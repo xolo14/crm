@@ -1,0 +1,1321 @@
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { DndContext, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
+import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { api } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, Send } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { AnimatePresence, motion } from "framer-motion";
+
+interface LeadForm {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  is_active: number | boolean;
+  fields_json?: FormField[];
+  source?: "system" | "custom";
+  assigned_count?: number;
+  created_at?: string;
+  created_by?: string | null;
+  meta_json?: {
+    company_name?: string;
+    logo_url?: string;
+    form_bg?: string;
+    field_bg?: string;
+    text_color?: string;
+    builder_questions?: Question[];
+    collect_email?: boolean;
+    allow_multiple_responses?: boolean;
+    edit_after_submit?: boolean;
+    show_progress_bar?: boolean;
+    shuffle_questions?: boolean;
+    confirmation_message?: string;
+    is_quiz?: boolean;
+  };
+}
+
+interface TeamMember {
+  id: string;
+  full_name: string;
+  email?: string;
+  referral_code?: string | null;
+  role?: string;
+  reports_to_id?: string | null;
+  org_id?: string | null;
+  org_name?: string | null;
+}
+
+interface FormAssignment {
+  id: string;
+  form_id: string;
+  member_id: string;
+  full_name?: string;
+  email?: string;
+  referral_code?: string | null;
+}
+
+type FieldType = "text" | "email" | "phone" | "textarea" | "select" | "number" | "date";
+type QuestionType =
+  | "short_answer"
+  | "paragraph"
+  | "multiple_choice"
+  | "checkboxes"
+  | "dropdown"
+  | "file_upload"
+  | "linear_scale"
+  | "mc_grid"
+  | "checkbox_grid"
+  | "date"
+  | "time"
+  | "section_break";
+
+interface FormField {
+  id: string;
+  key: string;
+  label: string;
+  type: FieldType;
+  required: boolean;
+  placeholder?: string;
+  options?: string[];
+}
+
+interface Question {
+  id: string;
+  type: QuestionType;
+  title: string;
+  description?: string;
+  required: boolean;
+  options?: string[];
+  rows?: string[];
+  columns?: string[];
+  scaleMin?: number;
+  scaleMax?: number;
+  scaleMinLabel?: string;
+  scaleMaxLabel?: string;
+  points?: number;
+  validation?: { kind?: "text" | "number" | "length" | "regex"; value?: string };
+  includeOther?: boolean;
+}
+
+interface FormBuilderState {
+  id: string;
+  title: string;
+  description: string;
+  slug: string;
+  companyName: string;
+  companyLogoUrl: string;
+  formBg: string;
+  fieldBg: string;
+  textColor: string;
+  isActive: boolean;
+  collectEmail: boolean;
+  allowMultipleResponses: boolean;
+  editAfterSubmit: boolean;
+  showProgressBar: boolean;
+  shuffleQuestions: boolean;
+  confirmationMessage: string;
+  isQuiz: boolean;
+  accentColor: string;
+  questions: Question[];
+}
+
+const PRIMARY_GREEN = "#1D9E75";
+
+const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
+  short_answer: "Short answer",
+  paragraph: "Paragraph",
+  multiple_choice: "Multiple choice",
+  checkboxes: "Checkboxes",
+  dropdown: "Dropdown",
+  file_upload: "File upload",
+  linear_scale: "Linear scale",
+  mc_grid: "Multiple choice grid",
+  checkbox_grid: "Checkbox grid",
+  date: "Date",
+  time: "Time",
+  section_break: "Section break",
+};
+
+const NEW_QUESTION = (type: QuestionType = "short_answer"): Question => ({
+  id: crypto.randomUUID(),
+  type,
+  title: "Question",
+  required: false,
+  options: type === "multiple_choice" || type === "checkboxes" || type === "dropdown" ? ["Option 1"] : [],
+  rows: type === "mc_grid" || type === "checkbox_grid" ? ["Row 1"] : [],
+  columns: type === "mc_grid" || type === "checkbox_grid" ? ["Column 1"] : [],
+  scaleMin: type === "linear_scale" ? 1 : undefined,
+  scaleMax: type === "linear_scale" ? 5 : undefined,
+});
+
+const DEFAULT_BUILDER_QUESTIONS = (): Question[] => [
+  {
+    id: crypto.randomUUID(),
+    type: "short_answer",
+    title: "Full Name",
+    required: true,
+    description: "",
+    options: [],
+  },
+  {
+    id: crypto.randomUUID(),
+    type: "short_answer",
+    title: "Email Address",
+    required: true,
+    description: "",
+    options: [],
+    validation: { kind: "regex", value: "email" },
+  },
+];
+
+function normalizeQuestionForType(question: Question, type: QuestionType): Question {
+  return {
+    ...question,
+    type,
+    options: type === "multiple_choice" || type === "checkboxes" || type === "dropdown" ? (question.options?.length ? question.options : ["Option 1"]) : [],
+    rows: type === "mc_grid" || type === "checkbox_grid" ? (question.rows?.length ? question.rows : ["Row 1"]) : [],
+    columns: type === "mc_grid" || type === "checkbox_grid" ? (question.columns?.length ? question.columns : ["Column 1"]) : [],
+    scaleMin: type === "linear_scale" ? (question.scaleMin ?? 1) : undefined,
+    scaleMax: type === "linear_scale" ? (question.scaleMax ?? 5) : undefined,
+    includeOther: type === "multiple_choice" || type === "checkboxes" ? !!question.includeOther : false,
+  };
+}
+
+const INITIAL_BUILDER: FormBuilderState = {
+  id: "",
+  title: "Untitled Form",
+  description: "",
+  slug: "",
+  companyName: "Syncpedia",
+  companyLogoUrl: "",
+  formBg: "#0A1410",
+  fieldBg: "#000000",
+  textColor: "#ffffff",
+  isActive: true,
+  collectEmail: false,
+  allowMultipleResponses: true,
+  editAfterSubmit: false,
+  showProgressBar: false,
+  shuffleQuestions: false,
+  confirmationMessage: "Your response has been recorded.",
+  isQuiz: false,
+  accentColor: PRIMARY_GREEN,
+  questions: DEFAULT_BUILDER_QUESTIONS(),
+};
+
+type BuilderAction =
+  | { type: "set"; patch: Partial<FormBuilderState> }
+  | { type: "set_questions"; questions: Question[] }
+  | { type: "add_question"; questionType?: QuestionType }
+  | { type: "update_question"; id: string; patch: Partial<Question> }
+  | { type: "duplicate_question"; id: string }
+  | { type: "delete_question"; id: string }
+  | { type: "reset"; next: FormBuilderState };
+
+function builderReducer(state: FormBuilderState, action: BuilderAction): FormBuilderState {
+  if (action.type === "set") return { ...state, ...action.patch };
+  if (action.type === "set_questions") return { ...state, questions: action.questions };
+  if (action.type === "add_question") return { ...state, questions: [...state.questions, NEW_QUESTION(action.questionType)] };
+  if (action.type === "update_question") {
+    return {
+      ...state,
+      questions: state.questions.map((q) => (q.id === action.id ? { ...q, ...action.patch } : q)),
+    };
+  }
+  if (action.type === "duplicate_question") {
+    const idx = state.questions.findIndex((q) => q.id === action.id);
+    if (idx < 0) return state;
+    const copy = { ...state.questions[idx], id: crypto.randomUUID(), title: `${state.questions[idx].title} (copy)` };
+    const next = [...state.questions];
+    next.splice(idx + 1, 0, copy);
+    return { ...state, questions: next };
+  }
+  if (action.type === "delete_question") {
+    const remaining = state.questions.filter((q) => q.id !== action.id);
+    return { ...state, questions: remaining.length ? remaining : [NEW_QUESTION("short_answer")] };
+  }
+  return action.next;
+}
+
+function mapLegacyFieldToQuestion(field: FormField): Question {
+  const typeMap: Record<FieldType, QuestionType> = {
+    text: "short_answer",
+    email: "short_answer",
+    phone: "short_answer",
+    textarea: "paragraph",
+    select: "dropdown",
+    number: "short_answer",
+    date: "date",
+  };
+  return {
+    id: field.id || crypto.randomUUID(),
+    type: typeMap[field.type] || "short_answer",
+    title: field.label || "Question",
+    required: !!field.required,
+    description: "",
+    options: field.options || [],
+    validation: field.type === "email" ? { kind: "regex", value: "email" } : undefined,
+  };
+}
+
+function toLegacyFields(questions: Question[]): FormField[] {
+  return questions
+    .filter((q) => q.type !== "section_break")
+    .map((q, idx) => {
+      const keyBase = q.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `field_${idx + 1}`;
+      const typeMap: Record<QuestionType, FieldType> = {
+        short_answer:
+          q.validation?.kind === "regex" && q.validation?.value === "email"
+            ? "email"
+            : q.validation?.kind === "number"
+              ? "number"
+              : "text",
+        paragraph: "textarea",
+        multiple_choice: "select",
+        checkboxes: "select",
+        dropdown: "select",
+        file_upload: "text",
+        linear_scale: "number",
+        mc_grid: "textarea",
+        checkbox_grid: "textarea",
+        date: "date",
+        time: "text",
+        section_break: "text",
+      };
+      return {
+        id: q.id,
+        key: keyBase,
+        label: q.title || `Question ${idx + 1}`,
+        type: typeMap[q.type] || "text",
+        required: !!q.required,
+        placeholder: q.description || "",
+        options: q.options || [],
+      };
+    });
+}
+
+function SortableQuestionCard({
+  question,
+  selected,
+  onSelect,
+  onUpdate,
+  onDuplicate,
+  onDelete,
+}: {
+  question: Question;
+  selected: boolean;
+  onSelect: () => void;
+  onUpdate: (patch: Partial<Question>) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: question.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+  return (
+    <Card
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "group relative rounded-2xl border bg-white/92 backdrop-blur-sm",
+        "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_rgba(0,0,0,0.04)]",
+        "transition-all duration-200 hover:-translate-y-0.5",
+        selected && "border-l-4 border-l-[#1D9E75] shadow-[0_0_0_4px_rgba(29,158,117,0.08),0_16px_40px_rgba(0,0,0,0.08)]"
+      )}
+      onClick={onSelect}
+    >
+      <CardContent className="p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <button className="text-muted-foreground cursor-grab" {...attributes} {...listeners}>
+            <GripVertical className="h-4 w-4" />
+          </button>
+          <Input
+            value={question.title}
+            onChange={(e) => onUpdate({ title: e.target.value })}
+            placeholder="Question"
+            className="bg-slate-50 border-transparent focus:bg-white focus:border-[#1D9E75] focus-visible:ring-4 focus-visible:ring-emerald-100"
+          />
+          <Select value={question.type} onValueChange={(v) => onUpdate(normalizeQuestionForType(question, v as QuestionType))}>
+            <SelectTrigger className="w-[190px]"><SelectValue /></SelectTrigger>
+            <SelectContent>{Object.entries(QUESTION_TYPE_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <div className="text-sm text-muted-foreground">
+          {question.type === "short_answer" && <Input disabled placeholder="Short answer text" />}
+          {question.type === "paragraph" && <Textarea disabled placeholder="Long answer text" />}
+          {(question.type === "multiple_choice" || question.type === "checkboxes" || question.type === "dropdown") && (
+            <div className="space-y-1">
+              {(question.options || []).map((opt, idx) => (
+                <Input key={`${question.id}-opt-${idx}`} value={opt} onChange={(e) => {
+                  const next = [...(question.options || [])];
+                  next[idx] = e.target.value;
+                  onUpdate({ options: next });
+                }} />
+              ))}
+              <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); onUpdate({ options: [...(question.options || []), `Option ${(question.options || []).length + 1}`] }); }}>
+                + Add option
+              </Button>
+              {(question.type === "multiple_choice" || question.type === "checkboxes") && !question.includeOther ? (
+                <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); onUpdate({ includeOther: true }); }}>
+                  Add "Other"
+                </Button>
+              ) : null}
+              {question.includeOther ? <p className="text-xs text-muted-foreground">Other option enabled</p> : null}
+            </div>
+          )}
+          {question.type === "linear_scale" && <div>Scale: {question.scaleMin || 1} to {question.scaleMax || 5}</div>}
+          {(question.type === "mc_grid" || question.type === "checkbox_grid") && <div>Grid question (rows/columns editable in right panel)</div>}
+          {question.type === "file_upload" && <Input disabled type="file" />}
+          {question.type === "date" && <Input disabled type="date" />}
+          {question.type === "time" && <Input disabled type="time" />}
+          {question.type === "section_break" && <div className="border-t pt-2 text-sm">Section break</div>}
+        </div>
+        <div className={cn("flex items-center justify-between border-t pt-3 transition-opacity", selected ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); onDuplicate(); }}>Duplicate</Button>
+            <Button variant="ghost" size="sm" className="text-destructive" onClick={(e) => { e.stopPropagation(); if (confirm("Delete this question?")) onDelete(); }}>Delete</Button>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span>Required</span>
+            <Checkbox checked={question.required} onCheckedChange={(c) => onUpdate({ required: c === true })} />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Unable to read file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function toBool(v: unknown): boolean {
+  return v === true || v === 1 || v === "1";
+}
+
+function makeSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** Platform-global Syncpedia forms (org_id NULL): slugs default + normal. */
+function isGlobalBuiltinLeadForm(form: LeadForm): boolean {
+  const s = String(form.slug || "").trim().toLowerCase();
+  const org = String(form.org_id ?? "").trim();
+  return (s === "default" || s === "normal") && org === "";
+}
+
+export default function FormsManagerPage() {
+  const { role, profile, user } = useAuth();
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [forms, setForms] = useState<LeadForm[]>(() => {
+    try {
+      const raw = localStorage.getItem("forms_manager_cache_v2");
+      if (!raw) return [];
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed as LeadForm[];
+    } catch {
+      return [];
+    }
+  });
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [assignmentsByForm, setAssignmentsByForm] = useState<Record<string, FormAssignment[]>>({});
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const [editing, setEditing] = useState<LeadForm | null>(null);
+  const [builder, dispatchBuilder] = useReducer(builderReducer, INITIAL_BUILDER);
+  const [builderTab, setBuilderTab] = useState<"questions" | "settings" | "preview">("questions");
+  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [formNameError, setFormNameError] = useState("");
+  const [history, setHistory] = useState<FormBuilderState[]>([]);
+  const [future, setFuture] = useState<FormBuilderState[]>([]);
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+
+  const canAssignForms = role === "super_admin" || role === "admin";
+  const canEditForms = canAssignForms || role === "sales_marketing";
+  const canAccess = canEditForms;
+  const isSalesMarketing = role === "sales_marketing";
+  const myReferralCode = String(profile?.referral_code ?? "").trim();
+
+  const baseApplyUrl = useMemo(() => `${window.location.origin}/apply`, []);
+
+  const buildApplyLink = useCallback(
+    (slug: string) => {
+      const base = `${baseApplyUrl}?form=${encodeURIComponent(slug)}`;
+      if (isSalesMarketing && myReferralCode) {
+        return `${base}&ref=${encodeURIComponent(myReferralCode)}`;
+      }
+      return base;
+    },
+    [baseApplyUrl, isSalesMarketing, myReferralCode],
+  );
+
+  const tableColCount = canAssignForms ? 7 : 5;
+
+  const canEditFormRow = useCallback(
+    (form: LeadForm) => {
+      if (!canEditForms) return false;
+      if (canAssignForms) return true;
+      return String(form.created_by || "") === String(user?.id || "");
+    },
+    [canEditForms, canAssignForms, user?.id],
+  );
+
+  useEffect(() => {
+    if (!canAccess) return;
+    void bootstrap();
+  }, [canAccess]);
+
+  useEffect(() => {
+    localStorage.setItem("forms_manager_cache_v2", JSON.stringify(forms));
+  }, [forms]);
+
+  async function bootstrap() {
+    setLoading(true);
+    try {
+      const [formsRes, teamRes] = await Promise.all([api.forms.list(), api.team.list()]);
+      const rows = Array.isArray(formsRes) ? formsRes : (formsRes?.data || []);
+      const mapped: LeadForm[] = rows.map((row: any) => ({
+        ...row,
+        fields_json: Array.isArray(row?.fields_json) ? row.fields_json : [],
+        meta_json: row?.meta_json && typeof row.meta_json === "object" ? row.meta_json : {},
+        source: "custom",
+      }));
+      setForms(mapped);
+      setTeamMembers(teamRes?.data || []);
+      const assignmentPairs = await Promise.all(
+        rows.map(async (row: any) => {
+          const id = row?.id as string | undefined;
+          if (!id) return null as const;
+          const a = await api.forms.assignments(id);
+          return [id, (a?.data || []) as FormAssignment[]] as const;
+        })
+      );
+      const nextAssignments: Record<string, FormAssignment[]> = {};
+      for (const pair of assignmentPairs) {
+        if (!pair) continue;
+        nextAssignments[pair[0]] = pair[1];
+      }
+      setAssignmentsByForm(nextAssignments);
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Failed to load forms", description: error?.message || "Try again." });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function syncRepFormAssignments() {
+    setBackfillRunning(true);
+    try {
+      const res = await api.forms.backfillSalesFormAssignments();
+      const u = typeof res?.users_updated === "number" ? res.users_updated : 0;
+      const r = typeof res?.assignment_rows_upserted === "number" ? res.assignment_rows_upserted : 0;
+      const s = typeof res?.users_skipped_no_matching_form === "number" ? res.users_skipped_no_matching_form : 0;
+      toast({
+        title: "Rep form links synced",
+        description: `${u} rep(s) updated, ${r} assignment row(s). ${s} skipped (no matching active default/normal form).`,
+      });
+      await bootstrap();
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Sync failed",
+        description: error?.message || "Try again.",
+      });
+    } finally {
+      setBackfillRunning(false);
+    }
+  }
+
+  function openCreate() {
+    setEditing(null);
+    const next = { ...INITIAL_BUILDER, id: crypto.randomUUID() };
+    dispatchBuilder({ type: "reset", next });
+    setHistory([next]);
+    setFuture([]);
+    setBuilderTab("questions");
+    setSelectedQuestionId(null);
+    setBuilderOpen(true);
+  }
+
+  function openEdit(form: LeadForm) {
+    setEditing(form);
+    const meta = form.meta_json || {};
+    const questions = Array.isArray(meta.builder_questions) && meta.builder_questions.length
+      ? meta.builder_questions
+      : (Array.isArray(form.fields_json) ? form.fields_json.map(mapLegacyFieldToQuestion) : [NEW_QUESTION("short_answer")]);
+    const nextState = {
+      id: form.id,
+      title: form.name || "Untitled Form",
+      slug: form.slug || "",
+      description: form.description || "",
+      companyName: meta.company_name || "Syncpedia",
+      companyLogoUrl: meta.logo_url || "",
+      formBg: meta.form_bg || "#0A1410",
+      fieldBg: meta.field_bg || "#000000",
+      textColor: meta.text_color || "#ffffff",
+      isActive: toBool(form.is_active),
+      collectEmail: !!meta.collect_email,
+      allowMultipleResponses: meta.allow_multiple_responses !== false,
+      editAfterSubmit: !!meta.edit_after_submit,
+      showProgressBar: !!meta.show_progress_bar,
+      shuffleQuestions: !!meta.shuffle_questions,
+      confirmationMessage: String(meta.confirmation_message || "Your response has been recorded."),
+      isQuiz: !!meta.is_quiz,
+      accentColor: PRIMARY_GREEN,
+      questions,
+    };
+    dispatchBuilder({
+      type: "reset",
+      next: nextState,
+    });
+    setHistory([nextState]);
+    setFuture([]);
+    setFormNameError("");
+    setBuilderOpen(true);
+  }
+
+  useEffect(() => {
+    if (!builderOpen) return;
+    const timer = window.setTimeout(() => {
+      if (saveStatus === "idle") void saveForm(false);
+    }, 30000);
+    return () => window.clearTimeout(timer);
+  }, [builder, builderOpen, saveStatus]);
+
+  useEffect(() => {
+    if (!builderOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void saveForm(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [builderOpen, builder, saveStatus]);
+
+  async function saveForm(publish = false) {
+    if (!builder.title.trim()) {
+      setFormNameError("Form name is required");
+      return;
+    }
+    setFormNameError("");
+    setSaveStatus("saving");
+    setSaving(true);
+    try {
+      const slug = builder.slug || makeSlug(builder.title);
+      const payload = {
+        name: builder.title.trim(),
+        slug: slug.trim(),
+        description: builder.description.trim() || null,
+        fields_json: toLegacyFields(builder.questions),
+        meta_json: {
+          company_name: builder.companyName.trim() || "Syncpedia",
+          logo_url: builder.companyLogoUrl.trim() || "",
+          form_bg: builder.formBg,
+          field_bg: builder.fieldBg,
+          text_color: builder.textColor,
+          builder_questions: builder.questions,
+          collect_email: builder.collectEmail,
+          allow_multiple_responses: builder.allowMultipleResponses,
+          edit_after_submit: builder.editAfterSubmit,
+          show_progress_bar: builder.showProgressBar,
+          shuffle_questions: builder.shuffleQuestions,
+          confirmation_message: builder.confirmationMessage,
+          is_quiz: builder.isQuiz,
+        },
+        is_active: publish ? true : builder.isActive,
+      };
+      if (editing) {
+        await api.forms.update(editing.id, payload);
+        toast({ title: "Form updated" });
+      } else {
+        const created = await api.forms.create(payload);
+        if (created?.id) {
+          setForms((prev) => [
+            {
+              id: created.id,
+              name: payload.name,
+              slug: payload.slug,
+              description: payload.description,
+              fields_json: payload.fields_json,
+              meta_json: payload.meta_json,
+              is_active: payload.is_active ? 1 : 0,
+              source: "custom",
+            },
+            ...prev,
+          ]);
+        }
+        toast({ title: "Form created" });
+      }
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 1200);
+      setBuilderOpen(false);
+      await bootstrap();
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Save failed", description: error?.message || "Try again." });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleFormStatus(form: LeadForm) {
+    try {
+      await api.forms.update(form.id, { is_active: !toBool(form.is_active) });
+      await bootstrap();
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Failed to update status", description: error?.message || "Try again." });
+    }
+  }
+
+  async function deleteForm(form: LeadForm) {
+    if (isGlobalBuiltinLeadForm(form)) {
+      toast({
+        variant: "destructive",
+        title: "Cannot delete built-in form",
+        description: "Global Default Capture and Normal forms are required for Syncpedia.",
+      });
+      return;
+    }
+    const ok = window.confirm(`Delete "${form.name}"? This cannot be undone.`);
+    if (!ok) return;
+    try {
+      await api.forms.delete(form.id);
+      setForms((prev) => prev.filter((f) => f.id !== form.id));
+      setAssignmentsByForm((prev) => {
+        const next = { ...prev };
+        delete next[form.id];
+        return next;
+      });
+      toast({ title: "Form deleted" });
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Delete failed", description: error?.message || "Try again." });
+    }
+  }
+
+  async function updateAssignments(formId: string, nextIds: string[]) {
+    try {
+      await api.forms.assignMembers(formId, nextIds);
+      const refreshed = await api.forms.assignments(formId);
+      setAssignmentsByForm((prev) => ({ ...prev, [formId]: refreshed?.data || [] }));
+      toast({ title: "Link assignments updated" });
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Assignment failed", description: error?.message || "Try again." });
+    }
+  }
+
+  function isSalesRepRole(role?: string): boolean {
+    const normalized = String(role || "").toLowerCase();
+    return normalized === "sales_representative";
+  }
+
+  function isSuperAdminCreatedMember(member: TeamMember): boolean {
+    const orgSlugLike = String(member.org_name || "").trim().toLowerCase();
+    if (orgSlugLike === "syncpedia") return true;
+    return !String(member.org_id || "").trim();
+  }
+
+  function isValidMemberId(memberId?: string | null): boolean {
+    const id = String(memberId || "").trim();
+    // UUIDv4-ish generic matcher used by users.id in this app
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+  }
+
+  function isGreenChecked(checked: boolean): string {
+    return `mr-2 inline-block h-3.5 w-3.5 rounded-[3px] border ${checked ? "border-[#1D9E75] bg-[#1D9E75]" : "border-gray-400 bg-white"}`;
+  }
+
+  function getAssignableMembersForForm(form: LeadForm): TeamMember[] {
+    const safeMembers = teamMembers.filter((m) => isValidMemberId(m.id));
+    if (form.slug === "default") {
+      return safeMembers.filter((m) => isSuperAdminCreatedMember(m));
+    }
+    if (form.slug === "normal") {
+      return safeMembers.filter((m) => !isSuperAdminCreatedMember(m));
+    }
+    return safeMembers;
+  }
+
+  async function updateAssignmentsForForm(form: LeadForm, nextIds: string[]) {
+    await updateAssignments(form.id, Array.from(new Set(nextIds.filter((id) => isValidMemberId(id)))));
+  }
+
+  function applyBuilderUpdate(updater: () => void) {
+    setHistory((prev) => [...prev.slice(-49), builder]);
+    setFuture([]);
+    updater();
+  }
+
+  function undoBuilder() {
+    const prev = history[history.length - 1];
+    if (!prev) return;
+    setHistory((h) => h.slice(0, -1));
+    setFuture((f) => [builder, ...f.slice(0, 49)]);
+    dispatchBuilder({ type: "reset", next: prev });
+  }
+
+  function redoBuilder() {
+    const next = future[0];
+    if (!next) return;
+    setFuture((f) => f.slice(1));
+    setHistory((h) => [...h.slice(-49), builder]);
+    dispatchBuilder({ type: "reset", next });
+  }
+
+  async function copy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: `${label} copied` });
+    } catch {
+      toast({ variant: "destructive", title: "Copy failed" });
+    }
+  }
+
+  const selectedQuestion = builder.questions.find((q) => q.id === selectedQuestionId) || null;
+
+  if (!canAccess) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center text-sm text-muted-foreground">You do not have access to Form Management.</CardContent>
+      </Card>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="h-64 flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (builderOpen) {
+    return (
+      <div className="min-h-[calc(100vh-120px)] bg-[linear-gradient(to_bottom,#f4f1ff_0%,#f7f8fc_100%)] -mx-4 sm:-mx-6 lg:-mx-8" onClick={() => setSelectedQuestionId(null)}>
+        <div className="sticky top-0 z-20 h-[72px] backdrop-blur-xl bg-white/80 border-b border-[#ebecef]">
+          <div className="px-4 sm:px-6 h-full flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <Button variant="ghost" size="sm" onClick={() => setBuilderOpen(false)}><ArrowLeft className="h-4 w-4 mr-1" />Back</Button>
+              <Button variant="ghost" size="sm" onClick={undoBuilder} disabled={history.length === 0}>Undo</Button>
+              <Button variant="ghost" size="sm" onClick={redoBuilder} disabled={future.length === 0}>Redo</Button>
+              <div className="min-w-0">
+                <Input className="h-8 w-64 bg-transparent border-none shadow-none text-sm font-semibold" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value, slug: makeSlug(e.target.value) } }))} />
+                <p className="text-[11px] text-muted-foreground px-3">Last edited just now</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant={builderTab === "questions" ? "default" : "outline"} size="sm" onClick={() => setBuilderTab("questions")}>Questions</Button>
+              <Button variant={builderTab === "settings" ? "default" : "outline"} size="sm" onClick={() => setBuilderTab("settings")}>Settings</Button>
+              <Button variant={builderTab === "preview" ? "default" : "outline"} size="sm" onClick={() => setBuilderTab("preview")}><Eye className="h-4 w-4 mr-1" />Preview</Button>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">{saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved ✓" : "Saved ✓"}</span>
+              <Button variant="outline" size="sm">Share</Button>
+              <Button size="sm" onClick={() => void saveForm(true)}><Send className="h-4 w-4 mr-1" />Publish</Button>
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-12 gap-6 p-6 sm:p-8">
+          <div className={cn("col-span-12 lg:col-span-8", builderTab === "settings" && "lg:col-span-8")}>
+            {builderTab === "questions" && (
+              <div className="max-w-[720px] mx-auto space-y-4" onClick={(e) => e.stopPropagation()}>
+                <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+                <Card className="rounded-2xl bg-white/90 backdrop-blur-sm shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_rgba(0,0,0,0.06)] overflow-hidden border border-black/5">
+                  <div className="h-[10px] rounded-t-2xl" style={{ background: "linear-gradient(90deg,#1D9E75,#35c997)" }} />
+                  <CardContent className="p-6 space-y-3">
+                    <Input className="text-[2rem] leading-tight font-bold tracking-[-0.03em] border-0 shadow-none px-0 focus-visible:ring-0 bg-transparent" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value } }))} placeholder="Untitled Form" />
+                    <Input className="border-0 shadow-none px-0 text-[15px] text-muted-foreground leading-relaxed focus-visible:ring-0 bg-transparent" value={builder.description} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { description: e.target.value } }))} placeholder="Add a description..." />
+                  </CardContent>
+                </Card>
+                </motion.div>
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => {
+                  const { active, over } = event;
+                  if (!over || active.id === over.id) return;
+                  const oldIndex = builder.questions.findIndex((q) => q.id === active.id);
+                  const newIndex = builder.questions.findIndex((q) => q.id === over.id);
+                  applyBuilderUpdate(() => dispatchBuilder({ type: "set_questions", questions: arrayMove(builder.questions, oldIndex, newIndex) }));
+                }}>
+                  <SortableContext items={builder.questions.map((q) => q.id)} strategy={verticalListSortingStrategy}>
+                    <div className="space-y-6">
+                      {builder.questions.map((q) => (
+                        <motion.div key={q.id} layout initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }}>
+                          <SortableQuestionCard
+                            question={q}
+                            selected={selectedQuestionId === q.id}
+                            onSelect={() => setSelectedQuestionId(q.id)}
+                            onUpdate={(patch) => applyBuilderUpdate(() => dispatchBuilder({ type: "update_question", id: q.id, patch }))}
+                            onDuplicate={() => applyBuilderUpdate(() => dispatchBuilder({ type: "duplicate_question", id: q.id }))}
+                            onDelete={() => applyBuilderUpdate(() => dispatchBuilder({ type: "delete_question", id: q.id }))}
+                          />
+                          {selectedQuestionId === q.id ? (
+                            <div className="absolute right-[-72px] mt-[-120px] hidden xl:block">
+                              <Card className="rounded-2xl w-[52px] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.12)] border-0">
+                                <CardContent className="p-2 space-y-2">
+                                  <Button variant="ghost" size="icon" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "short_answer" }))}><Plus className="h-4 w-4" /></Button>
+                                  <Button variant="ghost" size="icon" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "section_break" }))}>T</Button>
+                                  <Button variant="ghost" size="icon">Img</Button>
+                                  <Button variant="ghost" size="icon">Vid</Button>
+                                  <Button variant="ghost" size="icon">Sec</Button>
+                                </CardContent>
+                              </Card>
+                            </div>
+                          ) : null}
+                        </motion.div>
+                      ))}
+                    </div>
+                  </SortableContext>
+                </DndContext>
+                {builder.questions.length === 0 ? (
+                  <Card className="rounded-2xl border-dashed border-2 bg-white/70">
+                    <CardContent className="py-10 text-center">
+                      <p className="font-medium">Start building your form</p>
+                      <p className="text-sm text-muted-foreground mt-1">Drag blocks here or add your first question.</p>
+                    </CardContent>
+                  </Card>
+                ) : null}
+                <Button className="w-full rounded-xl" variant="outline" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "short_answer" }))}>+ Add question</Button>
+              </div>
+            )}
+            {builderTab === "settings" && (
+              <div className="max-w-[720px] mx-auto space-y-4">
+                <Card><CardHeader><CardTitle className="text-base">General</CardTitle></CardHeader><CardContent className="space-y-3">
+                  <div><Label>Form URL slug</Label><Input value={builder.slug} onChange={(e) => dispatchBuilder({ type: "set", patch: { slug: makeSlug(e.target.value) } })} /></div>
+                  <div><Label>Company Name</Label><Input value={builder.companyName} onChange={(e) => dispatchBuilder({ type: "set", patch: { companyName: e.target.value } })} /></div>
+                  <div className="space-y-2">
+                    <Label>Company Logo URL</Label>
+                    <Input value={builder.companyLogoUrl} onChange={(e) => dispatchBuilder({ type: "set", patch: { companyLogoUrl: e.target.value } })} />
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const input = document.createElement("input");
+                          input.type = "file";
+                          input.accept = "image/png,image/jpeg,image/jpg,image/webp,image/svg+xml";
+                          input.onchange = async () => {
+                            const f = input.files?.[0];
+                            if (!f) return;
+                            try {
+                              const data = await readFileAsDataUrl(f);
+                              dispatchBuilder({ type: "set", patch: { companyLogoUrl: data } });
+                              toast({ title: "Logo uploaded" });
+                            } catch {
+                              toast({ variant: "destructive", title: "Upload failed", description: "Unable to read logo file." });
+                            }
+                          };
+                          input.click();
+                        }}
+                      >
+                        Upload Logo
+                      </Button>
+                      {builder.companyLogoUrl ? (
+                        <Button type="button" variant="ghost" size="sm" onClick={() => dispatchBuilder({ type: "set", patch: { companyLogoUrl: "" } })}>
+                          Clear
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between"><span>Collect email addresses</span><Checkbox checked={builder.collectEmail} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { collectEmail: c === true } })} /></div>
+                  <div className="flex items-center justify-between"><span>Allow only one response</span><Checkbox checked={!builder.allowMultipleResponses} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { allowMultipleResponses: c !== true } })} /></div>
+                  <div className="flex items-center justify-between"><span>Edit after submit</span><Checkbox checked={builder.editAfterSubmit} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { editAfterSubmit: c === true } })} /></div>
+                  <div className="flex items-center justify-between"><span>Form is active</span><Checkbox checked={builder.isActive} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { isActive: c === true } })} /></div>
+                </CardContent></Card>
+                <Card><CardHeader><CardTitle className="text-base">Presentation</CardTitle></CardHeader><CardContent className="space-y-3">
+                  <div>
+                    <Label>Form Background</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <Input type="color" className="h-10 w-16 p-1" value={builder.formBg} onChange={(e) => dispatchBuilder({ type: "set", patch: { formBg: e.target.value } })} />
+                      <Input value={builder.formBg} onChange={(e) => dispatchBuilder({ type: "set", patch: { formBg: e.target.value } })} />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Field Background</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <Input type="color" className="h-10 w-16 p-1" value={builder.fieldBg} onChange={(e) => dispatchBuilder({ type: "set", patch: { fieldBg: e.target.value } })} />
+                      <Input value={builder.fieldBg} onChange={(e) => dispatchBuilder({ type: "set", patch: { fieldBg: e.target.value } })} />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Text Color</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <Input type="color" className="h-10 w-16 p-1" value={builder.textColor} onChange={(e) => dispatchBuilder({ type: "set", patch: { textColor: e.target.value } })} />
+                      <Input value={builder.textColor} onChange={(e) => dispatchBuilder({ type: "set", patch: { textColor: e.target.value } })} />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between"><span>Show progress bar</span><Checkbox checked={builder.showProgressBar} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { showProgressBar: c === true } })} /></div>
+                  <div className="flex items-center justify-between"><span>Shuffle question order</span><Checkbox checked={builder.shuffleQuestions} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { shuffleQuestions: c === true } })} /></div>
+                  <div><Label>Confirmation message</Label><Textarea value={builder.confirmationMessage} onChange={(e) => dispatchBuilder({ type: "set", patch: { confirmationMessage: e.target.value } })} /></div>
+                </CardContent></Card>
+                <Card><CardHeader><CardTitle className="text-base">Quizzes</CardTitle></CardHeader><CardContent>
+                  <div className="flex items-center justify-between"><span>Make this a quiz</span><Checkbox checked={builder.isQuiz} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { isQuiz: c === true } })} /></div>
+                </CardContent></Card>
+              </div>
+            )}
+            {builderTab === "preview" && (
+              <div className="max-w-[720px] mx-auto">
+                <Card className="rounded-2xl bg-white shadow-[0_16px_40px_rgba(0,0,0,0.08)]"><CardContent className="p-6 space-y-5">
+                  {builder.companyLogoUrl ? <img src={builder.companyLogoUrl} alt={builder.companyName} className="h-12 object-contain" /> : null}
+                  <h2 className="text-2xl font-semibold">{builder.companyName}</h2>
+                  <h3 className="text-xl font-semibold">{builder.title}</h3>
+                  {builder.showProgressBar ? <div className="h-2 rounded-full bg-slate-100"><div className="h-2 w-1/3 rounded-full bg-[#1D9E75]" /></div> : null}
+                  {builder.description ? <p className="text-sm text-muted-foreground">{builder.description}</p> : null}
+                  {builder.questions.map((q) => (
+                    <div key={`preview-${q.id}`} className="space-y-2">
+                      <Label>{q.title}{q.required ? <span className="text-destructive"> *</span> : null}</Label>
+                      {q.type === "short_answer" && <Input disabled placeholder="Your answer" />}
+                      {q.type === "paragraph" && <Textarea disabled placeholder="Your answer" />}
+                      {q.type === "date" && <Input disabled type="date" />}
+                      {q.type === "time" && <Input disabled type="time" />}
+                      {(q.type === "multiple_choice" || q.type === "checkboxes" || q.type === "dropdown") && (
+                        <div className="space-y-1">
+                          <Select disabled><SelectTrigger><SelectValue placeholder={(q.options || [])[0] || "Select"} /></SelectTrigger></Select>
+                          {q.includeOther ? <p className="text-xs text-muted-foreground">Other: ________</p> : null}
+                        </div>
+                      )}
+                      {q.type === "section_break" && <div className="border-t pt-3 text-sm text-muted-foreground">{q.description || "Section"}</div>}
+                    </div>
+                  ))}
+                  <Button className="h-11 px-8 text-base">Submit</Button>
+                </CardContent></Card>
+              </div>
+            )}
+          </div>
+          <div className="col-span-3 hidden lg:block">
+            <AnimatePresence>
+            <motion.div initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 14 }} transition={{ duration: 0.22 }}>
+            <Card className="rounded-none sticky top-20 bg-white/70 backdrop-blur-xl border-l border-black/5 border-y-0 border-r-0 shadow-none">
+              <CardHeader><CardTitle className="text-sm">Field Settings</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                {!selectedQuestion ? <p className="text-xs text-muted-foreground">Select a question card to edit settings.</p> : (
+                  <>
+                    <div><Label className="text-xs">Field type</Label>
+                      <Select value={selectedQuestion.type} onValueChange={(v) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: normalizeQuestionForType(selectedQuestion, v as QuestionType) })}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>{Object.entries(QUESTION_TYPE_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center justify-between"><span className="text-sm">Required</span><Checkbox checked={selectedQuestion.required} onCheckedChange={(c) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { required: c === true } })} /></div>
+                    <div><Label className="text-xs">Description</Label><Textarea value={selectedQuestion.description || ""} onChange={(e) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { description: e.target.value } })} /></div>
+                    {selectedQuestion.type === "short_answer" ? (
+                      <div className="space-y-2">
+                        <Label className="text-xs">Validation rule</Label>
+                        <Select value={selectedQuestion.validation?.kind || "text"} onValueChange={(v) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { validation: { ...(selectedQuestion.validation || {}), kind: v as "text" | "number" | "length" | "regex" } } })}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="text">Text</SelectItem>
+                            <SelectItem value="number">Number</SelectItem>
+                            <SelectItem value="length">Length</SelectItem>
+                            <SelectItem value="regex">Regex</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Input placeholder="Validation value (optional)" value={selectedQuestion.validation?.value || ""} onChange={(e) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { validation: { ...(selectedQuestion.validation || {}), value: e.target.value } } })} />
+                      </div>
+                    ) : null}
+                    {(selectedQuestion.type === "multiple_choice" || selectedQuestion.type === "checkboxes" || selectedQuestion.type === "dropdown") ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm">Shuffle options</span>
+                        <Checkbox checked={selectedQuestion.validation?.kind === "text" && selectedQuestion.validation?.value === "shuffle"} onCheckedChange={(c) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { validation: c === true ? { kind: "text", value: "shuffle" } : undefined } })} />
+                      </div>
+                    ) : null}
+                    {(selectedQuestion.type === "multiple_choice" || selectedQuestion.type === "checkboxes") ? (
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm">Add "Other"</span>
+                        <Checkbox checked={!!selectedQuestion.includeOther} onCheckedChange={(c) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { includeOther: c === true } })} />
+                      </div>
+                    ) : null}
+                    {builder.isQuiz && <div><Label className="text-xs">Point value</Label><Input type="number" value={selectedQuestion.points ?? 0} onChange={(e) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { points: Number(e.target.value) } })} /></div>}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+            </motion.div>
+            </AnimatePresence>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Form Management</h1>
+          <p className="text-sm text-muted-foreground">
+            {canAssignForms
+              ? "Create/edit forms and assign personalized form links to team members."
+              : "Create and edit your forms. Copy link includes your referral code so leads appear in My Leads."}
+          </p>
+        </div>
+        {canEditForms ? (
+          <Button onClick={openCreate} className="gap-1.5">
+            <Plus className="h-4 w-4" />
+            New Form
+          </Button>
+        ) : null}
+      </div>
+
+      {isSalesMarketing && !myReferralCode ? (
+        <p className="text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-md px-3 py-2">
+          Your account has no referral code yet. Ask an admin to set one so copied form links attribute leads to you in My Leads.
+        </p>
+      ) : null}
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Forms</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Slug</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Public Link</TableHead>
+                {canAssignForms ? <TableHead>Assign to Team</TableHead> : null}
+                {canAssignForms ? <TableHead>Assigned Links</TableHead> : null}
+                {canEditForms ? <TableHead className="w-36">Actions</TableHead> : null}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {forms.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={tableColCount} className="text-center py-8 text-sm text-muted-foreground">
+                    No forms yet. Create your first form.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                forms.map((form) => {
+                  const isOn = toBool(form.is_active);
+                  const directLink = buildApplyLink(form.slug);
+                  const assigned = assignmentsByForm[form.id] || [];
+                  const selectedIds = assigned.map((a) => a.member_id);
+                  const assignableMembers = getAssignableMembersForForm(form);
+                  const salesManagers = assignableMembers.filter((m) => String(m.role || "").toLowerCase() === "manager");
+                  const managerIds = new Set(salesManagers.map((l) => l.id));
+                  const standaloneSalesReps = assignableMembers.filter((m) => isSalesRepRole(m.role) && (!m.reports_to_id || !managerIds.has(String(m.reports_to_id))));
+                  return (
+                    <TableRow key={form.id}>
+                      <TableCell>
+                        <div className="font-medium">{form.name}</div>
+                        <div className="mt-1">
+                          <Badge variant="outline" className="text-[10px]">
+                            {isGlobalBuiltinLeadForm(form) ? "Built-in" : "Custom"}
+                          </Badge>
+                        </div>
+                        {form.description ? <div className="text-xs text-muted-foreground mt-0.5">{form.description}</div> : null}
+                      </TableCell>
+                      <TableCell>
+                        <code className="text-xs">{form.slug}</code>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={isOn ? "default" : "secondary"}>{isOn ? "Active" : "Inactive"}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => copy(directLink, "Form link")}>
+                            <Copy className="h-3.5 w-3.5" />
+                            Copy Link
+                          </Button>
+                        </div>
+                      </TableCell>
+                      {canAssignForms ? (
+                      <TableCell>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="outline" size="sm" className="h-8 gap-1.5">
+                              <Users className="h-3.5 w-3.5" />
+                              Assign
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="start"
+                            side="bottom"
+                            sideOffset={6}
+                            className="w-72 max-h-80 overflow-y-auto"
+                          >
+                            <DropdownMenuLabel>Select Team Members</DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                              {salesManagers.map((manager) => {
+                                const reps = assignableMembers.filter((m) => isSalesRepRole(m.role) && m.reports_to_id === manager.id);
+                                const autoAssignIds = reps.map((r) => r.id);
+                                const checked = autoAssignIds.length > 0 && autoAssignIds.every((id) => selectedIds.includes(id));
+                                return (
+                                  <div key={`manager-group-${manager.id}`} className="px-1 py-1.5">
+                                    <DropdownMenuItem
+                                      className="pl-2"
+                                      onSelect={(e) => {
+                                        e.preventDefault();
+                                        const ids = new Set(selectedIds);
+                                        if (checked) autoAssignIds.forEach((id) => ids.delete(id));
+                                        else autoAssignIds.forEach((id) => ids.add(id));
+                                        void updateAssignmentsForForm(form, Array.from(ids));
+                                      }}
+                                    >
+                                      <span
+                                        className={isGreenChecked(checked)}
+                                        title={checked ? "Assigned" : "Click to assign"}
+                                      />
+                                      Manager: {manager.full_name}
+                                    </DropdownMenuItem>
+                                    <div className="ml-4 mt-1 space-y-0.5 border-l border-border/70 pl-2">
+                                      {reps.length === 0 ? (
+                                        <p className="px-2 text-[11px] text-muted-foreground">No sales reps assigned</p>
+                                      ) : (
+                                        reps.map((rep) => {
+                                          const repChecked = selectedIds.includes(rep.id);
+                                          return (
+                                            <DropdownMenuItem
+                                              className="pl-2"
+                                              key={rep.id}
+                                              onSelect={(e) => {
+                                                e.preventDefault();
+                                                const ids = repChecked ? selectedIds.filter((id) => id !== rep.id) : [...selectedIds, rep.id];
+                                                void updateAssignmentsForForm(form, Array.from(new Set(ids)));
+                                              }}
+                                            >
+                                              <span
+                                                className={isGreenChecked(repChecked)}
+                                                title={repChecked ? "Assigned" : "Click to assign"}
+                                              />
+                                              ↳ {rep.full_name}
+                                            </DropdownMenuItem>
+                                          );
+                                        })
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {standaloneSalesReps.length > 0 ? (
+                                <>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuLabel>Standalone Sales Reps</DropdownMenuLabel>
+                                  {standaloneSalesReps.map((rep) => {
+                                    const checked = selectedIds.includes(rep.id);
+                                    return (
+                                      <DropdownMenuItem
+                                        className="pl-2"
+                                        key={rep.id}
+                                        onSelect={(e) => {
+                                          e.preventDefault();
+                                          const ids = checked ? selectedIds.filter((id) => id !== rep.id) : [...selectedIds, rep.id];
+                                          void updateAssignmentsForForm(form, Array.from(new Set(ids)));
+                                        }}
+                                      >
+                                        <span
+                                          className={isGreenChecked(checked)}
+                                          title={checked ? "Assigned" : "Click to assign"}
+                                        />
+                                        {rep.full_name}
+                                      </DropdownMenuItem>
+                                    );
+                                  })}
+                                </>
+                              ) : null}
+                              {salesManagers.length === 0 && standaloneSalesReps.length === 0 ? (
+                                <p className="px-2 py-1 text-xs text-muted-foreground">
+                                  {form.slug === "default"
+                                    ? "No superadmin-created members found for Default form."
+                                    : form.slug === "normal"
+                                    ? "No organization members found for Normal form."
+                                    : "No assignable members found."}
+                                </p>
+                              ) : null}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                      ) : null}
+                      {canAssignForms ? (
+                      <TableCell>
+                        {assigned.length === 0 ? (
+                          <span className="text-xs text-muted-foreground">No team member assigned</span>
+                        ) : (
+                          <div className="space-y-1">
+                            {assigned.slice(0, 3).map((a) => {
+                              const memberRef = a.referral_code || "";
+                              const memberLink = `${baseApplyUrl}?form=${encodeURIComponent(form.slug)}${memberRef ? `&ref=${encodeURIComponent(memberRef)}` : ""}`;
+                              return (
+                                <div key={a.id} className="flex items-center gap-2">
+                                  <span className="text-xs truncate max-w-[170px]">{a.full_name || a.email || "Member"}</span>
+                                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copy(memberLink, "Assigned link")}>
+                                    <LinkIcon className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              );
+                            })}
+                            {assigned.length > 3 ? <div className="text-[11px] text-muted-foreground">+{assigned.length - 3} more</div> : null}
+                          </div>
+                        )}
+                      </TableCell>
+                      ) : null}
+                      {canEditForms ? (
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          {canEditFormRow(form) ? (
+                          <>
+                          <Button variant="outline" size="sm" className="h-8" onClick={() => openEdit(form)}>
+                            Edit
+                          </Button>
+                          <Button variant="outline" size="sm" className="h-8" onClick={() => void toggleFormStatus(form)}>
+                            {isOn ? "Set Inactive" : "Set Active"}
+                          </Button>
+                          </>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Copy link only</span>
+                          )}
+                          {canAssignForms ? (
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            className="h-8"
+                            disabled={isGlobalBuiltinLeadForm(form)}
+                            title={isGlobalBuiltinLeadForm(form) ? "Built-in global forms cannot be deleted" : undefined}
+                            onClick={() => void deleteForm(form)}
+                          >
+                            Delete
+                          </Button>
+                          ) : null}
+                        </div>
+                      </TableCell>
+                      ) : null}
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+    </div>
+  );
+}
+

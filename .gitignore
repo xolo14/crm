@@ -1,0 +1,38 @@
+# Server env (Node.js Express)
+server/.env
+
+# Frontend env (Vite)
+.env
+.env.local
+.env.*.local
+.env.production
+
+# PHP API secrets (use config.example.php as template)
+public/api/config.php
+php-backend/api/config.php
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+php-backend/vendor
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

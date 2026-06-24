@@ -1,0 +1,34 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Wrong-path fallback (when frontend called /payment-links.php without /api)
+  RewriteRule ^payment-links\.php$ api/payment-links.php [L,QSA,NC]
+
+  # ── PHP API: never route /api/*.php to the React app ─────────
+  RewriteRule ^api/.+\.php$ - [L,NC]
+
+  # Missing /api/*.php must not fall through to index.html (that causes "HTTP 200" HTML errors)
+  RewriteCond %{REQUEST_URI} ^/api/.+\.php$ [NC]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteRule ^ - [R=404,L]
+
+  # Existing files and directories
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Pretty URLs for payment links (optional; .php URLs also work)
+  RewriteRule ^api/payment-links/([^/]+)/cancel/?$ api/payment-links.php?action=cancel&id=$1 [L,QSA]
+  RewriteRule ^api/payment-links/([^/]+)/remind/?$ api/payment-links.php?action=remind&id=$1 [L,QSA]
+  RewriteRule ^api/payment-links/create/?$ api/payment-links.php?action=create [L,QSA]
+  RewriteRule ^api/payment-links/webhook/?$ api/payment-links.php?action=webhook [L,QSA]
+  RewriteRule ^api/payment-links/([^/]+)/?$ api/payment-links.php?action=fetch&id=$1 [L,QSA]
+  RewriteRule ^api/payment-links/?$ api/payment-links.php [L,QSA]
+
+  # Other /api/* paths (PHP files, uploads, etc.)
+  RewriteRule ^api/ - [L]
+
+  # React SPA
+  RewriteRule ^ index.html [L]
+</IfModule>

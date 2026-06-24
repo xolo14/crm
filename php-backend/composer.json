@@ -1,0 +1,13 @@
+{
+  "name": "syncpedia/crm-backend",
+  "description": "PHP API dependencies",
+  "require": {
+    "php": ">=8.0",
+    "dompdf/dompdf": "^2.0",
+    "phpmailer/phpmailer": "^6.9"
+  },
+  "config": {
+    "optimize-autoloader": true,
+    "sort-packages": true
+  }
+}

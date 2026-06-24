@@ -1,0 +1,41 @@
+<?php
+require_once __DIR__ . '/helpers.php';
+cors();
+
+respond([
+    'status' => 'ok',
+    'message' => 'Syncpedia CRM API is running',
+    'version' => '2.0.0',
+    'endpoints' => [
+        'POST /api/auth.php?action=login' => 'Login',
+        'POST /api/auth.php?action=signup' => 'Sign up',
+        'POST /api/auth.php?action=me' => 'Get current user',
+        'POST /api/auth.php?action=switch_org' => 'Switch organization (super admin)',
+        'GET/POST/PUT/DELETE /api/leads.php' => 'Lead management',
+        'GET/POST/PUT/DELETE /api/contacts.php' => 'Contact management',
+        'GET/POST/PUT/DELETE /api/deals.php' => 'Deal management',
+        'GET/POST/PUT/DELETE /api/tasks.php' => 'Task management',
+        'GET/POST /api/activities.php' => 'Activity tracking',
+        'GET/POST/PUT/DELETE /api/students.php' => 'Student management',
+        'GET/POST/PUT/DELETE /api/courses.php' => 'Course management',
+        'GET/POST/PUT/DELETE /api/batches.php' => 'Batch management',
+        'GET/POST/PUT/DELETE /api/payments.php' => 'Student fee payment records',
+        'POST /api/payment-links.php' => 'Razorpay payment links (list, create, cancel, remind)',
+        'POST /api/payment-links.php?action=create' => 'Create standard Razorpay payment link',
+        'POST /api/payment-links.php?action=webhook' => 'Razorpay payment link webhooks',
+        'POST /api/email.php?action=phase_update' => 'Fresher salary phase progress email',
+        'GET /api/reports.php' => 'Reports & analytics',
+        'GET/PUT /api/settings.php' => 'Settings & team management',
+        'GET/POST/PUT/DELETE /api/team.php' => 'Team member management',
+        'GET/POST/PUT/DELETE /api/notifications.php' => 'Notification management',
+        'GET/POST/PUT/DELETE /api/daily-reports.php' => 'Daily performance reports',
+        'GET/POST/PUT/DELETE /api/organizations.php' => 'Organization management (super admin)',
+        'GET/PUT /api/profiles.php' => 'User profiles & dashboard',
+        'POST /api/public-lead.php' => 'Public lead capture form (no auth)',
+        'GET/POST/PUT/DELETE /api/offer-letters.php' => 'Offer letter templates & sending',
+        'GET/POST/PUT/DELETE /api/holidays.php' => 'Holiday management',
+        'GET/POST/PUT/DELETE /api/marketing.php' => 'Marketing members, email & WhatsApp campaigns',
+        'GET/POST/DELETE /api/lead-assignments.php' => 'Lead assignment & bulk assign',
+        'GET/POST /api/trash.php' => 'Deleted items archive, restore, auto-purge (30 days)',
+    ],
+]);
