@@ -87,11 +87,12 @@ export default function EditLeadDialog({
   }, [lead, form]);
 
   const submit = form.handleSubmit(async (values) => {
+    if (!lead) return;
     const { resume, ...rest } = values;
     if (resume instanceof File) {
-      await mutation.mutateAsync({ ...rest, resume });
+      await mutation.mutateAsync({ ...rest, id: lead.id, resume });
     } else {
-      await mutation.mutateAsync(rest);
+      await mutation.mutateAsync({ ...rest, id: lead.id });
     }
     toast({ title: "Lead updated successfully" });
     onOpenChange(false);

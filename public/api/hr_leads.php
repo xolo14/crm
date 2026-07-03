@@ -21,53 +21,65 @@ $role = $tokenData['role'] ?? '';
 $orgId = getOrgId($tokenData);
 
 function normalizeRole(string $role): string {
-    $r = strtolower(trim($role));
-    if ($r === 'superadmin' || $r === 'super admin' || $r === 'super-admin') return 'super_admin';
-    if ($r === 'organisation') return 'org';
-    return $r;
+    return syncpediaNormalizeRoleKey($role);
 }
 
 $current_user_id = $userId;
 $current_role = normalizeRole((string) $role); // super_admin | admin | org | hr
 $current_org_id = $orgId;
 
+function hrLeadsTenantSql(?string $orgId, string $tableAlias = 'a'): array {
+    $oid = is_string($orgId) ? trim($orgId) : '';
+    if ($oid === '') {
+        return ['sql' => ' AND 1=0', 'params' => []];
+    }
+    $prefix = $tableAlias !== '' ? $tableAlias . '.' : '';
+    return ['sql' => " AND {$prefix}org_id = ?", 'params' => [$oid]];
+}
+
 function ensureHrLeadsTable(PDO $db): void {
     static $done = false;
     if ($done) return;
-    $sql = "CREATE TABLE IF NOT EXISTS `hr_leads` (
-      `id` INT AUTO_INCREMENT PRIMARY KEY,
-      `hr_id` CHAR(36) NOT NULL,
-      `assigned_by` CHAR(36) DEFAULT NULL,
-      `full_name` VARCHAR(255) NOT NULL,
-      `phone` VARCHAR(20) NOT NULL,
-      `email` VARCHAR(255) DEFAULT NULL,
-      `source` VARCHAR(100) DEFAULT NULL,
-      `status` ENUM('new','contacted','interested','not_interested','converted','lost') DEFAULT 'new',
-      `priority` ENUM('low','medium','high') DEFAULT 'medium',
-      `notes` TEXT DEFAULT NULL,
-      `resume_path` VARCHAR(500) DEFAULT NULL,
-      `follow_up_date` DATE DEFAULT NULL,
-      `is_assigned` TINYINT(1) DEFAULT 0,
-      `org_id` CHAR(36) DEFAULT NULL,
-      `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      `deleted_at` TIMESTAMP NULL DEFAULT NULL,
-      INDEX `idx_hr_leads_hr_id` (`hr_id`),
-      INDEX `idx_hr_leads_status` (`status`),
-      INDEX `idx_hr_leads_is_assigned` (`is_assigned`),
-      INDEX `idx_hr_leads_created_at` (`created_at`),
-      INDEX `idx_hr_leads_org_id` (`org_id`),
-      FOREIGN KEY (`hr_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
-      FOREIGN KEY (`assigned_by`) REFERENCES `users`(`id`) ON DELETE SET NULL,
-      CONSTRAINT `fk_hr_leads_org` FOREIGN KEY (`org_id`) REFERENCES `organizations`(`id`) ON DELETE SET NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    if (syncpediaSkipRuntimeDdl($db)) {
+        $done = true;
+        return;
+    }
+    $sql = "CREATE TABLE IF NOT EXISTS hr_leads (
+      id SERIAL PRIMARY KEY,
+      hr_id CHAR(36) NOT NULL,
+      assigned_by CHAR(36) DEFAULT NULL,
+      full_name VARCHAR(255) NOT NULL,
+      phone VARCHAR(20) NOT NULL,
+      email VARCHAR(255) DEFAULT NULL,
+      source VARCHAR(100) DEFAULT NULL,
+      status VARCHAR(30) DEFAULT 'new',
+      priority VARCHAR(20) DEFAULT 'medium',
+      notes TEXT DEFAULT NULL,
+      resume_path VARCHAR(500) DEFAULT NULL,
+      follow_up_date DATE DEFAULT NULL,
+      is_assigned BOOLEAN DEFAULT FALSE,
+      org_id CHAR(36) DEFAULT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      deleted_at TIMESTAMP NULL DEFAULT NULL,
+      FOREIGN KEY (hr_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
+      CONSTRAINT fk_hr_leads_org FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE SET NULL
+    )";
     $db->exec($sql);
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_hr_id ON hr_leads (hr_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_status ON hr_leads (status)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_is_assigned ON hr_leads (is_assigned)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_created_at ON hr_leads (created_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_org_id ON hr_leads (org_id)');
     $done = true;
 }
 ensureHrLeadsTable($db);
 
 try {
-    $db->exec("ALTER TABLE hr_leads ADD COLUMN resume_path VARCHAR(500) DEFAULT NULL AFTER notes");
+    if (!syncpediaColumnExists($db, 'hr_leads', 'resume_path')) {
+        $db->exec('ALTER TABLE hr_leads ADD COLUMN resume_path VARCHAR(500) DEFAULT NULL');
+    }
 } catch (PDOException $e) {
     // Duplicate column / already exists
 }
@@ -97,6 +109,13 @@ if ($action === 'add_lead' && $method === 'POST') {
     $orgStmt = $db->prepare("SELECT org_id FROM users WHERE id = ? LIMIT 1");
     $orgStmt->execute([$targetHrId]);
     $derivedOrgId = $orgStmt->fetch()['org_id'] ?? null;
+    if ($current_role === 'admin') {
+        $adminOrgId = userEffectiveOrgId($db, $tokenData, $current_user_id);
+        $hrOrg = trim((string) ($derivedOrgId ?? ''));
+        if ($adminOrgId !== null && $adminOrgId !== '' && $hrOrg !== '' && $hrOrg !== $adminOrgId) {
+            respond(['error' => 'HR user must belong to your organization'], 403);
+        }
+    }
     $resumePath = null;
     if (!empty($_FILES['resume'])) {
         $resumePath = saveLeadResumeUpload($_FILES['resume']);
@@ -250,8 +269,9 @@ if ($action === 'all_leads' && $method === 'GET') {
     $where = "a.deleted_at IS NULL";
     $params = [];
     if ($current_role === 'admin' || $current_role === 'org') {
-        $where .= " AND a.org_id = ?";
-        $params[] = $current_org_id;
+        $tenant = hrLeadsTenantSql($current_org_id, 'a');
+        $where .= $tenant['sql'];
+        $params = array_merge($params, $tenant['params']);
     } elseif ($current_role === 'super_admin' && !empty($_GET['org_id']) && $_GET['org_id'] !== 'all') {
         $where .= " AND a.org_id = ?";
         $params[] = $_GET['org_id'];
@@ -380,7 +400,11 @@ if ($action === 'lead_stats' && $method === 'GET') {
     if (!in_array($current_role, ['super_admin', 'admin', 'org'], true)) respond(['success' => false, 'message' => 'Access denied'], 403);
     $where = "deleted_at IS NULL";
     $params = [];
-    if ($current_role === 'admin' || $current_role === 'org') { $where .= " AND org_id = ?"; $params[] = $current_org_id; }
+    if ($current_role === 'admin' || $current_role === 'org') {
+        $tenant = hrLeadsTenantSql($current_org_id, '');
+        $where .= $tenant['sql'];
+        $params = array_merge($params, $tenant['params']);
+    }
     elseif ($current_role === 'super_admin' && !empty($_GET['org_id']) && $_GET['org_id'] !== 'all') { $where .= " AND org_id = ?"; $params[] = $_GET['org_id']; }
 
     $qTotal = $db->prepare("SELECT COUNT(*) c FROM hr_leads WHERE $where");

@@ -857,26 +857,26 @@ export default function FresherSalaryTrackerPage() {
                       if (!confirmAdvanceId) return;
                       const res = advancePhaseStore(confirmAdvanceId);
                       setConfirmAdvanceId(null);
-                      if (res.ok) {
-                        try {
-                          await api.fresherSalary.update(res.member);
-                          lastPersistedMembersJson.current = JSON.stringify(useFresherSalaryStore.getState().members);
-                          toast({
-                            title: "Phase advanced",
-                            description: `Now at ${formatPhaseToast(res.member.currentPhase)}.`,
-                          });
-                        } catch (e) {
-                          toast({
-                            variant: "destructive",
-                            title: "Phase updated locally only",
-                            description: e instanceof Error ? e.message : "Server save failed — retry from the sheet.",
-                          });
-                        }
-                      } else {
+                      if ("reason" in res) {
                         toast({
                           variant: "destructive",
                           title: "Cannot advance",
                           description: res.reason,
+                        });
+                        return;
+                      }
+                      try {
+                        await api.fresherSalary.update(res.member);
+                        lastPersistedMembersJson.current = JSON.stringify(useFresherSalaryStore.getState().members);
+                        toast({
+                          title: "Phase advanced",
+                          description: `Now at ${formatPhaseToast(res.member.currentPhase)}.`,
+                        });
+                      } catch (e) {
+                        toast({
+                          variant: "destructive",
+                          title: "Phase updated locally only",
+                          description: e instanceof Error ? e.message : "Server save failed — retry from the sheet.",
                         });
                       }
                     })();

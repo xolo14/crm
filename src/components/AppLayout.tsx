@@ -4,6 +4,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils';
 import { AUTH_PORTAL } from '@/lib/portalAuth';
+import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
@@ -309,15 +310,17 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
   const handleSignOut = async () => {
     await signOut();
-    const logoutPathByRole: Record<string, string> = {
-      super_admin: AUTH_PORTAL.superAdmin,
-      admin: AUTH_PORTAL.admin,
-      manager: AUTH_PORTAL.manager,
-      marketing: AUTH_PORTAL.marketing,
-      sales_marketing: AUTH_PORTAL.salesRep,
-    };
-    const fallback = location.pathname.startsWith('/marketing') ? AUTH_PORTAL.marketing : AUTH_PORTAL.salesRep;
-    navigate(logoutPathByRole[role || ''] || fallback);
+    api.hr.logout();
+    const n = String(role || "").toLowerCase();
+    if (n === "super_admin" || n === "superadmin") {
+      navigate(AUTH_PORTAL.superAdmin);
+      return;
+    }
+    if (n === "admin" || n === "org" || n === "organisation") {
+      navigate(AUTH_PORTAL.admin);
+      return;
+    }
+    navigate(AUTH_PORTAL.login);
   };
 
   const handleBackToMaster = async () => {

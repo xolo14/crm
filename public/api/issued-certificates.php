@@ -8,13 +8,7 @@ $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'] ?? null;
 
 function tableHasColumn(PDO $db, string $table, string $column): bool {
-    try {
-        $stmt = $db->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
-        $stmt->execute([$column]);
-        return (bool) $stmt->fetch();
-    } catch (Throwable $e) {
-        return false;
-    }
+    return syncpediaColumnExists($db, $table, $column);
 }
 
 if ($method === 'GET') {

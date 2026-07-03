@@ -26,7 +26,7 @@ if ($method === 'POST') {
         $input['date'],
         $input['type'] ?? 'public',
         $input['notes'] ?? null,
-        in_array($tokenData['role'], ['admin', 'super_admin']) ? 1 : 0,
+        in_array(syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')), ['admin', 'super_admin'], true) ? 1 : 0,
     ]);
     respond(['id' => $id, 'message' => 'Holiday created'], 201);
 }

@@ -1,12 +1,6 @@
 import { useState, useEffect, useRef, useCallback, MouseEvent as ReactMouseEvent } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-
-import { supabase } from '@/integrations/supabase/client';
-
-// Default to PHP backend for offer letters to avoid Supabase RLS blocks.
-// Enable Supabase only when explicitly requested.
-const USE_SUPABASE = import.meta.env.VITE_OFFER_LETTERS_USE_SUPABASE === 'true';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -523,20 +517,9 @@ export default function OfferLetters() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      if (!USE_SUPABASE) {
-        const [tRes, sRes] = await Promise.all([api.offerLetters.templates(), api.offerLetters.sent()]);
-        setTemplates(((tRes as any).data || []) as OfferTemplate[]);
-        setSentLetters(((sRes as any).data || []) as SentLetter[]);
-      } else {
-        const [tRes, sRes] = await Promise.all([
-          supabase.from('offer_letter_templates').select('*').order('created_at', { ascending: false }),
-          supabase.from('offer_letters_sent').select('*').order('sent_at', { ascending: false }),
-        ]);
-        if (tRes.error) throw tRes.error;
-        if (sRes.error) throw sRes.error;
-        if (tRes.data) setTemplates(tRes.data as OfferTemplate[]);
-        if (sRes.data) setSentLetters(sRes.data as SentLetter[]);
-      }
+      const [tRes, sRes] = await Promise.all([api.offerLetters.templates(), api.offerLetters.sent()]);
+      setTemplates(((tRes as any).data || []) as OfferTemplate[]);
+      setSentLetters(((sRes as any).data || []) as SentLetter[]);
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error loading data', description: err.message }); }
     finally { setLoading(false); }
   }, [toast]);
@@ -712,41 +695,21 @@ export default function OfferLetters() {
     }
     setSaving(true);
     try {
-      if (!USE_SUPABASE) {
-        if (editingTemplate) {
-          await api.offerLetters.updateTemplate(editingTemplate.id, {
-            template_name: templateForm.template_name,
-            role_title: templateForm.role_title,
-            html_content: templateForm.html_content,
-            status: 'active',
-          });
-          toast({ title: 'Template updated' });
-        } else {
-          await api.offerLetters.createTemplate({
-            template_name: templateForm.template_name,
-            role_title: templateForm.role_title,
-            html_content: templateForm.html_content,
-            status: 'active',
-          });
-          toast({ title: 'Template created' });
-        }
-      } else if (editingTemplate) {
-        const { error } = await supabase.from('offer_letter_templates').update({
+      if (editingTemplate) {
+        await api.offerLetters.updateTemplate(editingTemplate.id, {
           template_name: templateForm.template_name,
           role_title: templateForm.role_title,
           html_content: templateForm.html_content,
-        }).eq('id', editingTemplate.id);
-        if (error) throw error;
-        toast({ title: 'Template updated' });
-      } else {
-        const { error } = await supabase.from('offer_letter_templates').insert({
-          template_name: templateForm.template_name,
-          role_title: templateForm.role_title,
-          html_content: templateForm.html_content,
-          created_by: user!.id,
           status: 'active',
         });
-        if (error) throw error;
+        toast({ title: 'Template updated' });
+      } else {
+        await api.offerLetters.createTemplate({
+          template_name: templateForm.template_name,
+          role_title: templateForm.role_title,
+          html_content: templateForm.html_content,
+          status: 'active',
+        });
         toast({ title: 'Template created' });
       }
       setShowEditor(false);
@@ -757,12 +720,7 @@ export default function OfferLetters() {
 
   const deleteTemplate = async (id: string) => {
     try {
-      if (!USE_SUPABASE) {
-        await api.offerLetters.deleteTemplate(id);
-      } else {
-        const { error } = await supabase.from('offer_letter_templates').delete().eq('id', id);
-        if (error) throw error;
-      }
+      await api.offerLetters.deleteTemplate(id);
       toast({ title: 'Template deleted' });
       fetchData();
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
@@ -775,7 +733,7 @@ export default function OfferLetters() {
 
   /** Opens server-stored PDF (PHP + Dompdf) or falls back to browser print from HTML. */
   const openSentLetterPdf = async (s: SentLetter) => {
-    if (!USE_SUPABASE && s.pdf_url) {
+    if (s.pdf_url) {
       try {
         const blob = await api.offerLetters.fetchSentPdfBlob(s.id);
         const url = URL.createObjectURL(blob);
@@ -871,38 +829,23 @@ export default function OfferLetters() {
       };
       const emailHtml = wrapOfferEmailPlainBody(emailDraft.body.trim(), formForEmail);
 
-      if (!USE_SUPABASE) {
-        await api.offerLetters.send({
-          template_id: sendTemplate!.id,
-          recipient_name: sendForm.recipient_name,
-          recipient_email: emailDraft.to.trim(),
-          role_title: sendForm.role_title,
-          html_content: finalHtml,
-          email_subject: emailDraft.subject.trim(),
-          email_html: emailHtml,
-          attachment_name: emailDraft.attachmentName || `Offer_Letter_${sendForm.recipient_name.replace(/\s+/g, '_')}.pdf`,
-          cc: emailDraft.cc.trim() || undefined,
-          bcc: emailDraft.bcc.trim() || undefined,
-          status: 'sent',
-        });
-      } else {
-        const { error } = await supabase.from('offer_letters_sent').insert({
-          template_id: sendTemplate!.id,
-          recipient_name: sendForm.recipient_name,
-          recipient_email: sendForm.recipient_email,
-          role_title: sendForm.role_title,
-          html_content: finalHtml,
-          sent_by: user!.id,
-          status: 'sent',
-        });
-        if (error) throw error;
-      }
+      await api.offerLetters.send({
+        template_id: sendTemplate!.id,
+        recipient_name: sendForm.recipient_name,
+        recipient_email: emailDraft.to.trim(),
+        role_title: sendForm.role_title,
+        html_content: finalHtml,
+        email_subject: emailDraft.subject.trim(),
+        email_html: emailHtml,
+        attachment_name: emailDraft.attachmentName || `Offer_Letter_${sendForm.recipient_name.replace(/\s+/g, '_')}.pdf`,
+        cc: emailDraft.cc.trim() || undefined,
+        bcc: emailDraft.bcc.trim() || undefined,
+        status: 'sent',
+      });
 
       toast({
         title: 'Offer letter sent',
-        description: USE_SUPABASE
-          ? `Record saved for ${emailDraft.to.trim()}`
-          : `PDF generated and emailed to ${emailDraft.to.trim()} from hr@syncpedia.in`,
+        description: `PDF generated and emailed to ${emailDraft.to.trim()} from hr@syncpedia.in`,
       });
       setShowSend(false);
       fetchData();
@@ -1084,26 +1027,14 @@ export default function OfferLetters() {
           .replace(/\{\{employment_type\}\}/g, candidate.employment_type)
           .replace(/\{\{probation_period\}\}/g, candidate.probation_period);
 
-        if (!USE_SUPABASE) {
-          await api.offerLetters.send({
-            template_id: bulkTemplate.id,
-            recipient_name: candidate.candidate_name,
-            recipient_email: candidate.recipient_email,
-            role_title: candidate.role_title || bulkTemplate.role_title,
-            html_content: finalHtml,
-            status: 'sent',
-          });
-        } else {
-          await supabase.from('offer_letters_sent').insert({
-            template_id: bulkTemplate.id,
-            recipient_name: candidate.candidate_name,
-            recipient_email: candidate.recipient_email,
-            role_title: candidate.role_title || bulkTemplate.role_title,
-            html_content: finalHtml,
-            sent_by: user!.id,
-            status: 'sent',
-          });
-        }
+        await api.offerLetters.send({
+          template_id: bulkTemplate.id,
+          recipient_name: candidate.candidate_name,
+          recipient_email: candidate.recipient_email,
+          role_title: candidate.role_title || bulkTemplate.role_title,
+          html_content: finalHtml,
+          status: 'sent',
+        });
       }
       toast({ title: `${valid.length} offer letter(s) generated!`, description: 'Records saved. You can preview/print from Sent Letters tab.' });
       setShowBulk(false);

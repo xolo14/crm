@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Plus } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
@@ -33,10 +34,14 @@ const initialFilters: TableFilters = {
   assignee: "",
 };
 
+const POLL_INTERVAL_MS = 20_000;
+
 export default function PaymentLinksPage() {
   const { toast } = useToast();
   const { profile } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const referralCode = profile?.referral_code?.trim() ?? "";
+  const pollInFlight = useRef(false);
 
   const [links, setLinks] = useState<RazorpayPaymentLink[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,23 +56,78 @@ export default function PaymentLinksPage() {
     null,
   );
 
-  const loadLinks = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await getAllPaymentLinks({ period });
-      setLinks(res.items ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load links");
-      setLinks([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [period]);
+  const loadLinks = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const silent = options?.silent === true;
+      if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
+      try {
+        const res = await getAllPaymentLinks({ period });
+        setLinks(res.items ?? []);
+        if (!silent) {
+          setError(null);
+        }
+      } catch (err) {
+        if (!silent) {
+          setError(err instanceof Error ? err.message : "Failed to load links");
+          setLinks([]);
+        }
+      } finally {
+        if (!silent) {
+          setLoading(false);
+        }
+      }
+    },
+    [period],
+  );
+
+  const refreshLinksQuiet = useCallback(() => {
+    if (pollInFlight.current) return;
+    pollInFlight.current = true;
+    void loadLinks({ silent: true }).finally(() => {
+      pollInFlight.current = false;
+    });
+  }, [loadLinks]);
 
   useEffect(() => {
     void loadLinks();
   }, [loadLinks]);
+
+  useEffect(() => {
+    if (searchParams.get("status") !== "paid") return;
+    void loadLinks();
+    const next = new URLSearchParams(searchParams);
+    next.delete("status");
+    setSearchParams(next, { replace: true });
+  }, [loadLinks, searchParams, setSearchParams]);
+
+  const hasPendingLinks = useMemo(
+    () =>
+      links.some(
+        (l) => l.status === "created" || l.status === "partially_paid",
+      ),
+    [links],
+  );
+
+  useEffect(() => {
+    if (!hasPendingLinks) return;
+    const timer = window.setInterval(() => {
+      refreshLinksQuiet();
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [hasPendingLinks, refreshLinksQuiet]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        refreshLinksQuiet();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [refreshLinksQuiet]);
 
   const periodLinks = useMemo(
     () => filterLinksByPeriod(links, period),
@@ -78,9 +138,9 @@ export default function PaymentLinksPage() {
     () => ({
       totalLinks: periodLinks.length,
       totalCollected: periodLinks
-        .filter((l) => l.status === "paid")
+        .filter((l) => l.status === "paid" || l.status === "partially_paid")
         .reduce((s, l) => s + l.amount_paid / 100, 0),
-      pending: periodLinks.filter((l) => l.status === "created").length,
+      pending: periodLinks.filter((l) => l.status === "created" || l.status === "partially_paid").length,
       paid: periodLinks.filter((l) => l.status === "paid").length,
       cancelled: periodLinks.filter((l) => l.status === "cancelled").length,
       expired: periodLinks.filter((l) => l.status === "expired").length,
@@ -246,7 +306,7 @@ export default function PaymentLinksPage() {
         onViewDetail={setDetailLink}
         onCancel={handleCancel}
         onRemind={handleRemind}
-        onRefresh={loadLinks}
+        onRefresh={() => void loadLinks()}
         onCopyShortUrl={copyShortUrl}
         onCreate={() => setCreateOpen(true)}
       />

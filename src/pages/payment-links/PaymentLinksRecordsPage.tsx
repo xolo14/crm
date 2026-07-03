@@ -41,7 +41,7 @@ function parseTeamList(res: unknown): TeamMemberLookup[] {
 
 export default function PaymentLinksRecordsPage() {
   const { user, profile } = useAuth();
-  const role = profile?.role ?? user?.role ?? "";
+  const role = user?.role ?? "";
   const isSalesRep = role === "sales_representative";
 
   const [links, setLinks] = useState<RazorpayPaymentLink[]>([]);

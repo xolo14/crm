@@ -35,10 +35,14 @@ function trashRestoreRow(PDO $db, array $trashRow, array $typeMap): void {
     if (!is_array($payload)) {
         throw new RuntimeException('Invalid archived payload');
     }
-    $stmt = $db->query('SHOW COLUMNS FROM `' . $table . '`');
+    $stmt = $db->prepare(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = ?",
+    );
+    $stmt->execute([$table]);
     $allowed = [];
     while ($c = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $allowed[] = $c['Field'];
+        $allowed[] = $c['column_name'];
     }
     $use = [];
     foreach ($allowed as $c) {
@@ -60,7 +64,7 @@ if ($method === 'GET') {
     requireRole($tokenData, ['admin', 'super_admin', 'manager']);
     $purged = trashPurgeExpired($db, 30);
 
-    if ($tokenData['role'] === 'super_admin') {
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
         if (!empty($_GET['org_id']) && $_GET['org_id'] !== 'all') {
             $where = 'org_id = ?';
             $params = [(string) $_GET['org_id']];
@@ -116,7 +120,7 @@ if ($method === 'POST') {
         respond(['error' => 'Trash id required'], 400);
     }
 
-    if ($tokenData['role'] === 'super_admin') {
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
         if (!empty($_GET['org_id']) && $_GET['org_id'] !== 'all') {
             $stmt = $db->prepare('SELECT * FROM trash_items WHERE id = ? AND org_id = ? LIMIT 1');
             $stmt->execute([$trashId, (string) $_GET['org_id']]);

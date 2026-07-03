@@ -6,7 +6,7 @@ $db = (new Database())->getConnection();
 $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
-$role = $tokenData['role'];
+$role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 
 // Only super_admin can manage organizations
 if ($method === 'GET') {
@@ -185,7 +185,12 @@ if ($method === 'POST') {
                 $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$adminId, $orgId]);
             } catch (Exception $e) {
             }
-            respond(['message' => 'Organization admin created', 'user_id' => $adminId], 201);
+            $welcomeResult = syncpediaSendMemberWelcomeEmail($adminName, $adminEmail, $adminPassword, 'admin', null);
+            $payload = ['message' => 'Organization admin created', 'user_id' => $adminId, 'email_sent' => $welcomeResult['email_sent'], 'email_from' => $welcomeResult['from']];
+            if ($welcomeResult['email_error'] !== null) {
+                $payload['email_error'] = $welcomeResult['email_error'];
+            }
+            respond($payload, 201);
         }
 
         if (($_GET['action'] ?? '') === 'sync_platform_sales') {
@@ -239,6 +244,7 @@ if ($method === 'POST') {
         $adminEmail = trim($input['admin_email'] ?? '');
         $adminName = trim($input['admin_name'] ?? '');
         $adminPassword = $input['admin_password'] ?? 'Welcome@123';
+        $orgWelcomeEmail = null;
 
         if ($createAdmin && (!$adminEmail || !$adminName)) {
             if ($db->inTransaction()) {
@@ -260,6 +266,9 @@ if ($method === 'POST') {
             } catch (Exception $e) {
                 // Older schema may not have owner_id; ignore.
             }
+
+            $welcomeResult = syncpediaSendMemberWelcomeEmail($adminName, $adminEmail, (string) $adminPassword, 'admin', null);
+            $orgWelcomeEmail = $welcomeResult;
         }
         
         // Create features from request (or defaults)
@@ -322,7 +331,15 @@ if ($method === 'POST') {
         }
 
         $db->commit();
-        respond(['id' => $orgId, 'message' => 'Organization created'], 201);
+        $orgPayload = ['id' => $orgId, 'message' => 'Organization created'];
+        if (is_array($orgWelcomeEmail)) {
+            $orgPayload['email_sent'] = $orgWelcomeEmail['email_sent'];
+            $orgPayload['email_from'] = $orgWelcomeEmail['from'];
+            if ($orgWelcomeEmail['email_error'] !== null) {
+                $orgPayload['email_error'] = $orgWelcomeEmail['email_error'];
+            }
+        }
+        respond($orgPayload, 201);
     } catch (Exception $e) {
         if ($db->inTransaction()) {
             $db->rollBack();
@@ -341,8 +358,14 @@ if ($method === 'PUT') {
     if (!empty($_GET['action']) && $_GET['action'] === 'features') {
         $features = $input['features'] ?? [];
         foreach ($features as $feat => $enabled) {
-            $stmt = $db->prepare("INSERT INTO org_features (id, org_id, feature, enabled) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE enabled = ?");
-            $stmt->execute([generateUUID(), $id, $feat, $enabled ? 1 : 0, $enabled ? 1 : 0]);
+            $upsert = syncpediaUpsertClause(
+                $db,
+                '(org_id, feature)',
+                ['enabled = EXCLUDED.enabled'],
+                ['`enabled` = VALUES(`enabled`)'],
+            );
+            $stmt = $db->prepare("INSERT INTO org_features (id, org_id, feature, enabled) VALUES (?, ?, ?, ?) {$upsert}");
+            $stmt->execute([generateUUID(), $id, $feat, $enabled ? 1 : 0]);
         }
         respond(['message' => 'Features updated']);
     }

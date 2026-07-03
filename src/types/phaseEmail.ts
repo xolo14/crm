@@ -1,4 +1,4 @@
-/** Frontend mirror of server/types/emailTypes.ts */
+/** Fresher salary phase email template types (mirrors PHP email_phase_templates). */
 export interface PhaseProgress {
   phaseNumber: number;
   phaseName: string;

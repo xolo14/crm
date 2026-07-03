@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import ResumeUploadBox from "@/components/hr/ResumeUploadBox";
+import type { CreateHRLeadInput, HRLeadStats } from "@/types/hrLeads";
 import { useAddLead } from "@/hooks/useHRLeads";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -75,7 +76,7 @@ export default function AddLeadDialog({
       toast({ variant: "destructive", title: "Select HR user" });
       return;
     }
-    await mutation.mutateAsync(values);
+    await mutation.mutateAsync(values as CreateHRLeadInput);
     toast({ title: "Lead added successfully" });
     onOpenChange(false);
     form.reset();

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertCircle, CheckCircle, ChevronLeft, ChevronRight, Clock, Download, FileText, MoreHorizontal, PhoneCall, Plus, Search, Shuffle, TrendingUp, UserCheck, Users, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle, ChevronLeft, ChevronRight, Clock, Download, Eye, FileText, MoreHorizontal, PhoneCall, Plus, Search, Shuffle, TrendingUp, UserCheck, Users, XCircle } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -11,11 +11,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { useAllHRLeads, useHRLeadStats, useAssignLead, useBulkAssignLeads, useDeleteLead, useUpdateLead } from "@/hooks/useHRLeads";
 import AddLeadDialog from "@/components/hr/AddLeadDialog";
 import AssignHRLeadDialog from "@/components/leads/AssignHRLeadDialog";
 import BulkAssignHRLeadsDialog from "@/components/leads/BulkAssignHRLeadsDialog";
-import type { HRLead } from "@/types/hrLeads";
+import { FormSubmissionDetails } from "@/components/leads/FormSubmissionDetails";
+import { LeadContactBlock } from "@/components/leads/LeadContactBlock";
+import type { HRLead, HRLeadStats } from "@/types/hrLeads";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { getISTLastWeekRangeYYYYMMDD, getISTMonthRangeYYYYMMDD, getISTWeekRangeYYYYMMDD } from "@/lib/hrLeadsWeek";
@@ -69,6 +72,8 @@ export default function HRLeadsPage() {
   const [assigningLead, setAssigningLead] = useState<number | null>(null);
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
   const [bulkAssigning, setBulkAssigning] = useState(false);
+  const [detailLead, setDetailLead] = useState<HRLead | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const hrListOrgFilter = isSuperAdmin && orgId !== "all" ? orgId : undefined;
   const { data: hrListData } = useQuery({
@@ -77,15 +82,15 @@ export default function HRLeadsPage() {
   });
   const { data: orgsData } = useQuery({
     queryKey: ["organizations", "list"],
-    queryFn: api.organizations.list,
+    queryFn: () => api.organizations.list(),
     enabled: isSuperAdmin,
   });
   const hrUsers = hrListData?.data || [];
   const organizations = orgsData?.data || orgsData || [];
   const { data: statsRes } = useHRLeadStats(showOrgFilter && orgId !== "all" ? orgId : undefined);
-  const stats = statsRes?.stats || statsRes || {};
+  const stats = (statsRes?.stats ?? {}) as HRLeadStats & { unassigned?: number };
 
-  const dateFilter = useMemo(() => {
+  const dateFilter = useMemo((): { from?: string; to?: string } => {
     if (datePreset === "this_week") return getISTWeekRangeYYYYMMDD();
     if (datePreset === "last_week") return getISTLastWeekRangeYYYYMMDD();
     if (datePreset === "this_month") return getISTMonthRangeYYYYMMDD();
@@ -394,11 +399,9 @@ export default function HRLeadsPage() {
                 <TableCell className="text-xs text-muted-foreground font-mono">{(page - 1) * limit + idx + 1}</TableCell>
                 <TableCell>
                   <p className="text-sm font-medium">{lead.full_name}</p>
-                  <p className="text-xs text-muted-foreground">{lead.notes || lead.source || ""}</p>
                 </TableCell>
                 <TableCell>
-                  <p className="text-sm">{lead.email || "—"}</p>
-                  <p className="text-xs text-muted-foreground">{lead.phone}</p>
+                  <LeadContactBlock email={lead.email} phone={lead.phone} notes={lead.notes} variant="table" />
                 </TableCell>
                 <TableCell><Badge variant="secondary" className="text-xs">{lead.source || "Other"}</Badge></TableCell>
                 <TableCell>
@@ -427,18 +430,49 @@ export default function HRLeadsPage() {
                 </TableCell>
                 <TableCell>
                   {canAssign ? (
-                    <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => setAssigningLead(leadNumericId(lead))}>
-                      <UserCheck className="h-3 w-3" /> {Number(lead.is_assigned) ? "Reassign" : "Assign"}
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => {
+                          setDetailLead(lead);
+                          setDetailOpen(true);
+                        }}
+                      >
+                        <Eye className="h-3 w-3" /> View
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => setAssigningLead(leadNumericId(lead))}>
+                        <UserCheck className="h-3 w-3" /> {Number(lead.is_assigned) ? "Reassign" : "Assign"}
+                      </Button>
+                    </div>
                   ) : (
-                    <span className="text-xs text-muted-foreground">View / Edit</span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs gap-1"
+                      onClick={() => {
+                        setDetailLead(lead);
+                        setDetailOpen(true);
+                      }}
+                    >
+                      <Eye className="h-3 w-3" /> View
+                    </Button>
                   )}
                 </TableCell>
                 <TableCell>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem>View</DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => {
+                          setDetailLead(lead);
+                          setDetailOpen(true);
+                        }}
+                      >
+                        <Eye className="h-4 w-4 mr-2" />
+                        View
+                      </DropdownMenuItem>
                       {canAssign && <DropdownMenuItem onClick={() => setAssigningLead(leadNumericId(lead))}>Edit</DropdownMenuItem>}
                       {canDelete && (
                         <DropdownMenuItem
@@ -470,6 +504,87 @@ export default function HRLeadsPage() {
       )}
 
       {canAddLead && <AddLeadDialog open={openAdd} onOpenChange={setOpenAdd} hrUsers={hrUsers} />}
+
+      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
+        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+          {detailLead ? (
+            <>
+              <SheetHeader className="pb-4 border-b border-border">
+                <SheetTitle className="text-lg">{detailLead.full_name}</SheetTitle>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <Badge variant="outline" className={`${statusColors[detailLead.status]} capitalize text-xs`}>
+                    {detailLead.status.replace(/_/g, " ")}
+                  </Badge>
+                  <Badge variant="secondary" className="text-xs capitalize">
+                    {detailLead.source?.replace(/^form_/, "Form ").replace(/_/g, " ") || "Other"}
+                  </Badge>
+                </div>
+              </SheetHeader>
+
+              <div className="mt-5 space-y-5">
+                <div>
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+                    Contact Information
+                  </h4>
+                  <LeadContactBlock
+                    email={detailLead.email}
+                    phone={detailLead.phone}
+                    notes={detailLead.notes}
+                    variant="detail"
+                  />
+                  {detailLead.resume_path ? (
+                    <div className="flex items-center gap-3 pt-3">
+                      <div className="h-8 w-8 rounded-lg bg-teal-500/10 flex items-center justify-center">
+                        <FileText className="h-4 w-4 text-teal-600" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Resume</p>
+                        <Button variant="link" className="h-auto p-0 text-teal-600 text-sm" asChild>
+                          <a href={resumePublicHref(detailLead.resume_path)} target="_blank" rel="noopener noreferrer">
+                            View file
+                          </a>
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="border-t border-border pt-4 space-y-2.5">
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                    <div>
+                      <p className="text-xs text-muted-foreground">HR (Added By)</p>
+                      <p className="text-sm font-medium">{detailLead.hr_name || "—"}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Assigned</p>
+                      <p className="text-sm font-medium">
+                        {Number(detailLead.is_assigned) ? detailLead.assigned_by_name || "Assigned" : "Unassigned"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Submitted On</p>
+                      <p className="text-sm font-medium">
+                        {new Date(detailLead.created_at).toLocaleDateString("en-IN", {
+                          day: "numeric",
+                          month: "short",
+                          year: "numeric",
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <FormSubmissionDetails notes={detailLead.notes} resumePath={detailLead.resume_path} />
+              </div>
+            </>
+          ) : null}
+        </SheetContent>
+      </Sheet>
+
       {canAssign && (
         <AssignHRLeadDialog
           open={!!assigningLead}

@@ -266,14 +266,24 @@ export default function SuperAdminPanel() {
     }
     setCreating(true);
     try {
-      await api.organizations.create({
+      const data = await api.organizations.create({
         ...form,
         create_admin: createAdminAccount,
         max_users: parseInt(form.max_users) || 10,
         industry: selectedIndustry,
         features: createFeatures,
-      });
-      toast({ title: 'Organization created!' });
+      }) as { email_sent?: boolean; email_error?: string };
+      if (data?.email_sent) {
+        toast({ title: 'Organization created!', description: 'Admin welcome email sent with login credentials.' });
+      } else if (data?.email_error) {
+        toast({
+          variant: 'destructive',
+          title: 'Organization created',
+          description: `Admin welcome email failed: ${data.email_error}`,
+        });
+      } else {
+        toast({ title: 'Organization created!' });
+      }
       setShowCreate(false);
       setForm({ name: '', slug: '', plan: 'starter', max_users: '10', admin_name: '', admin_email: '', admin_password: 'Welcome@123' });
       setCreateAdminAccount(true);
@@ -461,7 +471,7 @@ export default function SuperAdminPanel() {
             className="gap-1.5"
             disabled={syncPlatformSalesLoading}
             onClick={handleSyncPlatformSales}
-            title="Sets every user with NULL org_id to the Syncpedia organization; refreshes default + normal lead forms for team leads and sales roles there."
+            title="Sets every user with NULL org_id to the Syncpedia organization."
           >
             {syncPlatformSalesLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}
             Sync platform sales

@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-import { supabase } from '@/integrations/supabase/client';
 import { sendNotificationWithEmail } from '@/lib/notifications';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
@@ -24,6 +23,8 @@ import { LeadActivityTimeline } from '@/components/LeadActivityTimeline';
 import { LeadEnrollDialog } from '@/components/leads/LeadEnrollDialog';
 import * as perms from '@/lib/permissions';
 import { resumePublicHref } from '@/lib/resumeHref';
+import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails';
+import { LeadContactBlock } from '@/components/leads/LeadContactBlock';
 
 const MARKETING_RESUME_TYPES = [
   'application/pdf',
@@ -132,14 +133,27 @@ export default function FormLeads() {
   useEffect(() => {
     fetchData();
     if (formLeadsAssignmentRoster) fetchTeam();
-  }, [role]);
+  }, [role, user?.id, profile?.referral_code]);
 
   const fetchData = async () => {
     setLoading(true);
     try {
       const [leadsData, profilesData] = await Promise.all([api.leads.list(), api.profiles.list()]);
       const allLeads = Array.isArray(leadsData) ? leadsData : leadsData.data || leadsData.leads || [];
-      setLeads(allLeads.filter((l: any) => l.referred_by));
+      const myRef = profile?.referral_code || user?.referral_code || '';
+      setLeads(allLeads.filter((l: any) => {
+        const src = String(l.source || '');
+        const isFormLead =
+          !!l.referred_by ||
+          src.startsWith('form_') ||
+          src === 'normal_form' ||
+          src === 'google_forms';
+        if (!isFormLead) return false;
+        if (isManager) return true;
+        if (l.assigned_to === user?.id || l.created_by === user?.id) return true;
+        if (myRef && l.referred_by === myRef) return true;
+        return false;
+      }));
       setProfiles((Array.isArray(profilesData) ? profilesData : profilesData.profiles || profilesData.data || []).filter((p: any) => p.referral_code));
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
@@ -499,8 +513,7 @@ export default function FormLeads() {
         source: (Object.keys(SOURCE_LABELS).includes(r.source) ? r.source : 'other') as any,
         referred_by: refCode, status: 'new' as const,
       }));
-      const { error } = await supabase.from('leads').insert(records);
-      if (error) throw error;
+      await api.leads.bulkCreate(records);
       toast({ title: `${records.length} leads imported!` });
       setShowImportDialog(false);
       setImportPreview([]);
@@ -708,9 +721,8 @@ export default function FormLeads() {
                       <p className="font-medium text-sm truncate">{lead.name}</p>
                     </div>
                     <p className="text-xs text-muted-foreground mt-0.5">{lead.college || lead.company || '—'}</p>
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
-                      {lead.email && <span className="text-xs text-muted-foreground flex items-center gap-1"><Mail className="h-3 w-3" />{lead.email}</span>}
-                      {lead.phone && <span className="text-xs text-muted-foreground flex items-center gap-1"><Phone className="h-3 w-3" />{lead.phone}</span>}
+                    <div className="mt-1.5">
+                      <LeadContactBlock email={lead.email} phone={lead.phone} notes={lead.notes} variant="table" />
                     </div>
                     <p className="text-[10px] text-emerald-600 font-medium mt-1">Collected: {codeToName[lead.referred_by] || lead.referred_by}</p>
                     {lead.assigned_to ? (
@@ -802,8 +814,7 @@ export default function FormLeads() {
                     <div><p className="font-medium text-sm">{lead.name}</p><p className="text-xs text-muted-foreground">{lead.college || lead.company || ''}</p></div>
                   </TableCell>
                   <TableCell>
-                    <div className="text-sm">{lead.email || '—'}</div>
-                    {lead.phone && <div className="text-xs text-muted-foreground">{lead.phone}</div>}
+                    <LeadContactBlock email={lead.email} phone={lead.phone} notes={lead.notes} variant="table" />
                   </TableCell>
                   <TableCell>
                     <span className="text-sm font-medium text-emerald-600">{codeToName[lead.referred_by] || lead.referred_by}</span>
@@ -943,19 +954,13 @@ export default function FormLeads() {
                 {/* Contact Info */}
                 <div>
                   <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Contact Information</h4>
-                  <div className="space-y-2.5">
-                    {detailLead.email && (
-                      <div className="flex items-center gap-3">
-                        <div className="h-8 w-8 rounded-lg bg-blue-500/10 flex items-center justify-center"><Mail className="h-4 w-4 text-blue-600" /></div>
-                        <div><p className="text-xs text-muted-foreground">Email</p><p className="text-sm font-medium">{detailLead.email}</p></div>
-                      </div>
-                    )}
-                    {detailLead.phone && (
-                      <div className="flex items-center gap-3">
-                        <div className="h-8 w-8 rounded-lg bg-green-500/10 flex items-center justify-center"><Phone className="h-4 w-4 text-green-600" /></div>
-                        <div><p className="text-xs text-muted-foreground">Phone</p><p className="text-sm font-medium">{detailLead.phone}</p></div>
-                      </div>
-                    )}
+                  <LeadContactBlock
+                    email={detailLead.email}
+                    phone={detailLead.phone}
+                    notes={detailLead.notes}
+                    variant="detail"
+                  />
+                  <div className="space-y-2.5 mt-2.5">
                     {detailLead.college && (
                       <div className="flex items-center gap-3">
                         <div className="h-8 w-8 rounded-lg bg-purple-500/10 flex items-center justify-center"><GraduationCap className="h-4 w-4 text-purple-600" /></div>
@@ -1027,13 +1032,7 @@ export default function FormLeads() {
                   </div>
                 </div>
 
-                {/* Notes */}
-                {detailLead.notes && (
-                  <div className="border-t border-border pt-4">
-                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5"><StickyNote className="h-3.5 w-3.5" />Notes</h4>
-                    <p className="text-sm text-muted-foreground leading-relaxed bg-muted/50 p-3 rounded-lg">{detailLead.notes}</p>
-                  </div>
-                )}
+                <FormSubmissionDetails notes={detailLead.notes} resumePath={detailLead.resume_path} />
 
                 {/* Activity History */}
                 <LeadActivityTimeline

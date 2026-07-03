@@ -1,5 +1,6 @@
 import { ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
+import { AUTH_PORTAL } from "@/lib/portalAuth";
 import { useQuery } from "@tanstack/react-query";
 import {
   BarChart2,
@@ -81,7 +82,7 @@ export default function HRLayout({ children }: { children: ReactNode }) {
               className="gap-1.5"
               onClick={() => {
                 api.hr.logout();
-                navigate("/hr-login");
+                navigate(AUTH_PORTAL.login);
               }}
             >
               <LogOut className="h-4 w-4" />

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
+import { phpList } from '@/lib/phpList';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -19,6 +20,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
+import { publicApplyUrl } from '@/lib/siteOrigin';
 
 export default function WhatsAppPortal() {
   const { user } = useAuth();
@@ -45,7 +47,7 @@ export default function WhatsAppPortal() {
   const [sends, setSends] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [copiedLink, setCopiedLink] = useState<'default' | 'normal' | null>(null);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   const [showBulkSend, setShowBulkSend] = useState(false);
   const [bulkPhones, setBulkPhones] = useState('');
@@ -57,23 +59,25 @@ export default function WhatsAppPortal() {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [draftsRes, campaignsRes, profileRes] = await Promise.all([
-        supabase.from('whatsapp_drafts').select('*').eq('created_by', user?.id || '').order('updated_at', { ascending: false }),
-        supabase.from('whatsapp_campaigns').select('*').eq('created_by', user?.id || '').order('created_at', { ascending: false }),
-        supabase.from('profiles').select('referral_code').eq('user_id', user?.id || '').single(),
+      const [draftsRes, campaignsRes] = await Promise.all([
+        api.marketing.whatsappDrafts({ mine: true }),
+        api.marketing.whatsappCampaigns({ mine: true }),
       ]);
-      setDrafts(draftsRes.data || []);
-      setCampaigns(campaignsRes.data || []);
-      const code = profileRes.data?.referral_code || (user?.id ? 'SP-' + user.id.substring(0, 8).toUpperCase() : '');
+      const draftsData = phpList(draftsRes);
+      const campaignsData = phpList(campaignsRes);
+      setDrafts(draftsData);
+      setCampaigns(campaignsData);
+      const code = user?.referral_code || (user?.id ? 'SP-' + user.id.substring(0, 8).toUpperCase() : '');
       setReferralCode(code);
       if (code) {
-        const { data: leadsData } = await supabase.from('leads').select('*').eq('referred_by', code).order('created_at', { ascending: false });
-        setFormLeads(leadsData || []);
+        const leadsRes = await api.leads.list({ referred_by: code });
+        setFormLeads(phpList(leadsRes));
       }
-      if (campaignsRes.data && campaignsRes.data.length > 0) {
-        const ids = campaignsRes.data.map((c: any) => c.id);
-        const { data: sendsData } = await supabase.from('whatsapp_sends').select('*').in('campaign_id', ids).order('created_at', { ascending: false }).limit(500);
-        setSends(sendsData || []);
+      if (campaignsData.length > 0) {
+        const sendsRes = await api.marketing.whatsappSends(campaignsData.map((c: any) => c.id));
+        setSends(phpList(sendsRes));
+      } else {
+        setSends([]);
       }
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
@@ -86,9 +90,9 @@ export default function WhatsAppPortal() {
     setSavingDraft(true);
     try {
       if (editingDraft) {
-        await supabase.from('whatsapp_drafts').update({ name: draftName, subject: draftSubject, body: draftBody } as any).eq('id', editingDraft.id);
+        await api.marketing.updateWhatsappDraft(editingDraft.id, { name: draftName, subject: draftSubject, body: draftBody });
       } else {
-        await supabase.from('whatsapp_drafts').insert({ name: draftName, subject: draftSubject, body: draftBody, created_by: user?.id } as any);
+        await api.marketing.createWhatsappDraft({ name: draftName, subject: draftSubject, body: draftBody });
       }
       toast({ title: editingDraft ? 'Draft updated' : 'Draft saved' });
       setShowEditor(false); setEditingDraft(null); setDraftName(''); setDraftSubject(''); setDraftBody('');
@@ -100,7 +104,7 @@ export default function WhatsAppPortal() {
 
   const deleteDraft = async (id: string) => {
     try {
-      await supabase.from('whatsapp_drafts').delete().eq('id', id);
+      await api.marketing.deleteWhatsappDraft(id);
       toast({ title: 'Draft deleted' }); fetchAll();
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };
@@ -138,20 +142,26 @@ export default function WhatsAppPortal() {
     if (!draft) return;
     setSending(true);
     try {
-      const { data: campaign, error: campErr } = await supabase.from('whatsapp_campaigns').insert({
-        draft_id: selectedDraftId, subject: draft.subject, recipient_count: phones.length,
-        pending_count: phones.length, status: 'sending', created_by: user?.id,
-      } as any).select().single();
-      if (campErr) throw campErr;
-      const sendRecords = phones.map(phone => ({ campaign_id: campaign.id, recipient_phone: phone, status: 'pending' }));
-      await supabase.from('whatsapp_sends').insert(sendRecords as any);
+      const campaignRes = await api.marketing.createWhatsappCampaign({
+        draft_id: selectedDraftId,
+        subject: draft.subject,
+        recipient_count: phones.length,
+        pending_count: phones.length,
+        status: 'sending',
+      });
+      const campaignId = campaignRes.id || campaignRes.data?.id;
+      if (!campaignId) throw new Error('Campaign was not created');
+      await api.marketing.createWhatsappSends(
+        campaignId,
+        phones.map((phone) => ({ recipient_phone: phone, status: 'pending' })),
+      );
       // Trigger n8n webhook for WhatsApp
       try {
         const webhookUrl = import.meta.env.VITE_N8N_WHATSAPP_WEBHOOK;
         if (webhookUrl) {
           await fetch(webhookUrl, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ campaign_id: campaign.id, subject: draft.subject, body: draft.body, recipients: phones }),
+            body: JSON.stringify({ campaign_id: campaignId, subject: draft.subject, body: draft.body, recipients: phones }),
           });
         }
       } catch (webhookErr) { console.warn('n8n WhatsApp webhook not configured:', webhookErr); }
@@ -206,25 +216,13 @@ export default function WhatsAppPortal() {
             <Badge variant="outline" className="text-[10px]">{formLeads.length} leads</Badge>
           </div>
           <div className="flex items-center gap-2">
-            <Input readOnly value={`https://crm.syncpedia.in/apply?ref=${referralCode}`} className="text-xs h-8 bg-muted/50 font-mono" />
+            <Input readOnly value={publicApplyUrl(referralCode)} className="text-xs h-8 bg-muted/50 font-mono" />
             <Button size="sm" variant="outline" className="gap-1 shrink-0" onClick={() => {
-              navigator.clipboard.writeText(`https://crm.syncpedia.in/apply?ref=${referralCode}`);
-              setCopiedLink('default');
+              navigator.clipboard.writeText(publicApplyUrl(referralCode));
+              setCopiedLink(true);
               toast({ title: 'Link copied!' });
-              setTimeout(() => setCopiedLink(null), 2000);
-            }}><Copy className="h-3 w-3" />{copiedLink === 'default' ? 'Copied' : 'Copy'}</Button>
-          </div>
-          <div className="mt-2">
-            <p className="text-xs text-muted-foreground mb-2">Normal Form</p>
-            <div className="flex items-center gap-2">
-              <Input readOnly value={`https://crm.syncpedia.in/apply?ref=${referralCode}&form=normal`} className="text-xs h-8 bg-muted/50 font-mono" />
-              <Button size="sm" variant="outline" className="gap-1 shrink-0" onClick={() => {
-                navigator.clipboard.writeText(`https://crm.syncpedia.in/apply?ref=${referralCode}&form=normal`);
-                setCopiedLink('normal');
-                toast({ title: 'Link copied!' });
-                setTimeout(() => setCopiedLink(null), 2000);
-              }}><Copy className="h-3 w-3" />{copiedLink === 'normal' ? 'Copied' : 'Copy'}</Button>
-            </div>
+              setTimeout(() => setCopiedLink(false), 2000);
+            }}><Copy className="h-3 w-3" />{copiedLink ? 'Copied' : 'Copy'}</Button>
           </div>
         </CardContent>
       </Card>

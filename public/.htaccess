@@ -29,6 +29,9 @@
   # Other /api/* paths (PHP files, uploads, etc.)
   RewriteRule ^api/ - [L]
 
-  # React SPA
+  # SPA login portals (explicit for shared hosting)
+  RewriteRule ^(sales_rep_portal|super_admin|admin|manager|marketing|hr-login|auth)/?$ index.html [L]
+
+  # React SPA — all other client routes
   RewriteRule ^ index.html [L]
 </IfModule>

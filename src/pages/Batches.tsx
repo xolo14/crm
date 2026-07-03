@@ -24,6 +24,54 @@ const CAN_CREATE_ROLES = ['super_admin', 'admin', 'manager'];
 const CAN_EDIT_ALL_ROLES = ['super_admin', 'admin', 'manager'];
 const CAN_DELETE_ROLES = ['super_admin', 'admin'];
 
+const NO_COURSES_MSG =
+  'No courses yet. Create a course on the Courses page before creating a batch.';
+
+function validCourseOptions(courses: { id?: string; name?: string }[]) {
+  return courses.filter((c): c is { id: string; name?: string } => Boolean(c?.id));
+}
+
+function CoursePicker({
+  value,
+  onChange,
+  courses,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  courses: { id?: string; name?: string }[];
+}) {
+  const options = validCourseOptions(courses);
+
+  if (options.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground rounded-md border border-dashed px-3 py-2">
+        {NO_COURSES_MSG}
+      </p>
+    );
+  }
+
+  const selected =
+    value && options.some((c) => c.id === value) ? value : options[0].id;
+
+  return (
+    <>
+      <Select value={selected} onValueChange={onChange}>
+        <SelectTrigger>
+          <SelectValue placeholder="Select course" />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((c) => (
+            <SelectItem key={c.id} value={c.id}>
+              {c.name || 'Untitled course'}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <input type="hidden" name="course_id" value={selected} />
+    </>
+  );
+}
+
 export default function Batches() {
   const { toast } = useToast();
   const { role } = useAuth();
@@ -68,7 +116,8 @@ export default function Batches() {
       const data = await api.courses.list();
       const list = Array.isArray(data) ? data : data.data || data.courses || [];
       setCourses(list);
-      if (!createCourseId && list[0]?.id) setCreateCourseId(list[0].id);
+      const firstId = validCourseOptions(list)[0]?.id;
+      if (firstId) setCreateCourseId(firstId);
     } catch (err) {
       console.error(err);
     }
@@ -100,6 +149,10 @@ export default function Batches() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (validCourseOptions(courses).length === 0) {
+      toast({ variant: 'destructive', title: 'Create a course before adding a batch' });
+      return;
+    }
     const fd = new FormData(e.currentTarget as HTMLFormElement);
     try {
       await api.batches.create({
@@ -219,7 +272,10 @@ export default function Batches() {
               open={dialogOpen}
               onOpenChange={(open) => {
                 setDialogOpen(open);
-                if (open) setCreateCourseId((prev) => prev || courses[0]?.id || '');
+                if (open) {
+                  const firstId = validCourseOptions(courses)[0]?.id;
+                  if (firstId) setCreateCourseId(firstId);
+                }
               }}
             >
               <DialogTrigger asChild>
@@ -239,23 +295,11 @@ export default function Batches() {
                   </div>
                   <div className="space-y-2">
                     <Label>Course *</Label>
-                    <Select value={createCourseId} onValueChange={(v) => setCreateCourseId(v)}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select course" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {courses.length === 0 ? (
-                          <SelectItem value="">No courses</SelectItem>
-                        ) : (
-                          courses.map((c) => (
-                            <SelectItem key={c.id} value={c.id}>
-                              {c.name}
-                            </SelectItem>
-                          ))
-                        )}
-                      </SelectContent>
-                    </Select>
-                    <input type="hidden" name="course_id" value={createCourseId} />
+                    <CoursePicker
+                      value={createCourseId}
+                      onChange={setCreateCourseId}
+                      courses={courses}
+                    />
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-2">
@@ -274,7 +318,11 @@ export default function Batches() {
                   <p className="text-xs text-muted-foreground">
                     Status updates automatically: Upcoming (before start), Active (during), Completed (after end).
                   </p>
-                  <Button type="submit" className="w-full">
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={validCourseOptions(courses).length === 0}
+                  >
                     Create Batch
                   </Button>
                 </form>
@@ -298,23 +346,11 @@ export default function Batches() {
               </div>
               <div className="space-y-2">
                 <Label>Course *</Label>
-                <Select value={editCourseId} onValueChange={(v) => setEditCourseId(v)}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select course" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {courses.length === 0 ? (
-                      <SelectItem value="">No courses</SelectItem>
-                    ) : (
-                      courses.map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          {c.name}
-                        </SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
-                <input type="hidden" name="course_id" value={editCourseId} />
+                <CoursePicker
+                  value={editCourseId}
+                  onChange={setEditCourseId}
+                  courses={courses}
+                />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-2">
@@ -346,7 +382,11 @@ export default function Batches() {
                   {batchStatusLabel(editPreviewStatus)}
                 </Badge>
               </div>
-              <Button type="submit" className="w-full">
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={validCourseOptions(courses).length === 0}
+              >
                 Update Batch
               </Button>
             </form>

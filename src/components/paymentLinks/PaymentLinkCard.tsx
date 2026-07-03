@@ -24,6 +24,10 @@ const STATUS_BADGE: Record<
     label: "Paid",
     cls: "bg-[#e6faf0] text-[#0f5230] border-[#bdebd0]",
   },
+  partially_paid: {
+    label: "Partial",
+    cls: "bg-blue-50 text-blue-700 border-blue-200",
+  },
   cancelled: {
     label: "Cancelled",
     cls: "bg-gray-100 text-gray-500 border-gray-200",

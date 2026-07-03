@@ -14,45 +14,45 @@ function certEnsureTables(PDO $db): void {
     if ($done) return;
 
     $db->exec("
-        CREATE TABLE IF NOT EXISTS `certificate_issue_artifacts` (
-          `id` CHAR(36) NOT NULL,
-          `recipient_id` CHAR(36) DEFAULT NULL,
-          `template_id` CHAR(36) DEFAULT NULL,
-          `sync_id` VARCHAR(80) NOT NULL,
-          `student_name` VARCHAR(255) DEFAULT NULL,
-          `student_email` VARCHAR(255) DEFAULT NULL,
-          `course_name` VARCHAR(255) DEFAULT NULL,
-          `issue_date` DATE DEFAULT NULL,
-          `verify_token` LONGTEXT DEFAULT NULL,
-          `pdf_path` TEXT DEFAULT NULL,
-          `org_id` CHAR(36) DEFAULT NULL,
-          `issued_by` CHAR(36) DEFAULT NULL,
-          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          PRIMARY KEY (`id`),
-          UNIQUE KEY `uq_cert_artifact_sync` (`sync_id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        CREATE TABLE IF NOT EXISTS certificate_issue_artifacts (
+          id CHAR(36) NOT NULL,
+          recipient_id CHAR(36) DEFAULT NULL,
+          template_id CHAR(36) DEFAULT NULL,
+          sync_id VARCHAR(80) NOT NULL,
+          student_name VARCHAR(255) DEFAULT NULL,
+          student_email VARCHAR(255) DEFAULT NULL,
+          course_name VARCHAR(255) DEFAULT NULL,
+          issue_date DATE DEFAULT NULL,
+          verify_token TEXT DEFAULT NULL,
+          pdf_path TEXT DEFAULT NULL,
+          org_id CHAR(36) DEFAULT NULL,
+          issued_by CHAR(36) DEFAULT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          UNIQUE (sync_id)
+        )
     ");
 
     $db->exec("
-        CREATE TABLE IF NOT EXISTS `certificate_email_logs` (
-          `id` CHAR(36) NOT NULL,
-          `certificate_id` VARCHAR(80) NOT NULL,
-          `to_email` VARCHAR(255) NOT NULL,
-          `cc_email` TEXT DEFAULT NULL,
-          `bcc_email` TEXT DEFAULT NULL,
-          `subject` TEXT NOT NULL,
-          `body` LONGTEXT NOT NULL,
-          `attachment_url` TEXT DEFAULT NULL,
-          `message_id` VARCHAR(120) DEFAULT NULL,
-          `sent_at` DATETIME DEFAULT NULL,
-          `org_id` CHAR(36) DEFAULT NULL,
-          `sent_by` CHAR(36) DEFAULT NULL,
-          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          PRIMARY KEY (`id`),
-          KEY `idx_cert_email_logs_certificate` (`certificate_id`),
-          KEY `idx_cert_email_logs_org` (`org_id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        CREATE TABLE IF NOT EXISTS certificate_email_logs (
+          id CHAR(36) NOT NULL,
+          certificate_id VARCHAR(80) NOT NULL,
+          to_email VARCHAR(255) NOT NULL,
+          cc_email TEXT DEFAULT NULL,
+          bcc_email TEXT DEFAULT NULL,
+          subject TEXT NOT NULL,
+          body TEXT NOT NULL,
+          attachment_url TEXT DEFAULT NULL,
+          message_id VARCHAR(120) DEFAULT NULL,
+          sent_at TIMESTAMP DEFAULT NULL,
+          org_id CHAR(36) DEFAULT NULL,
+          sent_by CHAR(36) DEFAULT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id)
+        )
     ");
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cert_email_logs_certificate ON certificate_email_logs (certificate_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cert_email_logs_org ON certificate_email_logs (org_id)');
 
     $done = true;
 }
@@ -187,19 +187,35 @@ if ($method === 'POST' && $action === 'issue') {
     }
 
     $artifactId = generateUUID();
+    $upsert = syncpediaUpsertClause(
+        $db,
+        '(sync_id)',
+        [
+            'student_name = EXCLUDED.student_name',
+            'student_email = EXCLUDED.student_email',
+            'course_name = EXCLUDED.course_name',
+            'issue_date = EXCLUDED.issue_date',
+            'verify_token = EXCLUDED.verify_token',
+            'pdf_path = EXCLUDED.pdf_path',
+            'org_id = EXCLUDED.org_id',
+            'issued_by = EXCLUDED.issued_by',
+        ],
+        [
+            '`student_name` = VALUES(`student_name`)',
+            '`student_email` = VALUES(`student_email`)',
+            '`course_name` = VALUES(`course_name`)',
+            '`issue_date` = VALUES(`issue_date`)',
+            '`verify_token` = VALUES(`verify_token`)',
+            '`pdf_path` = VALUES(`pdf_path`)',
+            '`org_id` = VALUES(`org_id`)',
+            '`issued_by` = VALUES(`issued_by`)',
+        ],
+    );
     $ins = $db->prepare("
         INSERT INTO certificate_issue_artifacts
         (id, recipient_id, template_id, sync_id, student_name, student_email, course_name, issue_date, verify_token, pdf_path, org_id, issued_by)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          student_name = VALUES(student_name),
-          student_email = VALUES(student_email),
-          course_name = VALUES(course_name),
-          issue_date = VALUES(issue_date),
-          verify_token = VALUES(verify_token),
-          pdf_path = VALUES(pdf_path),
-          org_id = VALUES(org_id),
-          issued_by = VALUES(issued_by)
+        {$upsert}
     ");
     $ins->execute([$artifactId, $recipientId, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPath, $orgId, $userId]);
 

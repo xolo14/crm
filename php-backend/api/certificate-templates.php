@@ -12,17 +12,15 @@ function certTemplatesEnsureColumns(PDO $db): void {
     if ($done) return;
 
     try {
-        $chk = $db->query("SHOW COLUMNS FROM `certificate_templates` LIKE 'style_json'");
-        if ($chk && !$chk->fetch()) {
-            $db->exec("ALTER TABLE `certificate_templates` ADD COLUMN `style_json` JSON DEFAULT NULL AFTER `accent_color`");
+        if (!syncpediaColumnExists($db, 'certificate_templates', 'style_json')) {
+            $db->exec('ALTER TABLE certificate_templates ADD COLUMN style_json JSON DEFAULT NULL');
         }
     } catch (Throwable $e) {
     }
 
     try {
-        $chk = $db->query("SHOW COLUMNS FROM `certificate_templates` LIKE 'layers_json'");
-        if ($chk && !$chk->fetch()) {
-            $db->exec("ALTER TABLE `certificate_templates` ADD COLUMN `layers_json` JSON DEFAULT NULL AFTER `fields_json`");
+        if (!syncpediaColumnExists($db, 'certificate_templates', 'layers_json')) {
+            $db->exec('ALTER TABLE certificate_templates ADD COLUMN layers_json JSON DEFAULT NULL');
         }
     } catch (Throwable $e) {
     }

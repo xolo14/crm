@@ -13,6 +13,7 @@ require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/razorpay_service.php';
 require_once __DIR__ . '/payment_link_store.php';
 require_once __DIR__ . '/payment_link_receipt.php';
+require_once __DIR__ . '/payment_link_fulfillment.php';
 cors();
 
 /**
@@ -95,6 +96,7 @@ function handlePaymentLinksWebhook(): void
         paymentLinkProcessWebhookEvent($event);
     } catch (Throwable $e) {
         error_log('[RAZORPAY WEBHOOK] process error: ' . $e->getMessage());
+        paymentLinksError('Webhook processing failed', 500);
     }
 
     paymentLinksSuccess(['received' => true, 'event' => $type]);
@@ -377,7 +379,10 @@ function handleCreateStandardPaymentLink(array $tokenData): void
         ]);
         $body['notes'] = $userNotes;
         try {
-            paymentLinkPersistOnCreate($link, $body, $tokenData);
+            $persisted = paymentLinkPersistOnCreate($link, $body, $tokenData);
+            if ($persisted === null) {
+                error_log('[payment-links] persist on create returned null for ' . ($link['id'] ?? ''));
+            }
         } catch (Throwable $e) {
             error_log('[payment-links] persist on create: ' . $e->getMessage());
         }
@@ -465,12 +470,17 @@ try {
             if ($plinkId === '') {
                 paymentLinksError('Payment link id required', 400);
             }
+            $db = paymentLinksDb();
+            paymentLinksAssertItemAllowed($db, $tokenData, $plinkId);
             $row = paymentLinkFindByRazorpayId($plinkId);
-            if (!is_array($row) || empty($row['invoice_pdf_path'])) {
+            if (!is_array($row) || empty($row['invoice_pdf_path'])
+                || !syncpediaDocumentStorageFileExists((string) $row['invoice_pdf_path'])) {
                 paymentLinksError('Invoice not found for this payment link', 404);
             }
-            $name = trim((string) ($row['invoice_number'] ?? 'invoice')) . '.pdf';
-            syncpediaDocumentStorageStreamPdf((string) $row['invoice_pdf_path'], $name);
+            $name = trim((string) ($row['invoice_number'] ?? 'invoice'));
+            $resolved = syncpediaDocumentStorageResolvePath((string) $row['invoice_pdf_path']);
+            $ext = is_string($resolved) && preg_match('/\.html?$/i', $resolved) ? '.html' : '.pdf';
+            syncpediaDocumentStorageStreamPdf((string) $row['invoice_pdf_path'], $name . $ext);
             break;
 
         case 'fetch':
@@ -490,7 +500,11 @@ try {
             if ($id === '') {
                 paymentLinksError('Payment link id required', 400);
             }
-            paymentLinksSuccess(razorpayCancelPaymentLink($id));
+            $db = paymentLinksDb();
+            paymentLinksAssertItemAllowed($db, $tokenData, $id);
+            $cancelled = razorpayCancelPaymentLink($id);
+            paymentLinkUpsertFromRazorpay($cancelled, null);
+            paymentLinksSuccess($cancelled);
             break;
 
         case 'remind':
@@ -500,6 +514,8 @@ try {
             if ($id === '') {
                 paymentLinksError('Payment link id required', 400);
             }
+            $db = paymentLinksDb();
+            paymentLinksAssertItemAllowed($db, $tokenData, $id);
             $input = getInput();
             $medium = (($input['medium'] ?? 'email') === 'sms') ? 'sms' : 'email';
             if ($medium === 'sms') {

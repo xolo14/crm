@@ -123,21 +123,7 @@ export function DataPrivacy() {
 
       <div className="rounded-xl border border-red-300 bg-[#fff5f5] p-5">
         <h3 className="text-base font-semibold text-red-700">Danger Zone</h3>
-        <div className="mt-3 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-700">Delete All Test Data</p>
-              <p className="text-xs text-gray-500">Permanently remove all demo/test records</p>
-            </div>
-            <DangerButton label="Delete Test Data" onClick={() => setModalAction("Delete Test Data")} />
-          </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium text-gray-700">Reset Pipeline Stages</p>
-              <p className="text-xs text-gray-500">Reset to default stages - cannot be undone</p>
-            </div>
-            <DangerButton label="Reset Pipeline" onClick={() => setModalAction("Reset Pipeline")} />
-          </div>
+        <div className="mt-3">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-gray-700">Delete Organisation Account</p>

@@ -4,35 +4,35 @@
  */
 require_once __DIR__ . '/payment_link_store.php';
 require_once __DIR__ . '/razorpay_service.php';
+require_once __DIR__ . '/mail_transport.php';
 
-function paymentLinkReceiptAutoload(): ?string
+function paymentLinkReceiptAutoload(): bool
 {
-    $paths = [
-        __DIR__ . '/../vendor/autoload.php',
-        __DIR__ . '/../../php-backend/vendor/autoload.php',
-    ];
-    foreach ($paths as $p) {
-        if (is_file($p)) {
-            return $p;
-        }
-    }
-    return null;
+    return syncpediaLoadComposerAutoload();
 }
 
 function paymentLinkReceiptRenderHtmlToPdf(string $html, string $destAbsPath): bool
 {
-    $autoload = paymentLinkReceiptAutoload();
-    if ($autoload === null) {
+    if (!paymentLinkReceiptAutoload()) {
+        error_log('[payment_receipt] Composer vendor missing — run composer install in php-backend and upload vendor/ to Hostinger');
         return false;
     }
-    require_once $autoload;
     if (!class_exists(\Dompdf\Dompdf::class)) {
+        error_log('[payment_receipt] dompdf not installed');
         return false;
     }
     try {
+        $tmpDir = syncpediaDocumentStorageDir('tmp');
+        $fontDir = $tmpDir . DIRECTORY_SEPARATOR . 'fonts';
+        if (!is_dir($fontDir)) {
+            @mkdir($fontDir, 0775, true);
+        }
         $options = new \Dompdf\Options();
         $options->set('isRemoteEnabled', false);
         $options->set('isHtml5ParserEnabled', true);
+        $options->set('tempDir', $tmpDir);
+        $options->set('fontDir', $fontDir);
+        $options->set('fontCache', $tmpDir . DIRECTORY_SEPARATOR . 'font_cache');
         $dompdf = new \Dompdf\Dompdf($options);
         $wrapped = $html;
         if (stripos($html, '<html') === false) {
@@ -192,10 +192,13 @@ function paymentLinkReceiptGenerateInvoicePdf(
     );
     $dir = syncpediaDocumentStorageDir('payment_invoices');
     $abs = $dir . DIRECTORY_SEPARATOR . syncpediaDocumentSafeFilename($filename);
-    if (!paymentLinkReceiptRenderHtmlToPdf($html, $abs)) {
-        return null;
+    if (paymentLinkReceiptRenderHtmlToPdf($html, $abs)) {
+        return syncpediaDocumentStorageRelativePath($abs);
     }
-    return $abs;
+
+    error_log('[payment_receipt] dompdf unavailable — saving HTML invoice for ' . $filename);
+    $htmlPath = syncpediaDocumentStorageSaveHtml('payment_invoices', $filename, $html);
+    return $htmlPath;
 }
 
 function paymentLinkReceiptMakeInvoiceNumber(array $row, string $paymentId): string
@@ -301,11 +304,17 @@ function paymentLinkDeliverReceipt(
     $plain .= "\nYour invoice PDF is attached.\n\nRegards,\nSyncpedia";
 
     $attachments = [];
-    if ($pdfPath !== null && is_file($pdfPath)) {
-        $attachments[] = [
-            'path' => $pdfPath,
-            'name' => syncpediaDocumentSafeFilename($invoiceNumber . '.pdf'),
-        ];
+    if ($pdfPath !== null) {
+        $resolvedAttach = syncpediaDocumentStorageResolvePath($pdfPath);
+        if ($resolvedAttach !== null && is_file($resolvedAttach)) {
+            $isHtml = preg_match('/\.html?$/i', $resolvedAttach) === 1;
+            $attachments[] = [
+                'path' => $resolvedAttach,
+                'name' => syncpediaDocumentSafeFilename(
+                    $invoiceNumber . ($isHtml ? '.html' : '.pdf'),
+                ),
+            ];
+        }
     }
 
     $send = syncpediaSendPaymentReceiptEmail(
@@ -317,10 +326,15 @@ function paymentLinkDeliverReceipt(
     );
 
     if ($send['ok']) {
+        $storedPath = is_string($pdfPath) ? trim($pdfPath) : '';
+        if ($storedPath !== '' && !syncpediaDocumentStorageFileExists($storedPath)) {
+            error_log('[payment_receipt] invoice saved path missing on disk: ' . $storedPath);
+            $storedPath = '';
+        }
         paymentLinkMarkInvoiceSent(
             (string) $row['razorpay_payment_link_id'],
             $invoiceNumber,
-            $pdfPath ?? '',
+            $storedPath,
             $amountPaidPaise,
         );
         $notes = json_decode((string) ($row['notes'] ?? '{}'), true);
@@ -353,7 +367,12 @@ function paymentLinkDeliverReceipt(
 function paymentLinkProcessWebhookEvent(array $event): void
 {
     $type = (string) ($event['event'] ?? '');
-    $handled = ['payment_link.paid', 'payment_link.partially_paid'];
+    $handled = [
+        'payment_link.paid',
+        'payment_link.partially_paid',
+        'payment_link.cancelled',
+        'payment_link.expired',
+    ];
     if (!in_array($type, $handled, true)) {
         return;
     }
@@ -392,6 +411,14 @@ function paymentLinkProcessWebhookEvent(array $event): void
         return;
     }
 
-    $result = paymentLinkDeliverReceipt($row, $fullLink, $paymentEntity, $type);
+    if (in_array($type, ['payment_link.cancelled', 'payment_link.expired'], true)) {
+        error_log('[payment_receipt] ' . $plinkId . ' status=' . ($fullLink['status'] ?? $type));
+        return;
+    }
+
+    if (!function_exists('paymentLinkProcessPaymentSideEffects')) {
+        require_once __DIR__ . '/payment_link_fulfillment.php';
+    }
+    $result = paymentLinkProcessPaymentSideEffects($row, $fullLink, $paymentEntity, $type);
     error_log('[payment_receipt] ' . $plinkId . ' ' . json_encode($result, JSON_UNESCAPED_UNICODE));
 }

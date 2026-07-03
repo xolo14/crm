@@ -12,6 +12,21 @@ if (!function_exists('isStudentInsertUnknownColumn')) {
         return preg_match('/Unknown column\s+[\'`]?' . $col . '[\'`]?/i', $m) === 1;
     }
 }
+if (!function_exists('isStudentInsertUnknownColumnFallback')) {
+    /** True when students table is missing lead_id / org_id (retry with a slimmer INSERT). */
+    function isStudentInsertUnknownColumnFallback(Throwable $e): bool {
+        $m = $e->getMessage();
+        if (stripos($m, 'Unknown column') === false) {
+            return false;
+        }
+        foreach (['lead_id', 'org_id'] as $col) {
+            if (preg_match('/Unknown column\s+[\'`]?' . preg_quote($col, '/') . '[\'`]?/i', $m)) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
 if (!function_exists('isMysqlForeignKeyViolation')) {
     function isMysqlForeignKeyViolation(Throwable $e): bool {
         if ($e instanceof PDOException && isset($e->errorInfo[1]) && (int) $e->errorInfo[1] === 1452) {
@@ -28,21 +43,8 @@ $db = (new Database())->getConnection();
 $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
-$role = $tokenData['role'];
-$org = orgFilter($tokenData);
-
-function ensureLeadsResumeColumn(PDO $db): void {
-    static $done = false;
-    if ($done) {
-        return;
-    }
-    try {
-        $db->exec("ALTER TABLE leads ADD COLUMN resume_path VARCHAR(500) DEFAULT NULL AFTER notes");
-    } catch (PDOException $e) {
-        // Duplicate column / exists
-    }
-    $done = true;
-}
+$role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+$org = orgFilterLeadsTenant($db, $tokenData);
 
 /**
  * Validate batch for lead enrollment; returns course_id, counts, or error.
@@ -140,6 +142,15 @@ if ($method === 'GET') {
         $params = array_merge($params, [$s, $s, $s, $s, $s]);
     }
 
+    if (!empty($_GET['referred_by'])) {
+        $where .= " AND referred_by = ?";
+        $params[] = trim((string) $_GET['referred_by']);
+    }
+
+    if (!empty($_GET['form_leads']) && $_GET['form_leads'] !== '0' && $_GET['form_leads'] !== 'false') {
+        $where .= " AND referred_by IS NOT NULL AND referred_by != ''";
+    }
+
     if ($debug) {
         $debugMeta['role'] = $role;
         $debugMeta['user_id'] = $userId;
@@ -157,6 +168,70 @@ if ($method === 'GET') {
 if ($method === 'POST') {
     ensureLeadsResumeColumn($db);
     $input = getInput();
+
+    if (($_GET['action'] ?? '') === 'bulk') {
+        $rows = $input['leads'] ?? $input;
+        if (!is_array($rows) || $rows === []) {
+            respond(['error' => 'Expected non-empty leads array'], 400);
+        }
+        $created = 0;
+        $errors = [];
+        foreach ($rows as $i => $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = trim((string) ($row['name'] ?? ''));
+            if ($name === '') {
+                $errors[] = "Row $i: name is required";
+                continue;
+            }
+            $id = generateUUID();
+            $referredBy = trim((string) ($row['referred_by'] ?? ''));
+            $referredBy = $referredBy !== '' ? $referredBy : null;
+            $assignedTo = $row['assigned_to'] ?? null;
+            if ($assignedTo !== null && trim((string) $assignedTo) === '') {
+                $assignedTo = null;
+            }
+            $orgId = resolveCreatorOrgId($db, $tokenData);
+            if ($orgId === null && !empty($assignedTo)) {
+                try {
+                    $oStmt = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
+                    $oStmt->execute([$assignedTo]);
+                    $oRow = $oStmt->fetch(PDO::FETCH_ASSOC);
+                    $pick = is_array($oRow) ? trim((string) ($oRow['org_id'] ?? '')) : '';
+                    if ($pick !== '') {
+                        $orgId = $pick;
+                    }
+                } catch (Throwable $ignored) {
+                }
+            }
+            try {
+                $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([
+                    $id,
+                    $name,
+                    $row['email'] ?? null,
+                    $row['phone'] ?? null,
+                    $row['company'] ?? null,
+                    $row['college'] ?? null,
+                    $row['year_of_study'] ?? null,
+                    $row['course_interest'] ?? null,
+                    $referredBy,
+                    $row['source'] ?? 'other',
+                    $row['notes'] ?? null,
+                    $assignedTo,
+                    isset($row['tags']) ? json_encode($row['tags']) : null,
+                    $orgId,
+                    $row['status'] ?? 'new',
+                ]);
+                $created++;
+            } catch (Throwable $e) {
+                $errors[] = "Row $i: " . $e->getMessage();
+            }
+        }
+        respond(['message' => "Imported $created lead(s)", 'created' => $created, 'errors' => $errors], $created > 0 ? 201 : 400);
+    }
+
     $id = generateUUID();
     $name = trim($input['name'] ?? '');
     if (!$name) respond(['error' => 'Name is required'], 400);
@@ -166,13 +241,15 @@ if ($method === 'POST') {
 
     // Validate assigned_to to avoid FK failures on malformed/old data.
     $assignedTo = $input['assigned_to'] ?? null;
+    $assigneeRow = null;
     if ($assignedTo !== null && trim((string) $assignedTo) === '') {
         $assignedTo = null;
     }
     if (!empty($assignedTo)) {
-        $ustmt = $db->prepare("SELECT id FROM users WHERE id = ? LIMIT 1");
+        $ustmt = $db->prepare('SELECT id, org_id FROM users WHERE id = ? LIMIT 1');
         $ustmt->execute([$assignedTo]);
-        if (!$ustmt->fetch()) {
+        $assigneeRow = $ustmt->fetch(PDO::FETCH_ASSOC);
+        if (!$assigneeRow) {
             $assignedTo = null;
         }
     }
@@ -197,30 +274,17 @@ if ($method === 'POST') {
         }
     }
 
-    $orgId = getOrgId($tokenData);
-    $orgId = is_string($orgId) && trim($orgId) !== '' ? trim($orgId) : null;
-    if ($orgId === null && !empty($assignedTo)) {
-        try {
-            $oStmt = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
-            $oStmt->execute([$assignedTo]);
-            $oRow = $oStmt->fetch(PDO::FETCH_ASSOC);
-            $pick = is_array($oRow) ? trim((string) ($oRow['org_id'] ?? '')) : '';
-            if ($pick !== '') {
-                $orgId = $pick;
-            }
-        } catch (Throwable $ignored) {
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    if ($orgId === null && !empty($assignedTo) && is_array($assigneeRow ?? null)) {
+        $pick = trim((string) ($assigneeRow['org_id'] ?? ''));
+        if ($pick !== '') {
+            $orgId = $pick;
         }
     }
-    if ($orgId === null && !empty($userId)) {
-        try {
-            $oStmt = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
-            $oStmt->execute([$userId]);
-            $oRow = $oStmt->fetch(PDO::FETCH_ASSOC);
-            $pick = is_array($oRow) ? trim((string) ($oRow['org_id'] ?? '')) : '';
-            if ($pick !== '') {
-                $orgId = $pick;
-            }
-        } catch (Throwable $ignored) {
+    if (!empty($assignedTo) && is_array($assigneeRow ?? null) && $orgId !== null && $role !== 'super_admin') {
+        $assigneeOrg = trim((string) ($assigneeRow['org_id'] ?? ''));
+        if ($assigneeOrg !== '' && $assigneeOrg !== $orgId) {
+            respond(['error' => 'Assignee must belong to your organization'], 403);
         }
     }
 
@@ -291,21 +355,16 @@ if ($method === 'PUT') {
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
 
-    $prevStatus = '';
-    // Check permission and capture current status (used when leaving Enroll).
-    if (in_array($role, ['sales_representative'])) {
-        $stmt = $db->prepare("SELECT assigned_to, status FROM leads WHERE id = ?");
-        $stmt->execute([$id]);
-        $lead = $stmt->fetch();
-        if (!$lead || $lead['assigned_to'] !== $userId) respond(['error' => 'Forbidden'], 403);
-        $prevStatus = (string) ($lead['status'] ?? '');
-    } else {
-        $ls = $db->prepare('SELECT status FROM leads WHERE id = ? LIMIT 1');
-        $ls->execute([$id]);
-        $pl = $ls->fetch();
-        if (!$pl) respond(['error' => 'Lead not found'], 404);
-        $prevStatus = (string) ($pl['status'] ?? '');
+    $stmt = $db->prepare('SELECT * FROM leads WHERE id = ? LIMIT 1');
+    $stmt->execute([$id]);
+    $lead = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$lead) {
+        respond(['error' => 'Lead not found'], 404);
     }
+    if (!userCanUpdateLeadForCallLog($db, $tokenData, $userId, $role, $lead)) {
+        respond(['error' => 'Forbidden'], 403);
+    }
+    $prevStatus = (string) ($lead['status'] ?? '');
 
     $allowedStatus = ['new', 'contacted', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'];
     if (array_key_exists('status', $input) && !in_array($input['status'], $allowedStatus, true)) {
@@ -610,6 +669,16 @@ if ($method === 'DELETE') {
     requireRole($tokenData, ['admin', 'super_admin', 'manager']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
+
+    $stmt = $db->prepare('SELECT * FROM leads WHERE id = ? LIMIT 1');
+    $stmt->execute([$id]);
+    $lead = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$lead) {
+        respond(['error' => 'Lead not found'], 404);
+    }
+    if (!userCanUpdateLeadForCallLog($db, $tokenData, $userId, $role, $lead)) {
+        respond(['error' => 'Forbidden'], 403);
+    }
 
     trashArchiveRow($db, 'lead', 'leads', $id, $tokenData);
     $stmt = $db->prepare("DELETE FROM leads WHERE id = ?");

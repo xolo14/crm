@@ -6,12 +6,13 @@ $db = (new Database())->getConnection();
 $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
-$role = $tokenData['role'];
+$role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 
 /** Roles that manage fresher salary tracker (aligned with Team page). */
 function fsmAllowedRole(string $role): bool
 {
-    return in_array($role, ['super_admin', 'admin', 'manager'], true);
+    $r = syncpediaNormalizeRoleKey($role);
+    return in_array($r, ['super_admin', 'admin', 'org', 'manager'], true);
 }
 
 function fsmEnsureTable(PDO $db): void
@@ -21,18 +22,18 @@ function fsmEnsureTable(PDO $db): void
         return;
     }
     $db->exec("
-        CREATE TABLE IF NOT EXISTS `fresher_salary_members` (
-          `id` CHAR(36) NOT NULL,
-          `org_id` CHAR(36) DEFAULT NULL,
-          `payload` LONGTEXT NOT NULL,
-          `created_by` CHAR(36) DEFAULT NULL,
-          `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          PRIMARY KEY (`id`),
-          KEY `idx_fsm_org` (`org_id`),
-          KEY `idx_fsm_updated` (`updated_at`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        CREATE TABLE IF NOT EXISTS fresher_salary_members (
+          id CHAR(36) NOT NULL,
+          org_id CHAR(36) DEFAULT NULL,
+          payload TEXT NOT NULL,
+          created_by CHAR(36) DEFAULT NULL,
+          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id)
+        )
     ");
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_fsm_org ON fresher_salary_members (org_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_fsm_updated ON fresher_salary_members (updated_at)');
     $done = true;
 }
 

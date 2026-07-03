@@ -90,7 +90,7 @@ async function request(endpoint: string, options: RequestInit = {}) {
         const q = typeof window !== 'undefined' ? window.location.search || '' : '';
         target = q ? `/auth${q}` : AUTH_PORTAL.salesRep;
       } else {
-        const portal = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('auth_login_portal') || 'rep' : 'rep';
+        const portal = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('auth_login_portal') || 'login' : 'login';
         target = loginPathFromSessionPortal(portal);
       }
       window.location.replace(target);
@@ -101,19 +101,16 @@ async function request(endpoint: string, options: RequestInit = {}) {
   }
 
   const contentType = res.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    throw new Error('Server is not responding with JSON. Make sure PHP is running on your Hostinger server.');
-  }
+  const raw = await res.text();
 
-  function parseJsonBody(raw: string): any {
-    const trimmed = raw.replace(/^\uFEFF/, '').trim();
+  function parseJsonBody(text: string): any {
+    const trimmed = text.replace(/^\uFEFF/, '').trim();
     if (!trimmed) {
       throw new Error('Server returned empty response');
     }
     try {
       return JSON.parse(trimmed);
     } catch {
-      // PHP warnings/HTML before JSON — take first {...} block
       const start = trimmed.indexOf('{');
       const end = trimmed.lastIndexOf('}');
       if (start >= 0 && end > start) {
@@ -123,19 +120,39 @@ async function request(endpoint: string, options: RequestInit = {}) {
     }
   }
 
+  const looksLikeJson = contentType.includes('application/json')
+    || raw.trim().startsWith('{')
+    || raw.trim().startsWith('[');
+
+  if (!looksLikeJson) {
+    const isHtml = /<!DOCTYPE|<html/i.test(raw);
+    if (isHtml) {
+      throw new Error(
+        res.status === 404
+          ? 'API not found. Upload the full dist/ folder to Hostinger (must include api/ and root .htaccess).'
+          : `Server returned HTML instead of JSON (HTTP ${res.status}). Edit api/config.php with MySQL credentials from Hostinger → Databases, then open /api/ping.php to verify.`,
+      );
+    }
+    throw new Error(
+      `Server error (HTTP ${res.status}). Open /api/ping.php on your site to diagnose PHP and database setup.`,
+    );
+  }
+
   let data: any;
   try {
-    data = parseJsonBody(await res.text());
+    data = parseJsonBody(raw);
   } catch (e) {
-    throw new Error(`Invalid JSON response from ${endpoint}. Check server API/PHP error logs.`);
+    throw new Error(`Invalid JSON response from ${endpoint}. Check Hostinger PHP error logs.`);
   }
 
   if (!res.ok) {
     const errMsg = typeof data.error === 'string' ? data.error.trim() : '';
+    const message = typeof data.message === 'string' ? data.message.trim() : '';
+    const hint = typeof data.hint === 'string' ? data.hint.trim() : '';
     const det = typeof data.detail === 'string' ? data.detail.trim() : '';
     const file = typeof data.file === 'string' ? data.file.trim() : '';
     const line = data.line;
-    let msg = [errMsg, det].filter(Boolean).join(': ');
+    let msg = [errMsg, message, det, hint].filter(Boolean).join(' — ');
     if (file && line != null && line !== '') {
       msg += ` (${file}:${line})`;
     }
@@ -167,7 +184,7 @@ async function requestBlob(endpoint: string): Promise<Blob> {
         const q = typeof window !== 'undefined' ? window.location.search || '' : '';
         target = q ? `/auth${q}` : AUTH_PORTAL.salesRep;
       } else {
-        const portal = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('auth_login_portal') || 'rep' : 'rep';
+        const portal = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('auth_login_portal') || 'login' : 'login';
         target = loginPathFromSessionPortal(portal);
       }
       window.location.replace(target);
@@ -231,6 +248,8 @@ export const api = {
     },
     forgotPassword: (email: string) =>
       request('/auth.php?action=forgot_password', { method: 'POST', body: JSON.stringify({ email }) }),
+    verifyResetOtp: (email: string, otp: string) =>
+      request('/auth.php?action=verify_reset_otp', { method: 'POST', body: JSON.stringify({ email, otp }) }),
     resetPassword: (token: string, password: string) =>
       request('/auth.php?action=reset_password', { method: 'POST', body: JSON.stringify({ token, password }) }),
     logout: () => {
@@ -292,11 +311,18 @@ export const api = {
 
   // Leads
   leads: {
-    list: (params?: { status?: string; search?: string }) => {
-      const q = new URLSearchParams(params as any).toString();
-      return request(`/leads.php${q ? '?' + q : ''}`);
+    list: (params?: { status?: string; search?: string; referred_by?: string; form_leads?: boolean }) => {
+      const q = new URLSearchParams();
+      if (params?.status) q.set('status', params.status);
+      if (params?.search) q.set('search', params.search);
+      if (params?.referred_by) q.set('referred_by', params.referred_by);
+      if (params?.form_leads) q.set('form_leads', '1');
+      const qs = q.toString();
+      return request(`/leads.php${qs ? '?' + qs : ''}`);
     },
     create: (data: any) => request('/leads.php', { method: 'POST', body: JSON.stringify(data) }),
+    bulkCreate: (leads: any[]) =>
+      request('/leads.php?action=bulk', { method: 'POST', body: JSON.stringify({ leads }) }),
     update: (id: string, data: any) => request(`/leads.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/leads.php?id=${id}`, { method: 'DELETE' }),
   },
@@ -421,6 +447,8 @@ export const api = {
       return request(`/team.php${s ? `?${s}` : ''}`);
     },
     create: (data: any) => request('/team.php', { method: 'POST', body: JSON.stringify(data) }),
+    sendWelcomeEmail: (data: { user_id: string; password: string }) =>
+      request('/team.php?action=send_welcome_email', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) => request(`/team.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/team.php?id=${id}`, { method: 'DELETE' }),
   },
@@ -480,20 +508,36 @@ export const api = {
     createMember: (data: any) => request('/marketing.php?action=members', { method: 'POST', body: JSON.stringify(data) }),
     updateMember: (id: string, data: any) => request(`/marketing.php?action=members&id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteMember: (id: string) => request(`/marketing.php?action=members&id=${id}`, { method: 'DELETE' }),
-    emailDrafts: () => request('/marketing.php?action=email_drafts'),
+    emailDrafts: (params?: { mine?: boolean }) =>
+      request(`/marketing.php?action=email_drafts${params?.mine ? '&mine=1' : ''}`),
     createEmailDraft: (data: any) => request('/marketing.php?action=email_drafts', { method: 'POST', body: JSON.stringify(data) }),
     updateEmailDraft: (id: string, data: any) => request(`/marketing.php?action=email_drafts&id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteEmailDraft: (id: string) => request(`/marketing.php?action=email_drafts&id=${id}`, { method: 'DELETE' }),
-    emailCampaigns: () => request('/marketing.php?action=email_campaigns'),
+    emailCampaigns: (params?: { mine?: boolean }) =>
+      request(`/marketing.php?action=email_campaigns${params?.mine ? '&mine=1' : ''}`),
     createEmailCampaign: (data: any) => request('/marketing.php?action=email_campaigns', { method: 'POST', body: JSON.stringify(data) }),
     updateEmailCampaign: (id: string, data: any) => request(`/marketing.php?action=email_campaigns&id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    whatsappDrafts: () => request('/marketing.php?action=whatsapp_drafts'),
+    emailSends: (campaignIds: string[]) => {
+      if (!campaignIds.length) return Promise.resolve({ data: [] });
+      return request(`/marketing.php?action=email_sends&campaign_ids=${encodeURIComponent(campaignIds.join(','))}`);
+    },
+    createEmailSends: (campaignId: string, recipients: Array<string | { recipient_email?: string; email?: string; status?: string }>) =>
+      request('/marketing.php?action=email_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
+    whatsappDrafts: (params?: { mine?: boolean }) =>
+      request(`/marketing.php?action=whatsapp_drafts${params?.mine ? '&mine=1' : ''}`),
     createWhatsappDraft: (data: any) => request('/marketing.php?action=whatsapp_drafts', { method: 'POST', body: JSON.stringify(data) }),
     updateWhatsappDraft: (id: string, data: any) => request(`/marketing.php?action=whatsapp_drafts&id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteWhatsappDraft: (id: string) => request(`/marketing.php?action=whatsapp_drafts&id=${id}`, { method: 'DELETE' }),
-    whatsappCampaigns: () => request('/marketing.php?action=whatsapp_campaigns'),
+    whatsappCampaigns: (params?: { mine?: boolean }) =>
+      request(`/marketing.php?action=whatsapp_campaigns${params?.mine ? '&mine=1' : ''}`),
     createWhatsappCampaign: (data: any) => request('/marketing.php?action=whatsapp_campaigns', { method: 'POST', body: JSON.stringify(data) }),
     updateWhatsappCampaign: (id: string, data: any) => request(`/marketing.php?action=whatsapp_campaigns&id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    whatsappSends: (campaignIds: string[]) => {
+      if (!campaignIds.length) return Promise.resolve({ data: [] });
+      return request(`/marketing.php?action=whatsapp_sends&campaign_ids=${encodeURIComponent(campaignIds.join(','))}`);
+    },
+    createWhatsappSends: (campaignId: string, recipients: Array<string | { recipient_phone?: string; phone?: string; status?: string }>) =>
+      request('/marketing.php?action=whatsapp_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
     uploadLeadResume: async (file: File) => {
       const fd = new FormData();
       fd.append('resume', file);
@@ -530,10 +574,22 @@ export const api = {
   // Form Management
   forms: {
     list: () => request('/forms.php'),
-    create: (data: { name: string; slug?: string; description?: string; is_active?: boolean }) =>
-      request('/forms.php', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { name?: string; slug?: string; description?: string; is_active?: boolean }) =>
-      request(`/forms.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    create: (data: {
+      name: string;
+      slug?: string;
+      description?: string | null;
+      is_active?: boolean;
+      fields_json?: unknown;
+      meta_json?: Record<string, unknown>;
+    }) => request('/forms.php', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: {
+      name?: string;
+      slug?: string;
+      description?: string | null;
+      is_active?: boolean;
+      fields_json?: unknown;
+      meta_json?: Record<string, unknown>;
+    }) => request(`/forms.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/forms.php?id=${id}`, { method: 'DELETE' }),
     assignments: (formId: string) => request(`/forms.php?action=assignments&form_id=${formId}`),
     assignMembers: (formId: string, memberIds: string[]) =>
@@ -542,6 +598,17 @@ export const api = {
       request('/forms.php?action=backfill_sales_form_assignments', {
         method: 'POST',
         body: JSON.stringify({}),
+      }),
+    externalApiInfo: (formId: string) =>
+      request(`/forms.php?action=external_api&form_id=${encodeURIComponent(formId)}`),
+    generateApiKey: (formId: string) =>
+      request('/forms.php?action=generate_api_key', {
+        method: 'POST',
+        body: JSON.stringify({ form_id: formId }),
+      }),
+    revokeApiKey: (formId: string) =>
+      request(`/forms.php?action=revoke_api_key&form_id=${encodeURIComponent(formId)}`, {
+        method: 'DELETE',
       }),
   },
 

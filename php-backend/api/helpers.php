@@ -3,7 +3,7 @@
 if (ob_get_level() === 0) {
     ob_start();
 }
-require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/bootstrap.php';
 require_once __DIR__ . '/mail_transport.php';
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
@@ -14,16 +14,7 @@ class Database {
     public function getConnection() {
         if ($this->conn === null) {
             try {
-                $this->conn = new PDO(
-                    "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4",
-                    DB_USER,
-                    DB_PASS,
-                    [
-                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                        PDO::ATTR_EMULATE_PREPARES => false,
-                    ]
-                );
+                $this->conn = syncpediaCreatePdo();
             } catch (PDOException $e) {
                 respond(['error' => 'Database connection failed'], 500);
             }
@@ -39,7 +30,7 @@ function cors() {
     }
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
-    header("Access-Control-Allow-Origin: " . FRONTEND_URL);
+    header('Access-Control-Allow-Origin: ' . syncpediaCorsOrigin());
     header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
     header("Access-Control-Allow-Headers: Content-Type, Authorization");
     header("Content-Type: application/json; charset=UTF-8");
@@ -146,27 +137,52 @@ function verifyToken() {
 }
 
 function requireRole($tokenData, $roles) {
-    if (!in_array($tokenData['role'], $roles)) {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $allowed = array_map(
+        static fn($r) => syncpediaNormalizeRoleKey((string) $r),
+        $roles,
+    );
+    if (!in_array($role, $allowed, true)) {
         respond(['error' => 'Insufficient permissions'], 403);
     }
 }
 
 // Get org_id from token - super_admin can override via query param
 function getOrgId($tokenData) {
-    // Super admin can switch orgs
-    if ($tokenData['role'] === 'super_admin' && !empty($_GET['org_id'])) {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($role === 'super_admin' && !empty($_GET['org_id'])) {
         return $_GET['org_id'];
     }
-    return $tokenData['org_id'] ?? null;
+    $fromToken = $tokenData['org_id'] ?? null;
+    if ($fromToken !== null && trim((string) $fromToken) !== '') {
+        return trim((string) $fromToken);
+    }
+    $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    if ($userId !== '') {
+        try {
+            $db = (new Database())->getConnection();
+            $st = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
+            $st->execute([$userId]);
+            $row = $st->fetch(PDO::FETCH_ASSOC);
+            $oid = is_array($row) ? trim((string) ($row['org_id'] ?? '')) : '';
+            if ($oid !== '') {
+                return $oid;
+            }
+        } catch (Throwable $e) {
+            // ignore
+        }
+    }
+    return null;
 }
 
 // Build org filter for queries - returns WHERE clause fragment + params
-function orgFilter($tokenData, $tableAlias = '') {
+function orgFilter($tokenData, $tableAlias = '', ?PDO $db = null) {
     $prefix = $tableAlias ? "$tableAlias." : '';
-    $orgId = getOrgId($tokenData);
-    
+    $orgId = $db ? resolveCreatorOrgId($db, $tokenData) : getOrgId($tokenData);
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+
     // Super admin with no org filter sees everything
-    if ($tokenData['role'] === 'super_admin' && !$orgId) {
+    if ($role === 'super_admin' && !$orgId) {
         return ['where' => '1=1', 'params' => []];
     }
     
@@ -176,6 +192,51 @@ function orgFilter($tokenData, $tableAlias = '') {
     
     // Fallback: no org filter (backward compat for users without org)
     return ['where' => "({$prefix}org_id IS NULL)", 'params' => []];
+}
+
+/**
+ * Leads list scope for L3 org admin: org_id on row OR assigned/created by a member of the tenant.
+ *
+ * @return array{where: string, params: array}
+ */
+function orgFilterLeadsTenant(PDO $db, array $tokenData): array
+{
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($role === 'super_admin' && !getOrgId($tokenData)) {
+        return ['where' => '1=1', 'params' => []];
+    }
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    if (!$orgId) {
+        return ['where' => '(org_id IS NULL)', 'params' => []];
+    }
+    $sql = '(org_id = ? OR ((org_id IS NULL OR org_id = \'\') AND (
+        assigned_to IN (SELECT id FROM users WHERE org_id = ?)
+        OR created_by IN (SELECT id FROM users WHERE org_id = ?)
+    )))';
+
+    return ['where' => $sql, 'params' => [$orgId, $orgId, $orgId]];
+}
+
+/**
+ * Students list tenant scope (org on student/lead rows or mentor/assignee in org).
+ *
+ * @return array{sql: string, params: array}
+ */
+function orgFilterStudentsTenantSql(string $orgId): array
+{
+    $sql = ' AND (
+        s.org_id = ? OR l.org_id = ? OR l2.org_id = ?
+        OR s.mentor_id IN (SELECT id FROM users WHERE org_id = ?)
+        OR l.assigned_to IN (SELECT id FROM users WHERE org_id = ?)
+        OR l2.assigned_to IN (SELECT id FROM users WHERE org_id = ?)
+        OR l.created_by IN (SELECT id FROM users WHERE org_id = ?)
+        OR l2.created_by IN (SELECT id FROM users WHERE org_id = ?)
+    )';
+
+    return [
+        'sql' => $sql,
+        'params' => array_fill(0, 8, $orgId),
+    ];
 }
 
 /** L4–L1 role normalization (see src/lib/roleUtils.ts). */
@@ -195,6 +256,9 @@ function syncpediaNormalizeRoleKey(string $role): string
         return 'manager';
     }
     if (strpos($r, 'marketing') === 0) {
+        return 'marketing';
+    }
+    if ($r === 'sales_marketing') {
         return 'marketing';
     }
     return $r;
@@ -250,8 +314,7 @@ function hierarchyVisibleUserIds(PDO $db, array $tokenData): array {
     }
 
     try {
-        $chk = $db->query("SHOW COLUMNS FROM `users` LIKE 'reports_to_id'");
-        if (!$chk || !$chk->fetch()) {
+        if (!syncpediaColumnExists($db, 'users', 'reports_to_id')) {
             return [$userId];
         }
     } catch (Throwable $e) {
@@ -272,11 +335,11 @@ function hierarchyVisibleUserIds(PDO $db, array $tokenData): array {
                   AND u.is_active = 1
                   AND LOWER(TRIM(u.role)) NOT IN ('admin','super_admin')
                   AND (
-                    (p.org_id IS NULL OR TRIM(CAST(p.org_id AS CHAR)) = '')
-                    AND (u.org_id IS NULL OR TRIM(CAST(u.org_id AS CHAR)) = '')
+                    (p.org_id IS NULL OR TRIM(CAST(p.org_id AS TEXT)) = '')
+                    AND (u.org_id IS NULL OR TRIM(CAST(u.org_id AS TEXT)) = '')
                   OR (
-                    p.org_id IS NOT NULL AND TRIM(CAST(p.org_id AS CHAR)) <> ''
-                    AND u.org_id IS NOT NULL AND TRIM(CAST(u.org_id AS CHAR)) <> ''
+                    p.org_id IS NOT NULL AND TRIM(CAST(p.org_id AS TEXT)) <> ''
+                    AND u.org_id IS NOT NULL AND TRIM(CAST(u.org_id AS TEXT)) <> ''
                     AND u.org_id = p.org_id
                   ))
             ");
@@ -897,6 +960,19 @@ function syncpediaCrmAppBaseUrl(): string {
     return 'https://crm.syncpedia.in';
 }
 
+/** Browser login path for welcome / reset emails (staff → /login, org admin → /admin, platform → /super_admin). */
+function syncpediaRoleLoginPath(string $roleKey): string
+{
+    $r = syncpediaNormalizeRoleKey($roleKey);
+    if ($r === 'super_admin') {
+        return '/super_admin';
+    }
+    if ($r === 'admin' || $r === 'org') {
+        return '/admin';
+    }
+    return '/login';
+}
+
 function syncpediaTeamWelcomeRoleLabel(string $roleKey): string {
     $k = strtolower(trim($roleKey));
     $map = [
@@ -926,7 +1002,7 @@ function syncpediaBuildTeamMemberWelcomeEmailHtml(
         return htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     };
     $legal = $h(syncpediaMailLegalEntityName());
-    $loginUrl = $h(syncpediaCrmAppBaseUrl() . '/');
+    $loginUrl = $h(syncpediaCrmAppBaseUrl() . syncpediaRoleLoginPath($roleKey));
     $roleL = $h(syncpediaTeamWelcomeRoleLabel($roleKey));
     $phoneHtml = '';
     if ($phone !== null && trim($phone) !== '') {
@@ -959,6 +1035,74 @@ function syncpediaBuildTeamMemberWelcomeEmailHtml(
         . '</td></tr>'
         . '<tr><td align="center" style="padding:12px;font-size:12px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">' . $legal . '</td></tr>'
         . '</table></td></tr></table></body></html>';
+}
+
+/**
+ * Send welcome email with login credentials (from support@syncpedia.in).
+ *
+ * @return array{email_sent: bool, email_error: string|null, from: string}
+ */
+function syncpediaBuildPasswordResetOtpEmailHtml(string $fullName, string $otp): string
+{
+    $h = static function (string $s): string {
+        return htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    };
+    $legal = $h(syncpediaMailLegalEntityName());
+    $code = $h($otp);
+    $name = trim($fullName) !== '' ? $h(trim($fullName)) : 'there';
+
+    return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#eceff1;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eceff1;"><tr><td align="center" style="padding:24px 12px;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;">'
+        . '<tr><td style="background:#0f2318;padding:24px;font-family:Arial,Helvetica,sans-serif;font-size:20px;font-weight:700;color:#ffffff;text-align:center;">'
+        . 'Password reset code'
+        . '</td></tr>'
+        . '<tr><td style="background:#ffffff;padding:28px;font-family:Arial,Helvetica,sans-serif;">'
+        . '<p style="margin:0 0 18px 0;font-size:16px;line-height:1.5;color:#1e293b;">Hello ' . $name . ',</p>'
+        . '<p style="margin:0 0 20px 0;font-size:15px;line-height:1.55;color:#475569;">Use this one-time code to reset your Syncpedia CRM password. It expires in <strong>10 minutes</strong>.</p>'
+        . '<p style="margin:0;text-align:center;font-size:32px;font-weight:700;letter-spacing:0.35em;color:#0f2318;font-family:Consolas,monospace;">' . $code . '</p>'
+        . '<p style="margin:22px 0 0 0;font-size:12px;line-height:1.5;color:#94a3b8;">If you did not request this, you can ignore this email. Your password will stay the same.</p>'
+        . '</td></tr>'
+        . '<tr><td align="center" style="padding:12px;font-size:12px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">' . $legal . '</td></tr>'
+        . '</table></td></tr></table></body></html>';
+}
+
+/**
+ * @return array{email_sent: bool, email_error: string|null, from: string}
+ */
+function syncpediaSendPasswordResetOtpEmail(string $toEmail, string $fullName, string $otp): array
+{
+    $res = syncpediaSendHtmlEmail($toEmail, 'Your Syncpedia CRM password reset code', syncpediaBuildPasswordResetOtpEmailHtml($fullName, $otp));
+    $ok = ($res['ok'] ?? false) === true;
+    return [
+        'email_sent' => $ok,
+        'email_error' => $ok ? null : ($res['error'] ?? 'Email send failed'),
+        'from' => syncpediaSupportMailAddress(),
+    ];
+}
+
+function syncpediaSendMemberWelcomeEmail(
+    string $fullName,
+    string $loginEmail,
+    string $plainPassword,
+    string $roleKey,
+    ?string $phone = null,
+): array {
+    $phoneStr = is_string($phone) ? trim($phone) : '';
+    $html = syncpediaBuildTeamMemberWelcomeEmailHtml(
+        $fullName,
+        $loginEmail,
+        $plainPassword,
+        $roleKey,
+        $phoneStr !== '' ? $phoneStr : null,
+    );
+    $res = syncpediaSendHtmlEmail($loginEmail, 'Your Syncpedia CRM login credentials', $html);
+    $ok = ($res['ok'] ?? false) === true;
+    return [
+        'email_sent' => $ok,
+        'email_error' => $ok ? null : ($res['error'] ?? 'Email send failed'),
+        'from' => syncpediaSupportMailAddress(),
+    ];
 }
 
 /**
@@ -1346,41 +1490,7 @@ function respond($data, $status = 200) {
     exit;
 }
 
-/** MySQL duplicate key / unique constraint (idempotent enroll, etc.) */
-function isMysqlDuplicateKey(Throwable $e): bool {
-    if ($e instanceof PDOException && isset($e->errorInfo[1]) && (int)$e->errorInfo[1] === 1062) {
-        return true;
-    }
-    $m = $e->getMessage();
-    return stripos($m, '1062') !== false || stripos($m, 'Duplicate') !== false;
-}
-
-/** True when INSERT failed because listed columns are missing (older DB). */
-function isStudentInsertUnknownColumn(Throwable $e, string $column): bool {
-    $m = $e->getMessage();
-    if (stripos($m, 'Unknown column') === false) {
-        return false;
-    }
-    $col = preg_quote($column, '/');
-    return preg_match('/Unknown column\s+[\'`]?' . $col . '[\'`]?/i', $m) === 1;
-}
-
-/** True when INSERT failed because lead_id/org_id columns are missing (older DB). */
-function isStudentInsertUnknownColumnFallback(Throwable $e): bool {
-    return isStudentInsertUnknownColumn($e, 'lead_id') || isStudentInsertUnknownColumn($e, 'org_id');
-}
-
-/** MySQL foreign key violation (e.g. invalid org_id on students). */
-function isMysqlForeignKeyViolation(Throwable $e): bool {
-    if ($e instanceof PDOException && isset($e->errorInfo[1]) && (int) $e->errorInfo[1] === 1452) {
-        return true;
-    }
-    $m = $e->getMessage();
-    return stripos($m, '1452') !== false || stripos($m, 'foreign key constraint') !== false;
-}
-
-/**
- * True when this lead already has a student row (duplicate enroll is safe to ignore).
+/** True when this lead already has a student row (duplicate enroll is safe to ignore).
  * Uses lead_id only so we do not swallow duplicate-email errors for a different lead.
  */
 function enrollStudentRowAlreadyExists(PDO $db, string $leadId): bool {
@@ -1412,6 +1522,46 @@ function userEffectiveOrgId(PDO $db, array $tokenData, string $userId): ?string 
     } catch (Throwable $ignored) {
         return null;
     }
+}
+
+/** Org-scoped student access for PUT/DELETE (super_admin bypasses). */
+function userCanAccessStudentRow(PDO $db, array $tokenData, string $userId, string $rawRole, array $studentRow): bool {
+    if ($rawRole === 'super_admin') {
+        return true;
+    }
+    $orgId = userEffectiveOrgId($db, $tokenData, $userId);
+    if ($orgId === null || $orgId === '') {
+        return false;
+    }
+    $studentOrg = trim((string) ($studentRow['org_id'] ?? ''));
+    if ($studentOrg !== '' && $studentOrg === $orgId) {
+        return true;
+    }
+    $leadId = trim((string) ($studentRow['lead_id'] ?? ''));
+    if ($leadId !== '') {
+        try {
+            $st = $db->prepare('SELECT org_id FROM leads WHERE id = ? LIMIT 1');
+            $st->execute([$leadId]);
+            $leadOrg = trim((string) ($st->fetch(PDO::FETCH_ASSOC)['org_id'] ?? ''));
+            if ($leadOrg !== '' && $leadOrg === $orgId) {
+                return true;
+            }
+        } catch (Throwable $ignored) {
+        }
+    }
+    $email = trim((string) ($studentRow['email'] ?? ''));
+    if ($email !== '') {
+        try {
+            $st = $db->prepare('SELECT org_id FROM leads WHERE email = ? AND org_id = ? ORDER BY created_at DESC LIMIT 1');
+            $st->execute([$email, $orgId]);
+            $leadOrg = trim((string) ($st->fetch(PDO::FETCH_ASSOC)['org_id'] ?? ''));
+            if ($leadOrg === $orgId) {
+                return true;
+            }
+        } catch (Throwable $ignored) {
+        }
+    }
+    return false;
 }
 
 /** Same idea as editing a lead from CRM: rep sees assigned/referred; org roles same-org. */
@@ -1745,7 +1895,7 @@ function resolveCreatorOrgId(PDO $db, array $tokenData): ?string {
         }
     }
 
-    if (($tokenData['role'] ?? '') === 'super_admin') {
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
         $sid = syncpediaGetOrCreateOrgId($db, $creatorId);
         if ($sid) {
             return $sid;
@@ -1844,7 +1994,7 @@ function batchesFilterViewerSchedule(array $tokenData, array $rows): array
  */
 function resolveWriteOrgId(PDO $db, array $tokenData): ?string
 {
-    if (($tokenData['role'] ?? '') === 'super_admin' && !empty($_GET['org_id'])) {
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin' && !empty($_GET['org_id'])) {
         return (string) $_GET['org_id'];
     }
 
@@ -1863,46 +2013,44 @@ function ensureLeadFormsTables(PDO $db): void {
 
     try {
         $db->exec("
-            CREATE TABLE IF NOT EXISTS `lead_forms` (
-              `id` CHAR(36) NOT NULL,
-              `name` VARCHAR(255) NOT NULL,
-              `slug` VARCHAR(255) NOT NULL,
-              `description` TEXT DEFAULT NULL,
-              `fields_json` JSON DEFAULT NULL,
-              `is_active` TINYINT(1) NOT NULL DEFAULT 1,
-              `created_by` CHAR(36) NOT NULL,
-              `org_id` CHAR(36) DEFAULT NULL,
-              `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              PRIMARY KEY (`id`),
-              UNIQUE KEY `uq_lead_forms_slug_org` (`slug`, `org_id`),
-              KEY `idx_lead_forms_org` (`org_id`),
-              KEY `idx_lead_forms_active` (`is_active`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            CREATE TABLE IF NOT EXISTS lead_forms (
+              id CHAR(36) NOT NULL,
+              name VARCHAR(255) NOT NULL,
+              slug VARCHAR(255) NOT NULL,
+              description TEXT DEFAULT NULL,
+              fields_json JSON DEFAULT NULL,
+              is_active BOOLEAN NOT NULL DEFAULT TRUE,
+              created_by CHAR(36) NOT NULL,
+              org_id CHAR(36) DEFAULT NULL,
+              created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (id),
+              UNIQUE (slug, org_id)
+            )
         ");
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_lead_forms_org ON lead_forms (org_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_lead_forms_active ON lead_forms (is_active)');
 
-        $chk = $db->query("SHOW COLUMNS FROM `lead_forms` LIKE 'fields_json'");
-        if ($chk && !$chk->fetch()) {
-            $db->exec("ALTER TABLE `lead_forms` ADD COLUMN `fields_json` JSON DEFAULT NULL AFTER `description`");
+        if (!syncpediaColumnExists($db, 'lead_forms', 'fields_json')) {
+            $db->exec('ALTER TABLE lead_forms ADD COLUMN fields_json JSON DEFAULT NULL');
         }
-        $chk2 = $db->query("SHOW COLUMNS FROM `lead_forms` LIKE 'meta_json'");
-        if ($chk2 && !$chk2->fetch()) {
-            $db->exec("ALTER TABLE `lead_forms` ADD COLUMN `meta_json` JSON DEFAULT NULL AFTER `fields_json`");
+        if (!syncpediaColumnExists($db, 'lead_forms', 'meta_json')) {
+            $db->exec('ALTER TABLE lead_forms ADD COLUMN meta_json JSON DEFAULT NULL');
         }
 
         $db->exec("
-            CREATE TABLE IF NOT EXISTS `lead_form_assignments` (
-              `id` CHAR(36) NOT NULL,
-              `form_id` CHAR(36) NOT NULL,
-              `member_id` CHAR(36) NOT NULL,
-              `assigned_by` CHAR(36) NOT NULL,
-              `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              PRIMARY KEY (`id`),
-              UNIQUE KEY `uq_form_member` (`form_id`, `member_id`),
-              KEY `idx_lfa_form` (`form_id`),
-              KEY `idx_lfa_member` (`member_id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            CREATE TABLE IF NOT EXISTS lead_form_assignments (
+              id CHAR(36) NOT NULL,
+              form_id CHAR(36) NOT NULL,
+              member_id CHAR(36) NOT NULL,
+              assigned_by CHAR(36) NOT NULL,
+              created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (id),
+              UNIQUE (form_id, member_id)
+            )
         ");
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_lfa_form ON lead_form_assignments (form_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_lfa_member ON lead_form_assignments (member_id)');
     } catch (Throwable $ignored) {
     }
 
@@ -1910,39 +2058,13 @@ function ensureLeadFormsTables(PDO $db): void {
 }
 
 /**
- * Platform-global builtin forms for Syncpedia (org_id NULL): slug `default` + `normal`.
- * Recreates rows if they were deleted; safe to call on every request.
+ * Retire legacy platform-global builtin forms (slug normal/default, org_id NULL).
+ * These are no longer seeded or exposed in Form Management.
  */
-function ensureGlobalBuiltinLeadForms(PDO $db): void {
+function retireGlobalBuiltinLeadForms(PDO $db): void {
     try {
         ensureLeadFormsTables($db);
-
-        $st = $db->query("SELECT id FROM users WHERE LOWER(TRIM(role)) = 'super_admin' ORDER BY created_at ASC LIMIT 1");
-        $row = $st ? $st->fetch(PDO::FETCH_ASSOC) : false;
-        $createdBy = !empty($row['id']) ? (string) $row['id'] : '';
-        if ($createdBy === '') {
-            $st2 = $db->query("SELECT id FROM users ORDER BY created_at ASC LIMIT 1");
-            $row2 = $st2 ? $st2->fetch(PDO::FETCH_ASSOC) : false;
-            $createdBy = !empty($row2['id']) ? (string) $row2['id'] : '';
-        }
-        if ($createdBy === '') {
-            return;
-        }
-
-        $pairs = [
-            ['Default Capture', 'default', 'System global capture form (platform / Syncpedia sales)'],
-            ['Normal', 'normal', 'Standard global lead form (tenant sales)'],
-        ];
-        foreach ($pairs as [$name, $slug, $desc]) {
-            $ins = $db->prepare("
-                INSERT INTO lead_forms (id, name, slug, description, fields_json, meta_json, is_active, created_by, org_id)
-                SELECT UUID(), ?, ?, ?, NULL, NULL, 1, ?, NULL
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM lead_forms lf WHERE lf.slug = ? AND lf.org_id IS NULL
-                )
-            ");
-            $ins->execute([$name, $slug, $desc, $createdBy, $slug]);
-        }
+        $db->exec("UPDATE lead_forms SET is_active = 0 WHERE slug IN ('normal', 'default') AND org_id IS NULL");
     } catch (Throwable $ignored) {
     }
 }
@@ -1955,68 +2077,31 @@ function ensureLeadFormAssignmentsTable(PDO $db): void {
     }
     try {
         $db->exec("
-            CREATE TABLE IF NOT EXISTS `lead_form_assignments` (
-              `id` CHAR(36) NOT NULL,
-              `form_id` CHAR(36) NOT NULL,
-              `member_id` CHAR(36) NOT NULL,
-              `assigned_by` CHAR(36) NOT NULL,
-              `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              PRIMARY KEY (`id`),
-              UNIQUE KEY `uq_form_member` (`form_id`, `member_id`),
-              KEY `idx_lfa_form` (`form_id`),
-              KEY `idx_lfa_member` (`member_id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            CREATE TABLE IF NOT EXISTS lead_form_assignments (
+              id CHAR(36) NOT NULL,
+              form_id CHAR(36) NOT NULL,
+              member_id CHAR(36) NOT NULL,
+              assigned_by CHAR(36) NOT NULL,
+              created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (id),
+              UNIQUE (form_id, member_id)
+            )
         ");
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_lfa_form ON lead_form_assignments (form_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_lfa_member ON lead_form_assignments (member_id)');
     } catch (Throwable $ignored) {
     }
     $done = true;
 }
 
 /**
- * Resolve lead_form IDs for auto-assign:
- * - Platform members (no org): global active `default` AND global active `normal` (both existing system forms).
- * - Syncpedia org members: same as platform (default + normal globals).
- * - Other org members: active `normal` preferring org row, else global (matches Form Management rules).
+ * Resolve lead_form IDs for auto-assign on new sales members.
+ * Built-in global forms were removed; assign forms explicitly in Form Management.
  *
  * @return string[] distinct form UUIDs
  */
 function lfResolveAutoAssignLeadFormIds(PDO $db, ?string $memberOrg): array {
-    $ids = [];
-    try {
-        $effectiveOrg = $memberOrg;
-        if ($effectiveOrg !== null && $effectiveOrg !== '') {
-            $chk = $db->prepare('SELECT LOWER(TRIM(slug)) AS s FROM organizations WHERE id = ? LIMIT 1');
-            $chk->execute([$effectiveOrg]);
-            $orow = $chk->fetch(PDO::FETCH_ASSOC);
-            if (($orow['s'] ?? '') === syncpediaPlatformOrgSlug()) {
-                $effectiveOrg = null;
-            }
-        }
-
-        if ($effectiveOrg === null || $effectiveOrg === '') {
-            foreach (['default', 'normal'] as $slug) {
-                $st = $db->prepare("SELECT id FROM lead_forms WHERE slug = ? AND is_active = 1 AND org_id IS NULL LIMIT 1");
-                $st->execute([$slug]);
-                $row = $st->fetch(PDO::FETCH_ASSOC);
-                if (!empty($row['id'])) {
-                    $fid = (string)$row['id'];
-                    if (!in_array($fid, $ids, true)) {
-                        $ids[] = $fid;
-                    }
-                }
-            }
-        } else {
-            $st = $db->prepare("SELECT id FROM lead_forms WHERE slug = 'normal' AND is_active = 1 AND (org_id IS NULL OR org_id = ?) ORDER BY (org_id <=> ?) DESC LIMIT 1");
-            $st->execute([$effectiveOrg, $effectiveOrg]);
-            $row = $st->fetch(PDO::FETCH_ASSOC);
-            if (!empty($row['id'])) {
-                $ids[] = (string)$row['id'];
-            }
-        }
-    } catch (Throwable $ignored) {
-    }
-
-    return $ids;
+    return [];
 }
 
 /** Upsert lead_form_assignments for default/normal rules. Returns number of rows touched. */
@@ -2027,10 +2112,16 @@ function assignLeadFormsToSalesMember(PDO $db, string $assignedByUserId, string 
     $n = 0;
     foreach ($formIds as $fid) {
         try {
+            $upsert = syncpediaUpsertClause(
+                $db,
+                '(form_id, member_id)',
+                ['assigned_by = EXCLUDED.assigned_by'],
+                ['`assigned_by` = VALUES(`assigned_by`)'],
+            );
             $ins = $db->prepare("
                 INSERT INTO lead_form_assignments (id, form_id, member_id, assigned_by)
                 VALUES (?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE assigned_by = VALUES(assigned_by)
+                {$upsert}
             ");
             $ins->execute([generateUUID(), $fid, $memberId, $assignedByUserId]);
             $n++;
@@ -2279,6 +2370,418 @@ function saveLeadResumeUpload(?array $file): ?string {
     return '/uploads/resumes/' . $filename;
 }
 
+/** Broader file types for public form uploads (resume, certificates, images). */
+function formLeadAttachmentAllowedMimeTypes(): array {
+    return array_merge(leadResumeAllowedMimeTypes(), [
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'text/plain',
+    ]);
+}
+
+/**
+ * Store a public-form attachment under uploads/form_leads/.
+ *
+ * @return string|null Relative URL path e.g. /uploads/form_leads/xxx.pdf
+ */
+function saveFormLeadAttachmentUpload(?array $file): ?string {
+    if ($file === null || !isset($file['error'])) {
+        return null;
+    }
+    if ((int) $file['error'] === UPLOAD_ERR_NO_FILE) {
+        return null;
+    }
+    if ((int) $file['error'] !== UPLOAD_ERR_OK) {
+        respond(['error' => 'File upload failed'], 400);
+    }
+    $tmp = $file['tmp_name'] ?? '';
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        respond(['error' => 'Invalid file upload'], 400);
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size > leadResumeMaxBytes()) {
+        respond(['error' => 'File exceeds 5MB limit'], 400);
+    }
+    $mime = '';
+    if (class_exists('finfo')) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($tmp) ?: '';
+    }
+    if ($mime === '' || !in_array($mime, formLeadAttachmentAllowedMimeTypes(), true)) {
+        respond(['error' => 'File must be PDF, Word, JPG, PNG, or plain text'], 400);
+    }
+    $uploadParent = __DIR__ . '/../uploads/form_leads';
+    if (!is_dir($uploadParent)) {
+        if (!mkdir($uploadParent, 0755, true)) {
+            respond(['error' => 'Cannot create upload directory'], 500);
+        }
+    }
+    $baseDir = realpath($uploadParent);
+    if ($baseDir === false) {
+        respond(['error' => 'Upload directory unavailable'], 500);
+    }
+    $orig = basename((string) ($file['name'] ?? 'file'));
+    $orig = preg_replace('/[^a-zA-Z0-9._-]/', '_', $orig) ?: 'file';
+    $filename = uniqid('', true) . '_' . $orig;
+    $destFs = $baseDir . DIRECTORY_SEPARATOR . $filename;
+    if (!move_uploaded_file($tmp, $destFs)) {
+        respond(['error' => 'Failed to save file'], 500);
+    }
+    return '/uploads/form_leads/' . $filename;
+}
+
+/** Allow custom form sources like form_my-slug (legacy ENUM breaks inserts). */
+function ensureLeadsSourceColumnVarchar(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        $db->exec("ALTER TABLE leads MODIFY COLUMN source VARCHAR(100) DEFAULT 'other'");
+    } catch (PDOException $e) {
+        /* column may already be VARCHAR */
+    }
+    $done = true;
+}
+
+/** Ensure leads.resume_path exists for public forms and CRM uploads. */
+function ensureLeadsResumeColumn(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        $db->exec('ALTER TABLE leads ADD COLUMN resume_path VARCHAR(500) DEFAULT NULL AFTER notes');
+    } catch (PDOException $e) {
+        /* duplicate column / already exists */
+    }
+    $done = true;
+}
+
+/** @return array<string,mixed>|null */
+function publicLeadFetchFormBySlug(PDO $db, string $slug): ?array {
+    $slug = trim($slug);
+    if ($slug === '') {
+        return null;
+    }
+    $stmt = $db->prepare(
+        'SELECT lf.id, lf.name, lf.slug, lf.description, lf.fields_json, lf.meta_json, lf.is_active, lf.org_id, lf.created_by,
+                o.name AS org_name
+         FROM lead_forms lf
+         LEFT JOIN organizations o ON o.id = lf.org_id
+         WHERE LOWER(TRIM(lf.slug)) = LOWER(TRIM(?)) AND lf.is_active = 1
+         ORDER BY (lf.org_id IS NOT NULL) DESC, lf.updated_at DESC LIMIT 1',
+    );
+    $stmt->execute([$slug]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
+}
+
+/** @return array<int,array<string,mixed>> */
+function publicFormBuilderQuestionsFromMeta(?array $meta): array {
+    if (!is_array($meta)) {
+        return [];
+    }
+    $out = [];
+    $flat = $meta['builder_questions'] ?? [];
+    if (is_array($flat)) {
+        foreach ($flat as $q) {
+            if (is_array($q)) {
+                $out[] = $q;
+            }
+        }
+    }
+    $sections = $meta['sections'] ?? [];
+    if (is_array($sections)) {
+        foreach ($sections as $sec) {
+            if (!is_array($sec)) {
+                continue;
+            }
+            $qs = $sec['questions'] ?? [];
+            if (!is_array($qs)) {
+                continue;
+            }
+            foreach ($qs as $q) {
+                if (is_array($q)) {
+                    $out[] = $q;
+                }
+            }
+        }
+    }
+    return $out;
+}
+
+/** True when the form collects a resume (file upload or resume/CV field). */
+function publicFormHasResumeField(?array $formRow): bool {
+    if (!is_array($formRow)) {
+        return false;
+    }
+    $meta = [];
+    if (!empty($formRow['meta_json'])) {
+        if (is_array($formRow['meta_json'])) {
+            $meta = $formRow['meta_json'];
+        } elseif (is_string($formRow['meta_json'])) {
+            $tmp = json_decode($formRow['meta_json'], true);
+            if (is_array($tmp)) {
+                $meta = $tmp;
+            }
+        }
+    }
+    foreach (publicFormBuilderQuestionsFromMeta($meta) as $q) {
+        $type = strtolower(trim((string) ($q['type'] ?? '')));
+        $title = (string) ($q['title'] ?? '');
+        if ($type === 'file_upload' && preg_match('/resume|cv|curriculum/i', $title)) {
+            return true;
+        }
+        if (preg_match('/resume|cv|curriculum/i', $title)) {
+            return true;
+        }
+    }
+    $fields = $formRow['fields_json'] ?? [];
+    if (is_string($fields)) {
+        $fields = json_decode($fields, true) ?: [];
+    }
+    if (is_array($fields)) {
+        foreach ($fields as $f) {
+            if (!is_array($f)) {
+                continue;
+            }
+            $label = (string) ($f['label'] ?? $f['key'] ?? '');
+            if (preg_match('/resume|cv/i', $label)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/** Generate plaintext form external API key (shown once). */
+function formExternalApiKeyGenerateRaw(): string {
+    $raw = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
+    return 'frm_' . $raw;
+}
+
+/** Hash plaintext form external API key for DB/meta storage. */
+function formExternalApiKeyHash(string $raw): string {
+    return password_hash($raw, PASSWORD_DEFAULT);
+}
+
+/** Verify plaintext form external API key against stored hash. */
+function formExternalApiKeyVerify(string $provided, string $storedHash): bool {
+    $provided = trim($provided);
+    $storedHash = trim($storedHash);
+    if ($provided === '' || $storedHash === '') {
+        return false;
+    }
+    return password_verify($provided, $storedHash);
+}
+
+/** Read explicit lead destination from form meta_json (`form_leads` | `hr_leads`). */
+function publicFormLeadDestination(?array $formRow): ?string {
+    if (!is_array($formRow)) {
+        return null;
+    }
+    $meta = [];
+    if (!empty($formRow['meta_json'])) {
+        if (is_array($formRow['meta_json'])) {
+            $meta = $formRow['meta_json'];
+        } elseif (is_string($formRow['meta_json'])) {
+            $tmp = json_decode($formRow['meta_json'], true);
+            if (is_array($tmp)) {
+                $meta = $tmp;
+            }
+        }
+    }
+    $dest = strtolower(trim((string) ($meta['lead_destination'] ?? '')));
+    if ($dest === 'hr_leads' || $dest === 'form_leads') {
+        return $dest;
+    }
+    return null;
+}
+
+/** Resume / job-application public forms → HR Leads (not Form Leads). */
+function publicLeadShouldRouteToHr(
+    ?array $formRow,
+    string $formSlug,
+    string $source,
+    ?string $resumePath,
+    array $attachmentPaths,
+): bool {
+    $configured = publicFormLeadDestination($formRow);
+    if ($configured === 'hr_leads') {
+        return true;
+    }
+    if ($configured === 'form_leads') {
+        return false;
+    }
+    if ($resumePath !== null && $resumePath !== '') {
+        return true;
+    }
+    foreach (array_keys($attachmentPaths) as $key) {
+        if (preg_match('/resume|cv|curriculum/i', (string) $key)) {
+            return true;
+        }
+    }
+    if (publicFormHasResumeField($formRow)) {
+        return true;
+    }
+    $formName = is_array($formRow) ? trim((string) ($formRow['name'] ?? '')) : '';
+    $formSlugDb = is_array($formRow) ? trim((string) ($formRow['slug'] ?? '')) : '';
+    $haystack = strtolower(trim("$formSlug $formSlugDb $formName $source"));
+    if (preg_match('/job[-_\s]?application|resume|curriculum|hiring|career|vacancy|\bcv\b/', $haystack)) {
+        return true;
+    }
+    return false;
+}
+
+/** Pick an HR user to receive public resume-form submissions (same org as the form only). */
+function resolveHrUserIdForPublicForm(PDO $db, ?string $orgId, ?string $formCreatorId): ?string {
+    $orgId = is_string($orgId) ? trim($orgId) : '';
+    if ($orgId === '') {
+        $orgId = null;
+    }
+
+    $userInOrg = static function (?string $userId, ?string $requiredRole = null) use ($db, $orgId): ?string {
+        $uid = is_string($userId) ? trim($userId) : '';
+        if ($uid === '') {
+            return null;
+        }
+        $st = $db->prepare('SELECT id, role, org_id FROM users WHERE id = ? AND is_active = 1 LIMIT 1');
+        $st->execute([$uid]);
+        $u = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$u || empty($u['id'])) {
+            return null;
+        }
+        if ($requiredRole !== null) {
+            $roleKey = syncpediaNormalizeRoleKey((string) ($u['role'] ?? ''));
+            if ($roleKey !== syncpediaNormalizeRoleKey($requiredRole)) {
+                return null;
+            }
+        }
+        if ($orgId !== null) {
+            $userOrg = trim((string) ($u['org_id'] ?? ''));
+            if ($userOrg !== '' && $userOrg !== $orgId) {
+                return null;
+            }
+        }
+        return (string) $u['id'];
+    };
+
+    if ($formCreatorId !== null && $formCreatorId !== '') {
+        $hrCreator = $userInOrg($formCreatorId, 'hr');
+        if ($hrCreator !== null) {
+            return $hrCreator;
+        }
+    }
+    if ($orgId !== null) {
+        $st = $db->prepare(
+            "SELECT id FROM users WHERE org_id = ? AND is_active = 1 AND LOWER(TRIM(role)) = 'hr' ORDER BY created_at ASC LIMIT 1",
+        );
+        $st->execute([$orgId]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if ($row && !empty($row['id'])) {
+            return (string) $row['id'];
+        }
+    }
+    // No HR user yet — form creator owns the row until admin assigns to HR.
+    if ($formCreatorId !== null && $formCreatorId !== '') {
+        $creator = $userInOrg($formCreatorId);
+        if ($creator !== null) {
+            return $creator;
+        }
+    }
+    if ($orgId !== null) {
+        $st = $db->prepare(
+            "SELECT id FROM users WHERE org_id = ? AND is_active = 1 AND LOWER(TRIM(role)) IN ('admin','super_admin','org') ORDER BY created_at ASC LIMIT 1",
+        );
+        $st->execute([$orgId]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if ($row && !empty($row['id'])) {
+            return (string) $row['id'];
+        }
+    }
+    return null;
+}
+
+/** Extract phone for hr_leads (phone column is NOT NULL). */
+function publicFormResolvePhone(?string $phone, array $extraAnswers): string {
+    $phone = trim((string) ($phone ?? ''));
+    if ($phone !== '') {
+        return $phone;
+    }
+    foreach ($extraAnswers as $key => $val) {
+        if (!is_scalar($val)) {
+            continue;
+        }
+        $k = strtolower((string) $key);
+        $s = trim((string) $val);
+        if ($s === '') {
+            continue;
+        }
+        if (preg_match('/phone|mobile|contact|whatsapp|tel/i', $k)) {
+            return $s;
+        }
+    }
+    foreach ($extraAnswers as $val) {
+        if (!is_scalar($val)) {
+            continue;
+        }
+        $digits = preg_replace('/[^\d+]/', '', (string) $val);
+        if (strlen($digits) >= 10) {
+            return trim((string) $val);
+        }
+    }
+    return '0000000000';
+}
+
+function ensureHrLeadsTableExists(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    if (syncpediaSkipRuntimeDdl($db)) {
+        $done = true;
+        return;
+    }
+    $sql = "CREATE TABLE IF NOT EXISTS hr_leads (
+      id SERIAL PRIMARY KEY,
+      hr_id CHAR(36) NOT NULL,
+      assigned_by CHAR(36) DEFAULT NULL,
+      full_name VARCHAR(255) NOT NULL,
+      phone VARCHAR(20) NOT NULL,
+      email VARCHAR(255) DEFAULT NULL,
+      source VARCHAR(100) DEFAULT NULL,
+      status VARCHAR(30) DEFAULT 'new',
+      priority VARCHAR(20) DEFAULT 'medium',
+      notes TEXT DEFAULT NULL,
+      resume_path VARCHAR(500) DEFAULT NULL,
+      follow_up_date DATE DEFAULT NULL,
+      is_assigned BOOLEAN DEFAULT FALSE,
+      org_id CHAR(36) DEFAULT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      deleted_at TIMESTAMP NULL DEFAULT NULL,
+      FOREIGN KEY (hr_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL,
+      CONSTRAINT fk_hr_leads_org FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE SET NULL
+    )";
+    $db->exec($sql);
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_hr_id ON hr_leads (hr_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_status ON hr_leads (status)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_is_assigned ON hr_leads (is_assigned)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_created_at ON hr_leads (created_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_hr_leads_org_id ON hr_leads (org_id)');
+    try {
+        if (!syncpediaColumnExists($db, 'hr_leads', 'resume_path')) {
+            $db->exec('ALTER TABLE hr_leads ADD COLUMN resume_path VARCHAR(500) DEFAULT NULL');
+        }
+    } catch (PDOException $e) {
+        /* already exists */
+    }
+    $done = true;
+}
+
 /** Remove a previously stored resume file from disk (safe path under uploads/resumes/). */
 function deleteLeadResumeIfExists(?string $relativePath): void {
     if ($relativePath === null || $relativePath === '') {
@@ -2331,7 +2834,7 @@ function callRecordingMaxBytes(): int {
  */
 function ensureUploadDirectoriesExist(): void {
     $parent = __DIR__ . '/../uploads';
-    foreach (['resumes', 'call_recordings'] as $sub) {
+    foreach (['resumes', 'call_recordings', 'form_leads'] as $sub) {
         $dir = $parent . DIRECTORY_SEPARATOR . $sub;
         if (!is_dir($dir)) {
             @mkdir($dir, 0755, true);

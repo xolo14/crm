@@ -6,7 +6,7 @@ export type SubStatus = 'pending' | 'passed' | 'failed';
 
 export interface TrainingBlock {
   achieved: number;
-  target: 30000;
+  target: number;
   /** Training is unpaid per business rules. */
   isPaid: false;
   status: SubStatus;
@@ -14,19 +14,19 @@ export interface TrainingBlock {
 
 export interface Month1Block {
   achieved: number;
-  target: 160000;
+  target: number;
   status: 'pending' | 'fixed_eligible' | 'performance';
 }
 
 export interface Month2First10 {
   achieved: number;
-  target: 50000;
+  target: number;
   status: SubStatus;
 }
 
 export interface Month2Next15 {
   achieved: number;
-  target: 80000;
+  target: number;
   status: SubStatus;
 }
 
@@ -49,7 +49,7 @@ export type Month3Status = 'pending' | 'confirmed' | 'probation' | 'performance'
 
 export interface Month3Block {
   achieved: number;
-  target: 160000;
+  target: number;
   status: Month3Status;
 }
 

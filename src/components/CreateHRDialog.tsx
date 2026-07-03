@@ -30,8 +30,18 @@ export default function CreateHRDialog({ onSuccess }: { onSuccess?: () => void }
 
   const mutation = useMutation({
     mutationFn: (payload: FormValues) => api.hr.create(payload),
-    onSuccess: () => {
-      toast({ title: "HR account created" });
+    onSuccess: (data: { email_sent?: boolean; email_error?: string }) => {
+      if (data?.email_sent) {
+        toast({ title: "HR account created", description: "Welcome email with login credentials sent from support@syncpedia.in." });
+      } else if (data?.email_error) {
+        toast({
+          variant: "destructive",
+          title: "HR account created",
+          description: `Email could not be sent: ${data.email_error}`,
+        });
+      } else {
+        toast({ title: "HR account created" });
+      }
       queryClient.invalidateQueries({ queryKey: ["hr", "list"] });
       onSuccess?.();
       setOpen(false);

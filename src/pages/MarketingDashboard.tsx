@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
 import { api } from '@/lib/api';
+import { phpList, inDateRange } from '@/lib/phpList';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -165,66 +165,37 @@ export default function MarketingDashboard() {
       setMembers(membersData);
 
       // Fetch email campaigns with date filter
-      let campaignQuery = supabase
-        .from('email_campaigns')
-        .select('*')
-        .gte('created_at', from.toISOString())
-        .lte('created_at', to.toISOString())
-        .order('created_at', { ascending: false });
-
+      let campaignsData = phpList(await api.marketing.emailCampaigns());
+      campaignsData = campaignsData.filter((c) => inDateRange(c, from, to));
       if (memberFilter !== 'all') {
-        const member = (membersData || []).find(m => m.id === memberFilter);
+        const member = (membersData || []).find((m) => m.id === memberFilter);
         if (member) {
           const createdByIds = [member.id, member.user_id].filter(Boolean);
-          if (createdByIds.length === 1) {
-            campaignQuery = campaignQuery.eq('created_by', createdByIds[0] as string);
-          } else {
-            campaignQuery = campaignQuery.in('created_by', createdByIds as string[]);
-          }
+          campaignsData = campaignsData.filter((c) => createdByIds.includes(c.created_by));
         }
       }
+      setCampaigns(campaignsData);
 
-      const { data: campaignsData } = await campaignQuery;
-      setCampaigns(campaignsData || []);
-
-      // Fetch WhatsApp campaigns
-      let waQuery = supabase.from('whatsapp_campaigns').select('*')
-        .gte('created_at', from.toISOString()).lte('created_at', to.toISOString())
-        .order('created_at', { ascending: false });
+      let waData = phpList(await api.marketing.whatsappCampaigns());
+      waData = waData.filter((c) => inDateRange(c, from, to));
       if (memberFilter !== 'all') {
-        const member = (membersData || []).find(m => m.id === memberFilter);
+        const member = (membersData || []).find((m) => m.id === memberFilter);
         if (member) {
           const createdByIds = [member.id, member.user_id].filter(Boolean);
-          if (createdByIds.length === 1) {
-            waQuery = waQuery.eq('created_by', createdByIds[0] as string);
-          } else {
-            waQuery = waQuery.in('created_by', createdByIds as string[]);
-          }
+          waData = waData.filter((c) => createdByIds.includes(c.created_by));
         }
       }
-      const { data: waData } = await waQuery;
-      setWaCampaigns(waData || []);
+      setWaCampaigns(waData);
 
-      // Fetch sends for email campaigns
-      if (campaignsData && campaignsData.length > 0) {
-        const campaignIds = campaignsData.map(c => c.id);
-        const { data: sendsData } = await supabase
-          .from('email_sends')
-          .select('*')
-          .in('campaign_id', campaignIds)
-          .order('created_at', { ascending: false })
-          .limit(500);
-        setSends(sendsData || []);
+      if (campaignsData.length > 0) {
+        const sendsRes = await api.marketing.emailSends(campaignsData.map((c) => c.id));
+        setSends(phpList(sendsRes));
       } else {
         setSends([]);
       }
 
-      // Fetch unassigned form leads (referred_by is set, but assigned_to is null)
-      const { data: leadsData } = await supabase.from('leads').select('*')
-        .not('referred_by', 'is', null)
-        .order('created_at', { ascending: false })
-        .limit(500);
-      setFormLeads(leadsData || []);
+      const leadsRes = await api.leads.list({ form_leads: true });
+      setFormLeads(phpList(leadsRes));
 
       // Fetch lead assignment map for cases where assigned_to isn't directly set
       const assignmentRes = await api.leadAssignments.list();
@@ -263,7 +234,7 @@ export default function MarketingDashboard() {
         phone: newMember.phone || null,
         role: 'marketing',
         password,
-      });
+      }) as { id?: string; email_sent?: boolean; email_error?: string };
 
       // Optimistic UI update so member appears instantly.
       const createdMember: MarketingMember = {
@@ -282,7 +253,17 @@ export default function MarketingDashboard() {
       });
 
       setGeneratedCredentials({ email: newMember.email, password });
-      toast({ title: 'Marketing member created!' });
+      if (createRes?.email_sent) {
+        toast({ title: 'Marketing member created!', description: 'Welcome email sent with login credentials.' });
+      } else if (createRes?.email_error) {
+        toast({
+          variant: 'destructive',
+          title: 'Marketing member created',
+          description: `Welcome email failed: ${createRes.email_error}`,
+        });
+      } else {
+        toast({ title: 'Marketing member created!' });
+      }
       // Immediate + delayed sync to handle server/db propagation delay.
       fetchData();
       setTimeout(() => { fetchData(); }, 1200);
@@ -335,7 +316,7 @@ export default function MarketingDashboard() {
       if (!member) throw new Error('Member not found');
       for (const leadId of selectedLeadIds) {
         // Keep legacy compatibility field
-        await supabase.from('leads').update({ assigned_to: member.id } as any).eq('id', leadId);
+        await api.leads.update(leadId, { assigned_to: member.user_id || member.id });
         // Keep assignment relation in sync for reporting screens
         const existing = await api.leadAssignments.list(leadId);
         for (const a of existing?.data || []) {

@@ -1,6 +1,5 @@
 import {
   Building2,
-  FileText,
   Globe,
   ListTree,
   Lock,
@@ -30,7 +29,6 @@ const navGroups = [
     items: [
       { id: "pipeline-stages", name: "Pipeline Stages", icon: ListTree },
       { id: "tags-labels", name: "Tags & Labels", icon: Tags },
-      { id: "custom-fields", name: "Custom Fields", icon: FileText },
     ],
   },
   {

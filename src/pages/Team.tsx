@@ -132,7 +132,9 @@ export default function Team() {
   const [selectedOrgId, setSelectedOrgId] = useState<string>('all');
   const [addOpen, setAddOpen] = useState(false);
   const [addReviewOpen, setAddReviewOpen] = useState(false);
+  const [addMemberLoading, setAddMemberLoading] = useState(false);
   const [sendWelcomeLoading, setSendWelcomeLoading] = useState(false);
+  const [createdMemberId, setCreatedMemberId] = useState<string | null>(null);
   const [editingMember, setEditingMember] = useState<TeamMember | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -275,10 +277,43 @@ export default function Team() {
 
   const openAddMemberDialog = () => {
     setAddReviewOpen(false);
+    setCreatedMemberId(null);
     setAddOpen(true);
   };
 
-  const goToAddMemberReview = () => {
+  const resetNewMemberForm = () => {
+    setNewMember({ full_name: '', email: '', phone: '', role: 'sales_representative', password: 'Welcome@123', reports_to_id: '' });
+    setCreatedMemberId(null);
+  };
+
+  const closeAddMemberFlow = () => {
+    setAddOpen(false);
+    setAddReviewOpen(false);
+    setAddMemberLoading(false);
+    setSendWelcomeLoading(false);
+    resetNewMemberForm();
+  };
+
+  const buildCreateMemberPayload = (): Record<string, unknown> => {
+    const payload: Record<string, unknown> = {
+      full_name: newMember.full_name.trim(),
+      email: newMember.email.trim(),
+      phone: newMember.phone.trim() || undefined,
+      role: newMember.role,
+      password: newMember.password,
+      send_welcome_email: false,
+    };
+    if (isL1OperationalRole(newMember.role)) {
+      if (isManagerViewer && user?.id) {
+        payload.reports_to_id = user.id;
+      } else if (newMember.reports_to_id) {
+        payload.reports_to_id = newMember.reports_to_id;
+      }
+    }
+    return payload;
+  };
+
+  const handleAddMember = async () => {
     const name = newMember.full_name.trim();
     const em = newMember.email.trim();
     if (!name || !em) {
@@ -289,62 +324,65 @@ export default function Team() {
       toast({ variant: 'destructive', title: 'Invalid email', description: 'Enter a valid email address.' });
       return;
     }
-    setAddOpen(false);
-    setAddReviewOpen(true);
+    setAddMemberLoading(true);
+    try {
+      const data = (await api.team.create(buildCreateMemberPayload())) as { id?: string };
+      const memberId = typeof data?.id === 'string' ? data.id : null;
+      setCreatedMemberId(memberId);
+      toast({
+        title: 'Member added',
+        description: `${em} was added to your team. You can send login credentials by email on the next step.`,
+      });
+      setAddOpen(false);
+      setAddReviewOpen(true);
+      void fetchTeam();
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Error', description: err.message });
+    } finally {
+      setAddMemberLoading(false);
+    }
   };
 
-  const closeAddMemberFlow = () => {
-    setAddOpen(false);
-    setAddReviewOpen(false);
-    setSendWelcomeLoading(false);
-  };
-
-  const handleSendWelcomeAndCreate = async () => {
-    if (!newMember.full_name.trim() || !newMember.email.trim()) return;
+  const handleSendWelcomeEmail = async () => {
+    if (!createdMemberId) {
+      toast({ variant: 'destructive', title: 'Cannot send email', description: 'Member was not created. Close and try again.' });
+      return;
+    }
     setSendWelcomeLoading(true);
     try {
-      const payload: Record<string, unknown> = {
-        full_name: newMember.full_name.trim(),
-        email: newMember.email.trim(),
-        phone: newMember.phone.trim() || undefined,
-        role: newMember.role,
+      const data = (await api.team.sendWelcomeEmail({
+        user_id: createdMemberId,
         password: newMember.password,
-        send_welcome_email: true,
-      };
-      if (isL1OperationalRole(newMember.role)) {
-        if (isManagerViewer && user?.id) {
-          payload.reports_to_id = user.id;
-        } else if (newMember.reports_to_id) {
-          payload.reports_to_id = newMember.reports_to_id;
-        }
-      }
-      const data = (await api.team.create(payload)) as {
-        default_password?: string;
-        email_sent?: boolean;
-        email_error?: string;
-      };
+      })) as { email_sent?: boolean; email_error?: string };
       if (data.email_sent) {
         toast({
-          title: 'Member added',
-          description: `Welcome email sent to ${newMember.email.trim()} from support@syncpedia.in (or your SYNCPIEDIA_MAIL_FROM address).`,
+          title: 'Welcome email sent',
+          description: `Login credentials sent to ${newMember.email.trim()} from support@syncpedia.in (or your configured mail From address).`,
         });
       } else {
         toast({
-          title: 'Member added',
+          title: 'Email not sent',
           description: data.email_error
-            ? `Account created but email could not be sent: ${data.email_error}`
-            : 'Account created. Configure server mail to send welcome emails.',
-          variant: data.email_error ? 'destructive' : 'default',
+            ? data.email_error
+            : 'Configure server mail to send welcome emails.',
+          variant: 'destructive',
         });
+        return;
       }
-      setNewMember({ full_name: '', email: '', phone: '', role: 'sales_representative', password: 'Welcome@123', reports_to_id: '' });
       closeAddMemberFlow();
-      fetchTeam();
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
     } finally {
       setSendWelcomeLoading(false);
     }
+  };
+
+  const handleSkipWelcomeEmail = () => {
+    toast({
+      title: 'Member saved',
+      description: `${newMember.email.trim()} is on your team. You can share login credentials manually.`,
+    });
+    closeAddMemberFlow();
   };
 
   const handleEdit = async () => {
@@ -758,14 +796,15 @@ export default function Team() {
               </p>
             )}
             <p className="text-xs text-muted-foreground">
-              Next step: review details, then send a welcome email with login credentials from support@syncpedia.in (or your configured mail From address).
+              The member is added to your team immediately. On the next step you can optionally email login credentials from support@syncpedia.in.
             </p>
           </div>
           <DialogFooter className="flex-col sm:flex-row gap-2">
-            <Button variant="outline" onClick={() => setAddOpen(false)}>
+            <Button variant="outline" onClick={() => setAddOpen(false)} disabled={addMemberLoading}>
               Cancel
             </Button>
-            <Button onClick={goToAddMemberReview} disabled={!newMember.full_name?.trim() || !newMember.email?.trim()}>
+            <Button onClick={() => void handleAddMember()} disabled={addMemberLoading || !newMember.full_name?.trim() || !newMember.email?.trim()}>
+              {addMemberLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
               Add Member
             </Button>
           </DialogFooter>
@@ -783,10 +822,10 @@ export default function Team() {
       >
         <DialogContent className="max-w-[95vw] sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Review & email</DialogTitle>
+            <DialogTitle>Send welcome email</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground -mt-1">
-            Confirm the details below. Sending the email creates the account and delivers login credentials to the member.
+            This member is already on your team. Send login credentials by email, or skip and share them manually.
           </p>
           <div className="rounded-lg border border-border/80 bg-muted/20 px-4 py-3 space-y-3 text-sm">
             <div className="flex justify-between gap-4">
@@ -829,18 +868,15 @@ export default function Team() {
               type="button"
               variant="outline"
               disabled={sendWelcomeLoading}
-              onClick={() => {
-                setAddReviewOpen(false);
-                setAddOpen(true);
-              }}
+              onClick={handleSkipWelcomeEmail}
             >
-              Back
+              Skip for now
             </Button>
             <Button
               type="button"
               className="gap-2 bg-[#2ed573] text-[#0f2318] hover:bg-[#26c968]"
-              disabled={sendWelcomeLoading}
-              onClick={() => void handleSendWelcomeAndCreate()}
+              disabled={sendWelcomeLoading || !createdMemberId}
+              onClick={() => void handleSendWelcomeEmail()}
             >
               {sendWelcomeLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               Send mail

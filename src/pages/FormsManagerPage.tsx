@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { Link } from "react-router-dom";
 import { DndContext, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { PublicFormShell, builderBrandFromState } from "@/components/forms/PublicFormShell";
+import { PublicFormFields } from "@/components/forms/PublicFormFields";
+import { buildFormSections } from "@/components/forms/formBuilderTypes";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
@@ -15,9 +19,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, Send } from "lucide-react";
+import { Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, Send, Briefcase, UserRound } from "lucide-react";
+import { normalizeFormColor, parseFormMetaJson } from "@/components/forms/publicFormTypes";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+
+type LeadDestination = "form_leads" | "hr_leads";
+
+function formLeadDestinationFromMeta(meta: ReturnType<typeof parseFormMetaJson>): LeadDestination {
+  const dest = String(meta?.lead_destination || "").trim().toLowerCase();
+  return dest === "hr_leads" ? "hr_leads" : "form_leads";
+}
 
 interface LeadForm {
   id: string;
@@ -30,6 +43,8 @@ interface LeadForm {
   assigned_count?: number;
   created_at?: string;
   created_by?: string | null;
+  org_id?: string | null;
+  org_name?: string | null;
   meta_json?: {
     company_name?: string;
     logo_url?: string;
@@ -44,6 +59,7 @@ interface LeadForm {
     shuffle_questions?: boolean;
     confirmation_message?: string;
     is_quiz?: boolean;
+    lead_destination?: LeadDestination;
   };
 }
 
@@ -117,6 +133,7 @@ interface FormBuilderState {
   slug: string;
   companyName: string;
   companyLogoUrl: string;
+  headerImageUrl: string;
   formBg: string;
   fieldBg: string;
   textColor: string;
@@ -129,7 +146,14 @@ interface FormBuilderState {
   confirmationMessage: string;
   isQuiz: boolean;
   accentColor: string;
+  fieldBorderColor: string;
+  fieldBorderWidth: number;
+  sectionBorderColor: string;
+  sectionBorderWidth: number;
+  descriptionColor: string;
+  companyNameFontSize: number;
   questions: Question[];
+  leadDestination: LeadDestination;
 }
 
 const PRIMARY_GREEN = "#1D9E75";
@@ -199,11 +223,12 @@ const INITIAL_BUILDER: FormBuilderState = {
   title: "Untitled Form",
   description: "",
   slug: "",
-  companyName: "Syncpedia",
+  companyName: "",
   companyLogoUrl: "",
-  formBg: "#0A1410",
-  fieldBg: "#000000",
-  textColor: "#ffffff",
+  headerImageUrl: "",
+  formBg: "#ffffff",
+  fieldBg: "#ffffff",
+  textColor: "#111827",
   isActive: true,
   collectEmail: false,
   allowMultipleResponses: true,
@@ -213,7 +238,14 @@ const INITIAL_BUILDER: FormBuilderState = {
   confirmationMessage: "Your response has been recorded.",
   isQuiz: false,
   accentColor: PRIMARY_GREEN,
+  fieldBorderColor: "#000000",
+  fieldBorderWidth: 1,
+  sectionBorderColor: "#000000",
+  sectionBorderWidth: 2,
+  descriptionColor: "#6b7280",
+  companyNameFontSize: 17,
   questions: DEFAULT_BUILDER_QUESTIONS(),
+  leadDestination: "form_leads",
 };
 
 type BuilderAction =
@@ -275,7 +307,12 @@ function toLegacyFields(questions: Question[]): FormField[] {
   return questions
     .filter((q) => q.type !== "section_break")
     .map((q, idx) => {
-      const keyBase = q.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `field_${idx + 1}`;
+      const keyBase =
+        q.validation?.kind === "regex" && q.validation?.value === "email"
+          ? "email"
+          : /full\s*name/i.test(q.title || "")
+            ? "name"
+            : q.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `field_${idx + 1}`;
       const typeMap: Record<QuestionType, FieldType> = {
         short_answer:
           q.validation?.kind === "regex" && q.validation?.value === "email"
@@ -418,15 +455,15 @@ function makeSlug(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/** Platform-global Syncpedia forms (org_id NULL): slugs default + normal. */
-function isGlobalBuiltinLeadForm(form: LeadForm): boolean {
+/** Retired global Syncpedia capture form (slug default, no org). */
+function isRetiredGlobalBuiltinLeadForm(form: LeadForm): boolean {
   const s = String(form.slug || "").trim().toLowerCase();
   const org = String(form.org_id ?? "").trim();
   return (s === "default" || s === "normal") && org === "";
 }
 
 export default function FormsManagerPage() {
-  const { role, profile, user } = useAuth();
+  const { role, profile, user, organization } = useAuth();
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -453,6 +490,7 @@ export default function FormsManagerPage() {
   const [history, setHistory] = useState<FormBuilderState[]>([]);
   const [future, setFuture] = useState<FormBuilderState[]>([]);
   const [backfillRunning, setBackfillRunning] = useState(false);
+  const [destinationDialogOpen, setDestinationDialogOpen] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
 
   const canAssignForms = role === "super_admin" || role === "admin";
@@ -460,6 +498,8 @@ export default function FormsManagerPage() {
   const canAccess = canEditForms;
   const isSalesMarketing = role === "sales_marketing";
   const myReferralCode = String(profile?.referral_code ?? "").trim();
+
+  const formOrgName = editing?.org_name?.trim() || organization?.name?.trim() || "";
 
   const baseApplyUrl = useMemo(() => `${window.location.origin}/apply`, []);
 
@@ -474,7 +514,7 @@ export default function FormsManagerPage() {
     [baseApplyUrl, isSalesMarketing, myReferralCode],
   );
 
-  const tableColCount = canAssignForms ? 7 : 5;
+  const tableColCount = canAssignForms ? 8 : 6;
 
   const canEditFormRow = useCallback(
     (form: LeadForm) => {
@@ -499,18 +539,20 @@ export default function FormsManagerPage() {
     try {
       const [formsRes, teamRes] = await Promise.all([api.forms.list(), api.team.list()]);
       const rows = Array.isArray(formsRes) ? formsRes : (formsRes?.data || []);
-      const mapped: LeadForm[] = rows.map((row: any) => ({
-        ...row,
-        fields_json: Array.isArray(row?.fields_json) ? row.fields_json : [],
-        meta_json: row?.meta_json && typeof row.meta_json === "object" ? row.meta_json : {},
-        source: "custom",
-      }));
+      const mapped: LeadForm[] = rows
+        .map((row: any) => ({
+          ...row,
+          fields_json: Array.isArray(row?.fields_json) ? row.fields_json : [],
+          meta_json: parseFormMetaJson(row?.meta_json),
+          source: "custom",
+        }))
+        .filter((row: LeadForm) => !isRetiredGlobalBuiltinLeadForm(row));
       setForms(mapped);
       setTeamMembers(teamRes?.data || []);
       const assignmentPairs = await Promise.all(
         rows.map(async (row: any) => {
           const id = row?.id as string | undefined;
-          if (!id) return null as const;
+          if (!id) return null;
           const a = await api.forms.assignments(id);
           return [id, (a?.data || []) as FormAssignment[]] as const;
         })
@@ -537,7 +579,7 @@ export default function FormsManagerPage() {
       const s = typeof res?.users_skipped_no_matching_form === "number" ? res.users_skipped_no_matching_form : 0;
       toast({
         title: "Rep form links synced",
-        description: `${u} rep(s) updated, ${r} assignment row(s). ${s} skipped (no matching active default/normal form).`,
+        description: `${u} rep(s) updated, ${r} assignment row(s). ${s} skipped (no assignable form).`,
       });
       await bootstrap();
     } catch (error: any) {
@@ -552,8 +594,13 @@ export default function FormsManagerPage() {
   }
 
   function openCreate() {
+    setDestinationDialogOpen(true);
+  }
+
+  function startCreateWithDestination(leadDestination: LeadDestination) {
+    setDestinationDialogOpen(false);
     setEditing(null);
-    const next = { ...INITIAL_BUILDER, id: crypto.randomUUID() };
+    const next = { ...INITIAL_BUILDER, id: crypto.randomUUID(), leadDestination };
     dispatchBuilder({ type: "reset", next });
     setHistory([next]);
     setFuture([]);
@@ -564,7 +611,7 @@ export default function FormsManagerPage() {
 
   function openEdit(form: LeadForm) {
     setEditing(form);
-    const meta = form.meta_json || {};
+    const meta = parseFormMetaJson(form.meta_json);
     const questions = Array.isArray(meta.builder_questions) && meta.builder_questions.length
       ? meta.builder_questions
       : (Array.isArray(form.fields_json) ? form.fields_json.map(mapLegacyFieldToQuestion) : [NEW_QUESTION("short_answer")]);
@@ -573,11 +620,12 @@ export default function FormsManagerPage() {
       title: form.name || "Untitled Form",
       slug: form.slug || "",
       description: form.description || "",
-      companyName: meta.company_name || "Syncpedia",
-      companyLogoUrl: meta.logo_url || "",
-      formBg: meta.form_bg || "#0A1410",
-      fieldBg: meta.field_bg || "#000000",
-      textColor: meta.text_color || "#ffffff",
+      companyName: typeof meta.company_name === "string" ? meta.company_name : "",
+      companyLogoUrl: String(meta.logo_url || ""),
+      headerImageUrl: String(meta.header_image_url || ""),
+      formBg: normalizeFormColor(meta.form_bg, "#ffffff"),
+      fieldBg: normalizeFormColor(meta.field_bg, "#ffffff"),
+      textColor: normalizeFormColor(meta.text_color, "#111827"),
       isActive: toBool(form.is_active),
       collectEmail: !!meta.collect_email,
       allowMultipleResponses: meta.allow_multiple_responses !== false,
@@ -586,8 +634,15 @@ export default function FormsManagerPage() {
       shuffleQuestions: !!meta.shuffle_questions,
       confirmationMessage: String(meta.confirmation_message || "Your response has been recorded."),
       isQuiz: !!meta.is_quiz,
-      accentColor: PRIMARY_GREEN,
+      accentColor: normalizeFormColor(meta.accent_color, PRIMARY_GREEN),
+      fieldBorderColor: normalizeFormColor(meta.field_border_color, "#000000"),
+      fieldBorderWidth: Math.min(4, Math.max(1, Number(meta.field_border_width) || 1)),
+      sectionBorderColor: normalizeFormColor(meta.section_border_color, "#000000"),
+      sectionBorderWidth: Math.min(4, Math.max(1, Number(meta.section_border_width) || 2)),
+      descriptionColor: normalizeFormColor(meta.description_color, "#6b7280"),
+      companyNameFontSize: Math.min(48, Math.max(12, Number(meta.company_name_font_size) || 17)),
       questions,
+      leadDestination: formLeadDestinationFromMeta(meta),
     };
     dispatchBuilder({
       type: "reset",
@@ -619,7 +674,7 @@ export default function FormsManagerPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [builderOpen, builder, saveStatus]);
 
-  async function saveForm(publish = false) {
+  async function saveForm(publish = false, closeAfter = publish) {
     if (!builder.title.trim()) {
       setFormNameError("Form name is required");
       return;
@@ -635,11 +690,19 @@ export default function FormsManagerPage() {
         description: builder.description.trim() || null,
         fields_json: toLegacyFields(builder.questions),
         meta_json: {
-          company_name: builder.companyName.trim() || "Syncpedia",
+          company_name: builder.companyName.trim(),
           logo_url: builder.companyLogoUrl.trim() || "",
+          header_image_url: builder.headerImageUrl.trim() || "",
           form_bg: builder.formBg,
           field_bg: builder.fieldBg,
           text_color: builder.textColor,
+          accent_color: builder.accentColor,
+          field_border_color: builder.fieldBorderColor,
+          field_border_width: builder.fieldBorderWidth,
+          section_border_color: builder.sectionBorderColor,
+          section_border_width: builder.sectionBorderWidth,
+          description_color: builder.descriptionColor,
+          company_name_font_size: builder.companyNameFontSize,
           builder_questions: builder.questions,
           collect_email: builder.collectEmail,
           allow_multiple_responses: builder.allowMultipleResponses,
@@ -648,6 +711,7 @@ export default function FormsManagerPage() {
           shuffle_questions: builder.shuffleQuestions,
           confirmation_message: builder.confirmationMessage,
           is_quiz: builder.isQuiz,
+          lead_destination: builder.leadDestination,
         },
         is_active: publish ? true : builder.isActive,
       };
@@ -675,7 +739,7 @@ export default function FormsManagerPage() {
       }
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 1200);
-      setBuilderOpen(false);
+      if (closeAfter) setBuilderOpen(false);
       await bootstrap();
     } catch (error: any) {
       toast({ variant: "destructive", title: "Save failed", description: error?.message || "Try again." });
@@ -694,14 +758,6 @@ export default function FormsManagerPage() {
   }
 
   async function deleteForm(form: LeadForm) {
-    if (isGlobalBuiltinLeadForm(form)) {
-      toast({
-        variant: "destructive",
-        title: "Cannot delete built-in form",
-        description: "Global Default Capture and Normal forms are required for Syncpedia.",
-      });
-      return;
-    }
     const ok = window.confirm(`Delete "${form.name}"? This cannot be undone.`);
     if (!ok) return;
     try {
@@ -734,12 +790,6 @@ export default function FormsManagerPage() {
     return normalized === "sales_representative";
   }
 
-  function isSuperAdminCreatedMember(member: TeamMember): boolean {
-    const orgSlugLike = String(member.org_name || "").trim().toLowerCase();
-    if (orgSlugLike === "syncpedia") return true;
-    return !String(member.org_id || "").trim();
-  }
-
   function isValidMemberId(memberId?: string | null): boolean {
     const id = String(memberId || "").trim();
     // UUIDv4-ish generic matcher used by users.id in this app
@@ -750,15 +800,8 @@ export default function FormsManagerPage() {
     return `mr-2 inline-block h-3.5 w-3.5 rounded-[3px] border ${checked ? "border-[#1D9E75] bg-[#1D9E75]" : "border-gray-400 bg-white"}`;
   }
 
-  function getAssignableMembersForForm(form: LeadForm): TeamMember[] {
-    const safeMembers = teamMembers.filter((m) => isValidMemberId(m.id));
-    if (form.slug === "default") {
-      return safeMembers.filter((m) => isSuperAdminCreatedMember(m));
-    }
-    if (form.slug === "normal") {
-      return safeMembers.filter((m) => !isSuperAdminCreatedMember(m));
-    }
-    return safeMembers;
+  function getAssignableMembersForForm(_form: LeadForm): TeamMember[] {
+    return teamMembers.filter((m) => isValidMemberId(m.id));
   }
 
   async function updateAssignmentsForForm(form: LeadForm, nextIds: string[]) {
@@ -849,7 +892,23 @@ export default function FormsManagerPage() {
                   <div className="h-[10px] rounded-t-2xl" style={{ background: "linear-gradient(90deg,#1D9E75,#35c997)" }} />
                   <CardContent className="p-6 space-y-3">
                     <Input className="text-[2rem] leading-tight font-bold tracking-[-0.03em] border-0 shadow-none px-0 focus-visible:ring-0 bg-transparent" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value } }))} placeholder="Untitled Form" />
-                    <Input className="border-0 shadow-none px-0 text-[15px] text-muted-foreground leading-relaxed focus-visible:ring-0 bg-transparent" value={builder.description} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { description: e.target.value } }))} placeholder="Add a description..." />
+                    <div className="flex items-start gap-2">
+                      <Input
+                        className="flex-1 border-0 shadow-none px-0 text-[15px] leading-relaxed focus-visible:ring-0 bg-transparent"
+                        style={{ color: builder.descriptionColor }}
+                        value={builder.description}
+                        onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { description: e.target.value } }))}
+                        placeholder="Fill in your details to submit this form."
+                      />
+                      <Input
+                        type="color"
+                        className="h-9 w-12 shrink-0 p-1"
+                        title="Intro text color"
+                        value={normalizeFormColor(builder.descriptionColor, "#6b7280")}
+                        onChange={(e) => dispatchBuilder({ type: "set", patch: { descriptionColor: e.target.value } })}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">Intro line under the title — edit text and pick its color.</p>
                   </CardContent>
                 </Card>
                 </motion.div>
@@ -905,7 +964,32 @@ export default function FormsManagerPage() {
               <div className="max-w-[720px] mx-auto space-y-4">
                 <Card><CardHeader><CardTitle className="text-base">General</CardTitle></CardHeader><CardContent className="space-y-3">
                   <div><Label>Form URL slug</Label><Input value={builder.slug} onChange={(e) => dispatchBuilder({ type: "set", patch: { slug: makeSlug(e.target.value) } })} /></div>
-                  <div><Label>Company Name</Label><Input value={builder.companyName} onChange={(e) => dispatchBuilder({ type: "set", patch: { companyName: e.target.value } })} /></div>
+                  <div>
+                    <Label>Company Name</Label>
+                    <Input
+                      value={builder.companyName}
+                      placeholder={formOrgName ? `Leave empty to use ${formOrgName}` : "Leave empty to use organization name"}
+                      onChange={(e) => dispatchBuilder({ type: "set", patch: { companyName: e.target.value } })}
+                    />
+                  </div>
+                  <div>
+                    <Label>Company name font size (px)</Label>
+                    <Select
+                      value={String(builder.companyNameFontSize)}
+                      onValueChange={(v) => dispatchBuilder({ type: "set", patch: { companyNameFontSize: Number(v) } })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="14">14 px — small</SelectItem>
+                        <SelectItem value="17">17 px — default</SelectItem>
+                        <SelectItem value="20">20 px — medium</SelectItem>
+                        <SelectItem value="24">24 px — large</SelectItem>
+                        <SelectItem value="28">28 px — extra large</SelectItem>
+                        <SelectItem value="32">32 px — headline</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground mt-1">Shown centered under the header image.</p>
+                  </div>
                   <div className="space-y-2">
                     <Label>Company Logo URL</Label>
                     <Input value={builder.companyLogoUrl} onChange={(e) => dispatchBuilder({ type: "set", patch: { companyLogoUrl: e.target.value } })} />
@@ -941,32 +1025,174 @@ export default function FormsManagerPage() {
                       ) : null}
                     </div>
                   </div>
+                  <div className="space-y-2">
+                    <Label>Header image</Label>
+                    <p className="text-xs text-muted-foreground">Recommended 1600×400 px (4:1). Shown above company name on the public form.</p>
+                    <Input value={builder.headerImageUrl} onChange={(e) => dispatchBuilder({ type: "set", patch: { headerImageUrl: e.target.value } })} placeholder="https://... or upload below" />
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const input = document.createElement("input");
+                          input.type = "file";
+                          input.accept = "image/png,image/jpeg,image/jpg,image/webp";
+                          input.onchange = async () => {
+                            const f = input.files?.[0];
+                            if (!f) return;
+                            try {
+                              const reader = new FileReader();
+                              const data = await new Promise<string>((resolve, reject) => {
+                                reader.onload = () => resolve(String(reader.result || ""));
+                                reader.onerror = () => reject(new Error("read failed"));
+                                reader.readAsDataURL(f);
+                              });
+                              dispatchBuilder({ type: "set", patch: { headerImageUrl: data } });
+                              toast({ title: "Header image uploaded" });
+                            } catch {
+                              toast({ variant: "destructive", title: "Upload failed", description: "Unable to read image file." });
+                            }
+                          };
+                          input.click();
+                        }}
+                      >
+                        Upload Header
+                      </Button>
+                      {builder.headerImageUrl ? (
+                        <Button type="button" variant="ghost" size="sm" onClick={() => dispatchBuilder({ type: "set", patch: { headerImageUrl: "" } })}>
+                          Clear
+                        </Button>
+                      ) : null}
+                    </div>
+                    {builder.headerImageUrl ? (
+                      <img src={builder.headerImageUrl} alt="Header preview" className="w-full max-h-28 object-cover rounded-md border" />
+                    ) : null}
+                  </div>
                   <div className="flex items-center justify-between"><span>Collect email addresses</span><Checkbox checked={builder.collectEmail} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { collectEmail: c === true } })} /></div>
                   <div className="flex items-center justify-between"><span>Allow only one response</span><Checkbox checked={!builder.allowMultipleResponses} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { allowMultipleResponses: c !== true } })} /></div>
                   <div className="flex items-center justify-between"><span>Edit after submit</span><Checkbox checked={builder.editAfterSubmit} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { editAfterSubmit: c === true } })} /></div>
                   <div className="flex items-center justify-between"><span>Form is active</span><Checkbox checked={builder.isActive} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { isActive: c === true } })} /></div>
                 </CardContent></Card>
+                <Card>
+                  <CardHeader><CardTitle className="text-base">Lead destination</CardTitle></CardHeader>
+                  <CardContent className="space-y-3">
+                    <p className="text-xs text-muted-foreground">Where new submissions appear after someone fills this form.</p>
+                    <Select
+                      value={builder.leadDestination}
+                      onValueChange={(v) => dispatchBuilder({ type: "set", patch: { leadDestination: v as LeadDestination } })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="form_leads">Form Leads — sales & course inquiries</SelectItem>
+                        <SelectItem value="hr_leads">HR Leads — job applications & resumes</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {builder.leadDestination === "hr_leads"
+                        ? "Submissions go to Leads → HR Leads. Add a file upload field for resumes."
+                        : "Submissions go to Leads → Form Leads and are assigned to the form creator."}
+                    </p>
+                  </CardContent>
+                </Card>
                 <Card><CardHeader><CardTitle className="text-base">Presentation</CardTitle></CardHeader><CardContent className="space-y-3">
+                  <div className="rounded-lg overflow-hidden border">
+                    <p className="text-xs text-muted-foreground px-3 py-2 border-b bg-muted/30">Live preview — updates as you change colors</p>
+                    <PublicFormShell
+                      preview
+                      brand={builderBrandFromState(builder, formOrgName)}
+                      formTitle={builder.title || "Form title"}
+                      formDescription={builder.description || "Fill in your details to submit this form."}
+                    >
+                      <section className="sp-form-section">
+                        <div className="sp-form-group">
+                          <label className="sp-form-label">Sample field</label>
+                          <input className="sp-form-input" readOnly placeholder="Your answer" />
+                        </div>
+                      </section>
+                      <button type="button" className="sp-form-submit" disabled>Submit</button>
+                    </PublicFormShell>
+                  </div>
                   <div>
                     <Label>Form Background</Label>
                     <div className="mt-1 flex items-center gap-2">
-                      <Input type="color" className="h-10 w-16 p-1" value={builder.formBg} onChange={(e) => dispatchBuilder({ type: "set", patch: { formBg: e.target.value } })} />
+                      <Input type="color" className="h-10 w-16 p-1" value={normalizeFormColor(builder.formBg, "#ffffff")} onChange={(e) => dispatchBuilder({ type: "set", patch: { formBg: e.target.value } })} />
                       <Input value={builder.formBg} onChange={(e) => dispatchBuilder({ type: "set", patch: { formBg: e.target.value } })} />
                     </div>
                   </div>
                   <div>
                     <Label>Field Background</Label>
                     <div className="mt-1 flex items-center gap-2">
-                      <Input type="color" className="h-10 w-16 p-1" value={builder.fieldBg} onChange={(e) => dispatchBuilder({ type: "set", patch: { fieldBg: e.target.value } })} />
+                      <Input type="color" className="h-10 w-16 p-1" value={normalizeFormColor(builder.fieldBg, "#ffffff")} onChange={(e) => dispatchBuilder({ type: "set", patch: { fieldBg: e.target.value } })} />
                       <Input value={builder.fieldBg} onChange={(e) => dispatchBuilder({ type: "set", patch: { fieldBg: e.target.value } })} />
                     </div>
                   </div>
                   <div>
                     <Label>Text Color</Label>
                     <div className="mt-1 flex items-center gap-2">
-                      <Input type="color" className="h-10 w-16 p-1" value={builder.textColor} onChange={(e) => dispatchBuilder({ type: "set", patch: { textColor: e.target.value } })} />
+                      <Input type="color" className="h-10 w-16 p-1" value={normalizeFormColor(builder.textColor, "#111827")} onChange={(e) => dispatchBuilder({ type: "set", patch: { textColor: e.target.value } })} />
                       <Input value={builder.textColor} onChange={(e) => dispatchBuilder({ type: "set", patch: { textColor: e.target.value } })} />
                     </div>
+                  </div>
+                  <div>
+                    <Label>Accent / button color</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <Input type="color" className="h-10 w-16 p-1" value={normalizeFormColor(builder.accentColor, PRIMARY_GREEN)} onChange={(e) => dispatchBuilder({ type: "set", patch: { accentColor: e.target.value } })} />
+                      <Input value={builder.accentColor} onChange={(e) => dispatchBuilder({ type: "set", patch: { accentColor: e.target.value } })} />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Field border color</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <Input type="color" className="h-10 w-16 p-1" value={normalizeFormColor(builder.fieldBorderColor, "#000000")} onChange={(e) => dispatchBuilder({ type: "set", patch: { fieldBorderColor: e.target.value } })} />
+                      <Input value={builder.fieldBorderColor} onChange={(e) => dispatchBuilder({ type: "set", patch: { fieldBorderColor: e.target.value } })} />
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Field border size (px)</Label>
+                    <Select
+                      value={String(builder.fieldBorderWidth)}
+                      onValueChange={(v) => dispatchBuilder({ type: "set", patch: { fieldBorderWidth: Number(v) } })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 px — thin</SelectItem>
+                        <SelectItem value="2">2 px — medium</SelectItem>
+                        <SelectItem value="3">3 px — bold</SelectItem>
+                        <SelectItem value="4">4 px — extra bold</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Section border color</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <Input type="color" className="h-10 w-16 p-1" value={normalizeFormColor(builder.sectionBorderColor, "#000000")} onChange={(e) => dispatchBuilder({ type: "set", patch: { sectionBorderColor: e.target.value } })} />
+                      <Input value={builder.sectionBorderColor} onChange={(e) => dispatchBuilder({ type: "set", patch: { sectionBorderColor: e.target.value } })} />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">Borders around each section, form card, header, and submit button.</p>
+                  </div>
+                  <div>
+                    <Label>Section border size (px)</Label>
+                    <Select
+                      value={String(builder.sectionBorderWidth)}
+                      onValueChange={(v) => dispatchBuilder({ type: "set", patch: { sectionBorderWidth: Number(v) } })}
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 px — thin</SelectItem>
+                        <SelectItem value="2">2 px — medium</SelectItem>
+                        <SelectItem value="3">3 px — bold</SelectItem>
+                        <SelectItem value="4">4 px — extra bold</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Intro text color</Label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <Input type="color" className="h-10 w-16 p-1" value={normalizeFormColor(builder.descriptionColor, "#6b7280")} onChange={(e) => dispatchBuilder({ type: "set", patch: { descriptionColor: e.target.value } })} />
+                      <Input value={builder.descriptionColor} onChange={(e) => dispatchBuilder({ type: "set", patch: { descriptionColor: e.target.value } })} />
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">Color for &quot;Fill in your details…&quot; under the form title.</p>
                   </div>
                   <div className="flex items-center justify-between"><span>Show progress bar</span><Checkbox checked={builder.showProgressBar} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { showProgressBar: c === true } })} /></div>
                   <div className="flex items-center justify-between"><span>Shuffle question order</span><Checkbox checked={builder.shuffleQuestions} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { shuffleQuestions: c === true } })} /></div>
@@ -978,31 +1204,27 @@ export default function FormsManagerPage() {
               </div>
             )}
             {builderTab === "preview" && (
-              <div className="max-w-[720px] mx-auto">
-                <Card className="rounded-2xl bg-white shadow-[0_16px_40px_rgba(0,0,0,0.08)]"><CardContent className="p-6 space-y-5">
-                  {builder.companyLogoUrl ? <img src={builder.companyLogoUrl} alt={builder.companyName} className="h-12 object-contain" /> : null}
-                  <h2 className="text-2xl font-semibold">{builder.companyName}</h2>
-                  <h3 className="text-xl font-semibold">{builder.title}</h3>
-                  {builder.showProgressBar ? <div className="h-2 rounded-full bg-slate-100"><div className="h-2 w-1/3 rounded-full bg-[#1D9E75]" /></div> : null}
-                  {builder.description ? <p className="text-sm text-muted-foreground">{builder.description}</p> : null}
-                  {builder.questions.map((q) => (
-                    <div key={`preview-${q.id}`} className="space-y-2">
-                      <Label>{q.title}{q.required ? <span className="text-destructive"> *</span> : null}</Label>
-                      {q.type === "short_answer" && <Input disabled placeholder="Your answer" />}
-                      {q.type === "paragraph" && <Textarea disabled placeholder="Your answer" />}
-                      {q.type === "date" && <Input disabled type="date" />}
-                      {q.type === "time" && <Input disabled type="time" />}
-                      {(q.type === "multiple_choice" || q.type === "checkboxes" || q.type === "dropdown") && (
-                        <div className="space-y-1">
-                          <Select disabled><SelectTrigger><SelectValue placeholder={(q.options || [])[0] || "Select"} /></SelectTrigger></Select>
-                          {q.includeOther ? <p className="text-xs text-muted-foreground">Other: ________</p> : null}
-                        </div>
-                      )}
-                      {q.type === "section_break" && <div className="border-t pt-3 text-sm text-muted-foreground">{q.description || "Section"}</div>}
+              <div className="max-w-[720px] mx-auto rounded-xl overflow-hidden border">
+                <PublicFormShell
+                  brand={builderBrandFromState(builder, formOrgName)}
+                  formTitle={builder.title}
+                  formDescription={builder.description || "Fill in your details to submit this form."}
+                >
+                  {builder.showProgressBar ? (
+                    <div className="h-2 rounded-full mb-4" style={{ background: `${builder.fieldBg}88` }}>
+                      <div className="h-2 w-1/3 rounded-full" style={{ background: builder.accentColor }} />
                     </div>
-                  ))}
-                  <Button className="h-11 px-8 text-base">Submit</Button>
-                </CardContent></Card>
+                  ) : null}
+                  <PublicFormFields
+                    sections={buildFormSections(builder.questions)}
+                    values={{}}
+                    onChange={() => {}}
+                    disabled
+                  />
+                  <button type="button" className="sp-form-submit" disabled>
+                    Submit
+                  </button>
+                </PublicFormShell>
               </div>
             )}
           </div>
@@ -1064,6 +1286,45 @@ export default function FormsManagerPage() {
 
   return (
     <div className="space-y-4">
+      <Dialog open={destinationDialogOpen} onOpenChange={setDestinationDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Where should submissions go?</DialogTitle>
+            <DialogDescription>
+              Choose once when creating the form. You can change this later in Settings.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              className="rounded-lg border p-4 text-left hover:border-primary hover:bg-primary/5 transition-colors"
+              onClick={() => startCreateWithDestination("form_leads")}
+            >
+              <div className="flex items-center gap-2 font-medium">
+                <UserRound className="h-4 w-4 text-primary" />
+                Form Leads
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Course inquiries, contact forms, and sales leads. Shows in Leads → Form Leads.
+              </p>
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border p-4 text-left hover:border-primary hover:bg-primary/5 transition-colors"
+              onClick={() => startCreateWithDestination("hr_leads")}
+            >
+              <div className="flex items-center gap-2 font-medium">
+                <Briefcase className="h-4 w-4 text-primary" />
+                HR Leads
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Job applications and hiring. Shows in Leads → HR Leads with resume preview.
+              </p>
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Form Management</h1>
@@ -1074,10 +1335,15 @@ export default function FormsManagerPage() {
           </p>
         </div>
         {canEditForms ? (
-          <Button onClick={openCreate} className="gap-1.5">
-            <Plus className="h-4 w-4" />
-            New Form
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" asChild>
+              <Link to="/form-api-integrations">Form API Integrations</Link>
+            </Button>
+            <Button onClick={openCreate} className="gap-1.5">
+              <Plus className="h-4 w-4" />
+              New Form
+            </Button>
+          </div>
         ) : null}
       </div>
 
@@ -1096,6 +1362,7 @@ export default function FormsManagerPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                <TableHead>Destination</TableHead>
                 <TableHead>Slug</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Public Link</TableHead>
@@ -1121,16 +1388,22 @@ export default function FormsManagerPage() {
                   const salesManagers = assignableMembers.filter((m) => String(m.role || "").toLowerCase() === "manager");
                   const managerIds = new Set(salesManagers.map((l) => l.id));
                   const standaloneSalesReps = assignableMembers.filter((m) => isSalesRepRole(m.role) && (!m.reports_to_id || !managerIds.has(String(m.reports_to_id))));
+                  const leadDest = formLeadDestinationFromMeta(parseFormMetaJson(form.meta_json));
                   return (
                     <TableRow key={form.id}>
                       <TableCell>
                         <div className="font-medium">{form.name}</div>
                         <div className="mt-1">
                           <Badge variant="outline" className="text-[10px]">
-                            {isGlobalBuiltinLeadForm(form) ? "Built-in" : "Custom"}
+                            Custom
                           </Badge>
                         </div>
                         {form.description ? <div className="text-xs text-muted-foreground mt-0.5">{form.description}</div> : null}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={leadDest === "hr_leads" ? "secondary" : "default"} className="text-[10px] whitespace-nowrap">
+                          {leadDest === "hr_leads" ? "HR Leads" : "Form Leads"}
+                        </Badge>
                       </TableCell>
                       <TableCell>
                         <code className="text-xs">{form.slug}</code>
@@ -1242,11 +1515,7 @@ export default function FormsManagerPage() {
                               ) : null}
                               {salesManagers.length === 0 && standaloneSalesReps.length === 0 ? (
                                 <p className="px-2 py-1 text-xs text-muted-foreground">
-                                  {form.slug === "default"
-                                    ? "No superadmin-created members found for Default form."
-                                    : form.slug === "normal"
-                                    ? "No organization members found for Normal form."
-                                    : "No assignable members found."}
+                                  No assignable members found.
                                 </p>
                               ) : null}
                           </DropdownMenuContent>
@@ -1296,8 +1565,6 @@ export default function FormsManagerPage() {
                             variant="destructive"
                             size="sm"
                             className="h-8"
-                            disabled={isGlobalBuiltinLeadForm(form)}
-                            title={isGlobalBuiltinLeadForm(form) ? "Built-in global forms cannot be deleted" : undefined}
                             onClick={() => void deleteForm(form)}
                           >
                             Delete

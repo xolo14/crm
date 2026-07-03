@@ -33,8 +33,8 @@ export default function CommunicationsAdminPage() {
 
   const { data: orgsOverviewRes } = useQuery({ queryKey: ["comm", "orgs-overview"], queryFn: communicationsApi.orgsOverview });
   const { data: numbersRes } = useQuery({ queryKey: ["comm", "all-numbers"], queryFn: () => communicationsApi.virtualNumbers() });
-  const { data: orgsRes } = useQuery({ queryKey: ["orgs"], queryFn: api.organizations.list });
-  const { data: teamRes } = useQuery({ queryKey: ["team"], queryFn: api.team.list });
+  const { data: orgsRes } = useQuery({ queryKey: ["orgs"], queryFn: () => api.organizations.list() });
+  const { data: teamRes } = useQuery({ queryKey: ["team"], queryFn: () => api.team.list() });
 
   const orgsOverview = orgsOverviewRes?.data ?? [];
   const numbers = numbersRes?.data ?? [];

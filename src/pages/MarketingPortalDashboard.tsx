@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
+import { phpList } from '@/lib/phpList';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
@@ -47,20 +48,18 @@ export default function MarketingPortalDashboard() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [profileRes, emailRes, waRes] = await Promise.all([
-        supabase.from('profiles').select('referral_code').eq('user_id', user?.id || '').single(),
-        supabase.from('email_campaigns').select('*').eq('created_by', user?.id || '').order('created_at', { ascending: false }),
-        supabase.from('whatsapp_campaigns').select('*').eq('created_by', user?.id || '').order('created_at', { ascending: false }),
-      ]);
-
-      const code = profileRes.data?.referral_code || '';
+      const code = user?.referral_code || '';
       setReferralCode(code);
-      setEmailCampaigns(emailRes.data || []);
-      setWaCampaigns(waRes.data || []);
+      const [emailRes, waRes] = await Promise.all([
+        api.marketing.emailCampaigns({ mine: true }),
+        api.marketing.whatsappCampaigns({ mine: true }),
+      ]);
+      setEmailCampaigns(phpList(emailRes));
+      setWaCampaigns(phpList(waRes));
 
       if (code) {
-        const { data } = await supabase.from('leads').select('*').eq('referred_by', code).order('created_at', { ascending: false });
-        setFormLeads(data || []);
+        const leadsRes = await api.leads.list({ referred_by: code });
+        setFormLeads(phpList(leadsRes));
       }
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
@@ -116,8 +115,7 @@ export default function MarketingPortalDashboard() {
         referred_by: referralCode,
         status: 'new' as const,
       }));
-      const { error } = await supabase.from('leads').insert(records);
-      if (error) throw error;
+      await api.leads.bulkCreate(records);
       toast({ title: `${records.length} leads imported successfully!` });
       setShowImport(false);
       setImportPreview([]);

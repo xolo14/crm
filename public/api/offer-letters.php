@@ -31,6 +31,20 @@ function offerLetterPublicPdfUrl(string $id): string {
     return '/api/offer-letters.php?action=pdf&id=' . rawurlencode($id);
 }
 
+/** Org-scoped access for offer letter templates (sent letters already use orgFilter). */
+function offerLetterTemplateOrgFilter($tokenData, string $tableAlias = 't'): array {
+    return orgFilter($tokenData, $tableAlias);
+}
+
+function offerLettersFetchTemplateInScope(PDO $db, $tokenData, string $id): ?array {
+    $org = offerLetterTemplateOrgFilter($tokenData, '');
+    $params = array_merge([$id], $org['params']);
+    $stmt = $db->prepare("SELECT * FROM offer_letter_templates WHERE id = ? AND {$org['where']} LIMIT 1");
+    $stmt->execute($params);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
+}
+
 /**
  * Render HTML to PDF on disk using Dompdf (composer install in php-backend).
  * Returns false if vendor/autoload is missing or rendering fails.
@@ -121,8 +135,10 @@ if ($method === 'GET') {
     $action = $_GET['action'] ?? 'templates';
 
     if ($action === 'templates') {
-        $stmt = $db->prepare("SELECT * FROM offer_letter_templates ORDER BY created_at DESC");
-        $stmt->execute();
+        requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
+        $org = offerLetterTemplateOrgFilter($tokenData, 't');
+        $stmt = $db->prepare("SELECT t.* FROM offer_letter_templates t WHERE {$org['where']} ORDER BY t.created_at DESC");
+        $stmt->execute($org['params']);
         respond(['data' => $stmt->fetchAll()]);
     }
 
@@ -140,10 +156,11 @@ if ($method === 'GET') {
     }
 
     if ($action === 'template' && !empty($_GET['id'])) {
-        $stmt = $db->prepare("SELECT * FROM offer_letter_templates WHERE id = ?");
-        $stmt->execute([$_GET['id']]);
-        $template = $stmt->fetch();
-        if (!$template) respond(['error' => 'Template not found'], 404);
+        requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
+        $template = offerLettersFetchTemplateInScope($db, $tokenData, (string) $_GET['id']);
+        if (!$template) {
+            respond(['error' => 'Template not found'], 404);
+        }
         respond(['data' => $template]);
     }
 
@@ -158,7 +175,7 @@ if ($method === 'POST') {
 
     if ($action === 'create_template') {
         $id = generateUUID();
-        $orgId = $tokenData['org_id'] ?? null;
+        $orgId = getOrgId($tokenData);
         $status = $input['status'] ?? 'active';
         $name = trim($input['template_name'] ?? '') ?: 'Untitled Template';
         $roleTitle = trim($input['role_title'] ?? '');
@@ -180,6 +197,13 @@ if ($method === 'POST') {
     if ($action === 'send') {
         $id = generateUUID();
         $orgId = getOrgId($tokenData);
+        $templateId = trim((string) ($input['template_id'] ?? ''));
+        if ($templateId !== '') {
+            $tpl = offerLettersFetchTemplateInScope($db, $tokenData, $templateId);
+            if (!$tpl) {
+                respond(['error' => 'Template not found in your organization'], 404);
+            }
+        }
         $html = (string)($input['html_content'] ?? '');
         $recipientEmail = trim((string)($input['recipient_email'] ?? ''));
         if ($recipientEmail === '' || !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
@@ -322,9 +346,13 @@ if ($method === 'POST') {
 
 // PUT - Update template
 if ($method === 'PUT') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
+
+    if (!offerLettersFetchTemplateInScope($db, $tokenData, $id)) {
+        respond(['error' => 'Template not found'], 404);
+    }
 
     $input = getInput();
     $fields = [];
@@ -346,7 +374,7 @@ if ($method === 'PUT') {
 
 // DELETE - Delete template or sent letter
 if ($method === 'DELETE') {
-    requireRole($tokenData, ['admin', 'super_admin']);
+    requireRole($tokenData, ['admin', 'super_admin', 'org']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
 
@@ -354,11 +382,17 @@ if ($method === 'DELETE') {
 
     if ($action === 'sent') {
         @unlink(offerLetterPdfFilePath($id));
-        $stmt = $db->prepare("DELETE FROM offer_letters_sent WHERE id = ?");
+        $org = orgFilter($tokenData, 'ols');
+        $params = array_merge([$id], $org['params']);
+        $stmt = $db->prepare("DELETE FROM offer_letters_sent ols WHERE ols.id = ? AND {$org['where']}");
+        $stmt->execute($params);
     } else {
+        if (!offerLettersFetchTemplateInScope($db, $tokenData, $id)) {
+            respond(['error' => 'Template not found'], 404);
+        }
         $stmt = $db->prepare("DELETE FROM offer_letter_templates WHERE id = ?");
+        $stmt->execute([$id]);
     }
-    $stmt->execute([$id]);
     respond(['message' => 'Deleted successfully']);
 }
 

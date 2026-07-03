@@ -12,19 +12,33 @@ function ensurePasswordResetsTable(PDO $db): void {
         return;
     }
     try {
-        $db->exec("CREATE TABLE IF NOT EXISTS `password_resets` (
-            `id` CHAR(36) NOT NULL,
-            `user_id` CHAR(36) NOT NULL,
-            `token` VARCHAR(128) NOT NULL,
-            `expires_at` DATETIME NOT NULL,
-            `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (`id`),
-            UNIQUE KEY `uq_password_resets_token` (`token`),
-            KEY `idx_password_resets_user` (`user_id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        $db->exec("CREATE TABLE IF NOT EXISTS password_resets (
+            id CHAR(36) NOT NULL,
+            user_id CHAR(36) NOT NULL,
+            token VARCHAR(128) NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE (token)
+        )");
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets (user_id)');
     } catch (Exception $e) {
     }
     $ok = true;
+}
+
+/** Login page path for password-reset links, by account role. */
+function syncpediaPasswordResetLoginPath(string $role): string
+{
+    $r = syncpediaNormalizeRoleKey($role);
+    if ($r === 'super_admin') {
+        return '/super_admin';
+    }
+    if ($r === 'admin' || $r === 'org') {
+        return '/admin';
+    }
+
+    return '/login';
 }
 
 // Secret invite codes for role-based signup
@@ -36,14 +50,20 @@ define('INVITE_CODES', [
 
 function normalizeRoleForPortal(string $role): string {
     $cleaned = strtolower(trim($role));
-    if (strpos($cleaned, 'marketing') === 0) {
+    if (strpos($cleaned, 'marketing') === 0 || $cleaned === 'sales_marketing') {
         return 'marketing';
     }
     if ($cleaned === 'superadmin' || $cleaned === 'super admin' || $cleaned === 'super-admin') {
         return 'super_admin';
     }
+    if ($cleaned === 'organisation' || $cleaned === 'organization') {
+        return 'org';
+    }
     if ($cleaned === 'sales_manager' || $cleaned === 'team_lead') {
         return 'manager';
+    }
+    if ($cleaned === 'sales_executive') {
+        return 'sales_representative';
     }
     return $cleaned;
 }
@@ -139,21 +159,58 @@ if ($method === 'POST' && isset($_GET['action'])) {
             respond(['error' => 'Email is required'], 400);
         }
         ensurePasswordResetsTable($db);
-        $stmt = $db->prepare("SELECT id FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) AND is_active = 1");
+        $stmt = $db->prepare("SELECT id, full_name, role FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) AND is_active = 1");
         $stmt->execute([$email]);
         $u = $stmt->fetch();
+        $genericMsg = 'If an account exists for this email, a one-time code has been sent from support@syncpedia.in.';
         if (!$u) {
-            respond(['message' => 'If an account exists for this email, you can use a reset link from your administrator or try again later.', 'reset_url' => null]);
+            respond(['message' => $genericMsg]);
         }
+        $otp = sprintf('%06d', random_int(0, 999999));
+        $otpHash = password_hash($otp, PASSWORD_DEFAULT);
         $db->prepare("DELETE FROM password_resets WHERE user_id = ?")->execute([$u['id']]);
-        $token = bin2hex(random_bytes(32));
         $rid = generateUUID();
-        $exp = date('Y-m-d H:i:s', time() + 3600);
-        $db->prepare("INSERT INTO password_resets (id, user_id, token, expires_at) VALUES (?, ?, ?, ?)")->execute([$rid, $u['id'], $token, $exp]);
-        $resetUrl = '/auth?reset=' . rawurlencode($token);
+        $exp = date('Y-m-d H:i:s', time() + 600);
+        $db->prepare("INSERT INTO password_resets (id, user_id, token, expires_at) VALUES (?, ?, ?, ?)")->execute([$rid, $u['id'], $otpHash, $exp]);
+        $mail = syncpediaSendPasswordResetOtpEmail($email, (string) ($u['full_name'] ?? ''), $otp);
+        if (!($mail['email_sent'] ?? false)) {
+            $db->prepare("DELETE FROM password_resets WHERE id = ?")->execute([$rid]);
+            respond([
+                'error' => 'Could not send the reset code email. Check SMTP settings in api/config.php or try again later.',
+                'email_error' => $mail['email_error'] ?? 'Email send failed',
+            ], 503);
+        }
+        respond(['message' => $genericMsg]);
+    }
+
+    if ($action === 'verify_reset_otp') {
+        $email = trim($input['email'] ?? '');
+        $otp = trim($input['otp'] ?? '');
+        if (!$email || !preg_match('/^\d{6}$/', $otp)) {
+            respond(['error' => 'Valid email and 6-digit code are required'], 400);
+        }
+        ensurePasswordResetsTable($db);
+        $stmt = $db->prepare("
+            SELECT pr.id AS reset_id, pr.token, pr.user_id
+            FROM password_resets pr
+            INNER JOIN users u ON u.id = pr.user_id
+            WHERE LOWER(TRIM(u.email)) = LOWER(TRIM(?))
+              AND u.is_active = 1
+              AND pr.expires_at > NOW()
+            ORDER BY pr.created_at DESC
+            LIMIT 1
+        ");
+        $stmt->execute([$email]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row || !password_verify($otp, (string) ($row['token'] ?? ''))) {
+            respond(['error' => 'Invalid or expired code. Request a new one from Forgot password.'], 400);
+        }
+        $resetToken = bin2hex(random_bytes(32));
+        $exp = date('Y-m-d H:i:s', time() + 900);
+        $db->prepare("UPDATE password_resets SET token = ?, expires_at = ? WHERE id = ?")->execute([$resetToken, $exp, $row['reset_id']]);
         respond([
-            'message' => 'Password reset link created. It expires in one hour.',
-            'reset_url' => $resetUrl,
+            'message' => 'Code verified. Choose a new password.',
+            'reset_token' => $resetToken,
         ]);
     }
 
@@ -161,19 +218,19 @@ if ($method === 'POST' && isset($_GET['action'])) {
         $token = trim($input['token'] ?? '');
         $newPass = $input['password'] ?? '';
         if (!$token || strlen($newPass) < 6) {
-            respond(['error' => 'Valid reset link and new password (6+ characters) are required'], 400);
+            respond(['error' => 'Valid verification and new password (6+ characters) are required'], 400);
         }
         ensurePasswordResetsTable($db);
         $stmt = $db->prepare("SELECT user_id FROM password_resets WHERE token = ? AND expires_at > NOW()");
         $stmt->execute([$token]);
         $row = $stmt->fetch();
         if (!$row) {
-            respond(['error' => 'Invalid or expired reset link. Request a new one from Forgot password.'], 400);
+            respond(['error' => 'Your session expired. Request a new code from Forgot password.'], 400);
         }
         $hash = password_hash($newPass, PASSWORD_DEFAULT);
         $db->prepare("UPDATE users SET password_hash = ? WHERE id = ?")->execute([$hash, $row['user_id']]);
         $db->prepare("DELETE FROM password_resets WHERE token = ?")->execute([$token]);
-        respond(['message' => 'Your password has been updated. You can sign in now.']);
+        respond(['message' => 'Your password has been changed successfully. You can sign in now.']);
     }
 
     if ($action === 'login') {

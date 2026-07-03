@@ -4,7 +4,7 @@ cors();
 
 $db = (new Database())->getConnection();
 $tokenData = verifyToken();
-requireRole($tokenData, ['admin']);
+requireRole($tokenData, ['admin', 'super_admin', 'org']);
 
 $method = $_SERVER['REQUEST_METHOD'];
 

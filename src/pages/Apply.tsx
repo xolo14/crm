@@ -1,6 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
+import { PublicFormShell } from '@/components/forms/PublicFormShell';
+import { PublicFormFields } from '@/components/forms/PublicFormFields';
+import {
+  buildFormSections,
+  isEmailQuestion,
+  parseBuilderQuestions,
+  questionFieldKey,
+  resolveLeadContactFromFormValues,
+  type BuilderQuestion,
+  type LegacyFormField,
+} from '@/components/forms/formBuilderTypes';
+import { DEFAULT_PUBLIC_FORM_BRAND, parseFormMetaJson, publicFormBrandFromMeta, type PublicFormBrand } from '@/components/forms/publicFormTypes';
+import { getApiBase } from '@/lib/apiBase';
+import { reportLeadFormConversion } from '@/lib/gtagConversion';
 
 const SPECIALIZATIONS = [
   { group: 'AI & Data', options: ['Artificial Intelligence', 'Machine Learning', 'Data Science & Analytics', 'n8n Workflow Automation'] },
@@ -13,47 +27,92 @@ const SPECIALIZATIONS = [
 export default function Apply() {
   const [searchParams] = useSearchParams();
   const ref = searchParams.get('ref') || '';
+  const apiKey = searchParams.get('api_key') || '';
   const formSlug = (searchParams.get('form') || '').trim().toLowerCase();
-  const isNormalForm = formSlug === 'normal';
   const isDirectFormLink = formSlug.length > 0;
-  const isBuiltinFormSlug = formSlug === 'normal' || formSlug === 'default';
-  const isCustomForm = formSlug.length > 0 && !isBuiltinFormSlug;
+  const isCustomForm = isDirectFormLink;
   const { toast } = useToast();
   /** Any `?form=` link should open the form immediately (normal/default were incorrectly left on landing while landing UI is hidden for those slugs). */
   const [view, setView] = useState<'landing' | 'form'>(isDirectFormLink ? 'form' : 'landing');
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [dynamicFields, setDynamicFields] = useState<Array<{ id?: string; key: string; label: string; type: string; required?: boolean; placeholder?: string; options?: string[] }>>([]);
+  const [dynamicFields, setDynamicFields] = useState<LegacyFormField[]>([]);
+  const [builderQuestions, setBuilderQuestions] = useState<BuilderQuestion[] | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [formFiles, setFormFiles] = useState<Record<string, File | null>>({});
   const [form, setForm] = useState({ name: '', phone: '', email: '', specialization: '', otherSpecialization: '', college: '', year: '' });
-  const [formBrand, setFormBrand] = useState<{ companyName: string; logoUrl: string; formBg: string; fieldBg: string; textColor: string }>({
-    companyName: 'Student Survey Form',
-    logoUrl: '',
-    formBg: '#0A1410',
-    fieldBg: '#000000',
-    textColor: '#ffffff',
-  });
-  const effectiveDynamicFields = (() => {
-    if (!isCustomForm) return dynamicFields;
-    const hasName = dynamicFields.some((f) => ['name', 'full_name'].includes((f.key || '').toLowerCase()));
-    const hasEmail = dynamicFields.some((f) => (f.key || '').toLowerCase() === 'email');
-    const next = [...dynamicFields];
+  const [formBrand, setFormBrand] = useState<PublicFormBrand>(DEFAULT_PUBLIC_FORM_BRAND);
+  const [formDisplayTitle, setFormDisplayTitle] = useState('Application');
+  const [formDisplayDescription, setFormDisplayDescription] = useState('Fill in your details to begin the screening process.');
+  const [collectEmail, setCollectEmail] = useState(true);
+  const [confirmationMessage, setConfirmationMessage] = useState('');
+  const apiBase = getApiBase();
+
+  const formSections = useMemo(() => {
+    const parsed = builderQuestions ?? [];
+    const sections = buildFormSections(parsed, dynamicFields);
+    return sections;
+  }, [builderQuestions, dynamicFields]);
+
+  const displaySections = useMemo(() => {
+    if (!isCustomForm) return formSections;
+    const next = formSections.map((s) => ({ ...s, questions: [...s.questions] }));
+    if (next.length === 0) {
+      next.push({ id: "section-default", questions: [] });
+    }
+    const flat = next.flatMap((s) => s.questions);
+    const hasName = flat.some((q) => /full\s*name/i.test(q.title || ""));
+    const hasEmail = flat.some((q) => isEmailQuestion(q));
     if (!hasName) {
-      next.unshift({ id: 'system_name', key: 'name', label: 'Full Name', type: 'text', required: true, placeholder: 'Your full name' });
+      next[0].questions.unshift({
+        id: "system_name",
+        type: "short_answer",
+        title: "Full Name",
+        required: true,
+        description: "Your full name",
+      });
     }
     if (!hasEmail) {
-      next.push({ id: 'system_email', key: 'email', label: 'Email Address', type: 'email', required: true, placeholder: 'you@domain.com' });
+      next[next.length - 1].questions.push({
+        id: "system_email",
+        type: "short_answer",
+        title: "Email Address",
+        required: true,
+        validation: { kind: "regex", value: "email" },
+        description: "you@domain.com",
+      });
     }
-    return next.map((f) => {
-      const k = (f.key || '').toLowerCase();
-      if (k === 'email') return { ...f, required: true, type: 'email' };
-      if (k === 'name' || k === 'full_name') return { ...f, required: true, type: 'text' };
-      return f;
-    });
-  })();
+    return next;
+  }, [formSections, isCustomForm]);
+
+  const effectiveQuestions = useMemo(
+    () => displaySections.flatMap((s) => s.questions),
+    [displaySections],
+  );
+
+  const effectiveDynamicFields = useMemo(() => {
+    if (!isCustomForm) return dynamicFields;
+    return effectiveQuestions.map((q, idx) => ({
+      id: q.id,
+      key: questionFieldKey(q, idx),
+      label: q.title,
+      type:
+        isEmailQuestion(q)
+          ? 'email'
+          : q.type === 'paragraph'
+            ? 'textarea'
+            : q.type === 'dropdown'
+              ? 'select'
+              : 'text',
+      required: q.required,
+      placeholder: q.description,
+      options: q.options,
+    }));
+  }, [dynamicFields, effectiveQuestions, isCustomForm]);
 
   const handleChange = (field: string, value: string) => setForm(prev => ({ ...prev, [field]: value }));
   const handleDynamicFieldChange = (key: string, value: string) => setFormValues((prev) => ({ ...prev, [key]: value }));
+  const handleFileFieldChange = (key: string, file: File | null) => setFormFiles((prev) => ({ ...prev, [key]: file }));
   const handlePhoneChange = (value: string) => {
     const phoneDigits = value.replace(/\D/g, '').slice(0, 10);
     handleChange('phone', phoneDigits);
@@ -69,9 +128,65 @@ export default function Apply() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const isQuestionAnswered = (q: BuilderQuestion, key: string) => {
+    if (q.type === 'file_upload') return !!formFiles[key];
+    const v = (formValues[key] || '').trim();
+    if (!v) return false;
+    if (q.type === 'checkboxes') {
+      try {
+        return (JSON.parse(v) as unknown[]).length > 0;
+      } catch {
+        return v.length > 0;
+      }
+    }
+    if (q.type === 'mc_grid' || q.type === 'checkbox_grid') {
+      try {
+        const g = JSON.parse(v) as Record<string, unknown>;
+        return Object.keys(g).length > 0;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isCustomForm && effectiveDynamicFields.length > 0) {
+    if (isCustomForm && effectiveQuestions.length > 0) {
+      for (let i = 0; i < effectiveQuestions.length; i++) {
+        const q = effectiveQuestions[i];
+        const key = questionFieldKey(q, i);
+        if (q.required && !isQuestionAnswered(q, key)) {
+          toast({ title: `${q.title} is required`, variant: 'destructive' });
+          return;
+        }
+      }
+      const contact = resolveLeadContactFromFormValues(effectiveQuestions, formValues);
+      const nameVal = contact.name;
+      const emailVal = contact.email;
+      const phoneVal = contact.phone;
+      if (!nameVal) {
+        toast({ title: 'Full name is required', variant: 'destructive' });
+        return;
+      }
+      if (collectEmail) {
+        if (!emailVal) {
+          toast({ title: 'Email is required', variant: 'destructive' });
+          return;
+        }
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(emailVal)) {
+          toast({ title: 'Please enter a valid email', variant: 'destructive' });
+          return;
+        }
+      } else if (emailVal) {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(emailVal)) {
+          toast({ title: 'Please enter a valid email', variant: 'destructive' });
+          return;
+        }
+      }
+    } else if (isCustomForm && effectiveDynamicFields.length > 0) {
       const missing = effectiveDynamicFields.find((f) => f.required && !(formValues[f.key] || '').trim());
       if (missing) {
         toast({ title: `${missing.label} is required`, variant: 'destructive' });
@@ -103,27 +218,64 @@ export default function Apply() {
 
     setLoading(true);
     try {
-      const response = await fetch(
-        'https://crm.syncpedia.in/api/public-lead.php',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.name || formValues.full_name || '').trim() : form.name.trim(),
-            email: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.email || '').trim() : form.email.trim(),
-            phone: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.phone || formValues.whatsapp || '').trim() || undefined : form.phone.trim(),
-            college: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.college || '').trim() || undefined : (form.college.trim() || undefined),
-            year_of_study: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.year || formValues.year_of_study || '') || undefined : (form.year || undefined),
-            course_interest: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.course_interest || formValues.specialization || '').trim() || undefined : (selectedSpecialization || undefined),
-            notes: isCustomForm && effectiveDynamicFields.length > 0 ? JSON.stringify(formValues) : undefined,
-            source: formSlug ? `form_${formSlug}` : (isNormalForm ? 'normal_form' : 'website'),
-            form: formSlug || undefined,
-            ref: ref || undefined,
-          }),
+      const contact = isCustomForm && effectiveQuestions.length > 0
+        ? resolveLeadContactFromFormValues(effectiveQuestions, formValues)
+        : {
+            name: (formValues.name || formValues.full_name || '').trim(),
+            email: (formValues.email || '').trim(),
+            phone: (formValues.phone || formValues.whatsapp || formValues.whatsapp_number || '').trim(),
+          };
+      const customName = contact.name;
+      const customEmail = contact.email;
+      const customPhone = contact.phone;
+
+      if (isCustomForm && effectiveQuestions.length > 0) {
+        const fd = new FormData();
+        fd.append('name', customName);
+        if (customEmail) fd.append('email', customEmail);
+        if (customPhone) fd.append('phone', customPhone);
+        const college = (formValues.college || '').trim();
+        const year = (formValues.year || formValues.year_of_study || '').trim();
+        const course = (formValues.course_interest || formValues.specialization || '').trim();
+        if (college) fd.append('college', college);
+        if (year) fd.append('year_of_study', year);
+        if (course) fd.append('course_interest', course);
+        fd.append('form_answers', JSON.stringify(formValues));
+        fd.append('source', formSlug ? `form_${formSlug}` : 'website');
+        if (formSlug) fd.append('form', formSlug);
+        if (ref) fd.append('ref', ref);
+        if (apiKey) fd.append('api_key', apiKey);
+        for (const [key, file] of Object.entries(formFiles)) {
+          if (file) fd.append(`file_${key}`, file);
         }
-      );
+        const response = await fetch(`${apiBase}/public-lead.php`, { method: 'POST', body: fd });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Submission failed');
+        reportLeadFormConversion();
+        setSubmitted(true);
+        return;
+      }
+
+      const response = await fetch(`${apiBase}/public-lead.php`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: isCustomForm && effectiveDynamicFields.length > 0 ? customName : form.name.trim(),
+          email: isCustomForm && effectiveDynamicFields.length > 0 ? customEmail : form.email.trim(),
+          phone: isCustomForm && effectiveDynamicFields.length > 0 ? customPhone || undefined : form.phone.trim(),
+          college: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.college || '').trim() || undefined : (form.college.trim() || undefined),
+          year_of_study: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.year || formValues.year_of_study || '') || undefined : (form.year || undefined),
+          course_interest: isCustomForm && effectiveDynamicFields.length > 0 ? (formValues.course_interest || formValues.specialization || '').trim() || undefined : (selectedSpecialization || undefined),
+          form_answers: isCustomForm && effectiveDynamicFields.length > 0 ? JSON.stringify(formValues) : undefined,
+          source: formSlug ? `form_${formSlug}` : 'website',
+          form: formSlug || undefined,
+          ref: ref || undefined,
+          api_key: apiKey || undefined,
+        }),
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Submission failed');
+      reportLeadFormConversion();
       setSubmitted(true);
     } catch (err: any) {
       console.error('Submit error:', err);
@@ -133,36 +285,72 @@ export default function Apply() {
     }
   };
 
-  // Inject page-level styles
   useEffect(() => {
-    const prev = document.body.style.cssText;
-    document.body.style.cssText = 'margin:0;padding:0;background:#020806;overflow-x:hidden;';
-    document.documentElement.style.background = '#020806';
-    return () => { document.body.style.cssText = prev; document.documentElement.style.background = ''; };
+    document.documentElement.classList.add('sp-apply-route');
+    return () => {
+      document.documentElement.classList.remove('sp-apply-route', 'sp-apply-form-full');
+      document.body.style.cssText = '';
+      document.documentElement.style.background = '';
+    };
   }, []);
+
+  useEffect(() => {
+    const prevBody = document.body.style.cssText;
+    const prevHtmlBg = document.documentElement.style.background;
+    const formOpen = view === 'form';
+
+    if (formOpen) {
+      document.documentElement.classList.add('sp-apply-form-full');
+      document.documentElement.style.setProperty('--sp-apply-form-bg', formBrand.formBg);
+    } else {
+      document.documentElement.classList.remove('sp-apply-form-full');
+      document.documentElement.style.removeProperty('--sp-apply-form-bg');
+    }
+
+    const desktopOuterBg = '#e8eaed';
+    const bg = formOpen ? desktopOuterBg : (isDirectFormLink ? formBrand.formBg : '#020806');
+
+    document.body.style.cssText = `margin:0;padding:0;background:${bg};overflow-x:hidden;${formOpen ? 'min-height:100dvh;' : ''}`;
+    document.documentElement.style.background = bg;
+
+    return () => {
+      document.body.style.cssText = prevBody;
+      document.documentElement.style.background = prevHtmlBg;
+    };
+  }, [formBrand.formBg, view, isDirectFormLink]);
 
   useEffect(() => {
     if (!formSlug) return;
     let mounted = true;
     (async () => {
       try {
-        const res = await fetch(`https://crm.syncpedia.in/api/public-lead.php?form=${encodeURIComponent(formSlug)}`);
+        const res = await fetch(`${apiBase}/public-lead.php?form=${encodeURIComponent(formSlug)}`);
         const data = await res.json();
         const row = data?.data;
         if (!row || !mounted) return;
-        const meta = row?.meta_json || {};
+        const meta = parseFormMetaJson(row?.meta_json);
         const customFields = Array.isArray(row?.fields_json) ? row.fields_json : [];
+        const parsedQuestions = parseBuilderQuestions(meta);
+        setBuilderQuestions(parsedQuestions);
         setDynamicFields(customFields);
         const initVals: Record<string, string> = {};
-        for (const f of customFields) initVals[f.key] = '';
+        const sections = buildFormSections(parsedQuestions ?? [], customFields);
+        let idx = 0;
+        for (const section of sections) {
+          for (const q of section.questions) {
+            initVals[questionFieldKey(q, idx)] = '';
+            idx += 1;
+          }
+        }
+        for (const f of customFields) {
+          if (f.key && initVals[f.key] === undefined) initVals[f.key] = '';
+        }
         setFormValues(initVals);
-        setFormBrand({
-          companyName: String(meta?.company_name || row?.name || 'Student Survey Form'),
-          logoUrl: String(meta?.logo_url || ''),
-          formBg: String(meta?.form_bg || '#0A1410'),
-          fieldBg: String(meta?.field_bg || '#000000'),
-          textColor: String(meta?.text_color || '#ffffff'),
-        });
+        setFormBrand(publicFormBrandFromMeta(meta, { orgName: row?.org_name }));
+        setFormDisplayTitle(String(row?.name || 'Application'));
+        setFormDisplayDescription(String(row?.description || 'Fill in your details to submit this form.'));
+        setCollectEmail(meta.collect_email !== false);
+        setConfirmationMessage(String(meta.confirmation_message || '').trim());
       } catch {
         // keep defaults for branding
       }
@@ -170,14 +358,22 @@ export default function Apply() {
     return () => {
       mounted = false;
     };
-  }, [formSlug]);
+  }, [formSlug, apiBase]);
 
   return (
     <>
       <style>{`
         .sp-root { --bg-deep:#020806; --bg-card:#0A1410; --accent:#2ECC71; --text-main:#fff; --text-muted:#94a3b8; --border-light:rgba(255,255,255,0.1); --glass:rgba(2,8,6,0.85); --ease-out:cubic-bezier(0.16,1,0.3,1); }
         .sp-root { box-sizing:border-box; font-family:'Inter',sans-serif; background:var(--bg-deep); color:var(--text-main); max-width:480px; margin:0 auto; min-height:100vh; min-height:100dvh; border-left:1px solid var(--border-light); border-right:1px solid var(--border-light); position:relative; box-shadow:0 0 50px rgba(0,0,0,0.5); padding-bottom:max(100px,env(safe-area-inset-bottom)); background-image:linear-gradient(rgba(255,255,255,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.03) 1px,transparent 1px); background-size:40px 40px; }
-        @media(max-width:480px){.sp-root{border-left:none;border-right:none;max-width:100%;}}
+        .sp-root.sp-form-active{background-image:none;max-width:640px;width:100%;margin:0 auto;padding:0;padding-bottom:max(24px,env(safe-area-inset-bottom));border-left:none;border-right:none;box-shadow:none;min-height:100dvh;min-height:100svh;}
+        .sp-root.sp-form-active .sp-slide-right{max-width:100%;width:100%;margin:0;}
+        html.sp-apply-form-full{padding:0;height:100%;}
+        html.sp-apply-form-full body,html.sp-apply-form-full #root{min-height:100dvh;min-height:100svh;margin:0;padding:0;width:100%;}
+        html.sp-apply-form-full body{background:#e8eaed;}
+        @media(max-width:640px){
+          .sp-root.sp-form-active{max-width:100%;width:100%;margin:0;}
+          html.sp-apply-form-full body{background:var(--sp-apply-form-bg,#ffffff);}
+        }
         .sp-root.sp-normal{max-width:100%;border-left:none;border-right:none;box-shadow:none;padding-bottom:24px;}
         .sp-root.sp-normal .sp-press{display:none;}
         .sp-root.sp-normal .sp-header{padding:12px 0;}
@@ -297,21 +493,25 @@ export default function Apply() {
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
 
       <div
-        className={`sp-root ${isNormalForm ? 'sp-normal' : ''} ${isCustomForm ? 'sp-custom' : ''}`}
+        className={`sp-root ${isCustomForm ? 'sp-custom' : ''} ${view === 'form' ? 'sp-form-active' : ''}`}
         style={{
+          ...(view === 'form' ? { background: 'transparent', maxWidth: '640px', width: '100%', margin: '0 auto', padding: 0, border: 'none', boxShadow: 'none', minHeight: '100dvh' } : {}),
           ['--bg-card' as any]: formBrand.formBg,
           ['--text-main' as any]: formBrand.textColor,
-          ['--text-muted' as any]: formBrand.textColor,
+          ['--text-muted' as any]: `${formBrand.textColor}cc`,
           ['--field-bg' as any]: formBrand.fieldBg,
+          ['--accent' as any]: formBrand.accentColor,
         }}
       >
-        {/* Header */}
+        {/* Header — landing / marketing pages only (form view uses PublicFormShell brand bar) */}
+        {view !== 'form' && (
         <header className="sp-header">
           {formBrand.logoUrl ? (
             <img src={formBrand.logoUrl} alt={formBrand.companyName} className="sp-logo" style={{ height: 30, objectFit: 'contain' }} />
           ) : null}
           <span className="sp-logo" style={{ marginTop: formBrand.logoUrl ? 8 : 0 }}>{formBrand.companyName || 'Student Survey Form'}</span>
         </header>
+        )}
 
         {/* Press Strip (keep for built-in forms only) */}
         {!isCustomForm && (
@@ -325,7 +525,7 @@ export default function Apply() {
         )}
 
         {/* LANDING VIEW */}
-        {!isNormalForm && view === 'landing' && !submitted && (
+        {!isCustomForm && view === 'landing' && !submitted && (
           <div className="sp-slide-left">
             {/* Hero Banner */}
             <div className="sp-hero">
@@ -472,150 +672,110 @@ export default function Apply() {
           </div>
         )}
 
-        {/* FORM VIEW */}
+        {/* FORM VIEW — Google Forms layout: header image → brand → fields */}
         {view === 'form' && !submitted && (
           <div className="sp-slide-right">
-            <div className="sp-content">
-              {!isCustomForm && !isBuiltinFormSlug && (
+            {!isCustomForm && (
+              <div className="sp-content" style={{ paddingBottom: 0 }}>
                 <button type="button" className="sp-back" onClick={goBack}>
                   ← Back to Details
                 </button>
-              )}
-              <div className="sp-form-shell">
-                <div style={{ marginBottom: 20 }}>
-                  <h2 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: 4, color: isCustomForm ? formBrand.textColor : undefined }}>Application</h2>
-                  <p style={{ fontSize: '0.85rem', color: isCustomForm ? formBrand.textColor : '#94a3b8', fontWeight: isCustomForm ? 600 : 400 }}>Fill in your details to begin the screening process.</p>
-                </div>
-
-                <form onSubmit={handleSubmit}>
-                {isCustomForm && effectiveDynamicFields.length > 0 ? (
-                  <>
-                    {effectiveDynamicFields.map((field) => (
-                      <div className="sp-form-group" key={field.id || field.key}>
-                        <label className="sp-label">{field.label}</label>
-                        {field.type === 'textarea' ? (
-                          <textarea
-                            className="sp-input"
-                            placeholder={field.placeholder || ''}
-                            value={formValues[field.key] || ''}
-                            onChange={(e) => handleDynamicFieldChange(field.key, e.target.value)}
-                            required={!!field.required}
-                          />
-                        ) : field.type === 'select' ? (
-                          <select
-                            className="sp-input"
-                            value={formValues[field.key] || ''}
-                            onChange={(e) => handleDynamicFieldChange(field.key, e.target.value)}
-                            required={!!field.required}
-                          >
-                            <option value="">{field.placeholder || `Select ${field.label}`}</option>
-                            {(field.options || []).map((opt) => (
+              </div>
+            )}
+            <PublicFormShell
+              brand={formBrand}
+              formTitle={isCustomForm ? formDisplayTitle : 'Application'}
+              formDescription={isCustomForm ? formDisplayDescription : 'Fill in your details to begin the screening process.'}
+              fullPage
+            >
+              <form onSubmit={handleSubmit}>
+                {isCustomForm && effectiveQuestions.length > 0 ? (
+                  <PublicFormFields
+                    sections={displaySections}
+                    values={formValues}
+                    files={formFiles}
+                    onChange={handleDynamicFieldChange}
+                    onFileChange={handleFileFieldChange}
+                  />
+                ) : (
+                  <section className="sp-form-section">
+                    <div className="sp-form-group">
+                      <label className="sp-form-label">Full Name</label>
+                      <input className="sp-form-input" type="text" placeholder="Your full name" maxLength={100} value={form.name} onChange={e => handleChange('name', e.target.value)} required />
+                    </div>
+                    <div className="sp-form-group">
+                      <label className="sp-form-label">WhatsApp Number</label>
+                      <input
+                        className="sp-form-input"
+                        type="tel"
+                        inputMode="numeric"
+                        pattern="[0-9]{10}"
+                        placeholder="10-digit number"
+                        maxLength={10}
+                        value={form.phone}
+                        onChange={e => handlePhoneChange(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="sp-form-group">
+                      <label className="sp-form-label">Email Address</label>
+                      <input className="sp-form-input" type="email" placeholder="you@domain.com" maxLength={255} value={form.email} onChange={e => handleChange('email', e.target.value)} required />
+                    </div>
+                    <div className="sp-form-group">
+                      <label className="sp-form-label">Select Specialization</label>
+                      <select className="sp-form-input" value={form.specialization} onChange={e => handleChange('specialization', e.target.value)}>
+                        <option value="">Choose your domain</option>
+                        {SPECIALIZATIONS.map(group => (
+                          <optgroup key={group.group} label={group.group}>
+                            {group.options.map(opt => (
                               <option key={opt} value={opt}>{opt}</option>
                             ))}
-                          </select>
-                        ) : (
-                          <input
-                            className="sp-input"
-                            type={field.type === 'phone' ? 'tel' : field.type}
-                            placeholder={field.placeholder || ''}
-                            value={formValues[field.key] || ''}
-                            onChange={(e) => handleDynamicFieldChange(field.key, e.target.value)}
-                            required={!!field.required}
-                          />
-                        )}
-                      </div>
-                    ))}
-                  </>
-                ) : (
-                  <>
-                <div className="sp-form-group">
-                  <label className="sp-label">Full Name</label>
-                  <input className="sp-input" type="text" placeholder="Your full name" maxLength={100} value={form.name} onChange={e => handleChange('name', e.target.value)} required />
-                </div>
-
-                <div className="sp-form-group">
-                  <label className="sp-label">WhatsApp Number</label>
-                  <input
-                    className="sp-input"
-                    type="tel"
-                    inputMode="numeric"
-                    pattern="[0-9]{10}"
-                    placeholder=""
-                    maxLength={10}
-                    value={form.phone}
-                    onChange={e => handlePhoneChange(e.target.value)}
-                    required
-                  />
-                </div>
-
-                <div className="sp-form-group">
-                  <label className="sp-label">Email Address</label>
-                  <input className="sp-input" type="email" placeholder="you@domain.com" maxLength={255} value={form.email} onChange={e => handleChange('email', e.target.value)} required />
-                </div>
-
-                <div className="sp-form-group">
-                  <label className="sp-label">Select Specialization</label>
-                  <select className="sp-input" value={form.specialization} onChange={e => handleChange('specialization', e.target.value)}>
-                    <option value="">Choose your domain</option>
-                    {SPECIALIZATIONS.map(group => (
-                      <optgroup key={group.group} label={group.group}>
-                        {group.options.map(opt => (
-                          <option key={opt} value={opt}>{opt}</option>
+                          </optgroup>
                         ))}
-                      </optgroup>
-                    ))}
-                    <option value="Others">Others</option>
-                  </select>
-                </div>
-
-                {form.specialization === 'Others' && (
-                  <div className="sp-form-group">
-                    <label className="sp-label">Please Specify</label>
-                    <input
-                      className="sp-input"
-                      type="text"
-                      placeholder="Type your specialization"
-                      maxLength={120}
-                      value={form.otherSpecialization}
-                      onChange={e => handleChange('otherSpecialization', e.target.value)}
-                      required
-                    />
-                  </div>
+                        <option value="Others">Others</option>
+                      </select>
+                    </div>
+                    {form.specialization === 'Others' && (
+                      <div className="sp-form-group">
+                        <label className="sp-form-label">Please Specify</label>
+                        <input
+                          className="sp-form-input"
+                          type="text"
+                          placeholder="Type your specialization"
+                          maxLength={120}
+                          value={form.otherSpecialization}
+                          onChange={e => handleChange('otherSpecialization', e.target.value)}
+                          required
+                        />
+                      </div>
+                    )}
+                    <div className="sp-form-group">
+                      <label className="sp-form-label">College Name</label>
+                      <input className="sp-form-input" type="text" placeholder="Your college / university" maxLength={200} value={form.college} onChange={e => handleChange('college', e.target.value)} />
+                    </div>
+                    <div className="sp-form-group">
+                      <label className="sp-form-label">Year of Study</label>
+                      <select className="sp-form-input" value={form.year} onChange={e => handleChange('year', e.target.value)}>
+                        <option value="">Select year</option>
+                        <option value="1st Year">1st Year</option>
+                        <option value="2nd Year">2nd Year</option>
+                        <option value="3rd Year">3rd Year</option>
+                        <option value="4th Year">4th Year</option>
+                        <option value="Graduated">Graduated</option>
+                        <option value="Working Professional">Working Professional</option>
+                      </select>
+                    </div>
+                  </section>
                 )}
-
-                <div className="sp-form-group">
-                  <label className="sp-label">College Name</label>
-                  <input className="sp-input" type="text" placeholder="Your college / university" maxLength={200} value={form.college} onChange={e => handleChange('college', e.target.value)} />
+                <div className="sp-form-secure">
+                  <span style={{ color: formBrand.accentColor, fontSize: '1rem' }}>🔒</span>
+                  <span className="sp-form-secure-text">Your data is ISO-protected and never shared with third parties.</span>
                 </div>
-
-                <div className="sp-form-group">
-                  <label className="sp-label">Year of Study</label>
-                  <select className="sp-input" value={form.year} onChange={e => handleChange('year', e.target.value)}>
-                    <option value="">Select year</option>
-                    <option value="1st Year">1st Year</option>
-                    <option value="2nd Year">2nd Year</option>
-                    <option value="3rd Year">3rd Year</option>
-                    <option value="4th Year">4th Year</option>
-                    <option value="Graduated">Graduated</option>
-                    <option value="Working Professional">Working Professional</option>
-                  </select>
-                </div>
-                </>
-                )}
-
-                <div className="sp-secure">
-                  <span style={{ color: '#2ECC71', fontSize: '1rem' }}>🔒</span>
-                  <span className="sp-secure-text">Your data is ISO-protected and never shared with third parties.</span>
-                </div>
-
-                <div className="sp-submit-wrap">
-                  <button type="submit" className="sp-btn" disabled={loading}>
-                    {loading ? 'Submitting...' : 'Submit Application'}
-                  </button>
-                </div>
-                </form>
-              </div>
-            </div>
+                <button type="submit" className="sp-form-submit" disabled={loading}>
+                  {loading ? 'Submitting...' : 'Submit Application'}
+                </button>
+              </form>
+            </PublicFormShell>
           </div>
         )}
 
@@ -624,12 +784,12 @@ export default function Apply() {
           <div className="sp-success">
             <div style={{ fontSize: '3rem', marginBottom: 16 }}>✓</div>
             <h2>Applied!</h2>
-            <p>Our counselor will call you within 24 hours.</p>
+            <p>{confirmationMessage || 'Our counselor will call you within 24 hours.'}</p>
           </div>
         )}
 
         {/* Sticky Footer CTA (landing only) */}
-        {!isNormalForm && view === 'landing' && !submitted && (
+        {!isCustomForm && view === 'landing' && !submitted && (
           <div className="sp-footer-bar">
             <div className="sp-footer-inner">
               <button className="sp-btn" onClick={showForm}>Apply Now</button>

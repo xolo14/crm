@@ -8,7 +8,8 @@ $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 
 if ($method === 'GET') {
-    if (in_array($tokenData['role'], ['admin', 'super_admin', 'manager'])) {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if (in_array($role, ['admin', 'super_admin', 'manager'], true)) {
         $stmt = $db->prepare("SELECT * FROM activities ORDER BY occurred_at DESC LIMIT 100");
         $stmt->execute();
     } else {

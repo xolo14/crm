@@ -1,6 +1,6 @@
 <?php
 /**
- * Persist Razorpay payment links in MySQL (payment_links table).
+ * Persist Razorpay payment links in PostgreSQL (payment_links table).
  */
 require_once __DIR__ . '/document_storage.php';
 
@@ -12,48 +12,124 @@ function paymentLinksDb(): PDO
 function paymentLinkEnsureSchema(PDO $db): void
 {
     try {
-        $db->exec(
-            'CREATE TABLE IF NOT EXISTS `payment_links` (
-              `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-              `org_id` CHAR(36) DEFAULT NULL,
-              `razorpay_payment_link_id` VARCHAR(64) NOT NULL,
-              `salesperson_id` CHAR(36) NOT NULL,
-              `salesperson_referral_code` VARCHAR(50) NOT NULL DEFAULT "",
-              `customer_name` VARCHAR(200) NOT NULL,
-              `customer_email` VARCHAR(255) DEFAULT NULL,
-              `customer_phone` VARCHAR(30) DEFAULT NULL,
-              `amount` BIGINT NOT NULL,
-              `currency` VARCHAR(3) NOT NULL DEFAULT "INR",
-              `description` VARCHAR(500) DEFAULT NULL,
-              `reference_id` VARCHAR(100) DEFAULT NULL,
-              `payment_type` ENUM("full","partial") NOT NULL DEFAULT "full",
-              `accept_partial` TINYINT(1) NOT NULL DEFAULT 0,
-              `first_min_partial_amount` BIGINT UNSIGNED DEFAULT NULL,
-              `status` ENUM("created","partially_paid","paid","cancelled","expired") NOT NULL DEFAULT "created",
-              `amount_paid` BIGINT UNSIGNED NOT NULL DEFAULT 0,
-              `razorpay_short_url` VARCHAR(500) NOT NULL DEFAULT "",
-              `notify_email` TINYINT(1) NOT NULL DEFAULT 0,
-              `notify_sms` TINYINT(1) NOT NULL DEFAULT 0,
-              `expire_by` DATETIME DEFAULT NULL,
-              `reminder_enable` TINYINT(1) NOT NULL DEFAULT 0,
-              `notes` JSON DEFAULT NULL,
-              `invoice_number` VARCHAR(64) DEFAULT NULL,
-              `invoice_sent_at` DATETIME DEFAULT NULL,
-              `invoice_sent_for_amount_paid` BIGINT UNSIGNED DEFAULT NULL,
-              `invoice_pdf_path` TEXT DEFAULT NULL,
-              `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              PRIMARY KEY (`id`),
-              UNIQUE KEY `uq_pl_rzp_id` (`razorpay_payment_link_id`)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
-        );
+        if (!syncpediaDbIsMysql($db)) {
+            $db->exec(
+                'CREATE TABLE IF NOT EXISTS payment_links (
+                  id BIGSERIAL PRIMARY KEY,
+                  org_id CHAR(36) DEFAULT NULL,
+                  razorpay_payment_link_id VARCHAR(64) NOT NULL,
+                  salesperson_id CHAR(36) NOT NULL,
+                  salesperson_referral_code VARCHAR(50) NOT NULL DEFAULT \'\',
+                  customer_name VARCHAR(200) NOT NULL,
+                  customer_email VARCHAR(255) DEFAULT NULL,
+                  customer_phone VARCHAR(30) DEFAULT NULL,
+                  amount BIGINT NOT NULL,
+                  currency VARCHAR(3) NOT NULL DEFAULT \'INR\',
+                  description VARCHAR(500) DEFAULT NULL,
+                  reference_id VARCHAR(100) DEFAULT NULL,
+                  payment_type VARCHAR(20) NOT NULL DEFAULT \'full\',
+                  accept_partial BOOLEAN NOT NULL DEFAULT FALSE,
+                  first_min_partial_amount BIGINT DEFAULT NULL,
+                  status VARCHAR(30) NOT NULL DEFAULT \'created\',
+                  amount_paid BIGINT NOT NULL DEFAULT 0,
+                  razorpay_short_url VARCHAR(500) NOT NULL DEFAULT \'\',
+                  notify_email BOOLEAN NOT NULL DEFAULT FALSE,
+                  notify_sms BOOLEAN NOT NULL DEFAULT FALSE,
+                  expire_by TIMESTAMP DEFAULT NULL,
+                  reminder_enable BOOLEAN NOT NULL DEFAULT FALSE,
+                  notes JSON DEFAULT NULL,
+                  invoice_number VARCHAR(64) DEFAULT NULL,
+                  invoice_sent_at TIMESTAMP DEFAULT NULL,
+                  invoice_sent_for_amount_paid BIGINT DEFAULT NULL,
+                  invoice_pdf_path TEXT DEFAULT NULL,
+                  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE (razorpay_payment_link_id)
+                )',
+            );
+        }
     } catch (Throwable $e) {
         error_log('[payment_links] ensure table: ' . $e->getMessage());
+    }
+
+    try {
+        if (!syncpediaColumnExists($db, 'payment_links', 'enrollment_applied_at')) {
+            if (syncpediaDbIsMysql($db)) {
+                $db->exec(
+                    'ALTER TABLE payment_links ADD COLUMN enrollment_applied_at DATETIME DEFAULT NULL',
+                );
+            } else {
+                $db->exec(
+                    'ALTER TABLE payment_links ADD COLUMN enrollment_applied_at TIMESTAMP DEFAULT NULL',
+                );
+            }
+        }
+    } catch (Throwable $e) {
+        // Column already exists.
+    }
+}
+
+/** Resolve tenant org for payment link storage (JWT + users table fallback). */
+function paymentLinksResolveOrgId(array $tokenData): ?string
+{
+    if (function_exists('getOrgId')) {
+        $orgId = getOrgId($tokenData);
+        if (is_string($orgId) && trim($orgId) !== '') {
+            return trim($orgId);
+        }
+    }
+    $fromToken = trim((string) ($tokenData['org_id'] ?? ''));
+    if ($fromToken !== '') {
+        return $fromToken;
+    }
+    $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    if ($userId === '') {
+        return null;
+    }
+    try {
+        $db = paymentLinksDb();
+        $st = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
+        $st->execute([$userId]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        $oid = trim((string) (is_array($row) ? ($row['org_id'] ?? '') : ''));
+        return $oid !== '' ? $oid : null;
+    } catch (Throwable $e) {
+        error_log('[payment_links] resolve org_id: ' . $e->getMessage());
+        return null;
+    }
+}
+
+/** @return list<string> */
+function paymentLinksOrgMemberIds(PDO $db, string $orgId): array
+{
+    if ($orgId === '') {
+        return [];
+    }
+    try {
+        $st = $db->prepare('SELECT id FROM users WHERE org_id = ?');
+        $st->execute([$orgId]);
+        $ids = [];
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $id = trim((string) ($row['id'] ?? ''));
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+        return $ids;
+    } catch (Throwable $e) {
+        error_log('[payment_links] org member ids: ' . $e->getMessage());
+        return [];
     }
 }
 
 function paymentLinkMapRazorpayStatus(string $status, int $amountPaid, int $amount): string
 {
+    if ($amount > 0 && $amountPaid >= $amount) {
+        return 'paid';
+    }
     $s = strtolower(trim($status));
     if ($s === 'paid') {
         return 'paid';
@@ -116,29 +192,51 @@ function paymentLinkPersistOnCreate(
         $notesJson = '{}';
     }
 
-    $sql = 'INSERT INTO payment_links (
+    $orgId = paymentLinksResolveOrgId($tokenData);
+
+    $insertSql = 'INSERT INTO payment_links (
         org_id, razorpay_payment_link_id, salesperson_id, salesperson_referral_code,
         customer_name, customer_email, customer_phone, amount, currency, description,
         reference_id, payment_type, accept_partial, first_min_partial_amount, status,
         amount_paid, razorpay_short_url, notify_email, notify_sms, expire_by,
         reminder_enable, notes
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ON DUPLICATE KEY UPDATE
-        customer_name = VALUES(customer_name),
-        customer_email = VALUES(customer_email),
-        customer_phone = VALUES(customer_phone),
-        amount = VALUES(amount),
-        description = VALUES(description),
-        reference_id = VALUES(reference_id),
-        status = VALUES(status),
-        amount_paid = VALUES(amount_paid),
-        razorpay_short_url = VALUES(razorpay_short_url),
-        notes = VALUES(notes),
-        updated_at = CURRENT_TIMESTAMP';
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)';
+
+    if (syncpediaDbIsMysql($db)) {
+        $sql = $insertSql . '
+        ON DUPLICATE KEY UPDATE
+            org_id = COALESCE(VALUES(org_id), org_id),
+            customer_name = VALUES(customer_name),
+            customer_email = VALUES(customer_email),
+            customer_phone = VALUES(customer_phone),
+            amount = VALUES(amount),
+            description = VALUES(description),
+            reference_id = VALUES(reference_id),
+            status = VALUES(status),
+            amount_paid = VALUES(amount_paid),
+            razorpay_short_url = VALUES(razorpay_short_url),
+            notes = VALUES(notes),
+            updated_at = CURRENT_TIMESTAMP';
+    } else {
+        $sql = $insertSql . '
+        ON CONFLICT (razorpay_payment_link_id) DO UPDATE SET
+            org_id = COALESCE(EXCLUDED.org_id, payment_links.org_id),
+            customer_name = EXCLUDED.customer_name,
+            customer_email = EXCLUDED.customer_email,
+            customer_phone = EXCLUDED.customer_phone,
+            amount = EXCLUDED.amount,
+            description = EXCLUDED.description,
+            reference_id = EXCLUDED.reference_id,
+            status = EXCLUDED.status,
+            amount_paid = EXCLUDED.amount_paid,
+            razorpay_short_url = EXCLUDED.razorpay_short_url,
+            notes = EXCLUDED.notes,
+            updated_at = CURRENT_TIMESTAMP';
+    }
 
     $stmt = $db->prepare($sql);
     $stmt->execute([
-        $tokenData['org_id'] ?? null,
+        $orgId,
         $plinkId,
         $salespersonId,
         trim((string) ($notes['referral_code'] ?? $notes['crm_referral'] ?? '')),
@@ -269,43 +367,64 @@ function paymentLinkUpsertFromRazorpay(
 /**
  * List access scope for payment links (mirrors leads.php: manager = downline, admin/org = tenant, rep = self).
  *
- * @return array{mode: string, org_id: ?string, salesperson_ids: string[]}
+ * @return array{mode: string, org_id: ?string, salesperson_ids: string[], org_member_ids: string[]}
  */
 function paymentLinksBuildAccessScope(PDO $db, array $tokenData): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     $userId = trim((string) ($tokenData['user_id'] ?? ''));
     $orgId = getOrgId($tokenData);
+    $resolvedOrgId = is_string($orgId) && trim($orgId) !== '' ? trim($orgId) : null;
 
-    if ($role === 'super_admin' && !$orgId) {
-        return ['mode' => 'all', 'org_id' => null, 'salesperson_ids' => []];
+    if ($role === 'super_admin' && !$resolvedOrgId) {
+        return ['mode' => 'all', 'org_id' => null, 'salesperson_ids' => [], 'org_member_ids' => []];
     }
-    if (in_array($role, ['admin', 'org', 'finance'], true) || ($role === 'super_admin' && $orgId)) {
-        return ['mode' => 'org', 'org_id' => is_string($orgId) ? $orgId : null, 'salesperson_ids' => []];
+    if (in_array($role, ['admin', 'org', 'finance'], true) || ($role === 'super_admin' && $resolvedOrgId)) {
+        if ($resolvedOrgId === null) {
+            return [
+                'mode' => 'self',
+                'org_id' => null,
+                'salesperson_ids' => $userId !== '' ? [$userId] : [],
+                'org_member_ids' => [],
+            ];
+        }
+        return [
+            'mode' => 'org',
+            'org_id' => $resolvedOrgId,
+            'salesperson_ids' => [],
+            'org_member_ids' => paymentLinksOrgMemberIds($db, $resolvedOrgId),
+        ];
     }
     if ($role === 'manager') {
         $ids = hierarchyGetVisibleUserIds($db, $tokenData);
         if (empty($ids) && $userId !== '') {
             $ids = [$userId];
         }
-        return ['mode' => 'downline', 'org_id' => is_string($orgId) ? $orgId : null, 'salesperson_ids' => $ids];
+        return [
+            'mode' => 'downline',
+            'org_id' => $resolvedOrgId,
+            'salesperson_ids' => $ids,
+            'org_member_ids' => [],
+        ];
     }
     if ($role === 'sales_representative') {
         return [
             'mode' => 'self',
-            'org_id' => is_string($orgId) ? $orgId : null,
+            'org_id' => $resolvedOrgId,
             'salesperson_ids' => $userId !== '' ? [$userId] : [],
+            'org_member_ids' => [],
         ];
     }
     return [
         'mode' => 'self',
-        'org_id' => is_string($orgId) ? $orgId : null,
+        'org_id' => $resolvedOrgId,
         'salesperson_ids' => $userId !== '' ? [$userId] : [],
+        'org_member_ids' => [],
     ];
 }
 
 /**
- * @param array{mode: string, org_id: ?string, salesperson_ids: string[]} $scope
+ * @param array{mode: string, org_id: ?string, salesperson_ids: string[], org_member_ids?: string[]} $scope
  * @return array{sql: string, params: array}
  */
 function paymentLinksCrmListScopeSql(array $scope): array
@@ -315,7 +434,16 @@ function paymentLinksCrmListScopeSql(array $scope): array
         return ['sql' => '', 'params' => []];
     }
     if ($mode === 'org' && !empty($scope['org_id'])) {
-        return ['sql' => ' AND org_id = ?', 'params' => [(string) $scope['org_id']]];
+        $orgId = (string) $scope['org_id'];
+        $memberIds = is_array($scope['org_member_ids'] ?? null) ? $scope['org_member_ids'] : [];
+        if (empty($memberIds)) {
+            return ['sql' => ' AND org_id = ?', 'params' => [$orgId]];
+        }
+        $in = implode(',', array_fill(0, count($memberIds), '?'));
+        return [
+            'sql' => " AND (org_id = ? OR ((org_id IS NULL OR org_id = '') AND salesperson_id IN ({$in})))",
+            'params' => array_merge([$orgId], array_values($memberIds)),
+        ];
     }
     if (in_array($mode, ['downline', 'self'], true) && !empty($scope['salesperson_ids'])) {
         $in = implode(',', array_fill(0, count($scope['salesperson_ids']), '?'));
@@ -361,7 +489,18 @@ function paymentLinksItemSalespersonId(array $item, array $crmMap): string
     return trim((string) ($notes['salesperson_id'] ?? ''));
 }
 
-/** @param array<string, mixed> $item @param array{mode: string, org_id: ?string, salesperson_ids: string[]} $scope @param array<string, array<string, mixed>> $crmMap */
+/** @param array{mode: string, org_id: ?string, salesperson_ids: string[], org_member_ids?: string[]} $scope */
+function paymentLinksItemBelongsToOrg(array $item, array $scope, array $crmMap): bool
+{
+    $memberIds = is_array($scope['org_member_ids'] ?? null) ? $scope['org_member_ids'] : [];
+    if (empty($memberIds)) {
+        return false;
+    }
+    $spId = paymentLinksItemSalespersonId($item, $crmMap);
+    return $spId !== '' && in_array($spId, $memberIds, true);
+}
+
+/** @param array<string, mixed> $item @param array{mode: string, org_id: ?string, salesperson_ids: string[], org_member_ids?: string[]} $scope @param array<string, array<string, mixed>> $crmMap */
 function paymentLinksItemAllowed(array $item, array $scope, array $crmMap): bool
 {
     $mode = (string) ($scope['mode'] ?? 'all');
@@ -382,13 +521,38 @@ function paymentLinksItemAllowed(array $item, array $scope, array $crmMap): bool
             if ($rowOrg !== '' && $rowOrg !== (string) $scope['org_id']) {
                 return false;
             }
+            if ($rowOrg !== '') {
+                return true;
+            }
+            return paymentLinksItemBelongsToOrg($item, $scope, $crmMap);
         }
-        return true;
+        return paymentLinksItemBelongsToOrg($item, $scope, $crmMap);
     }
-    return true;
+    return false;
 }
 
-/** @param list<mixed> $items @param array{mode: string, org_id: ?string, salesperson_ids: string[]} $scope @return list<mixed> */
+/** Enforce payment-link access for cancel / remind / invoice when scope is restricted. */
+function paymentLinksAssertItemAllowed(PDO $db, array $tokenData, string $plinkId): void
+{
+    $scope = paymentLinksBuildAccessScope($db, $tokenData);
+    if (($scope['mode'] ?? 'all') === 'all') {
+        return;
+    }
+    try {
+        $item = razorpayFetchPaymentLink($plinkId);
+    } catch (Throwable $e) {
+        paymentLinksError($e->getMessage(), 500);
+    }
+    if (!is_array($item)) {
+        paymentLinksError('Payment link not found', 404);
+    }
+    $crmMap = paymentLinksCrmSalespersonMap([$plinkId]);
+    if (!paymentLinksItemAllowed($item, $scope, $crmMap)) {
+        paymentLinksError('Forbidden', 403);
+    }
+}
+
+/** @param list<mixed> $items @param array{mode: string, org_id: ?string, salesperson_ids: string[], org_member_ids?: string[]} $scope @return list<mixed> */
 function paymentLinksApplyListScope(array $items, array $scope): array
 {
     if (($scope['mode'] ?? 'all') === 'all') {
@@ -474,15 +638,18 @@ function paymentLinkCrmRowToRazorpayShape(array $row): array
         }
     }
 
-    $status = (string) ($row['status'] ?? 'created');
-    if ($status === 'partially_paid') {
-        $status = 'partially_paid';
-    }
+    $amount = (int) ($row['amount'] ?? 0);
+    $amountPaid = (int) ($row['amount_paid'] ?? 0);
+    $status = paymentLinkMapRazorpayStatus(
+        (string) ($row['status'] ?? 'created'),
+        $amountPaid,
+        $amount,
+    );
 
     return [
         'id' => (string) ($row['razorpay_payment_link_id'] ?? ''),
-        'amount' => (int) ($row['amount'] ?? 0),
-        'amount_paid' => (int) ($row['amount_paid'] ?? 0),
+        'amount' => $amount,
+        'amount_paid' => $amountPaid,
         'currency' => (string) ($row['currency'] ?? 'INR'),
         'description' => (string) ($row['description'] ?? ''),
         'status' => $status,
@@ -500,8 +667,140 @@ function paymentLinkCrmRowToRazorpayShape(array $row): array
     ];
 }
 
+function paymentLinkStatusRank(string $status): int
+{
+    static $ranks = [
+        'paid' => 5,
+        'partially_paid' => 4,
+        'created' => 3,
+        'expired' => 2,
+        'cancelled' => 1,
+    ];
+
+    return $ranks[strtolower(trim($status))] ?? 0;
+}
+
 /**
- * Razorpay list + CRM rows missing from API response.
+ * Prefer the most advanced status and highest amount_paid between Razorpay and CRM.
+ *
+ * @param array<string, mixed> $item
+ * @param array<string, mixed> $crmRow
+ * @return array<string, mixed>
+ */
+function paymentLinkMergeRazorpayWithCrm(array $item, array $crmRow): array
+{
+    $crm = paymentLinkCrmRowToRazorpayShape($crmRow);
+    $amount = (int) ($item['amount'] ?? $crm['amount'] ?? 0);
+    $paid = max((int) ($item['amount_paid'] ?? 0), (int) ($crm['amount_paid'] ?? 0));
+    $item['amount_paid'] = $paid;
+
+    $rzpStatus = paymentLinkMapRazorpayStatus(
+        (string) ($item['status'] ?? 'created'),
+        $paid,
+        $amount,
+    );
+    $crmStatus = (string) ($crm['status'] ?? 'created');
+    $terminal = ['cancelled', 'expired'];
+    if (in_array($rzpStatus, $terminal, true) && $crmStatus === 'created') {
+        $picked = $rzpStatus;
+    } elseif (in_array($crmStatus, $terminal, true) && $rzpStatus === 'created') {
+        $picked = $crmStatus;
+    } else {
+        $picked = paymentLinkStatusRank($crmStatus) > paymentLinkStatusRank($rzpStatus)
+            ? $crmStatus
+            : $rzpStatus;
+    }
+    $item['status'] = paymentLinkMapRazorpayStatus($picked, $paid, $amount);
+
+    $itemNotes = is_array($item['notes'] ?? null) ? $item['notes'] : [];
+    $crmNotes = is_array($crm['notes'] ?? null) ? $crm['notes'] : [];
+    $item['notes'] = array_merge($itemNotes, $crmNotes);
+
+    if (trim((string) ($item['short_url'] ?? '')) === '' && !empty($crm['short_url'])) {
+        $item['short_url'] = $crm['short_url'];
+    }
+
+    return $item;
+}
+
+/**
+ * Re-fetch recent pending links from Razorpay so paid status appears without waiting on webhooks.
+ *
+ * @param array<int, mixed> $items
+ */
+function paymentLinksRefreshStalePending(array &$items, int $maxRefresh = 80): void
+{
+    $now = time();
+    $refreshed = 0;
+
+    foreach ($items as $idx => $item) {
+        if ($refreshed >= $maxRefresh) {
+            break;
+        }
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $status = strtolower(trim((string) ($item['status'] ?? '')));
+        if (!in_array($status, ['created', 'partially_paid'], true)) {
+            continue;
+        }
+
+        $createdAt = (int) ($item['created_at'] ?? 0);
+        if ($createdAt > 0 && ($now - $createdAt) > 30 * 86400) {
+            continue;
+        }
+
+        $id = trim((string) ($item['id'] ?? ''));
+        if ($id === '') {
+            continue;
+        }
+
+        try {
+            $fresh = razorpayFetchPaymentLink($id);
+            if (!is_array($fresh)) {
+                continue;
+            }
+            $paid = (int) ($fresh['amount_paid'] ?? 0);
+            $total = (int) ($fresh['amount'] ?? 0);
+            $fresh['status'] = paymentLinkMapRazorpayStatus(
+                (string) ($fresh['status'] ?? 'created'),
+                $paid,
+                $total,
+            );
+            $items[$idx] = $fresh;
+            try {
+                $row = paymentLinkUpsertFromRazorpay($fresh, null);
+                if (is_array($row)) {
+                    $paid = (int) ($fresh['amount_paid'] ?? 0);
+                    $total = (int) ($fresh['amount'] ?? 0);
+                    $newStatus = paymentLinkMapRazorpayStatus(
+                        (string) ($fresh['status'] ?? 'created'),
+                        $paid,
+                        $total,
+                    );
+                    if ($paid > 0 && in_array($newStatus, ['paid', 'partially_paid'], true)) {
+                        if (!function_exists('paymentLinkProcessPaymentSideEffects')) {
+                            require_once __DIR__ . '/payment_link_fulfillment.php';
+                        }
+                        $eventType = $newStatus === 'paid'
+                            ? 'payment_link.paid'
+                            : 'payment_link.partially_paid';
+                        paymentLinkProcessPaymentSideEffects($row, $fresh, null, $eventType);
+                    }
+                }
+            } catch (Throwable $e) {
+                error_log('[payment_links] refresh upsert: ' . $e->getMessage());
+            }
+            $refreshed++;
+        } catch (Throwable $e) {
+            error_log('[payment_links] refresh fetch ' . $id . ': ' . $e->getMessage());
+        }
+    }
+}
+
+/**
+ * Razorpay list + CRM rows (merged status) + live refresh for recent pending links.
  *
  * @param array<string, mixed> $filters
  * @return array<string, mixed>
@@ -515,27 +814,56 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
         $accessScope = paymentLinksBuildAccessScope(paymentLinksDb(), $tokenData);
     }
 
-    $result = razorpayFetchAllPaymentLinks($filters);
-    $items = is_array($result['items'] ?? null) ? $result['items'] : [];
-    $seen = [];
-    foreach ($items as $item) {
-        if (is_array($item) && !empty($item['id'])) {
-            $seen[(string) $item['id']] = true;
-        }
-    }
-
+    $crmById = [];
     try {
         foreach (paymentLinkListCrmRows($from, $to, 500, $accessScope) as $row) {
             $id = trim((string) ($row['razorpay_payment_link_id'] ?? ''));
-            if ($id === '' || isset($seen[$id])) {
-                continue;
+            if ($id !== '') {
+                $crmById[$id] = $row;
             }
-            $items[] = paymentLinkCrmRowToRazorpayShape($row);
-            $seen[$id] = true;
         }
     } catch (Throwable $e) {
-        error_log('[payment_links] CRM list merge: ' . $e->getMessage());
+        error_log('[payment_links] CRM list preload: ' . $e->getMessage());
     }
+
+    $result = razorpayFetchAllPaymentLinks($filters);
+    $items = is_array($result['items'] ?? null) ? $result['items'] : [];
+
+    foreach ($items as $i => $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $id = trim((string) ($item['id'] ?? ''));
+        if ($id !== '' && isset($crmById[$id])) {
+            $items[$i] = paymentLinkMergeRazorpayWithCrm($item, $crmById[$id]);
+            unset($crmById[$id]);
+        }
+    }
+
+    foreach ($crmById as $row) {
+        $items[] = paymentLinkCrmRowToRazorpayShape($row);
+    }
+
+    paymentLinksRefreshStalePending($items);
+
+    foreach ($items as $i => $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $id = trim((string) ($item['id'] ?? ''));
+        if ($id === '') {
+            continue;
+        }
+        $row = paymentLinkFindByRazorpayId($id);
+        if (is_array($row)) {
+            $items[$i] = paymentLinkMergeRazorpayWithCrm($item, $row);
+        }
+    }
+
+    if (!function_exists('paymentLinksFulfillPaidItems')) {
+        require_once __DIR__ . '/payment_link_fulfillment.php';
+    }
+    paymentLinksFulfillPaidItems($items);
 
     if ($accessScope !== null) {
         $items = paymentLinksApplyListScope($items, $accessScope);

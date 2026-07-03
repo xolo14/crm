@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
-import type { Database } from '@/integrations/supabase/types';
+import { api } from '@/lib/api';
+import { phpList } from '@/lib/phpList';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -64,12 +64,11 @@ export default function ImportedLeads() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const { data: profile } = await supabase.from('profiles').select('referral_code').eq('user_id', user?.id || '').single();
-      const code = profile?.referral_code || '';
+      const code = user?.referral_code || '';
       setReferralCode(code);
       if (code) {
-        const { data } = await supabase.from('leads').select('*').eq('referred_by', code).order('created_at', { ascending: false });
-        setLeads(data || []);
+        const leadsRes = await api.leads.list({ referred_by: code });
+        setLeads(phpList(leadsRes));
       }
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
@@ -158,7 +157,7 @@ export default function ImportedLeads() {
           phone: phoneIdx >= 0 ? cols[phoneIdx] || null : null,
           college: collegeIdx >= 0 ? cols[collegeIdx] || null : null,
           year_of_study: yearIdx >= 0 ? cols[yearIdx] || null : null,
-          source: (validSources.includes(rawSource) ? rawSource : 'other') as Database['public']['Enums']['lead_source'],
+          source: (validSources.includes(rawSource) ? rawSource : 'other') as string,
           notes: notesIdx >= 0 ? cols[notesIdx] || null : null,
           referred_by: referralCode,
           status: 'new' as const,
@@ -167,8 +166,7 @@ export default function ImportedLeads() {
 
       if (newLeads.length === 0) { toast({ variant: 'destructive', title: 'No valid rows', description: 'Could not parse any leads from the CSV.' }); return; }
 
-      const { error } = await supabase.from('leads').insert(newLeads);
-      if (error) throw error;
+      await api.leads.bulkCreate(newLeads);
 
       toast({ title: 'Import successful', description: `${newLeads.length} lead(s) imported.` });
       fetchData();

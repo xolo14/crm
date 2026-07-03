@@ -1,40 +1,42 @@
 <?php
-require_once __DIR__ . '/helpers.php';
+// CORS first — before bootstrap/config can fail
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Form-Api-Key');
+header('Content-Type: application/json; charset=UTF-8');
 
-// Allow CORS from any origin for public form
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type");
-header("Content-Type: application/json; charset=UTF-8");
-
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
+require_once __DIR__ . '/helpers.php';
+
 $db = (new Database())->getConnection();
-ensureGlobalBuiltinLeadForms($db);
+retireGlobalBuiltinLeadForms($db);
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    $slug = trim((string)($_GET['form'] ?? ''));
+    $slug = trim((string) ($_GET['form'] ?? ''));
     if ($slug === '') {
         respond(['data' => null]);
     }
-    $stmt = $db->prepare("SELECT id, name, slug, description, fields_json, meta_json, is_active FROM lead_forms WHERE slug = ? AND is_active = 1 ORDER BY (org_id IS NOT NULL) DESC, updated_at DESC LIMIT 1");
-    $stmt->execute([$slug]);
-    $row = $stmt->fetch();
+    $row = publicLeadFetchFormBySlug($db, $slug);
     if (!$row) {
         respond(['data' => null]);
     }
     $fields = [];
     $meta = [];
     if (!empty($row['fields_json'])) {
-        $tmp = json_decode((string)$row['fields_json'], true);
-        if (is_array($tmp)) $fields = $tmp;
+        $tmp = json_decode((string) $row['fields_json'], true);
+        if (is_array($tmp)) {
+            $fields = $tmp;
+        }
     }
     if (!empty($row['meta_json'])) {
-        $tmp = json_decode((string)$row['meta_json'], true);
-        if (is_array($tmp)) $meta = $tmp;
+        $tmp = json_decode((string) $row['meta_json'], true);
+        if (is_array($tmp)) {
+            $meta = $tmp;
+        }
     }
     respond(['data' => [
         'id' => $row['id'],
@@ -43,7 +45,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         'description' => $row['description'],
         'fields_json' => $fields,
         'meta_json' => $meta,
-        'is_active' => (int)$row['is_active'],
+        'is_active' => (int) $row['is_active'],
+        'org_name' => $row['org_name'] ?? null,
+        'has_resume_field' => publicFormHasResumeField($row),
+        'lead_destination' => publicFormLeadDestination($row) ?? 'form_leads',
+        'routes_to_hr' => publicLeadShouldRouteToHr($row, (string) ($row['slug'] ?? ''), '', null, []),
     ]]);
 }
 
@@ -51,35 +57,133 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     respond(['error' => 'Method not allowed'], 405);
 }
 
-$input = getInput();
+ensureLeadsResumeColumn($db);
+ensureLeadsSourceColumnVarchar($db);
+ensureUploadDirectoriesExist();
 
-// Validate required fields
-if (empty($input['name']) || empty($input['email'])) {
-    respond(['error' => 'Name and email are required'], 400);
+$isMultipart = stripos((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'multipart/form-data') !== false;
+$input = $isMultipart ? $_POST : getInput();
+if (!is_array($input)) {
+    $input = [];
 }
 
-// Sanitize inputs
-$name = trim($input['name']);
-$email = trim((string)($input['email'] ?? ''));
-$phone = !empty($input['phone']) ? trim($input['phone']) : null;
-$college = !empty($input['college']) ? trim($input['college']) : null;
-$yearOfStudy = !empty($input['year_of_study']) ? trim($input['year_of_study']) : null;
-$courseInterest = !empty($input['course_interest']) ? trim($input['course_interest']) : null;
-$source = !empty($input['source']) ? trim($input['source']) : 'website';
-$ref = !empty($input['ref']) ? trim($input['ref']) : null;
+$name = trim((string) ($input['name'] ?? ''));
+$email = trim((string) ($input['email'] ?? ''));
 
-// Validate email format
-if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+$extraAnswers = [];
+if (!empty($input['form_answers'])) {
+    $decoded = json_decode((string) $input['form_answers'], true);
+    if (is_array($decoded)) {
+        $extraAnswers = $decoded;
+    }
+} elseif (!empty($input['notes']) && is_string($input['notes'])) {
+    $decoded = json_decode($input['notes'], true);
+    if (is_array($decoded)) {
+        $extraAnswers = $decoded;
+    }
+}
+
+if ($name === '' && $extraAnswers !== []) {
+    $name = trim((string) ($extraAnswers['name'] ?? $extraAnswers['full_name'] ?? ''));
+    if ($name === '') {
+        foreach ($extraAnswers as $key => $val) {
+            if (!is_scalar($val)) {
+                continue;
+            }
+            $k = strtolower((string) $key);
+            if (preg_match('/full.?name|^name$/i', $k)) {
+                $name = trim((string) $val);
+                break;
+            }
+        }
+    }
+}
+if ($email === '' && $extraAnswers !== []) {
+    $email = trim((string) ($extraAnswers['email'] ?? ''));
+    if ($email === '') {
+        foreach ($extraAnswers as $key => $val) {
+            if (!is_scalar($val)) {
+                continue;
+            }
+            $k = strtolower((string) $key);
+            if (preg_match('/e[\s-]*mail|email_address/i', $k)) {
+                $email = trim((string) $val);
+                break;
+            }
+        }
+    }
+}
+
+$source = !empty($input['source']) ? trim((string) $input['source']) : 'website';
+$ref = !empty($input['ref']) ? trim((string) $input['ref']) : null;
+
+$formSlug = trim((string) ($input['form'] ?? $input['form_slug'] ?? ($_GET['form'] ?? '')));
+if ($formSlug === '' && is_string($source) && preg_match('/^form_(.+)$/', $source, $m)) {
+    $formSlug = trim($m[1]);
+}
+
+$formRow = $formSlug !== '' ? publicLeadFetchFormBySlug($db, $formSlug) : null;
+if ($formSlug !== '' && !is_array($formRow)) {
+    respond(['error' => 'Form not found or inactive'], 404);
+}
+
+$formMeta = [];
+if (is_array($formRow) && !empty($formRow['meta_json'])) {
+    $tmp = is_array($formRow['meta_json']) ? $formRow['meta_json'] : json_decode((string) $formRow['meta_json'], true);
+    if (is_array($tmp)) {
+        $formMeta = $tmp;
+    }
+}
+$collectEmail = ($formMeta['collect_email'] ?? true) !== false;
+
+if ($name === '') {
+    respond(['error' => 'Name is required'], 400);
+}
+if ($collectEmail) {
+    if ($email === '') {
+        respond(['error' => 'Email is required'], 400);
+    }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        respond(['error' => 'Invalid email address'], 400);
+    }
+} elseif ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
     respond(['error' => 'Invalid email address'], 400);
 }
+if (!$collectEmail && $email === '') {
+    $email = null;
+}
 
-// If referral code provided, look up the sales rep from users table
+$phone = !empty($input['phone']) ? trim((string) $input['phone']) : null;
+$college = !empty($input['college']) ? trim((string) $input['college']) : null;
+$yearOfStudy = !empty($input['year_of_study']) ? trim((string) $input['year_of_study']) : null;
+$courseInterest = !empty($input['course_interest']) ? trim((string) $input['course_interest']) : null;
+
+$formCreatorId = is_array($formRow) ? trim((string) ($formRow['created_by'] ?? '')) : '';
+$formOrgId = is_array($formRow) ? trim((string) ($formRow['org_id'] ?? '')) : '';
+$formCreatorRef = '';
+
+if (is_array($formRow)) {
+    $meta = $formMeta;
+    $requiresKey = !empty($meta['external_api_enabled']);
+    $storedHash = trim((string) ($meta['external_api_key_hash'] ?? ''));
+    if ($requiresKey && $storedHash !== '') {
+        $providedApiKey = trim((string) (
+            $input['api_key']
+            ?? $_GET['api_key']
+            ?? ($_SERVER['HTTP_X_FORM_API_KEY'] ?? '')
+        ));
+        if ($providedApiKey !== '' && !formExternalApiKeyVerify($providedApiKey, $storedHash)) {
+            respond(['error' => 'Invalid form API key'], 401);
+        }
+    }
+}
+
 $assignedTo = null;
-$referredBy = $ref;
+$referredBy = $ref !== '' && $ref !== null ? $ref : null;
 $refUserOrgId = null;
 
 if ($ref) {
-    $stmt = $db->prepare("SELECT id, org_id FROM users WHERE referral_code = ? LIMIT 1");
+    $stmt = $db->prepare('SELECT id, org_id, referral_code FROM users WHERE referral_code = ? LIMIT 1');
     $stmt->execute([$ref]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($user && is_array($user)) {
@@ -88,38 +192,159 @@ if ($ref) {
         if ($rorg !== '') {
             $refUserOrgId = $rorg;
         }
-    }
-}
-
-// Org: owning org of the lead form (slug) first, else the referred rep's org.
-$formSlug = trim((string) ($input['form'] ?? $input['form_slug'] ?? ($_GET['form'] ?? '')));
-if ($formSlug === '' && is_string($source) && preg_match('/^form_(.+)$/', $source, $m)) {
-    $formSlug = trim($m[1]);
-}
-$formOrgId = null;
-if ($formSlug !== '') {
-    $fs = $db->prepare("SELECT org_id FROM lead_forms WHERE slug = ? AND is_active = 1 ORDER BY (org_id IS NOT NULL) DESC, updated_at DESC LIMIT 1");
-    $fs->execute([$formSlug]);
-    $fr = $fs->fetch(PDO::FETCH_ASSOC);
-    if ($fr && is_array($fr)) {
-        $fog = trim((string) ($fr['org_id'] ?? ''));
-        if ($fog !== '') {
-            $formOrgId = $fog;
+        $rc = trim((string) ($user['referral_code'] ?? ''));
+        if ($rc !== '') {
+            $referredBy = $rc;
         }
     }
 }
-$orgId = $formOrgId ?? $refUserOrgId;
+
+if ($formCreatorId !== '') {
+    $ust = $db->prepare('SELECT referral_code FROM users WHERE id = ? LIMIT 1');
+    $ust->execute([$formCreatorId]);
+    $urow = $ust->fetch(PDO::FETCH_ASSOC);
+    if ($urow && is_array($urow)) {
+        $formCreatorRef = trim((string) ($urow['referral_code'] ?? ''));
+    }
+}
+
+// No ?ref= on link → assign to form creator so it appears in their Form Leads / My Leads.
+if (!$assignedTo && $formCreatorId !== '') {
+    $assignedTo = $formCreatorId;
+}
+if (($referredBy === null || $referredBy === '') && $formCreatorRef !== '') {
+    $referredBy = $formCreatorRef;
+}
+
+$orgId = $formOrgId !== '' ? $formOrgId : $refUserOrgId;
+$createdBy = $formCreatorId !== '' ? $formCreatorId : $assignedTo;
+
+$attachmentPaths = [];
+$resumePath = null;
+
+if ($isMultipart && !empty($_FILES) && is_array($_FILES)) {
+    foreach ($_FILES as $fieldKey => $file) {
+        if (!is_array($file) || !isset($file['error'])) {
+            continue;
+        }
+        $key = preg_replace('/^file_/', '', (string) $fieldKey);
+        $saved = saveFormLeadAttachmentUpload($file);
+        if ($saved === null) {
+            continue;
+        }
+        $attachmentPaths[$key] = $saved;
+        if ($resumePath === null && preg_match('/resume|cv/i', $key)) {
+            $resumePath = $saved;
+        }
+    }
+}
+
+if ($resumePath === null && !empty($attachmentPaths)) {
+    $resumePath = reset($attachmentPaths) ?: null;
+}
+
+$notesParts = [];
+if ($courseInterest) {
+    $notesParts[] = "Course Interest: $courseInterest";
+}
+if ($formSlug !== '') {
+    $notesParts[] = 'Form: ' . $formSlug;
+}
+if ($ref !== null && $ref !== '') {
+    $notesParts[] = 'Referral: ' . $ref;
+}
+if ($extraAnswers !== []) {
+    $notesParts[] = 'Answers: ' . json_encode($extraAnswers, JSON_UNESCAPED_UNICODE);
+}
+if ($attachmentPaths !== []) {
+    $notesParts[] = 'Attachments: ' . json_encode($attachmentPaths, JSON_UNESCAPED_UNICODE);
+}
+$notes = $notesParts !== [] ? implode("\n", $notesParts) : null;
+
+$tags = null;
+if ($formSlug !== '') {
+    $tags = json_encode(['form_slug' => $formSlug, 'form_id' => $formRow['id'] ?? null]);
+}
+
+$routesToHr = publicLeadShouldRouteToHr($formRow, $formSlug, $source, $resumePath, $attachmentPaths);
+
+if ($routesToHr) {
+    $leadOrgId = $formOrgId !== '' ? $formOrgId : ($orgId !== '' ? $orgId : $refUserOrgId);
+    $hrUserId = resolveHrUserIdForPublicForm(
+        $db,
+        $leadOrgId !== '' ? $leadOrgId : null,
+        $formCreatorId !== '' ? $formCreatorId : null,
+    );
+    if ($hrUserId === null) {
+        respond(['error' => 'No active user available to receive HR leads. Add an HR user in Users, then try again.'], 503);
+    }
+    ensureHrLeadsTableExists($db);
+    $hrPhone = publicFormResolvePhone($phone, $extraAnswers);
+    $hrSource = $formSlug !== '' ? 'form_' . $formSlug : ($source !== '' ? $source : 'website');
+    $assignedBy = ($formCreatorId !== '' && $formCreatorId !== $hrUserId) ? $formCreatorId : null;
+    $hrLeadOrgId = $leadOrgId !== '' ? $leadOrgId : null;
+    if ($hrLeadOrgId === null && $formCreatorId !== '') {
+        $creatorOrgStmt = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
+        $creatorOrgStmt->execute([$formCreatorId]);
+        $creatorOrgRow = $creatorOrgStmt->fetch(PDO::FETCH_ASSOC);
+        $creatorOrg = is_array($creatorOrgRow) ? trim((string) ($creatorOrgRow['org_id'] ?? '')) : '';
+        if ($creatorOrg !== '') {
+            $hrLeadOrgId = $creatorOrg;
+        }
+    }
+    try {
+        $stmt = $db->prepare(
+            'INSERT INTO hr_leads (hr_id, assigned_by, full_name, phone, email, source, status, priority, notes, resume_path, is_assigned, org_id)
+             VALUES (?, ?, ?, ?, ?, ?, \'new\', \'medium\', ?, ?, 0, ?)',
+        );
+        $stmt->execute([
+            $hrUserId,
+            $assignedBy,
+            $name,
+            $hrPhone,
+            $email,
+            $hrSource,
+            $notes,
+            $resumePath,
+            $hrLeadOrgId,
+        ]);
+        $hrLeadId = (int) $db->lastInsertId();
+        respond([
+            'success' => true,
+            'hr_lead_id' => $hrLeadId,
+            'destination' => 'hr_leads',
+        ]);
+    } catch (PDOException $e) {
+        respond(['error' => 'Failed to save HR lead'], 500);
+    }
+}
 
 $id = generateUUID();
-$notes = $courseInterest ? "Course Interest: $courseInterest" : null;
 
 try {
-    $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, college, year_of_study, course_interest, source, assigned_to, referred_by, status, notes, org_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, NOW(), NOW())");
+    $stmt = $db->prepare(
+        'INSERT INTO leads (id, name, email, phone, college, year_of_study, course_interest, source, assigned_to, referred_by, status, notes, resume_path, tags, org_id, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'new\', ?, ?, ?, ?, ?, NOW(), NOW())',
+    );
     $stmt->execute([
-        $id, $name, $email, $phone, $college, $yearOfStudy, $courseInterest, $source, $assignedTo, $referredBy, $notes, $orgId,
+        $id,
+        $name,
+        $email,
+        $phone,
+        $college,
+        $yearOfStudy,
+        $courseInterest,
+        $source,
+        $assignedTo,
+        $referredBy,
+        $notes,
+        $resumePath,
+        $tags,
+        $orgId !== '' ? $orgId : null,
+        $createdBy !== '' ? $createdBy : null,
     ]);
 
-    respond(['success' => true, 'lead_id' => $id]);
+    respond(['success' => true, 'lead_id' => $id, 'destination' => 'leads']);
 } catch (PDOException $e) {
     respond(['error' => 'Failed to save lead'], 500);
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
+import { phpList } from '@/lib/phpList';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,6 +21,7 @@ import {
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
+import { publicApplyUrl } from '@/lib/siteOrigin';
 
 export default function MarketingPortal() {
   const { user } = useAuth();
@@ -63,28 +65,28 @@ export default function MarketingPortal() {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [draftsRes, campaignsRes, profileRes] = await Promise.all([
-        supabase.from('email_drafts').select('*').eq('created_by', user?.id || '').order('updated_at', { ascending: false }),
-        supabase.from('email_campaigns').select('*').eq('created_by', user?.id || '').order('created_at', { ascending: false }),
-        supabase.from('profiles').select('referral_code').eq('user_id', user?.id || '').single(),
+      const [draftsRes, campaignsRes] = await Promise.all([
+        api.marketing.emailDrafts({ mine: true }),
+        api.marketing.emailCampaigns({ mine: true }),
       ]);
-      setDrafts(draftsRes.data || []);
-      setCampaigns(campaignsRes.data || []);
+      const draftsData = phpList(draftsRes);
+      const campaignsData = phpList(campaignsRes);
+      setDrafts(draftsData);
+      setCampaigns(campaignsData);
 
-      // Use referral code from profile, or generate a fallback from user ID
-      const code = profileRes.data?.referral_code || (user?.id ? 'SP-' + user.id.substring(0, 8).toUpperCase() : '');
+      const code = user?.referral_code || (user?.id ? 'SP-' + user.id.substring(0, 8).toUpperCase() : '');
       setReferralCode(code);
 
-      // Fetch form leads referred by this member
       if (code) {
-        const { data: leadsData } = await supabase.from('leads').select('*').eq('referred_by', code).order('created_at', { ascending: false });
-        setFormLeads(leadsData || []);
+        const leadsRes = await api.leads.list({ referred_by: code });
+        setFormLeads(phpList(leadsRes));
       }
 
-      if (campaignsRes.data && campaignsRes.data.length > 0) {
-        const ids = campaignsRes.data.map(c => c.id);
-        const { data: sendsData } = await supabase.from('email_sends').select('*').in('campaign_id', ids).order('created_at', { ascending: false }).limit(500);
-        setSends(sendsData || []);
+      if (campaignsData.length > 0) {
+        const sendsRes = await api.marketing.emailSends(campaignsData.map((c: any) => c.id));
+        setSends(phpList(sendsRes));
+      } else {
+        setSends([]);
       }
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
@@ -100,9 +102,9 @@ export default function MarketingPortal() {
     setSavingDraft(true);
     try {
       if (editingDraft) {
-        await supabase.from('email_drafts').update({ name: draftName, subject: draftSubject, html_body: draftBody } as any).eq('id', editingDraft.id);
+        await api.marketing.updateEmailDraft(editingDraft.id, { name: draftName, subject: draftSubject, html_body: draftBody });
       } else {
-        await supabase.from('email_drafts').insert({ name: draftName, subject: draftSubject, html_body: draftBody, created_by: user?.id } as any);
+        await api.marketing.createEmailDraft({ name: draftName, subject: draftSubject, html_body: draftBody });
       }
       toast({ title: editingDraft ? 'Draft updated' : 'Draft saved' });
       setShowEditor(false);
@@ -120,7 +122,7 @@ export default function MarketingPortal() {
 
   const deleteDraft = async (id: string) => {
     try {
-      await supabase.from('email_drafts').delete().eq('id', id);
+      await api.marketing.deleteEmailDraft(id);
       toast({ title: 'Draft deleted' });
       fetchAll();
     } catch (err: any) {
@@ -174,26 +176,20 @@ export default function MarketingPortal() {
 
     setSending(true);
     try {
-      // Create campaign
-      const { data: campaign, error: campErr } = await supabase.from('email_campaigns').insert({
+      const campaignRes = await api.marketing.createEmailCampaign({
         draft_id: selectedDraftId,
         subject: draft.subject,
         recipient_count: emails.length,
         pending_count: emails.length,
         status: 'sending',
-        created_by: user?.id,
-      } as any).select().single();
+      });
+      const campaignId = campaignRes.id || campaignRes.data?.id;
+      if (!campaignId) throw new Error('Campaign was not created');
 
-      if (campErr) throw campErr;
-
-      // Create individual send records
-      const sendRecords = emails.map(email => ({
-        campaign_id: campaign.id,
-        recipient_email: email,
-        status: 'pending',
-      }));
-
-      await supabase.from('email_sends').insert(sendRecords as any);
+      await api.marketing.createEmailSends(
+        campaignId,
+        emails.map((email) => ({ recipient_email: email, status: 'pending' })),
+      );
 
       // Trigger n8n webhook
       try {
@@ -203,7 +199,7 @@ export default function MarketingPortal() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              campaign_id: campaign.id,
+              campaign_id: campaignId,
               subject: draft.subject,
               html_body: draft.html_body,
               recipients: emails,
@@ -274,11 +270,11 @@ export default function MarketingPortal() {
             <div className="flex items-center gap-2">
               <Input
                 readOnly
-                value={`https://crm.syncpedia.in/apply?ref=${referralCode}`}
+                value={publicApplyUrl(referralCode)}
                 className="text-xs h-8 bg-muted/50 font-mono"
               />
               <Button size="sm" variant="outline" className="gap-1 shrink-0" onClick={() => {
-                navigator.clipboard.writeText(`https://crm.syncpedia.in/apply?ref=${referralCode}`);
+                navigator.clipboard.writeText(publicApplyUrl(referralCode));
                 setCopiedLink('default');
                 toast({ title: 'Link copied!' });
                 setTimeout(() => setCopiedLink(null), 2000);
@@ -291,11 +287,11 @@ export default function MarketingPortal() {
               <div className="flex items-center gap-2">
                 <Input
                   readOnly
-                  value={`https://crm.syncpedia.in/apply?ref=${referralCode}&form=normal`}
+                  value={publicApplyUrl(referralCode, 'normal')}
                   className="text-xs h-8 bg-muted/50 font-mono"
                 />
                 <Button size="sm" variant="outline" className="gap-1 shrink-0" onClick={() => {
-                  navigator.clipboard.writeText(`https://crm.syncpedia.in/apply?ref=${referralCode}&form=normal`);
+                  navigator.clipboard.writeText(publicApplyUrl(referralCode, 'normal'));
                   setCopiedLink('normal');
                   toast({ title: 'Link copied!' });
                   setTimeout(() => setCopiedLink(null), 2000);

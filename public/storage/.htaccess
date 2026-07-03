@@ -1,0 +1,7 @@
+# Block direct HTTP access — invoices are served via /api/payment-links.php?action=invoice
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Deny from all
+</IfModule>

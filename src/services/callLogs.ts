@@ -100,7 +100,7 @@ export const callLogsApi = {
 
   addLogMultipart: (body: CreateCallLogInput, recording: File) => {
     const fd = new FormData();
-    appendCallLogFields(fd, body as Record<string, unknown>);
+    appendCallLogFields(fd, body as unknown as Record<string, unknown>);
     fd.append("call_recording", recording);
     return requestMultipart<{ success: true; log: CallLog }>("/call_logs.php?action=add_log", fd);
   },

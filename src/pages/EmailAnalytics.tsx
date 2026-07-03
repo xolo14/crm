@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
 import { api } from '@/lib/api';
+import { phpList, inDateRange } from '@/lib/phpList';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -95,25 +95,19 @@ export default function EmailAnalytics() {
       }
 
       // Campaigns
-      let q = supabase.from('email_campaigns').select('*')
-        .gte('created_at', from.toISOString())
-        .lte('created_at', to.toISOString())
-        .order('created_at', { ascending: false });
-
-      if (isMarketing) q = q.eq('created_by', user?.id || '');
+      let campData = phpList(await api.marketing.emailCampaigns(isMarketing ? { mine: true } : undefined));
+      campData = campData.filter((c) => inDateRange(c, from, to));
       if (memberFilter !== 'all' && isSuperAdmin) {
-        const member = membersData.find(m => m.id === memberFilter);
-        if (member) q = q.eq('created_by', member.id);
+        const member = membersData.find((m) => m.id === memberFilter);
+        if (member) {
+          campData = campData.filter((c) => c.created_by === member.id || c.created_by === member.user_id);
+        }
       }
+      setCampaigns(campData);
 
-      const { data: campData } = await q;
-      setCampaigns(campData || []);
-
-      if (campData && campData.length > 0) {
-        const ids = campData.map(c => c.id);
-        const { data: sendsData } = await supabase.from('email_sends').select('*')
-          .in('campaign_id', ids).order('created_at', { ascending: false }).limit(1000);
-        setSends(sendsData || []);
+      if (campData.length > 0) {
+        const sendsRes = await api.marketing.emailSends(campData.map((c) => c.id));
+        setSends(phpList(sendsRes));
       } else {
         setSends([]);
       }

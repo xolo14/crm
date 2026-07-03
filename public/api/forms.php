@@ -6,8 +6,8 @@ $db = (new Database())->getConnection();
 $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
-$role = $tokenData['role'];
-$orgId = $tokenData['org_id'] ?? null;
+$role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+$orgId = getOrgId($tokenData);
 
 function formsResolveOrgSlug(PDO $db, ?string $orgId): ?string {
     $oid = is_string($orgId) ? trim($orgId) : '';
@@ -23,10 +23,41 @@ function formsResolveOrgSlug(PDO $db, ?string $orgId): ?string {
     }
 }
 
-ensureGlobalBuiltinLeadForms($db);
+/** @return array<string,mixed> */
+function formsParseMetaJson($raw): array {
+    if (is_array($raw)) return $raw;
+    if (is_string($raw) && trim($raw) !== '') {
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded)) return $decoded;
+    }
+    return [];
+}
+
+/**
+ * Fetch a form row scoped to caller permissions.
+ *
+ * @return array<string,mixed>|null
+ */
+function formsGetScopedForm(PDO $db, string $formId, string $role, string $userId, ?string $orgId): ?array {
+    $params = [$formId];
+    $orgClause = '';
+    if ($role === 'marketing' || $role === 'sales_marketing') {
+        $orgClause = ' AND created_by = ?';
+        $params[] = $userId;
+    } elseif ($role !== 'super_admin') {
+        $orgClause = ' AND org_id = ?';
+        $params[] = $orgId;
+    }
+    $st = $db->prepare("SELECT id, name, slug, org_id, created_by, meta_json FROM lead_forms WHERE id = ? $orgClause LIMIT 1");
+    $st->execute($params);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
+}
+
+retireGlobalBuiltinLeadForms($db);
 
 if ($method === 'GET') {
-    requireRole($tokenData, ['super_admin', 'admin', 'manager', 'sales_representative', 'marketing', 'sales_marketing']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'sales_marketing']);
     $action = $_GET['action'] ?? '';
 
     if ($action === 'assignments') {
@@ -57,12 +88,31 @@ if ($method === 'GET') {
         respond(['data' => $stmt->fetchAll()]);
     }
 
+    if ($action === 'external_api') {
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
+        $formId = trim((string) ($_GET['form_id'] ?? ''));
+        if ($formId === '') respond(['error' => 'form_id required'], 400);
+        $row = formsGetScopedForm($db, $formId, $role, $userId, $orgId);
+        if (!$row) respond(['error' => 'Form not found'], 404);
+        $meta = formsParseMetaJson($row['meta_json'] ?? null);
+        $enabled = !empty($meta['external_api_enabled']);
+        $hash = trim((string) ($meta['external_api_key_hash'] ?? ''));
+        respond([
+            'data' => [
+                'form_id' => $row['id'],
+                'enabled' => $enabled,
+                'has_key' => $hash !== '',
+                'integration_url' => '/apply?form=' . rawurlencode((string) ($row['slug'] ?? '')),
+            ],
+        ]);
+    }
+
     $params = [];
-    $where = '1=1';
+    $where = "NOT (lf.slug IN ('normal', 'default') AND lf.org_id IS NULL)";
     $orgSlug = formsResolveOrgSlug($db, $orgId);
     $isSyncpediaOrg = ($orgSlug === 'syncpedia') || ($orgId === null || $orgId === '');
     if ($role === 'super_admin') {
-        // all forms
+        // all non-retired forms
     } elseif ($role === 'admin') {
         if ($isSyncpediaOrg) {
             // Syncpedia admin: all super_admin-created forms
@@ -71,48 +121,38 @@ if ($method === 'GET') {
                 WHERE su.id = lf.created_by AND LOWER(TRIM(su.role)) = 'super_admin'
             )";
         } else {
-            // Other org admin: global/org active normal + own created forms
-            $where .= " AND (
-                (lf.is_active = 1 AND lf.slug = 'normal' AND (lf.org_id IS NULL OR lf.org_id = ?))
-                OR lf.created_by = ?
-            )";
-            $params[] = $orgId;
+            $where .= " AND (lf.created_by = ? OR lf.org_id = ?)";
             $params[] = $userId;
+            $params[] = $orgId;
         }
+    } elseif ($role === 'marketing') {
+        $where .= " AND lf.is_active = 1 AND (lf.created_by = ?";
+        $params[] = $userId;
+        if (!$isSyncpediaOrg) {
+            $where .= " OR lf.org_id = ?";
+            $params[] = $orgId;
+        }
+        $where .= ")";
+    } elseif ($role === 'org') {
+        $where .= " AND lf.is_active = 1 AND lf.org_id = ?";
+        $params[] = $orgId;
     } elseif ($role === 'sales_marketing') {
-        if ($isSyncpediaOrg) {
-            $where .= " AND lf.is_active = 1 AND (
-                lf.created_by = ?
-                OR (lf.org_id IS NULL AND lf.slug IN ('default','normal'))
-            )";
-            $params[] = $userId;
-        } else {
-            $where .= " AND lf.is_active = 1 AND (
-                lf.created_by = ?
-                OR (lf.slug = 'normal' AND (lf.org_id IS NULL OR lf.org_id = ?))
-            )";
-            $params[] = $userId;
-            $params[] = $orgId;
-        }
+        $where .= " AND lf.is_active = 1 AND lf.created_by = ?";
+        $params[] = $userId;
     } else {
-        if ($isSyncpediaOrg) {
-            // Syncpedia members: default + normal by default; also include explicit assignments.
-            $where .= " AND lf.is_active = 1 AND (
-                (lf.org_id IS NULL AND lf.slug IN ('default','normal'))
-                OR EXISTS (SELECT 1 FROM lead_form_assignments lfa WHERE lfa.form_id = lf.id AND lfa.member_id = ?)
-            )";
-            $params[] = $userId;
-        } else {
-            // Other org members: normal only (global/org scoped).
-            $where .= " AND lf.is_active = 1 AND lf.slug = 'normal' AND (lf.org_id IS NULL OR lf.org_id = ?)";
-            $params[] = $orgId;
-        }
+        $where .= " AND lf.is_active = 1 AND EXISTS (
+            SELECT 1 FROM lead_form_assignments lfa
+            WHERE lfa.form_id = lf.id AND lfa.member_id = ?
+        )";
+        $params[] = $userId;
     }
 
     $stmt = $db->prepare("
         SELECT lf.*,
+               o.name AS org_name,
                (SELECT COUNT(*) FROM lead_form_assignments lfa WHERE lfa.form_id = lf.id) AS assigned_count
         FROM lead_forms lf
+        LEFT JOIN organizations o ON o.id = lf.org_id
         WHERE $where
         ORDER BY lf.created_at DESC
     ");
@@ -136,7 +176,7 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'sales_marketing']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
     $input = getInput();
     $action = $_GET['action'] ?? '';
 
@@ -178,11 +218,6 @@ if ($method === 'POST') {
 
             $memberOrg = isset($member['org_id']) ? trim((string)$member['org_id']) : '';
             $memberOrgSlug = isset($member['org_slug']) ? trim((string)$member['org_slug']) : '';
-            $isSyncpediaMember = ($memberOrgSlug === 'syncpedia') || ($memberOrg === '');
-
-            if (($formRow['slug'] ?? '') === 'default' && !$isSyncpediaMember) {
-                respond(['error' => 'Default form can only be assigned to Syncpedia members'], 400);
-            }
 
             if ($role !== 'super_admin') {
                 $formOrg = isset($formRow['org_id']) ? trim((string)$formRow['org_id']) : '';
@@ -212,7 +247,7 @@ if ($method === 'POST') {
             if (empty($cleanMemberIds)) {
                 $db->prepare('
                     DELETE lfa FROM lead_form_assignments lfa
-                    INNER JOIN users u ON u.id = lfa.member_id
+                    INNER JOIN users u ON lfa.member_id = u.id
                     WHERE lfa.form_id = ? AND u.org_id = ?
                 ')->execute([$formId, $orgId]);
             } else {
@@ -220,22 +255,52 @@ if ($method === 'POST') {
                 $delParams = array_merge([$formId, $orgId], $cleanMemberIds);
                 $db->prepare("
                     DELETE lfa FROM lead_form_assignments lfa
-                    INNER JOIN users u ON u.id = lfa.member_id
+                    INNER JOIN users u ON lfa.member_id = u.id
                     WHERE lfa.form_id = ? AND u.org_id = ?
                       AND lfa.member_id NOT IN ($placeholders)
                 ")->execute($delParams);
             }
         }
 
+        $upsert = syncpediaUpsertClause(
+            $db,
+            '(form_id, member_id)',
+            ['assigned_by = EXCLUDED.assigned_by'],
+            ['`assigned_by` = VALUES(`assigned_by`)'],
+        );
         $stmt = $db->prepare("
             INSERT INTO lead_form_assignments (id, form_id, member_id, assigned_by)
             VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE assigned_by = VALUES(assigned_by)
+            {$upsert}
         ");
         foreach ($cleanMemberIds as $mid) {
             $stmt->execute([generateUUID(), $formId, $mid, $userId]);
         }
         respond(['message' => 'Assignments saved']);
+    }
+
+    if ($action === 'generate_api_key') {
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
+        $formId = trim((string) ($input['form_id'] ?? ''));
+        if ($formId === '') respond(['error' => 'form_id required'], 400);
+        $row = formsGetScopedForm($db, $formId, $role, $userId, $orgId);
+        if (!$row) respond(['error' => 'Form not found'], 404);
+        $meta = formsParseMetaJson($row['meta_json'] ?? null);
+        $plain = formExternalApiKeyGenerateRaw();
+        $meta['external_api_enabled'] = true;
+        $meta['external_api_key_hash'] = formExternalApiKeyHash($plain);
+        $meta['external_api_key_last_rotated_at'] = date('c');
+        $db->prepare('UPDATE lead_forms SET meta_json = ? WHERE id = ?')
+            ->execute([json_encode($meta), $formId]);
+        respond([
+            'message' => 'Form API key generated',
+            'data' => [
+                'form_id' => $formId,
+                'api_key' => $plain,
+                'enabled' => true,
+                'integration_url' => '/apply?form=' . rawurlencode((string) ($row['slug'] ?? '')),
+            ],
+        ]);
     }
 
     $name = trim($input['name'] ?? '');
@@ -276,14 +341,14 @@ if ($method === 'POST') {
 }
 
 if ($method === 'PUT') {
-    requireRole($tokenData, ['super_admin', 'admin', 'sales_marketing']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'id required'], 400);
     $input = getInput();
 
     $params = [$id];
     $orgClause = '';
-    if ($role === 'sales_marketing') {
+    if ($role === 'marketing') {
         $orgClause = ' AND created_by = ?';
         $params[] = $userId;
     } elseif ($role !== 'super_admin') {
@@ -318,7 +383,7 @@ if ($method === 'PUT') {
     if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
 
     $vals[] = $id;
-    if ($role === 'sales_marketing') {
+    if ($role === 'marketing') {
         $vals[] = $userId;
     } elseif ($role !== 'super_admin') {
         $vals[] = $orgId;
@@ -329,6 +394,21 @@ if ($method === 'PUT') {
 }
 
 if ($method === 'DELETE') {
+    $action = $_GET['action'] ?? '';
+    if ($action === 'revoke_api_key') {
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
+        $formId = trim((string) ($_GET['form_id'] ?? ''));
+        if ($formId === '') respond(['error' => 'form_id required'], 400);
+        $row = formsGetScopedForm($db, $formId, $role, $userId, $orgId);
+        if (!$row) respond(['error' => 'Form not found'], 404);
+        $meta = formsParseMetaJson($row['meta_json'] ?? null);
+        unset($meta['external_api_key_hash']);
+        $meta['external_api_enabled'] = false;
+        $db->prepare('UPDATE lead_forms SET meta_json = ? WHERE id = ?')
+            ->execute([json_encode($meta), $formId]);
+        respond(['message' => 'Form API key revoked']);
+    }
+
     requireRole($tokenData, ['super_admin', 'admin']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'id required'], 400);
@@ -346,12 +426,6 @@ if ($method === 'DELETE') {
     if (!$row) {
         respond(['error' => 'Form not found'], 404);
     }
-    $delSlug = strtolower(trim((string) ($row['slug'] ?? '')));
-    $delOrg = isset($row['org_id']) ? trim((string) $row['org_id']) : '';
-    if (($delSlug === 'default' || $delSlug === 'normal') && $delOrg === '') {
-        respond(['error' => 'Built-in Syncpedia platform forms (slugs default / normal, global) cannot be deleted.'], 403);
-    }
-
     $stmt = $db->prepare("DELETE FROM lead_forms WHERE id = ? $orgClause");
     $stmt->execute($params);
     respond(['message' => 'Form deleted']);

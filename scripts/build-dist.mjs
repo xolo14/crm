@@ -43,74 +43,162 @@ function ensureDir(dir) {
 }
 
 // ── 1. React frontend (also copies public/ → dist/) ──────────
+// .env.production sets VITE_API_URL= so the built app uses same-origin /api (no Hostinger env vars).
 run("npm run build:vite");
 
 // ── 2. PHP API (source of truth: php-backend/) ─────────────
 log("Syncing PHP api → dist/api + public/api");
 copyDir(path.join(root, "php-backend", "api"), path.join(dist, "api"));
 copyDir(path.join(root, "php-backend", "api"), path.join(root, "public", "api"));
+copyFile(
+  path.join(root, "php-backend", "composer.json"),
+  path.join(dist, "composer.json"),
+);
+copyFile(
+  path.join(root, "php-backend", "install-vendor.sh"),
+  path.join(dist, "install-vendor.sh"),
+);
+
+// ── 2b. api/config.php — ship template for first Hostinger deploy ─────────────
+const localConfig = path.join(root, "php-backend", "api", "config.php");
+const exampleConfig = path.join(root, "php-backend", "api", "config.example.php");
+const distConfig = path.join(dist, "api", "config.php");
+if (fs.existsSync(localConfig)) {
+  copyFile(localConfig, distConfig);
+  log("Copied php-backend/api/config.php → dist/api/config.php");
+} else if (fs.existsSync(exampleConfig)) {
+  copyFile(exampleConfig, distConfig);
+  log("Shipped dist/api/config.php from config.example.php — edit MySQL credentials on Hostinger before use");
+}
 
 // ── 3. PHP vendor + database ─────────────────────────────────
+const vendorDir = path.join(root, "php-backend", "vendor");
+const composerJson = path.join(root, "php-backend", "composer.json");
+if (fs.existsSync(composerJson) && !fs.existsSync(path.join(vendorDir, "autoload.php"))) {
+  log("Running composer install in php-backend/ (dompdf + PHPMailer for invoices)");
+  try {
+    run("composer install --no-dev --optimize-autoloader", path.join(root, "php-backend"));
+  } catch (e) {
+    log("WARN: composer install failed — upload php-backend/vendor manually or run composer on server");
+  }
+}
 copyDir(path.join(root, "php-backend", "vendor"), path.join(dist, "vendor"));
 copyDir(path.join(root, "php-backend", "vendor"), path.join(root, "public", "vendor"));
 copyFile(
-  path.join(root, "php-backend", "database.sql"),
+  path.join(root, "php-backend", "database.mysql.sql"),
   path.join(dist, "database.sql"),
 );
+copyFile(
+  path.join(root, "php-backend", "database.mysql.sql"),
+  path.join(root, "public", "database.sql"),
+);
 
-// ── 4. Upload directories (must exist & be writable on server) ─
+// ── 4. Upload + invoice storage (must exist & be writable on server) ─
 for (const sub of [
   "uploads/resumes",
   "uploads/call_recordings",
   "uploads/certificates",
+  "uploads/certificate_assets",
   "uploads/payslips",
   "storage/payment_invoices",
+  "storage/tmp",
+  "storage/payslips",
+  "storage/offer_letters",
 ]) {
   ensureDir(path.join(dist, sub));
   ensureDir(path.join(root, "public", sub));
 }
+copyDir(path.join(root, "php-backend", "storage"), path.join(dist, "storage"));
+copyDir(path.join(root, "php-backend", "storage"), path.join(root, "public", "storage"));
 ensureDir(path.join(root, "php-backend", "storage", "payment_invoices"));
+ensureDir(path.join(root, "php-backend", "storage", "tmp"));
 
-// ── 5. Deploy instructions inside dist ─────────────────────
-const deployMd = `# SYNCPedia CRM — deploy from this folder
+// ── 5. Ensure root .htaccess is in dist (Vite copies public/, but verify) ─
+const htaccess = path.join(root, "public", ".htaccess");
+if (fs.existsSync(htaccess)) {
+  copyFile(htaccess, path.join(dist, ".htaccess"));
+}
 
-Upload **everything inside this \`dist/\` folder** to Hostinger \`public_html\`
-(or your site root). Stack: **React (Vite) + PHP API + MySQL** — no Node.js required.
+// ── 6. Deploy instructions inside dist ─────────────────────
+const deployMd = `# SYNCPedia CRM — Hostinger shared hosting
 
-## Folder layout
+Upload **everything inside this \`dist/\` folder** to \`public_html\`.
+No Node.js or server environment variables are required on Hostinger.
+
+## Stack
 
 | Path | Purpose |
 |------|---------|
 | \`index.html\`, \`assets/\` | React CRM frontend |
-| \`api/\` | PHP backend (login, leads, payment links, email, etc.) |
-| \`vendor/\` | PHP Composer libraries |
-| \`uploads/\` | User uploads (must be writable, chmod 755) |
-| \`database.sql\` | MySQL schema reference |
+| \`api/\` | PHP backend (login, leads, forms, payments, etc.) |
+| \`api/config.php\` | **MySQL + secrets** (edit on server) |
+| \`vendor/\` | PHP libraries (PHPMailer, etc.) |
+| \`uploads/\` | User uploads (chmod 755, writable) |
+| \`storage/payment_invoices/\` | **Payment invoice PDFs** (chmod 775, writable — do not delete on re-deploy) |
+| \`vendor/\` | PHP libraries (**dompdf** for invoices, PHPMailer) |
+| \`database.sql\` | Import once in phpMyAdmin |
+| \`.htaccess\` | Routes \`/api/*.php\` to PHP (not React) |
 
-## Step 1 — Upload & configure
+## Step 1 — Upload files
 
-1. Upload all files from \`dist/\` to \`public_html\`.
-2. Edit \`api/config.php\`:
-   - MySQL: \`DB_HOST\`, \`DB_NAME\`, \`DB_USER\`, \`DB_PASS\`
-   - Razorpay: \`RAZORPAY_KEY_ID\`, \`RAZORPAY_KEY_SECRET\`, \`RAZORPAY_WEBHOOK_SECRET\`
-   - Optional: \`CRM_PUBLIC_URL=https://your-crm-domain.com\`
-   - SMTP (fresher emails): \`SMTP_HR_USER\`, \`SMTP_HR_PASS\`, etc.
-3. Ensure \`uploads/\` subfolders are writable.
-4. Upload root \`.htaccess\` (keeps \`/api/*.php\` on PHP, not React).
+1. Upload all contents of \`dist/\` to Hostinger \`public_html\`.
+2. Confirm \`.htaccess\` uploaded (show hidden files in File Manager).
 
-## Step 2 — Razorpay webhook
+## Step 2 — MySQL (phpMyAdmin)
 
-\`https://your-crm-domain.com/api/payment-links.php?action=webhook\`
+1. hPanel → **Databases** → create MySQL database + user (note all four values).
+2. phpMyAdmin → **Import** → select \`database.sql\`.
+3. Edit \`api/config.php\` on the server (included in dist as a template — replace placeholder DB values):
 
-## Verify
+\`\`\`php
+define('DB_HOST', 'localhost');           // almost always localhost on Hostinger
+define('DB_NAME', 'u123456789_syncpedia'); // from Databases panel
+define('DB_USER', 'u123456789_crmuser');
+define('DB_PASS', 'your_password');
+define('JWT_SECRET', 'random-32-char-string'); // change this!
+\`\`\`
 
-- CRM: \`https://yourdomain.com\`
-- Payment links (logged in): \`https://yourdomain.com/api/payment-links.php?count=5\`
-- Should return JSON \`{"success":true,"data":{...}}\` — not HTML.
+4. Optional: Razorpay keys, SMTP, \`GOOGLE_CLIENT_ID\` in the same file.
 
-## After deploy
+## Step 3 — Verify (must return JSON, not HTML)
 
-Hard-refresh the browser (Ctrl+F5) so cached HTML responses are cleared.
+Open in browser:
+
+\`https://your-domain.com/api/ping.php\`
+
+Expected: \`{"status":"ok","database":"connected",...}\`
+
+If you see HTML or a blank page, PHP is not running or \`.htaccess\` is missing.
+
+## Step 4 — PHP version
+
+hPanel → **Advanced** → **PHP Configuration** → use **PHP 8.1+** and enable \`pdo_mysql\`.
+
+## Step 5 — Invoice PDF storage
+
+Payment invoices are saved to \`storage/payment_invoices/\` on the server (not in MySQL).
+
+1. After upload, set folder permissions: **storage/** and **storage/payment_invoices/** → **775** (writable).
+2. Open \`/api/ping.php\` — you should see \`"storage": { "payment_invoices": "writable" }\`.
+3. \`vendor/\` must include **dompdf** (run \`sh install-vendor.sh\` via Hostinger SSH if PDFs fail).
+4. On re-deploy, **do not delete** \`storage/payment_invoices/\` — it holds saved invoices.
+
+Download invoice in CRM: Payment Links → view link → **Download Invoice**.
+
+## Forgot password / login errors
+
+If the app says "Server returned HTML" or "Database not configured":
+- \`api/config.php\` still has placeholder DB values, or
+- \`database.sql\` was not imported, or
+- \`api/\` folder was not uploaded.
+
+## Razorpay webhook (optional)
+
+\`https://your-domain.com/api/payment-links.php?action=webhook\`
+
+## Rebuild locally
+
+\`npm run build\` → re-upload \`dist/\` **except** do not overwrite your live \`api/config.php\` if it is already configured.
 `;
 
 fs.writeFileSync(path.join(dist, "DEPLOY.md"), deployMd, "utf8");
@@ -122,4 +210,5 @@ if (fs.existsSync(staleNodeApi)) {
 }
 
 log("Done. Upload the contents of /dist to Hostinger public_html.");
+log("  Then edit api/config.php on Hostinger and open /api/ping.php to verify.");
 log(`  Frontend + PHP: ${dist}`);

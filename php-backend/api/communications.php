@@ -13,10 +13,7 @@ $userId = $tokenData['user_id'];
 $input = getInput();
 
 function commNormRole(array $tokenData): string {
-    $r = strtolower(trim($tokenData['role'] ?? ''));
-    if ($r === 'superadmin') return 'super_admin';
-    if ($r === 'organisation') return 'org';
-    return $r;
+    return syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 }
 
 function commIsSuperAdmin(array $tokenData): bool {
@@ -57,16 +54,20 @@ function commEnsureMetaColumns(PDO $db): void {
     static $ok = false;
     if ($ok) return;
     $alters = [
-        "ALTER TABLE `platform_whatsapp_config` ADD COLUMN `app_secret` VARCHAR(255) DEFAULT NULL",
-        "ALTER TABLE `platform_whatsapp_config` ADD COLUMN `webhook_verify_token` VARCHAR(128) DEFAULT NULL",
-        "ALTER TABLE `platform_whatsapp_config` ADD COLUMN `graph_api_version` VARCHAR(10) NOT NULL DEFAULT 'v21.0'",
-        "ALTER TABLE `comm_whatsapp_messages` ADD COLUMN `delivered_at` TIMESTAMP NULL DEFAULT NULL",
-        "ALTER TABLE `comm_whatsapp_messages` ADD COLUMN `read_at` TIMESTAMP NULL DEFAULT NULL",
-        "ALTER TABLE `whatsapp_message_templates` ADD COLUMN `meta_template_id` VARCHAR(100) DEFAULT NULL",
-        "ALTER TABLE `whatsapp_message_templates` ADD COLUMN `meta_status` VARCHAR(30) DEFAULT NULL",
+        ['platform_whatsapp_config', 'app_secret', 'VARCHAR(255) DEFAULT NULL'],
+        ['platform_whatsapp_config', 'webhook_verify_token', 'VARCHAR(128) DEFAULT NULL'],
+        ['platform_whatsapp_config', 'graph_api_version', "VARCHAR(10) NOT NULL DEFAULT 'v21.0'"],
+        ['comm_whatsapp_messages', 'delivered_at', 'TIMESTAMP NULL DEFAULT NULL'],
+        ['comm_whatsapp_messages', 'read_at', 'TIMESTAMP NULL DEFAULT NULL'],
+        ['whatsapp_message_templates', 'meta_template_id', 'VARCHAR(100) DEFAULT NULL'],
+        ['whatsapp_message_templates', 'meta_status', 'VARCHAR(30) DEFAULT NULL'],
     ];
-    foreach ($alters as $sql) {
-        try { $db->exec($sql); } catch (Throwable $e) {}
+    foreach ($alters as [$table, $column, $type]) {
+        try {
+            if (!syncpediaColumnExists($db, $table, $column)) {
+                $db->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$type}");
+            }
+        } catch (Throwable $e) {}
     }
     $ok = true;
 }

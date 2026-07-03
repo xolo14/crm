@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
 import { api } from '@/lib/api';
+import { phpList, inDateRange } from '@/lib/phpList';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -79,21 +79,21 @@ export default function WhatsAppAnalytics() {
       } else {
         setMembers([]);
       }
-      let q = supabase.from('whatsapp_campaigns').select('*')
-        .gte('created_at', from.toISOString()).lte('created_at', to.toISOString())
-        .order('created_at', { ascending: false });
-      if (isMarketing) q = q.eq('created_by', user?.id || '');
+      let campData = phpList(await api.marketing.whatsappCampaigns(isMarketing ? { mine: true } : undefined));
+      campData = campData.filter((c) => inDateRange(c, from, to));
       if (memberFilter !== 'all' && isSuperAdmin) {
         const member = membersData.find((m: any) => m.id === memberFilter);
-        if (member) q = q.eq('created_by', member.id);
+        if (member) {
+          campData = campData.filter((c) => c.created_by === member.id || c.created_by === member.user_id);
+        }
       }
-      const { data: campData } = await q;
-      setCampaigns(campData || []);
-      if (campData && campData.length > 0) {
-        const ids = campData.map((c: any) => c.id);
-        const { data: sendsData } = await supabase.from('whatsapp_sends').select('*').in('campaign_id', ids).order('created_at', { ascending: false }).limit(1000);
-        setSends(sendsData || []);
-      } else { setSends([]); }
+      setCampaigns(campData);
+      if (campData.length > 0) {
+        const sendsRes = await api.marketing.whatsappSends(campData.map((c: any) => c.id));
+        setSends(phpList(sendsRes));
+      } else {
+        setSends([]);
+      }
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
     finally { setLoading(false); }
   };

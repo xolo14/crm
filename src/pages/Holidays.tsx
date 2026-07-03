@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { ChevronLeft, ChevronRight, CalendarDays, CheckCircle2, XCircle, PartyPopper, Flag, Plus, Calendar, TreePalm, Star } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, getDay, addMonths, subMonths, isSameMonth, isSameDay, isToday } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { phpList } from '@/lib/phpList';
 
 interface Holiday {
   id: string;
@@ -94,11 +95,12 @@ export default function Holidays() {
 
   const fetchHolidays = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('holidays')
-      .select('*')
-      .order('date', { ascending: true });
-    if (!error && data) setHolidays(data);
+    try {
+      const res = await api.holidays.list(String(currentMonth.getFullYear()));
+      setHolidays(phpList(res));
+    } catch {
+      toast.error('Failed to load holidays');
+    }
     setLoading(false);
   };
 
@@ -138,9 +140,8 @@ export default function Holidays() {
       return;
     }
     setSaving(true);
-    const { error } = await supabase
-      .from('holidays')
-      .insert({
+    try {
+      await api.holidays.create({
         name: addName.trim(),
         date: addDate,
         type: addType,
@@ -148,9 +149,6 @@ export default function Holidays() {
         approved_at: canManageHolidays ? new Date().toISOString() : null,
         notes: addNotes || null,
       });
-    if (error) {
-      toast.error('Failed to add holiday');
-    } else {
       toast.success(
         canManageHolidays
           ? 'Holiday added successfully!'
@@ -158,6 +156,8 @@ export default function Holidays() {
       );
       setAddDialogOpen(false);
       fetchHolidays();
+    } catch {
+      toast.error('Failed to add holiday');
     }
     setSaving(false);
   };
@@ -165,22 +165,18 @@ export default function Holidays() {
   const handleApprove = async (approve: boolean) => {
     if (!selectedHoliday || !user) return;
     setSaving(true);
-    const isValidUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user.id);
-    const { error } = await supabase
-      .from('holidays')
-      .update({
+    try {
+      await api.holidays.update(selectedHoliday.id, {
         is_approved: approve,
-        approved_by: isValidUuid ? user.id : null,
+        approved_by: user.id,
         approved_at: new Date().toISOString(),
         notes,
-      })
-      .eq('id', selectedHoliday.id);
-    if (error) {
-      toast.error('Failed to update holiday');
-    } else {
+      });
       toast.success(approve ? 'Holiday approved!' : 'Holiday marked as working day');
       setDialogOpen(false);
       fetchHolidays();
+    } catch {
+      toast.error('Failed to update holiday');
     }
     setSaving(false);
   };

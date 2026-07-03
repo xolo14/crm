@@ -8,6 +8,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { communicationsApi } from "@/services/communications";
 import DialerPad from "@/components/communications/DialerPad";
+import WhatsAppSetupHome from "@/components/communications/WhatsAppSetupHome";
+import WhatsAppSetupWizard from "@/components/communications/WhatsAppSetupWizard";
 import LogCallDialog from "@/components/sales/LogCallDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,7 +29,7 @@ function normalizePhone(p: string) {
 }
 
 export default function CommunicationsHubPage({ adminLink }: { adminLink?: string }) {
-  const { user } = useAuth();
+  const { user, organization } = useAuth();
   const isMobile = useIsMobile();
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -41,6 +43,9 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   const [waName, setWaName] = useState("");
   const [waTemplateId, setWaTemplateId] = useState("");
   const [waVars, setWaVars] = useState("");
+  const [setupWizardOpen, setSetupWizardOpen] = useState(false);
+
+  const isOrgAdmin = ["admin", "org", "super_admin"].includes(user?.role || "");
 
   const { data: summary } = useQuery({ queryKey: ["comm", "summary"], queryFn: communicationsApi.hubSummary });
   const { data: assignmentsRes } = useQuery({ queryKey: ["comm", "my-numbers"], queryFn: communicationsApi.myNumberAssignments });
@@ -51,6 +56,11 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   const { data: templatesRes } = useQuery({
     queryKey: ["comm", "templates-approved"],
     queryFn: () => communicationsApi.templates({ status: "approved" }),
+  });
+  const { data: orgConfigRes } = useQuery({
+    queryKey: ["comm", "org-config"],
+    queryFn: () => communicationsApi.orgConfig(),
+    enabled: isOrgAdmin,
   });
   const { data: messagesRes } = useQuery({ queryKey: ["comm", "messages"], queryFn: () => communicationsApi.messages(20) });
 
@@ -80,8 +90,8 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   }, [selectedTemplate, waVars]);
 
   const orgWa = summary?.org_whatsapp;
-  const isOrgAdmin = ["admin", "org", "super_admin"].includes(user?.role || "");
   const waConnected = orgWa?.is_active && orgWa?.connection_status === "connected";
+  const orgConfig = orgConfigRes?.data ?? null;
 
   const sendMutation = useMutation({
     mutationFn: communicationsApi.sendWhatsapp,
@@ -278,7 +288,17 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
 
         {/* ── WHATSAPP ── */}
         <TabsContent value="whatsapp" className="mt-4 space-y-4">
-          <div className="grid gap-4 lg:grid-cols-2">
+          {isOrgAdmin && !waConnected ? (
+            <WhatsAppSetupHome
+              userName={user?.full_name}
+              connected={waConnected}
+              businessPhone={orgWa?.business_phone}
+              onConnect={() => setSetupWizardOpen(true)}
+              onManage={() => setSetupWizardOpen(true)}
+            />
+          ) : null}
+
+          <div className={cn("grid gap-4 lg:grid-cols-2", isOrgAdmin && !waConnected && "opacity-60 pointer-events-none")}>
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">Send WhatsApp</CardTitle>
@@ -289,7 +309,16 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
                   <div className="rounded-lg border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-sm">
                     WhatsApp is not connected for your organization.
                     {isOrgAdmin ? (
-                      <> <Link to="/communications/whatsapp-setup" className="font-medium underline">Set up Meta API</Link></>
+                      <>
+                        {" "}
+                        <button
+                          type="button"
+                          className="font-medium underline"
+                          onClick={() => setSetupWizardOpen(true)}
+                        >
+                          Start setup wizard
+                        </button>
+                      </>
                     ) : (
                       " Ask your admin to connect Meta WhatsApp."
                     )}
@@ -393,6 +422,17 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
       </Tabs>
 
       <LogCallDialog open={logCallOpen} onOpenChange={setLogCallOpen} />
+
+      {isOrgAdmin ? (
+        <WhatsAppSetupWizard
+          open={setupWizardOpen}
+          onOpenChange={setSetupWizardOpen}
+          orgId={organization?.id || summary?.org_id}
+          orgName={organization?.name}
+          existingConfig={orgConfig}
+          onConnected={() => qc.invalidateQueries({ queryKey: ["comm"] })}
+        />
+      ) : null}
     </div>
   );
 }

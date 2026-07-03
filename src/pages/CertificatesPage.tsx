@@ -256,7 +256,7 @@ function decodeVerifyPayload(encoded: string): VerifyPayload | null {
     if (typeof parsed.certId !== "string") return null;
     if (!isCertTemplate(parsed.template)) return null;
     if (!isRecord(parsed.overrides)) return null;
-    return parsed as VerifyPayload;
+    return parsed as unknown as VerifyPayload;
   } catch {
     return null;
   }
@@ -1847,7 +1847,9 @@ async function extractTextLayersFromImage(dataUrl: string): Promise<CertLayer[]>
   try {
     const { data } = await worker.recognize(dataUrl);
     const dims = await createImageBitmapFromDataUrl(dataUrl);
-    const words = (data?.words || []).filter((w: any) => String(w?.text || "").trim().length >= 2);
+    const words = (
+      (data as { words?: Array<{ text?: string; bbox?: { x0: number; x1: number; y0: number; y1: number } }> }).words || []
+    ).filter((w) => String(w?.text || "").trim().length >= 2);
     const lines: CertLayer[] = [];
     for (const w of words.slice(0, 120)) {
       const text = String(w.text || "").trim();

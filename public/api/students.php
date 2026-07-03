@@ -7,10 +7,11 @@ $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     // Super admin should see all students unless an explicit org_id filter is requested.
-    $orgId = ($tokenData['role'] ?? '') === 'super_admin' && empty($_GET['org_id'])
+    $orgId = $role === 'super_admin' && empty($_GET['org_id']) && empty($tokenData['org_id'])
         ? null
-        : getOrgId($tokenData);
+        : resolveCreatorOrgId($db, $tokenData);
     $where = '1=1';
     $params = [];
 
@@ -25,12 +26,11 @@ if ($method === 'GET') {
         $params[] = $_GET['status'];
     }
 
-    // Tenant scope: when JWT has org_id (admin, manager, super_admin after org switch), show students tied to that org on the row or via originating lead.
+    // Tenant scope: org on student/lead rows, or mentor/assignee/creator in the same org.
     if ($orgId) {
-        $where .= ' AND (s.org_id = ? OR l.org_id = ? OR l2.org_id = ?)';
-        $params[] = $orgId;
-        $params[] = $orgId;
-        $params[] = $orgId;
+        $tenant = orgFilterStudentsTenantSql($orgId);
+        $where .= $tenant['sql'];
+        $params = array_merge($params, $tenant['params']);
     }
 
     // L2 manager: students tied to downline leads or mentor/user on the row (matches leads.php / profiles dashboard).
@@ -67,6 +67,7 @@ if ($method === 'GET') {
             AND l2.id = (
                 SELECT le.id FROM leads le
                 WHERE le.email = s.email AND TRIM(le.email) <> ''
+                AND (s.org_id IS NULL OR TRIM(s.org_id) = '' OR le.org_id = s.org_id)
                 ORDER BY le.created_at DESC
                 LIMIT 1
             )
@@ -96,11 +97,12 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    requireRole($tokenData, ['admin', 'manager', 'super_admin']);
+    requireRole($tokenData, ['admin', 'manager', 'super_admin', 'org']);
     $input = getInput();
     $id = generateUUID();
+    $orgId = resolveCreatorOrgId($db, $tokenData);
 
-    $stmt = $db->prepare("INSERT INTO students (id, name, email, phone, college, year_of_study, course_id, batch_id, status, enrollment_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    $stmt = $db->prepare("INSERT INTO students (id, name, email, phone, college, year_of_study, course_id, batch_id, org_id, status, enrollment_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     $stmt->execute([
         $id,
         $input['name'],
@@ -110,6 +112,7 @@ if ($method === 'POST') {
         $input['year_of_study'] ?? null,
         $input['course_id'] ?? null,
         $input['batch_id'] ?? null,
+        $orgId,
         $input['status'] ?? 'active',
         $input['enrollment_date'] ?? date('Y-m-d'),
     ]);
@@ -117,10 +120,22 @@ if ($method === 'POST') {
 }
 
 if ($method === 'PUT') {
-    requireRole($tokenData, ['admin', 'manager', 'super_admin']);
+    requireRole($tokenData, ['admin', 'manager', 'super_admin', 'org']);
     $input = getInput();
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
+
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = (string) ($tokenData['user_id'] ?? '');
+    $existing = $db->prepare('SELECT * FROM students WHERE id = ? LIMIT 1');
+    $existing->execute([$id]);
+    $studentRow = $existing->fetch(PDO::FETCH_ASSOC);
+    if (!$studentRow) {
+        respond(['error' => 'Student not found'], 404);
+    }
+    if (!userCanAccessStudentRow($db, $tokenData, $userId, $role, $studentRow)) {
+        respond(['error' => 'Forbidden'], 403);
+    }
 
     $fields = [];
     $params = [];
@@ -139,9 +154,21 @@ if ($method === 'PUT') {
 }
 
 if ($method === 'DELETE') {
-    requireRole($tokenData, ['admin', 'super_admin']);
+    requireRole($tokenData, ['admin', 'super_admin', 'org']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
+
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = (string) ($tokenData['user_id'] ?? '');
+    $existing = $db->prepare('SELECT * FROM students WHERE id = ? LIMIT 1');
+    $existing->execute([$id]);
+    $studentRow = $existing->fetch(PDO::FETCH_ASSOC);
+    if (!$studentRow) {
+        respond(['error' => 'Student not found'], 404);
+    }
+    if (!userCanAccessStudentRow($db, $tokenData, $userId, $role, $studentRow)) {
+        respond(['error' => 'Forbidden'], 403);
+    }
 
     trashArchiveRow($db, 'student', 'students', $id, $tokenData);
     $stmt = $db->prepare("DELETE FROM students WHERE id = ?");

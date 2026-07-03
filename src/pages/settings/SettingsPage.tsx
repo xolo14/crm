@@ -2,7 +2,6 @@ import { useState } from "react";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import { AuditLogs } from "@/components/settings/sections/AuditLogs";
 import { CompanyProfile } from "@/components/settings/sections/CompanyProfile";
-import { CustomFields } from "@/components/settings/sections/CustomFields";
 import { DataPrivacy } from "@/components/settings/sections/DataPrivacy";
 import { GeneralSettings } from "@/components/settings/sections/GeneralSettings";
 import { Localization } from "@/components/settings/sections/Localization";
@@ -16,7 +15,6 @@ const sectionComponents: Record<string, React.FC> = {
   localization: Localization,
   "pipeline-stages": PipelineStages,
   "tags-labels": TagsAndLabels,
-  "custom-fields": CustomFields,
   security: Security,
   "audit-logs": AuditLogs,
   "data-privacy": DataPrivacy,

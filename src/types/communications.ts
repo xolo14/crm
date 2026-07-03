@@ -48,9 +48,6 @@ export interface MetaPartnerConfig {
   is_active: number | boolean;
 }
 
-  is_active: number | boolean;
-}
-
 export interface ApplyLibraryTemplateResult {
   id: string;
   status: string;

@@ -14,6 +14,7 @@ function syncpediaLoadComposerAutoload(): bool
     }
     $paths = [
         __DIR__ . '/../vendor/autoload.php',
+        dirname(__DIR__) . '/vendor/autoload.php',
         __DIR__ . '/../../php-backend/vendor/autoload.php',
         __DIR__ . '/../../../php-backend/vendor/autoload.php',
     ];

@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation, Outlet } from "rea
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import AppLayout from "@/components/AppLayout";
 import Auth from "@/pages/Auth";
+import LoginPortal from "@/pages/LoginPortal";
 import Dashboard from "@/pages/Dashboard";
 import Leads from "@/pages/Leads";
 import Students from "@/pages/Students";
@@ -39,13 +40,13 @@ import OfferLetters from "@/pages/OfferLetters";
 import CertificatesPage, { CertificateVerifyPage } from "./pages/CertificatesPage";
 import PayslipPage from "@/pages/payslip/PayslipPage";
 import FormsManagerPage from "@/pages/FormsManagerPage";
+import FormApiIntegrationsPage from "@/pages/FormApiIntegrationsPage";
 import SuperAdminPanel from "@/pages/SuperAdminPanel";
 import SuperAdminOrgDashboard from "@/pages/SuperAdminOrgDashboard";
 import NotFound from "./pages/NotFound";
 import { ReactNode } from "react";
-import { getPortalLoginRedirect } from "@/lib/portalAuth";
+import { getPortalLoginRedirect, AUTH_PORTAL } from "@/lib/portalAuth";
 import HRLayout from "@/layouts/HRLayout";
-import HRLogin from "@/pages/HRLogin";
 import HRDashboard from "@/pages/hr/HRDashboard";
 import HRMyLeads from "@/pages/hr/MyLeads";
 import HRAssignedLeads from "@/pages/hr/AssignedLeads";
@@ -61,6 +62,7 @@ import OrgWhatsAppSetupPage from "@/pages/communications/OrgWhatsAppSetupPage";
 import MetaPartnerPage from "@/pages/communications/MetaPartnerPage";
 import TemplateLibraryPage from "@/pages/communications/TemplateLibraryPage";
 import FresherSalaryTrackerPage from "@/pages/FresherSalaryTrackerPage";
+import CallLogPage from "@/pages/sales/CallLogPage";
 import { canAccessFresherSalary, canAccessOfferLetters } from "@/lib/orgAccess";
 
 const queryClient = new QueryClient();
@@ -156,11 +158,11 @@ function AdminSuperOrOrgGate({ children }: { children: ReactNode }) {
 }
 
 function HRProtectedRoute({ children }: { children: ReactNode }) {
-  const token = localStorage.getItem("hr_token");
-  const userRaw = localStorage.getItem("hr_user");
-  const user = userRaw ? JSON.parse(userRaw) : null;
-  if (!token || !user || String(user.role || "").toLowerCase() !== "hr") {
-    return <Navigate to="/hr-login" replace />;
+  const { user, loading } = useAuth();
+  if (loading) return <AuthLoading />;
+  const role = String(user?.role || "").toLowerCase();
+  if (!user || role !== "hr") {
+    return <Navigate to={AUTH_PORTAL.login} replace />;
   }
   return <HRLayout>{children}</HRLayout>;
 }
@@ -174,15 +176,16 @@ const App = () => (
         <AuthProvider>
           <Routes>
             <Route path="/apply" element={<Apply />} />
-            <Route path="/sales_rep_portal" element={<Auth />} />
+            <Route path="/login" element={<LoginPortal />} />
             <Route path="/super_admin" element={<Auth />} />
             <Route path="/admin" element={<Auth />} />
             <Route path="/organisation" element={<Navigate to="/admin" replace />} />
-            <Route path="/marketing" element={<Auth />} />
-            <Route path="/manager" element={<Auth />} />
-            <Route path="/auth" element={<Auth />} />
-            <Route path="/hr-login" element={<HRLogin />} />
-            <Route path="/sales-rep" element={<Navigate to="/sales_rep_portal" replace />} />
+            <Route path="/sales_rep_portal" element={<Navigate to="/login" replace />} />
+            <Route path="/manager" element={<Navigate to="/login" replace />} />
+            <Route path="/marketing" element={<Navigate to="/login" replace />} />
+            <Route path="/auth" element={<Navigate to="/login" replace />} />
+            <Route path="/hr-login" element={<Navigate to="/login" replace />} />
+            <Route path="/sales-rep" element={<Navigate to="/login" replace />} />
             <Route path="/verify/:certId" element={<CertificateVerifyPage />} />
 
             <Route element={<MainLayoutRoute />}>
@@ -248,6 +251,7 @@ const App = () => (
               <Route path="/certificates" element={<SuperAdminGate><CertificatesPage /></SuperAdminGate>} />
               <Route path="/payslip" element={<PayslipPage />} />
               <Route path="/form-management" element={<FormManagementGate><FormsManagerPage /></FormManagementGate>} />
+              <Route path="/form-api-integrations" element={<FormManagementGate><FormApiIntegrationsPage /></FormManagementGate>} />
               <Route path="*" element={<NotFound />} />
             </Route>
 

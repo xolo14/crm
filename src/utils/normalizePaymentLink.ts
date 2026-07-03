@@ -43,19 +43,25 @@ export function normalizePaymentLink(raw: unknown): RazorpayPaymentLink {
     }
   }
 
-  const status = String(r.status ?? "created") as PaymentLinkStatus;
+  const statusRaw = String(r.status ?? "created").toLowerCase().trim();
+  const status = (
+    ["created", "partially_paid", "paid", "cancelled", "expired"].includes(statusRaw)
+      ? statusRaw
+      : "created"
+  ) as PaymentLinkStatus;
+  const amount = Number(r.amount ?? 0);
+  let amountPaid = Number(r.amount_paid ?? 0);
+  if (status === "paid" && amount > 0 && amountPaid < amount) {
+    amountPaid = amount;
+  }
 
   return {
     id: String(r.id ?? ""),
-    amount: Number(r.amount ?? 0),
-    amount_paid: Number(r.amount_paid ?? 0),
+    amount,
+    amount_paid: amountPaid,
     currency: String(r.currency ?? "INR"),
     description: String(r.description ?? ""),
-    status: ["created", "partially_paid", "paid", "cancelled", "expired"].includes(
-        status,
-      )
-      ? status
-      : "created",
+    status,
     short_url: String(r.short_url ?? ""),
     created_at: Number(r.created_at ?? 0),
     expire_by: r.expire_by ? Number(r.expire_by) : undefined,

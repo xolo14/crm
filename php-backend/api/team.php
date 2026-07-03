@@ -28,11 +28,10 @@ function teamEnsureReportsToColumn(PDO $db): void {
         return;
     }
     try {
-        $chk = $db->query("SHOW COLUMNS FROM `users` LIKE 'reports_to_id'");
-        if ($chk && !$chk->fetch()) {
-            $db->exec("ALTER TABLE `users` ADD COLUMN `reports_to_id` CHAR(36) DEFAULT NULL AFTER `org_id`");
+        if (!syncpediaColumnExists($db, 'users', 'reports_to_id')) {
+            $db->exec('ALTER TABLE users ADD COLUMN reports_to_id CHAR(36) DEFAULT NULL');
             try {
-                $db->exec("ALTER TABLE `users` ADD INDEX `idx_users_reports_to` (`reports_to_id`)");
+                $db->exec('CREATE INDEX IF NOT EXISTS idx_users_reports_to ON users (reports_to_id)');
             } catch (Exception $e) {
             }
         }
@@ -155,8 +154,97 @@ if ($method === 'GET') {
     respond(['data' => $stmt->fetchAll()]);
 }
 
-// POST - Create new team member
+/** Whether the caller may send welcome email to an existing team member. */
+function teamCallerCanSendWelcomeTo(PDO $db, array $tokenData, array $targetUser): bool
+{
+    $callerRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $targetId = trim((string) ($targetUser['id'] ?? ''));
+    if ($targetId === '') {
+        return false;
+    }
+    if ($callerRole === 'super_admin') {
+        return true;
+    }
+
+    $callerOrg = teamResolveCallerOrgId($db, $tokenData);
+    $targetOrg = trim((string) ($targetUser['org_id'] ?? ''));
+    if ($callerOrg === null || $callerOrg === '' || $targetOrg === '' || $callerOrg !== $targetOrg) {
+        return false;
+    }
+
+    if ($callerRole === 'admin') {
+        return true;
+    }
+
+    if ($callerRole === 'manager') {
+        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
+        return in_array($targetId, $visibleIds, true);
+    }
+
+    return false;
+}
+
+function teamWantsWelcomeEmail(array $input): bool
+{
+    if (!array_key_exists('send_welcome_email', $input)) {
+        return false;
+    }
+    $v = $input['send_welcome_email'];
+    if ($v === true || $v === 1 || $v === '1') {
+        return true;
+    }
+    if (is_string($v) && strtolower(trim($v)) === 'true') {
+        return true;
+    }
+    return false;
+}
+
+// POST - Create new team member / send welcome email
 if ($method === 'POST') {
+    $postAction = trim((string) ($_GET['action'] ?? ''));
+
+    if ($postAction === 'send_welcome_email') {
+        requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+        $input = getInput();
+        $targetId = trim((string) ($input['user_id'] ?? $input['id'] ?? ''));
+        $password = (string) ($input['password'] ?? '');
+        if ($targetId === '' || trim($password) === '') {
+            respond(['error' => 'user_id and password are required'], 400);
+        }
+
+        $stmt = $db->prepare(
+            'SELECT id, email, full_name, phone, role, org_id FROM users WHERE id = ? AND is_active = 1 LIMIT 1',
+        );
+        $stmt->execute([$targetId]);
+        $target = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$target || !is_array($target)) {
+            respond(['error' => 'Team member not found'], 404);
+        }
+        if (!teamCallerCanSendWelcomeTo($db, $tokenData, $target)) {
+            respond(['error' => 'You cannot send welcome email to this member'], 403);
+        }
+
+        $memberRole = normalizeRoleValue((string) ($target['role'] ?? ''));
+        $welcomeResult = syncpediaSendMemberWelcomeEmail(
+            (string) ($target['full_name'] ?? ''),
+            (string) ($target['email'] ?? ''),
+            $password,
+            $memberRole,
+            is_string($target['phone'] ?? null) ? (string) $target['phone'] : null,
+        );
+
+        $payload = [
+            'id' => $targetId,
+            'message' => 'Welcome email processed',
+            'email_sent' => $welcomeResult['email_sent'],
+            'email_from' => $welcomeResult['from'],
+        ];
+        if ($welcomeResult['email_error'] !== null) {
+            $payload['email_error'] = $welcomeResult['email_error'];
+        }
+        respond($payload);
+    }
+
     requireRole($tokenData, ['admin', 'super_admin', 'manager']);
     $input = getInput();
 
@@ -165,12 +253,11 @@ if ($method === 'POST') {
     $fullName = trim($input['full_name'] ?? '');
     $phone = $input['phone'] ?? null;
     $memberRole = normalizeRoleValue($input['role'] ?? 'sales_representative');
-    $sendWelcomeEmail = !empty($input['send_welcome_email']);
     $callerRole = normalizeRoleValue((string) $role);
     $isManagerCreator = $callerRole === 'manager';
 
     // Super_admin creates team members under the Syncpedia platform tenant — never under a switched-into tenant.
-    if (($tokenData['role'] ?? '') === 'super_admin') {
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
         $orgId = syncpediaGetOrCreateOrgId($db, $userId);
     } else {
         $orgId = resolveCreatorOrgId($db, $tokenData);
@@ -269,16 +356,19 @@ if ($method === 'POST') {
     }
 
     $emailSent = false;
+    $emailFrom = null;
     $emailError = null;
-    if ($sendWelcomeEmail) {
-        $phoneStr = is_string($phone) ? $phone : null;
-        $welcomeHtml = syncpediaBuildTeamMemberWelcomeEmailHtml($fullName, $email, (string) $password, $memberRole, $phoneStr);
-        $mailRes = syncpediaSendHtmlEmail($email, 'Your Syncpedia CRM login credentials', $welcomeHtml);
-        if (($mailRes['ok'] ?? false) === true) {
-            $emailSent = true;
-        } else {
-            $emailError = $mailRes['error'] ?? 'Email send failed';
-        }
+    if (teamWantsWelcomeEmail($input)) {
+        $welcomeResult = syncpediaSendMemberWelcomeEmail(
+            $fullName,
+            $email,
+            (string) $password,
+            $memberRole,
+            is_string($phone) ? $phone : null,
+        );
+        $emailSent = $welcomeResult['email_sent'];
+        $emailFrom = $welcomeResult['from'];
+        $emailError = $welcomeResult['email_error'];
     }
 
     $payload = [
@@ -286,6 +376,7 @@ if ($method === 'POST') {
         'message' => 'Team member created',
         'default_password' => $password,
         'email_sent' => $emailSent,
+        'email_from' => $emailFrom,
     ];
     if ($emailError !== null) {
         $payload['email_error'] = $emailError;

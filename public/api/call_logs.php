@@ -8,38 +8,40 @@ $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? '';
 $userId = $tokenData['user_id'];
-$rawRole = strtolower(trim((string) ($tokenData['role'] ?? '')));
-if ($rawRole === 'superadmin') {
-    $rawRole = 'super_admin';
-}
-if ($rawRole === 'organisation') {
-    $rawRole = 'org';
-}
+$rawRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 
-/** Add attachment_path if missing (checks INFORMATION_SCHEMA; tries AFTER notes then plain ADD). */
+/** Add attachment_path if missing. */
 function callLogsEnsureAttachmentColumn(PDO $db): void
 {
     try {
-        $dbName = $db->query('SELECT DATABASE()')->fetchColumn();
-        if ($dbName === false || $dbName === '') {
-            return;
-        }
-        $stmt = $db->prepare(
-            'SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?'
-        );
-        $stmt->execute([(string) $dbName, 'call_logs', 'attachment_path']);
-        if ((int) $stmt->fetchColumn() > 0) {
-            return;
-        }
-        foreach ([
-            'ALTER TABLE `call_logs` ADD COLUMN `attachment_path` VARCHAR(500) DEFAULT NULL AFTER `notes`',
-            'ALTER TABLE `call_logs` ADD COLUMN `attachment_path` VARCHAR(500) DEFAULT NULL',
-        ] as $alterSql) {
+        if (syncpediaColumnExists($db, 'call_logs', 'attachment_path')) {
+            // Backward compat: if older schemas kept recording path in legacy columns, copy into attachment_path.
             try {
-                $db->exec($alterSql);
-                break;
-            } catch (PDOException $ignored) {
+                if (syncpediaColumnExists($db, 'call_logs', 'recording_url')) {
+                    $db->exec("UPDATE call_logs SET attachment_path = recording_url WHERE (attachment_path IS NULL OR TRIM(attachment_path) = '') AND recording_url IS NOT NULL AND TRIM(recording_url) <> ''");
+                }
+            } catch (Throwable $ignored) {
             }
+            try {
+                if (syncpediaColumnExists($db, 'call_logs', 'recording_path')) {
+                    $db->exec("UPDATE call_logs SET attachment_path = recording_path WHERE (attachment_path IS NULL OR TRIM(attachment_path) = '') AND recording_path IS NOT NULL AND TRIM(recording_path) <> ''");
+                }
+            } catch (Throwable $ignored) {
+            }
+            return;
+        }
+        $db->exec('ALTER TABLE call_logs ADD COLUMN attachment_path VARCHAR(500) DEFAULT NULL');
+        try {
+            if (syncpediaColumnExists($db, 'call_logs', 'recording_url')) {
+                $db->exec("UPDATE call_logs SET attachment_path = recording_url WHERE (attachment_path IS NULL OR TRIM(attachment_path) = '') AND recording_url IS NOT NULL AND TRIM(recording_url) <> ''");
+            }
+        } catch (Throwable $ignored) {
+        }
+        try {
+            if (syncpediaColumnExists($db, 'call_logs', 'recording_path')) {
+                $db->exec("UPDATE call_logs SET attachment_path = recording_path WHERE (attachment_path IS NULL OR TRIM(attachment_path) = '') AND recording_path IS NOT NULL AND TRIM(recording_path) <> ''");
+            }
+        } catch (Throwable $ignored) {
         }
     } catch (Throwable $ignored) {
     }
@@ -51,33 +53,37 @@ function ensureCallLogsTable(PDO $db): void
     if ($done) {
         return;
     }
-    $sql = "CREATE TABLE IF NOT EXISTS `call_logs` (
-      `id` INT AUTO_INCREMENT PRIMARY KEY,
-      `sales_rep_id` CHAR(36) NOT NULL,
-      `org_id` CHAR(36) NOT NULL,
-      `lead_id` CHAR(36) DEFAULT NULL,
-      `call_type` ENUM('incoming','outgoing','missed','rejected') NOT NULL,
-      `call_status` ENUM('connected','never_attended','not_pickup_by_client') NOT NULL DEFAULT 'connected',
-      `duration_seconds` INT NOT NULL DEFAULT 0,
-      `client_phone` VARCHAR(20) DEFAULT NULL,
-      `client_name` VARCHAR(255) DEFAULT NULL,
-      `notes` TEXT DEFAULT NULL,
-      `attachment_path` VARCHAR(500) DEFAULT NULL,
-      `call_date` DATE NOT NULL,
-      `call_time` TIME DEFAULT NULL,
-      `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      INDEX `idx_calllog_rep_id` (`sales_rep_id`),
-      INDEX `idx_calllog_date` (`call_date`),
-      INDEX `idx_calllog_org` (`org_id`),
-      INDEX `idx_calllog_type` (`call_type`),
-      INDEX `idx_calllog_rep_date` (`sales_rep_id`, `call_date`),
-      INDEX `idx_calllog_org_date` (`org_id`, `call_date`),
-      CONSTRAINT `fk_calllog_rep` FOREIGN KEY (`sales_rep_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
-      CONSTRAINT `fk_calllog_org` FOREIGN KEY (`org_id`) REFERENCES `organizations`(`id`) ON DELETE CASCADE,
-      CONSTRAINT `fk_calllog_lead` FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON DELETE SET NULL
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+    if (syncpediaSkipRuntimeDdl($db)) {
+        $done = true;
+        return;
+    }
+    $sql = "CREATE TABLE IF NOT EXISTS call_logs (
+      id SERIAL PRIMARY KEY,
+      sales_rep_id CHAR(36) NOT NULL,
+      org_id CHAR(36) NOT NULL,
+      lead_id CHAR(36) DEFAULT NULL,
+      call_type VARCHAR(20) NOT NULL,
+      call_status VARCHAR(40) NOT NULL DEFAULT 'connected',
+      duration_seconds INT NOT NULL DEFAULT 0,
+      client_phone VARCHAR(20) DEFAULT NULL,
+      client_name VARCHAR(255) DEFAULT NULL,
+      notes TEXT DEFAULT NULL,
+      attachment_path VARCHAR(500) DEFAULT NULL,
+      call_date DATE NOT NULL,
+      call_time TIME DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_calllog_rep FOREIGN KEY (sales_rep_id) REFERENCES users(id) ON DELETE CASCADE,
+      CONSTRAINT fk_calllog_org FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE,
+      CONSTRAINT fk_calllog_lead FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL
+    )";
     try {
         $db->exec($sql);
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_calllog_rep_id ON call_logs (sales_rep_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_calllog_date ON call_logs (call_date)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_calllog_org ON call_logs (org_id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_calllog_type ON call_logs (call_type)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_calllog_rep_date ON call_logs (sales_rep_id, call_date)');
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_calllog_org_date ON call_logs (org_id, call_date)');
     } catch (PDOException $e) {
         // Table exists / FK ordering — ignore for idempotent deploys
     }

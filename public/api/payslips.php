@@ -25,8 +25,7 @@ syncpediaDocumentEnsureColumn($db, 'payslips', 'pdf_path', 'TEXT DEFAULT NULL');
 $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? '';
-$role = strtolower((string) ($tokenData['role'] ?? ''));
-$normalizedRole = $role === 'superadmin' ? 'super_admin' : ($role === 'organisation' ? 'org' : $role);
+$normalizedRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 $userId = (string) ($tokenData['user_id'] ?? '');
 $callerOrgId = getOrgId($tokenData);
 $input = getInput();
@@ -78,7 +77,7 @@ function mapPayslipRow(array $r): array {
         'status' => (string) ($r['status'] ?? 'draft'),
         'orgId' => isset($r['org_id']) ? (string) $r['org_id'] : null,
         'pdfPath' => isset($r['pdf_path']) ? (string) $r['pdf_path'] : null,
-        'hasStoredPdf' => !empty($r['pdf_path']) && is_file((string) $r['pdf_path']),
+        'hasStoredPdf' => !empty($r['pdf_path']) && syncpediaDocumentStorageFileExists((string) $r['pdf_path']),
     ];
 }
 

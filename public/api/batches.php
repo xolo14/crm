@@ -9,7 +9,7 @@ $method = $_SERVER['REQUEST_METHOD'];
 if ($method === 'GET') {
     // Super admin should see all batches unless an explicit org_id filter is requested.
     $effectiveToken = $tokenData;
-    if (($tokenData['role'] ?? '') === 'super_admin' && empty($_GET['org_id'])) {
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin' && empty($_GET['org_id'])) {
         $effectiveToken['org_id'] = null;
     }
     $rawOrg = getOrgId($effectiveToken);
