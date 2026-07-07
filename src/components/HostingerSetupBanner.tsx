@@ -11,7 +11,8 @@ export function HostingerSetupBanner() {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    const runCheck = () => {
+      void (async () => {
       try {
         const url = `${getApiBase()}/ping.php`;
         const res = await fetch(url, { cache: "no-store" });
@@ -50,9 +51,15 @@ export function HostingerSetupBanner() {
           setDetail(`Cannot reach ${getApiBase()}/ping.php. Ensure api/ and .htaccess are uploaded to public_html.`);
         }
       }
-    })();
+      })();
+    };
+
+    // Defer health check so login paint is not competing with /api/ping.php on mobile.
+    const delayMs = 2500;
+    const timer = window.setTimeout(runCheck, delayMs);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, []);
 

@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "sync:api": "node scripts/sync-api.mjs",
+    "predev": "node scripts/sync-api.mjs",
     "build:vite": "vite build",
     "build": "node scripts/build-dist.mjs",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
+    "check:api": "node scripts/check-api-files.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"

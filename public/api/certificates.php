@@ -102,34 +102,27 @@ function certBuildSimplePdf(string $title, string $line1, string $line2): string
 certEnsureTables($db);
 
 if ($method === 'GET' && $action === 'email_logs') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
     $certificateId = trim((string) ($_GET['certificate_id'] ?? ''));
-    $where = '1=1';
-    $params = [];
+    $org = orgFilter($tokenData, 'cel', $db);
+    $where = $org['where'];
+    $params = $org['params'];
     if ($certificateId !== '') {
-        $where .= ' AND certificate_id = ?';
+        $where .= ' AND cel.certificate_id = ?';
         $params[] = $certificateId;
     }
-    if ($orgId) {
-        $where .= ' AND (org_id = ? OR org_id IS NULL)';
-        $params[] = $orgId;
-    }
-    $stmt = $db->prepare("SELECT * FROM certificate_email_logs WHERE $where ORDER BY created_at DESC LIMIT 100");
+    $stmt = $db->prepare("SELECT cel.* FROM certificate_email_logs cel WHERE $where ORDER BY cel.created_at DESC LIMIT 100");
     $stmt->execute($params);
     respond(['data' => $stmt->fetchAll()]);
 }
 
 if ($method === 'GET' && $action === 'pdf') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
     $certificateId = trim((string) ($_GET['certificate_id'] ?? ''));
     if ($certificateId === '') respond(['error' => 'certificate_id required'], 400);
-    $params = [$certificateId];
-    $where = 'sync_id = ?';
-    if ($orgId) {
-        $where .= ' AND (org_id = ? OR org_id IS NULL)';
-        $params[] = $orgId;
-    }
-    $stmt = $db->prepare("SELECT * FROM certificate_issue_artifacts WHERE $where ORDER BY created_at DESC LIMIT 1");
+    $org = orgFilter($tokenData, 'cia', $db);
+    $params = array_merge([$certificateId], $org['params']);
+    $stmt = $db->prepare("SELECT cia.* FROM certificate_issue_artifacts cia WHERE cia.sync_id = ? AND {$org['where']} ORDER BY cia.created_at DESC LIMIT 1");
     $stmt->execute($params);
     $row = $stmt->fetch();
     if (!$row || empty($row['pdf_path']) || !is_file((string) $row['pdf_path'])) {
@@ -157,16 +150,10 @@ if ($method === 'POST' && $action === 'issue') {
     $studentName = trim((string) ($input['recipientName'] ?? ''));
     $studentEmail = trim((string) ($input['recipientEmail'] ?? ''));
     if ($studentName === '' || $studentEmail === '') {
-        $sp = [$recipientId];
-        $sw = 'id = ?';
-        if ($orgId) {
-            $sw .= ' AND (org_id = ? OR org_id IS NULL)';
-            $sp[] = $orgId;
-        }
-        $s = $db->prepare("SELECT id, name, email FROM students WHERE $sw LIMIT 1");
-        $s->execute($sp);
-        $row = $s->fetch();
-        if ($row) {
+        $s = $db->prepare('SELECT s.* FROM students s WHERE s.id = ? LIMIT 1');
+        $s->execute([$recipientId]);
+        $row = $s->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row) && userCanAccessStudentRow($db, $tokenData, (string) $userId, (string) ($tokenData['role'] ?? ''), $row)) {
             if ($studentName === '') $studentName = trim((string) ($row['name'] ?? ''));
             if ($studentEmail === '') $studentEmail = trim((string) ($row['email'] ?? ''));
         }
@@ -174,6 +161,16 @@ if ($method === 'POST' && $action === 'issue') {
     if ($studentName === '' || $studentEmail === '') {
         respond(['error' => 'Student details not found'], 404);
     }
+
+    $tplOrg = orgFilter($tokenData, 'ct', $db);
+    $tplParams = array_merge([$templateId], $tplOrg['params']);
+    $tplStmt = $db->prepare("SELECT ct.id FROM certificate_templates ct WHERE ct.id = ? AND {$tplOrg['where']} LIMIT 1");
+    $tplStmt->execute($tplParams);
+    if (!$tplStmt->fetch()) {
+        respond(['error' => 'Certificate template not found in your organization'], 404);
+    }
+
+    $writeOrgId = resolveWriteOrgId($db, $tokenData);
 
     $courseName = trim((string) ($input['courseName'] ?? ''));
     $issueDate = trim((string) ($input['issueDate'] ?? date('Y-m-d')));
@@ -217,7 +214,7 @@ if ($method === 'POST' && $action === 'issue') {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         {$upsert}
     ");
-    $ins->execute([$artifactId, $recipientId, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPath, $orgId, $userId]);
+    $ins->execute([$artifactId, $recipientId, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPath, $writeOrgId, $userId]);
 
     $pdfUrl = '/api/certificates.php?action=pdf&certificate_id=' . rawurlencode($syncId);
     respond([
@@ -245,13 +242,9 @@ if ($method === 'POST' && $action === 'send_email') {
         respond(['error' => 'Invalid TO email address'], 400);
     }
 
-    $lookupParams = [$certificateId];
-    $lookupWhere = 'sync_id = ?';
-    if ($orgId) {
-        $lookupWhere .= ' AND (org_id = ? OR org_id IS NULL)';
-        $lookupParams[] = $orgId;
-    }
-    $artifactStmt = $db->prepare("SELECT pdf_path, student_name, sync_id FROM certificate_issue_artifacts WHERE $lookupWhere ORDER BY created_at DESC LIMIT 1");
+    $org = orgFilter($tokenData, 'cia', $db);
+    $lookupParams = array_merge([$certificateId], $org['params']);
+    $artifactStmt = $db->prepare("SELECT cia.pdf_path, cia.student_name, cia.sync_id FROM certificate_issue_artifacts cia WHERE cia.sync_id = ? AND {$org['where']} ORDER BY cia.created_at DESC LIMIT 1");
     $artifactStmt->execute($lookupParams);
     $artifact = $artifactStmt->fetch(PDO::FETCH_ASSOC);
     if (!$artifact) {
@@ -287,6 +280,7 @@ if ($method === 'POST' && $action === 'send_email') {
     $messageId = 'mail_' . uniqid('', true);
     $sentAt = date('Y-m-d H:i:s');
     $logId = generateUUID();
+    $logOrgId = resolveWriteOrgId($db, $tokenData);
     $stmt = $db->prepare("
         INSERT INTO certificate_email_logs
         (id, certificate_id, to_email, cc_email, bcc_email, subject, body, attachment_url, message_id, sent_at, org_id, sent_by)
@@ -303,7 +297,7 @@ if ($method === 'POST' && $action === 'send_email') {
         $attachmentUrl !== '' ? $attachmentUrl : '/api/certificates.php?action=pdf&certificate_id=' . rawurlencode($syncId),
         $messageId,
         $sentAt,
-        $orgId,
+        $logOrgId,
         $userId,
     ]);
 

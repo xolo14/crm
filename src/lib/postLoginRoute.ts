@@ -1,7 +1,7 @@
 import { api } from "@/lib/api";
 import { normalizeAppRole } from "@/lib/roleUtils";
 
-/** Roles that must use `/admin` (org admin), not the shared Login Portal. */
+/** Org-level admin roles (L3), not a separate login URL anymore. */
 export function isAdminPortalRole(role?: string | null): boolean {
   const n = normalizeAppRole(role);
   return n === "admin" || n === "org";
@@ -12,10 +12,9 @@ export function isSuperAdminPortalRole(role?: string | null): boolean {
   return normalizeAppRole(role) === "super_admin";
 }
 
-/** Staff login at `/login` (sales, manager, marketing, HR, etc.). */
+/** Shared login at `/login` — all roles except super_admin. */
 export function isLoginPortalRole(role?: string | null): boolean {
-  const n = normalizeAppRole(role);
-  return !isAdminPortalRole(n) && !isSuperAdminPortalRole(n);
+  return !isSuperAdminPortalRole(role);
 }
 
 export function getPostLoginPath(role?: string | null): string {

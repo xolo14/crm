@@ -57,16 +57,23 @@ $site = (defined('CRM_PUBLIC_URL') && CRM_PUBLIC_URL !== '')
 require_once __DIR__ . '/document_storage.php';
 $invoiceStorage = syncpediaDocumentStorageHealth('payment_invoices');
 
+$debug = defined('APP_DEBUG') && APP_DEBUG === true;
 http_response_code($dbOk ? 200 : 503);
-echo json_encode([
-    'status' => $dbOk ? 'ok' : 'error',
-    'php' => PHP_VERSION,
-    'api' => 'reachable',
-    'database' => $dbOk ? 'connected' : 'failed',
-    'storage' => [
-        'payment_invoices' => $invoiceStorage['writable'] ? 'writable' : 'not_writable',
-        'path' => $invoiceStorage['path'],
-    ],
-    'message' => $dbOk ? 'Syncpedia CRM API is ready' : $dbMessage,
-    'site' => $site,
-], JSON_UNESCAPED_UNICODE);
+if ($debug) {
+    echo json_encode([
+        'status' => $dbOk ? 'ok' : 'error',
+        'php' => PHP_VERSION,
+        'api' => 'reachable',
+        'database' => $dbOk ? 'connected' : 'failed',
+        'storage' => [
+            'payment_invoices' => $invoiceStorage['writable'] ? 'writable' : 'not_writable',
+        ],
+        'message' => $dbOk ? 'Syncpedia CRM API is ready' : $dbMessage,
+    ], JSON_UNESCAPED_UNICODE);
+} else {
+    echo json_encode([
+        'status' => $dbOk ? 'ok' : 'error',
+        'api' => 'reachable',
+        'database' => $dbOk ? 'connected' : 'failed',
+    ], JSON_UNESCAPED_UNICODE);
+}

@@ -5,6 +5,33 @@
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 SET NAMES utf8mb4;
 
+-- ── Add org_id column on older databases (skip if "Duplicate column" error) ─
+ALTER TABLE `tasks` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `created_by`;
+ALTER TABLE `activities` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `user_id`;
+ALTER TABLE `contacts` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `owner_id`;
+ALTER TABLE `deals` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `owner_id`;
+ALTER TABLE `daily_reports` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `user_id`;
+ALTER TABLE `holidays` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `is_approved`;
+ALTER TABLE `notifications` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `user_id`;
+ALTER TABLE `courses` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL;
+ALTER TABLE `batches` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL;
+ALTER TABLE `lead_forms` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `created_by`;
+ALTER TABLE `offer_letter_templates` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `created_by`;
+ALTER TABLE `offer_letters_sent` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `sent_by`;
+ALTER TABLE `certificate_templates` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `created_by`;
+ALTER TABLE `issued_certificates` ADD COLUMN `org_id` CHAR(36) DEFAULT NULL AFTER `issued_by`;
+
+-- Optional indexes (ignore "Duplicate key name" if already present)
+ALTER TABLE `tasks` ADD INDEX `idx_tasks_org` (`org_id`);
+ALTER TABLE `activities` ADD INDEX `idx_activities_org` (`org_id`);
+ALTER TABLE `contacts` ADD INDEX `idx_contacts_org` (`org_id`);
+ALTER TABLE `deals` ADD INDEX `idx_deals_org` (`org_id`);
+ALTER TABLE `daily_reports` ADD INDEX `idx_reports_org` (`org_id`);
+ALTER TABLE `holidays` ADD INDEX `idx_holidays_org` (`org_id`);
+ALTER TABLE `notifications` ADD INDEX `idx_notif_org` (`org_id`);
+ALTER TABLE `courses` ADD INDEX `idx_courses_org` (`org_id`);
+ALTER TABLE `batches` ADD INDEX `idx_batches_org` (`org_id`);
+
 -- ── payment_links (Razorpay) ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS `payment_links` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -128,3 +155,96 @@ WHERE (s.org_id IS NULL OR s.org_id = '')
 -- Verify: payment links visible to org admins
 -- SELECT razorpay_payment_link_id, org_id, salesperson_id, customer_name, created_at
 -- FROM payment_links ORDER BY created_at DESC LIMIT 20;
+
+-- ── Backfill org_id on tenant-scoped modules ───────────────────────────────
+UPDATE `holidays` h
+INNER JOIN `users` u ON u.id = h.approved_by
+SET h.org_id = u.org_id
+WHERE (h.org_id IS NULL OR h.org_id = '')
+  AND u.org_id IS NOT NULL
+  AND h.approved_by IS NOT NULL;
+
+UPDATE `tasks` t
+INNER JOIN `users` u ON u.id = COALESCE(t.created_by, t.assigned_to)
+SET t.org_id = u.org_id
+WHERE (t.org_id IS NULL OR t.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `activities` a
+INNER JOIN `users` u ON u.id = a.user_id
+SET a.org_id = u.org_id
+WHERE (a.org_id IS NULL OR a.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `contacts` c
+INNER JOIN `users` u ON u.id = c.owner_id
+SET c.org_id = u.org_id
+WHERE (c.org_id IS NULL OR c.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `deals` d
+INNER JOIN `users` u ON u.id = d.owner_id
+SET d.org_id = u.org_id
+WHERE (d.org_id IS NULL OR d.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `daily_reports` dr
+INNER JOIN `users` u ON u.id = dr.user_id
+SET dr.org_id = u.org_id
+WHERE (dr.org_id IS NULL OR dr.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `offer_letter_templates` olt
+INNER JOIN `users` u ON u.id = olt.created_by
+SET olt.org_id = u.org_id
+WHERE (olt.org_id IS NULL OR olt.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `offer_letters_sent` ols
+INNER JOIN `users` u ON u.id = ols.sent_by
+SET ols.org_id = u.org_id
+WHERE (ols.org_id IS NULL OR ols.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `certificate_templates` ct
+INNER JOIN `users` u ON u.id = ct.created_by
+SET ct.org_id = u.org_id
+WHERE (ct.org_id IS NULL OR ct.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `issued_certificates` ic
+INNER JOIN `users` u ON u.id = ic.issued_by
+SET ic.org_id = u.org_id
+WHERE (ic.org_id IS NULL OR ic.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `certificate_issue_artifacts` cia
+INNER JOIN `users` u ON u.id = cia.issued_by
+SET cia.org_id = u.org_id
+WHERE (cia.org_id IS NULL OR cia.org_id = '')
+  AND u.org_id IS NOT NULL
+  AND cia.issued_by IS NOT NULL;
+
+UPDATE `notifications` n
+INNER JOIN `users` u ON u.id = n.user_id
+SET n.org_id = u.org_id
+WHERE (n.org_id IS NULL OR n.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `lead_forms` lf
+INNER JOIN `users` u ON u.id = lf.created_by
+SET lf.org_id = u.org_id
+WHERE (lf.org_id IS NULL OR lf.org_id = '')
+  AND u.org_id IS NOT NULL;
+
+UPDATE `courses` c
+INNER JOIN `batches` b ON b.course_id = c.id
+SET c.org_id = b.org_id
+WHERE (c.org_id IS NULL OR c.org_id = '')
+  AND b.org_id IS NOT NULL;
+
+UPDATE `batches` b
+INNER JOIN `courses` c ON c.id = b.course_id
+SET b.org_id = c.org_id
+WHERE (b.org_id IS NULL OR b.org_id = '')
+  AND c.org_id IS NOT NULL;

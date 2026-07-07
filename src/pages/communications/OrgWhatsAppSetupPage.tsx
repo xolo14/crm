@@ -46,6 +46,7 @@ export default function OrgWhatsAppSetupPage() {
   });
 
   const config = configRes?.data;
+  const isInterakt = config?.provider === "interakt";
   const webhookUrl = config?.webhook_url_suggested || configRes?.webhook_url_suggested || "";
   const templates = templatesRes?.data ?? [];
   const waConnected = Boolean(config?.is_active) && config?.connection_status === "connected";
@@ -67,10 +68,27 @@ export default function OrgWhatsAppSetupPage() {
     onError: (e: Error) => toast({ variant: "destructive", title: "Sync failed", description: e.message }),
   });
 
-  const createTplMut = useMutation({
-    mutationFn: () => communicationsApi.createTemplate(tplForm),
+  const approveInteraktMut = useMutation({
+    mutationFn: (templateId: string) => communicationsApi.approveInteraktTemplate(templateId),
     onSuccess: () => {
-      toast({ title: "Template saved", description: "Click Submit to Meta for official approval." });
+      toast({ title: "Template approved", description: "Ready to send via Interakt." });
+      qc.invalidateQueries({ queryKey: ["comm", "org-templates"] });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Failed", description: e.message }),
+  });
+
+  const createTplMut = useMutation({
+    mutationFn: () =>
+      communicationsApi.createTemplate({
+        ...tplForm,
+        mark_approved: isInterakt,
+        provider_template_id: tplForm.name,
+      }),
+    onSuccess: () => {
+      toast({
+        title: "Template saved",
+        description: isInterakt ? "Approved for Interakt sending." : "Click Submit to Meta for official approval.",
+      });
       setTplOpen(false);
       setTplForm({ name: "", body: "", category: "marketing", language: "en" });
       qc.invalidateQueries({ queryKey: ["comm", "org-templates"] });
@@ -105,7 +123,7 @@ export default function OrgWhatsAppSetupPage() {
         <div>
           <h1 className="text-2xl font-bold">WhatsApp Setup</h1>
           <p className="text-sm text-muted-foreground">
-            {organization?.name || "Your organization"} — connect your own Meta Business API
+            {organization?.name || "Your organization"} — connect via Interakt or Meta Business API
           </p>
         </div>
       </div>
@@ -123,9 +141,13 @@ export default function OrgWhatsAppSetupPage() {
           <CardHeader>
             <CardTitle className="text-base">Connection details</CardTitle>
             <CardDescription>
-              Phone Number ID: <code className="text-xs">{config.phone_number_id || "—"}</code>
-              {" · "}
-              WABA ID: <code className="text-xs">{config.waba_id || "—"}</code>
+              Provider: <Badge variant="outline" className="text-xs">{config.provider || "interakt"}</Badge>
+              {!isInterakt ? (
+                <>
+                  {" · "}Phone Number ID: <code className="text-xs">{config.phone_number_id || "—"}</code>
+                  {" · "}WABA ID: <code className="text-xs">{config.waba_id || "—"}</code>
+                </>
+              ) : null}
             </CardDescription>
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground space-y-2">
@@ -149,7 +171,9 @@ export default function OrgWhatsAppSetupPage() {
       <Card className="border-primary/20 bg-primary/5">
         <CardContent className="pt-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm text-muted-foreground">
           <span>
-            Each organization uses its own Meta WhatsApp account. Use the <strong>Official Template Library</strong> for Meta-aligned templates with faster approval.
+            {isInterakt
+              ? "Interakt: create templates in Interakt dashboard, then add the same code name here and mark approved."
+              : "Each organization can use Meta WhatsApp directly. Use the Official Template Library for Meta-aligned templates."}
           </span>
           <Button variant="secondary" size="sm" className="gap-1.5 shrink-0" asChild>
             <Link to="/communications/template-library"><BookOpen className="h-4 w-4" /> Template Library</Link>
@@ -160,13 +184,19 @@ export default function OrgWhatsAppSetupPage() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-4">
           <div>
-            <CardTitle>Official Meta templates</CardTitle>
-            <CardDescription>Create templates and submit to Meta for approval</CardDescription>
+            <CardTitle>{isInterakt ? "Interakt templates" : "Official Meta templates"}</CardTitle>
+            <CardDescription>
+              {isInterakt
+                ? "Template name must match Interakt code name (from app.interakt.ai/templates/list)"
+                : "Create templates and submit to Meta for approval"}
+            </CardDescription>
           </div>
           <div className="flex gap-2">
+            {!isInterakt ? (
             <Button size="sm" variant="outline" className="gap-1" onClick={() => syncMut.mutate(undefined)} disabled={syncMut.isPending}>
               <RefreshCw className="h-4 w-4" /> Sync
             </Button>
+            ) : null}
             <Dialog open={tplOpen} onOpenChange={setTplOpen}>
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1"><Plus className="h-4 w-4" /> New</Button>
@@ -174,7 +204,7 @@ export default function OrgWhatsAppSetupPage() {
               <DialogContent>
                 <DialogHeader><DialogTitle>New WhatsApp template</DialogTitle></DialogHeader>
                 <div className="space-y-3">
-                  <div className="space-y-1.5"><Label>Name</Label><Input value={tplForm.name} onChange={(e) => setTplForm((p) => ({ ...p, name: e.target.value }))} /></div>
+                  <div className="space-y-1.5"><Label>Name (Interakt code name)</Label><Input value={tplForm.name} onChange={(e) => setTplForm((p) => ({ ...p, name: e.target.value }))} placeholder="e.g. welcome_lead_101" /></div>
                   <div className="space-y-1.5"><Label>Body ({"{{1}}"}, {"{{2}}"} for variables)</Label><Textarea rows={5} value={tplForm.body} onChange={(e) => setTplForm((p) => ({ ...p, body: e.target.value }))} /></div>
                 </div>
                 <DialogFooter>
@@ -204,7 +234,12 @@ export default function OrgWhatsAppSetupPage() {
                     <TableCell><Badge variant={STATUS_COLORS[t.status] as "default"}>{t.status}</Badge></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{t.meta_status || "—"}</TableCell>
                     <TableCell>
-                      {t.status === "draft" || (t.status === "pending_approval" && !t.meta_template_id) ? (
+                      {isInterakt && t.status !== "approved" ? (
+                        <Button size="sm" variant="outline" className="gap-1 h-8" onClick={() => approveInteraktMut.mutate(t.id)} disabled={approveInteraktMut.isPending}>
+                          <Upload className="h-3 w-3" /> Mark approved
+                        </Button>
+                      ) : null}
+                      {!isInterakt && (t.status === "draft" || (t.status === "pending_approval" && !t.meta_template_id)) ? (
                         <Button size="sm" variant="outline" className="gap-1 h-8" onClick={() => submitMetaMut.mutate(t.id)} disabled={submitMetaMut.isPending}>
                           <Upload className="h-3 w-3" /> Submit to Meta
                         </Button>

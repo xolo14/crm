@@ -1,6 +1,16 @@
+<IfModule mod_mime.c>
+  AddType application/javascript js mjs
+  AddType text/css css
+</IfModule>
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteBase /
+
+  # Block sensitive files from direct download
+  <FilesMatch "^(\.env|\.git|database\.sql|config\.example\.php)$">
+    Require all denied
+  </FilesMatch>
 
   # Wrong-path fallback (when frontend called /payment-links.php without /api)
   RewriteRule ^payment-links\.php$ api/payment-links.php [L,QSA,NC]
@@ -18,6 +28,14 @@
   RewriteCond %{REQUEST_FILENAME} -d
   RewriteRule ^ - [L]
 
+  # Vite build chunks — never SPA-fallback (missing .js must 404, not return HTML)
+  RewriteCond %{REQUEST_URI} ^/assets/ [NC]
+  RewriteRule ^ - [R=404,L]
+
+  # Other static extensions at site root
+  RewriteCond %{REQUEST_URI} \.(js|mjs|css|woff2?|ttf|eot|ico|png|jpg|jpeg|webp|svg|gif|map)$ [NC]
+  RewriteRule ^ - [R=404,L]
+
   # Pretty URLs for payment links (optional; .php URLs also work)
   RewriteRule ^api/payment-links/([^/]+)/cancel/?$ api/payment-links.php?action=cancel&id=$1 [L,QSA]
   RewriteRule ^api/payment-links/([^/]+)/remind/?$ api/payment-links.php?action=remind&id=$1 [L,QSA]
@@ -34,4 +52,19 @@
 
   # React SPA — all other client routes
   RewriteRule ^ index.html [L]
+</IfModule>
+
+# Gzip/Brotli-style compression for HTML, CSS, JS (Hostinger mod_deflate)
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/plain text/css text/xml application/javascript application/json application/xml image/svg+xml
+</IfModule>
+
+# Cache static assets (LCP / repeat visits)
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|css|woff2?|ttf|eot|ico|png|jpg|jpeg|webp|svg|gif)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "^(index\.html|robots\.txt|sitemap\.xml)$">
+    Header set Cache-Control "public, max-age=3600"
+  </FilesMatch>
 </IfModule>

@@ -108,10 +108,10 @@ if ($action === 'leads_by_source') {
 }
 
 if ($action === 'deals_by_stage') {
-    $orgId = getOrgId($tokenData);
+    $orgId = tenantListOrgId($db, $tokenData);
     $stageScope = $orgId
         ? ['sql' => ' AND ps.org_id = ?', 'params' => [$orgId]]
-        : ['sql' => '', 'params' => []];
+        : (tenantIsMasterView($tokenData) ? ['sql' => '', 'params' => []] : ['sql' => ' AND 1=0', 'params' => []]);
     $dealScope = reportsDealScopeSql($db, $tokenData, 'd');
     $joinDeal = 'LEFT JOIN deals d ON d.stage_id = ps.id AND d.status = \'open\'' . $dealScope['sql'];
     $params = array_merge($dealScope['params'], $stageScope['params']);
@@ -129,7 +129,7 @@ if ($action === 'deals_by_stage') {
 
 if ($action === 'team') {
     $userScope = reportsTeamUserScopeSql($db, $tokenData);
-    $orgId = getOrgId($tokenData);
+    $orgId = tenantListOrgId($db, $tokenData);
     $leadOrgClause = $orgId ? ' AND l.org_id = ?' : '';
     $dealOrgClause = $orgId ? ' AND d2.org_id = ?' : '';
     $dealOrgClause3 = $orgId ? ' AND d3.org_id = ?' : '';

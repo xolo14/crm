@@ -13,47 +13,15 @@ if ($method === 'GET') {
     if (!empty($_GET['action']) && $_GET['action'] === 'dashboard') {
         $result = [];
 
-        if (syncpediaNormalizeRoleKey((string) ($role ?? '')) === 'super_admin') {
-            $orgId = !empty($_GET['org_id']) ? $_GET['org_id'] : null;
-        } else {
-            $orgId = resolveCreatorOrgId($db, $tokenData);
-        }
-        $useOrg = !empty($orgId);
+        $orgId = tenantListOrgId($db, $tokenData);
+        $useOrg = $orgId !== null && $orgId !== '';
         $normRole = syncpediaNormalizeRoleKey((string) ($role ?? ''));
         $managerVisibleIds = ($normRole === 'manager') ? hierarchyGetVisibleUserIds($db, $tokenData) : [];
 
-        // Leads (tenant-scoped for org roles; super_admin only all tenants when no ?org_id=)
-        $params = [];
-        if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
-            $where = '1=1';
-            $scope = hierarchyL1OwnLeadsScopeSql($tokenData);
-            $where .= $scope['sql'];
-            $params = $scope['params'];
-            if ($useOrg) {
-                $leadTenant = orgFilterLeadsTenant($db, $tokenData);
-                $where .= ' AND (' . $leadTenant['where'] . ')';
-                $params = array_merge($params, $leadTenant['params']);
-            } elseif ($normRole !== 'super_admin') {
-                $where .= ' AND (org_id IS NULL)';
-            }
-        } elseif ($normRole === 'manager') {
-            $where = $useOrg ? 'org_id = ?' : '(org_id IS NULL)';
-            $params = $useOrg ? [$orgId] : [];
-            $scope = hierarchyLeadDownlineScopeSql($managerVisibleIds);
-            $where .= $scope['sql'];
-            $params = array_merge($params, $scope['params']);
-        } elseif ($useOrg && in_array($normRole, ['admin', 'org'], true)) {
-            $leadTenant = orgFilterLeadsTenant($db, $tokenData);
-            $where = $leadTenant['where'];
-            $params = $leadTenant['params'];
-        } elseif ($useOrg) {
-            $where = 'org_id = ?';
-            $params = [$orgId];
-        } elseif ($normRole === 'super_admin') {
-            $where = '1=1';
-        } else {
-            $where = '(org_id IS NULL)';
-        }
+        // Leads (tenant + hierarchy)
+        $leadScope = tenantLeadsScopeSql($db, $tokenData, '');
+        $where = '1=1' . $leadScope['sql'];
+        $params = $leadScope['params'];
         $stmt = $db->prepare("SELECT id, status, source, referred_by, assigned_to, created_at FROM leads WHERE $where ORDER BY created_at DESC LIMIT 1000");
         $stmt->execute($params);
         $result['leads'] = $stmt->fetchAll();
@@ -96,42 +64,48 @@ if ($method === 'GET') {
                 WHERE 1=1{$tenant['sql']}
             ");
             $stmt->execute($tenant['params']);
-        } elseif ($normRole === 'super_admin') {
+        } elseif (tenantIsMasterView($tokenData)) {
             $stmt = $db->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) as active FROM students");
             $stmt->execute();
         } else {
-            $stmt = $db->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) as active FROM students WHERE org_id IS NULL");
-            $stmt->execute();
+            $students = ['total' => 0, 'active' => 0];
+            $stmt = null;
         }
-        $students = $stmt->fetch();
+        if ($stmt) {
+            $students = $stmt->fetch();
+        }
         $result['students_count'] = (int)$students['total'];
         $result['active_students'] = (int)$students['active'];
 
         if ($useOrg) {
             $stmt = $db->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) as active FROM courses WHERE org_id = ?");
             $stmt->execute([$orgId]);
-        } elseif ($normRole === 'super_admin') {
+        } elseif (tenantIsMasterView($tokenData)) {
             $stmt = $db->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) as active FROM courses");
             $stmt->execute();
         } else {
-            $stmt = $db->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) as active FROM courses WHERE org_id IS NULL");
-            $stmt->execute();
+            $courses = ['total' => 0, 'active' => 0];
+            $stmt = null;
         }
-        $courses = $stmt->fetch();
+        if ($stmt) {
+            $courses = $stmt->fetch();
+        }
         $result['courses_count'] = (int)$courses['total'];
         $result['active_courses'] = (int)$courses['active'];
 
         if ($useOrg) {
             $stmt = $db->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status IN ('active','upcoming') THEN 1 ELSE 0 END) as active FROM batches WHERE org_id = ?");
             $stmt->execute([$orgId]);
-        } elseif ($normRole === 'super_admin') {
+        } elseif (tenantIsMasterView($tokenData)) {
             $stmt = $db->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status IN ('active','upcoming') THEN 1 ELSE 0 END) as active FROM batches");
             $stmt->execute();
         } else {
-            $stmt = $db->prepare("SELECT COUNT(*) as total, SUM(CASE WHEN status IN ('active','upcoming') THEN 1 ELSE 0 END) as active FROM batches WHERE org_id IS NULL");
-            $stmt->execute();
+            $batches = ['total' => 0, 'active' => 0];
+            $stmt = null;
         }
-        $batches = $stmt->fetch();
+        if ($stmt) {
+            $batches = $stmt->fetch();
+        }
         $result['batches_count'] = (int)$batches['total'];
         $result['active_batches'] = (int)$batches['active'];
 
@@ -157,14 +131,16 @@ if ($method === 'GET') {
         } elseif ($useOrg) {
             $stmt = $db->prepare("SELECT COALESCE(SUM(CASE WHEN status='paid' THEN amount ELSE 0 END),0) as paid, COALESCE(SUM(CASE WHEN status='pending' THEN amount ELSE 0 END),0) as pending FROM payments WHERE org_id = ?");
             $stmt->execute([$orgId]);
-        } elseif ($normRole === 'super_admin') {
+        } elseif (tenantIsMasterView($tokenData)) {
             $stmt = $db->prepare("SELECT COALESCE(SUM(CASE WHEN status='paid' THEN amount ELSE 0 END),0) as paid, COALESCE(SUM(CASE WHEN status='pending' THEN amount ELSE 0 END),0) as pending FROM payments");
             $stmt->execute();
         } else {
-            $stmt = $db->prepare("SELECT COALESCE(SUM(CASE WHEN status='paid' THEN amount ELSE 0 END),0) as paid, COALESCE(SUM(CASE WHEN status='pending' THEN amount ELSE 0 END),0) as pending FROM payments WHERE org_id IS NULL");
-            $stmt->execute();
+            $payments = ['paid' => 0, 'pending' => 0];
+            $stmt = null;
         }
-        $payments = $stmt->fetch();
+        if ($stmt) {
+            $payments = $stmt->fetch();
+        }
         $result['total_revenue'] = (float)$payments['paid'];
         $result['pending_revenue'] = (float)$payments['pending'];
 
@@ -175,20 +151,22 @@ if ($method === 'GET') {
                 $stmt = $db->prepare("SELECT id as user_id, full_name, referral_code FROM users WHERE referral_code IS NOT NULL AND org_id = ? AND id IN ($inUsers)");
                 $stmt->execute(array_merge([$orgId], $managerVisibleIds));
             } else {
-                $stmt = $db->prepare("SELECT id as user_id, full_name, referral_code FROM users WHERE referral_code IS NOT NULL AND org_id IS NULL AND id IN ($inUsers)");
-                $stmt->execute($managerVisibleIds);
+                $result['profiles'] = [];
+                $stmt = null;
             }
         } elseif ($useOrg) {
             $stmt = $db->prepare("SELECT id as user_id, full_name, referral_code FROM users WHERE referral_code IS NOT NULL AND org_id = ?");
             $stmt->execute([$orgId]);
-        } elseif ($normRole === 'super_admin') {
+        } elseif (tenantIsMasterView($tokenData)) {
             $stmt = $db->prepare("SELECT id as user_id, full_name, referral_code FROM users WHERE referral_code IS NOT NULL");
             $stmt->execute();
         } else {
-            $stmt = $db->prepare("SELECT id as user_id, full_name, referral_code FROM users WHERE referral_code IS NOT NULL AND org_id IS NULL");
-            $stmt->execute();
+            $result['profiles'] = [];
+            $stmt = null;
         }
-        $result['profiles'] = $stmt->fetchAll();
+        if ($stmt) {
+            $result['profiles'] = $stmt->fetchAll();
+        }
 
         respond($result);
     }
@@ -218,9 +196,12 @@ if ($method === 'PUT') {
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
 
-    // Users can update own profile, admins can update any
-    if ($id !== $userId && !in_array($role, ['admin', 'super_admin'])) {
-        respond(['error' => 'Forbidden'], 403);
+    // Users can update own profile; admins can update users in their org only
+    if ($id !== $userId) {
+        if (!in_array($role, ['admin', 'super_admin', 'org'], true)) {
+            respond(['error' => 'Forbidden'], 403);
+        }
+        syncpediaAssertTargetUserEditable($db, $tokenData, $id);
     }
 
     $fields = [];

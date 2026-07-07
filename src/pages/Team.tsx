@@ -17,7 +17,7 @@ import { Search, Plus, Shield, Users, UserCheck, ChevronDown, ChevronRight, More
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useToast } from '@/hooks/use-toast';
-import { cn } from '@/lib/utils';
+import { generateTempPassword } from '@/lib/randomPassword';
 import {
   canRoleManageRole,
   getRoleLevel,
@@ -157,7 +157,7 @@ export default function Team() {
     email: '',
     phone: '',
     role: 'sales_representative',
-    password: 'Welcome@123',
+    password: generateTempPassword(),
     reports_to_id: '' as string,
   });
   const currentLevel = getRoleLevel(currentRole);
@@ -282,7 +282,7 @@ export default function Team() {
   };
 
   const resetNewMemberForm = () => {
-    setNewMember({ full_name: '', email: '', phone: '', role: 'sales_representative', password: 'Welcome@123', reports_to_id: '' });
+    setNewMember({ full_name: '', email: '', phone: '', role: 'sales_representative', password: generateTempPassword(), reports_to_id: '' });
     setCreatedMemberId(null);
   };
 
@@ -463,14 +463,14 @@ export default function Team() {
     const options = managersForL1Member(member);
     if (!canAssignTeam) {
       return (
-        <span className={cn('text-muted-foreground', compact ? 'text-xs' : 'text-sm')}>
+        <span className={compact ? 'text-muted-foreground text-xs' : 'text-muted-foreground text-sm'}>
           {member.reports_to_name || 'Unassigned'}
         </span>
       );
     }
     return (
       <Select value={member.reports_to_id || 'none'} onValueChange={(v) => handleChangeReportsTo(member, v)}>
-        <SelectTrigger className={cn(compact ? 'h-8 text-xs mt-1' : 'h-8 text-xs')}>
+        <SelectTrigger className={compact ? 'h-8 text-xs mt-1' : 'h-8 text-xs'}>
           <SelectValue placeholder="Select manager" />
         </SelectTrigger>
         <SelectContent>
@@ -742,7 +742,7 @@ export default function Team() {
               <Input
                 value={newMember.password}
                 onChange={(e) => setNewMember((p) => ({ ...p, password: e.target.value }))}
-                placeholder="Welcome@123"
+                placeholder="Auto-generated secure password"
               />
             </div>
             <div className="space-y-1.5">

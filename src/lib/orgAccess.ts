@@ -1,33 +1,53 @@
 /**
- * Platform vs tenant access for HR modules that default to Syncpedia-only.
- * Other organizations enable via Super Admin → Portals & Access when creating/editing features.
+ * Platform vs tenant access for gated HR / finance modules.
  */
 
-export const FEATURE_OFFER_LETTERS = "offer_letters";
-export const FEATURE_FRESHER_SALARY = "fresher_salary";
+import {
+  FEATURE_FRESHER_SALARY,
+  FEATURE_OFFER_LETTERS,
+  FEATURE_CERTIFICATES,
+  FEATURE_PAYSLIP,
+  isOrgFeatureEnabled,
+} from "./orgFeatures";
 
 export type OrgAccessLite = {
   slug?: string | null;
   features?: Record<string, boolean> | null;
 };
 
-export function isSyncpediaOrganization(org: OrgAccessLite | null): boolean {
-  return String(org?.slug ?? "")
-    .toLowerCase()
-    .trim() === "syncpedia";
-}
+export {
+  FEATURE_OFFER_LETTERS,
+  FEATURE_FRESHER_SALARY,
+  FEATURE_CERTIFICATES,
+  FEATURE_PAYSLIP,
+} from "./orgFeatures";
 
-/** Offer Letters + Fresher Salary: only super_admin / admin; Syncpedia org always; else org feature flag. */
+export { isSyncpediaOrganization, isOrgFeatureEnabled, isPathAllowedByOrgFeatures, featureKeyForPath } from "./orgFeatures";
+
+/** Offer Letters: admin/super_admin + feature flag (Syncpedia always). */
 export function canAccessOfferLetters(role: string | null, org: OrgAccessLite | null): boolean {
   if (role !== "super_admin" && role !== "admin") return false;
-  if (!org && role === "super_admin") return true;
-  if (isSyncpediaOrganization(org)) return true;
-  return org?.features?.[FEATURE_OFFER_LETTERS] === true;
+  return isOrgFeatureEnabled(role, org, FEATURE_OFFER_LETTERS);
 }
 
 export function canAccessFresherSalary(role: string | null, org: OrgAccessLite | null): boolean {
   if (role !== "super_admin" && role !== "admin") return false;
-  if (!org && role === "super_admin") return true;
-  if (isSyncpediaOrganization(org)) return true;
-  return org?.features?.[FEATURE_FRESHER_SALARY] === true;
+  return isOrgFeatureEnabled(role, org, FEATURE_FRESHER_SALARY);
+}
+
+export function canAccessCertificates(role: string | null, org: OrgAccessLite | null): boolean {
+  if (role === "super_admin" && !org) return true;
+  if (role !== "super_admin" && role !== "admin") return false;
+  return isOrgFeatureEnabled(role, org, FEATURE_CERTIFICATES);
+}
+
+export function canAccessPayslip(role: string | null, org: OrgAccessLite | null): boolean {
+  if (role !== "super_admin" && role !== "admin" && role !== "org") return false;
+  return isOrgFeatureEnabled(role, org, FEATURE_PAYSLIP);
+}
+
+/** Payment Records — team summaries; super admin, admin, and managers only. */
+export function canAccessPaymentRecords(role: string | null): boolean {
+  if (!role) return false;
+  return role === "super_admin" || role === "admin" || role === "manager";
 }

@@ -7,7 +7,8 @@ $action = isset($_GET['action']) ? trim((string) $_GET['action']) : '';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($action === 'phase_update' && $method === 'POST') {
-    verifyToken();
+    $tokenData = verifyToken();
+    requireRole($tokenData, ['hr', 'admin', 'super_admin', 'org', 'manager']);
 
     $body = getInput();
     $payload = is_array($body['payload'] ?? null) ? $body['payload'] : null;

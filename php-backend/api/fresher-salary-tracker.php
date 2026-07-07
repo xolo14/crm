@@ -140,7 +140,7 @@ if ($method === 'POST') {
         respond(['error' => 'name is required'], 400);
     }
 
-    $orgId = getOrgId($tokenData);
+    $orgId = resolveWriteOrgId($db, $tokenData);
     $payload = json_encode($member, JSON_UNESCAPED_UNICODE);
     if ($payload === false) {
         respond(['error' => 'Invalid member payload'], 400);

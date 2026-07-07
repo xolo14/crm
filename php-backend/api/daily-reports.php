@@ -46,27 +46,15 @@ function dailyReportsEnsureLostColumn(PDO $db): void
 if ($method === 'GET') {
     $where = "1=1";
     $params = [];
-    $effRole = syncpediaNormalizeRoleKey((string) $role);
 
-    // Filter by user
+    $scope = tenantDailyReportsScopeSql($db, $tokenData);
+    $where .= $scope['sql'];
+    $params = array_merge($params, $scope['params']);
+
+    // Filter by user (must still be within tenant scope above)
     if (!empty($_GET['user_id'])) {
         $where .= " AND dr.user_id = ?";
         $params[] = $_GET['user_id'];
-    } elseif (in_array($effRole, ['sales_representative', 'sales_marketing'], true)) {
-        $where .= " AND dr.user_id = ?";
-        $params[] = $userId;
-    } elseif (hierarchyRoleUsesDownlineScope($tokenData)) {
-        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        $scope = hierarchyBuildInClause('dr.user_id', $visibleIds);
-        $where .= $scope['sql'];
-        $params = array_merge($params, $scope['params']);
-    } elseif (in_array($effRole, ['admin', 'org'], true)) {
-        $scope = hierarchyOrgUserIdsScopeSql($tokenData, 'dr.user_id');
-        $where .= $scope['sql'];
-        $params = array_merge($params, $scope['params']);
-    } elseif ($effRole === 'super_admin' && !empty($_GET['org_id'])) {
-        $where .= ' AND dr.user_id IN (SELECT id FROM users WHERE org_id = ?)';
-        $params[] = (string) $_GET['org_id'];
     }
 
     // Filter by date
@@ -110,6 +98,7 @@ if ($method === 'POST') {
     $id = generateUUID();
     $reportDate = $input['report_date'] ?? date('Y-m-d');
     $totalLost = (int) ($input['total_lost'] ?? 0);
+    $orgId = resolveWriteOrgId($db, $tokenData);
 
     // Check if report already exists for this date
     $stmt = $db->prepare("SELECT id FROM daily_reports WHERE user_id = ? AND report_date = ?");
@@ -118,11 +107,51 @@ if ($method === 'POST') {
 
     if ($existing) {
         // Update existing report
-        $stmt = $db->prepare("UPDATE daily_reports SET
-            total_calls = ?, total_followups = ?, total_demos = ?, total_conversions = ?,
-            new_leads_contacted = ?, total_lost = ?, lead_updates = ?, summary = ?, challenges = ?
-            WHERE id = ?");
+        try {
+            $stmt = $db->prepare("UPDATE daily_reports SET
+                total_calls = ?, total_followups = ?, total_demos = ?, total_conversions = ?,
+                new_leads_contacted = ?, total_lost = ?, lead_updates = ?, summary = ?, challenges = ?, org_id = ?
+                WHERE id = ?");
+            $stmt->execute([
+                $input['total_calls'] ?? 0,
+                $input['total_followups'] ?? 0,
+                $input['total_demos'] ?? 0,
+                $input['total_conversions'] ?? 0,
+                $input['new_leads_contacted'] ?? 0,
+                $totalLost,
+                json_encode($input['lead_updates'] ?? []),
+                $input['summary'] ?? null,
+                $input['challenges'] ?? null,
+                $orgId,
+                $existing['id'],
+            ]);
+        } catch (Throwable $e) {
+            $stmt = $db->prepare("UPDATE daily_reports SET
+                total_calls = ?, total_followups = ?, total_demos = ?, total_conversions = ?,
+                new_leads_contacted = ?, total_lost = ?, lead_updates = ?, summary = ?, challenges = ?
+                WHERE id = ?");
+            $stmt->execute([
+                $input['total_calls'] ?? 0,
+                $input['total_followups'] ?? 0,
+                $input['total_demos'] ?? 0,
+                $input['total_conversions'] ?? 0,
+                $input['new_leads_contacted'] ?? 0,
+                $totalLost,
+                json_encode($input['lead_updates'] ?? []),
+                $input['summary'] ?? null,
+                $input['challenges'] ?? null,
+                $existing['id'],
+            ]);
+        }
+        respond(['id' => $existing['id'], 'message' => 'Report updated']);
+    }
+
+    try {
+        $stmt = $db->prepare("INSERT INTO daily_reports (id, user_id, report_date, total_calls, total_followups, total_demos, total_conversions, new_leads_contacted, total_lost, lead_updates, summary, challenges, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([
+            $id,
+            $userId,
+            $reportDate,
             $input['total_calls'] ?? 0,
             $input['total_followups'] ?? 0,
             $input['total_demos'] ?? 0,
@@ -132,45 +161,45 @@ if ($method === 'POST') {
             json_encode($input['lead_updates'] ?? []),
             $input['summary'] ?? null,
             $input['challenges'] ?? null,
-            $existing['id'],
+            $orgId,
         ]);
-        respond(['id' => $existing['id'], 'message' => 'Report updated']);
+    } catch (Throwable $e) {
+        $stmt = $db->prepare("INSERT INTO daily_reports (id, user_id, report_date, total_calls, total_followups, total_demos, total_conversions, new_leads_contacted, total_lost, lead_updates, summary, challenges) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([
+            $id,
+            $userId,
+            $reportDate,
+            $input['total_calls'] ?? 0,
+            $input['total_followups'] ?? 0,
+            $input['total_demos'] ?? 0,
+            $input['total_conversions'] ?? 0,
+            $input['new_leads_contacted'] ?? 0,
+            $totalLost,
+            json_encode($input['lead_updates'] ?? []),
+            $input['summary'] ?? null,
+            $input['challenges'] ?? null,
+        ]);
     }
-
-    $stmt = $db->prepare("INSERT INTO daily_reports (id, user_id, report_date, total_calls, total_followups, total_demos, total_conversions, new_leads_contacted, total_lost, lead_updates, summary, challenges) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    $stmt->execute([
-        $id,
-        $userId,
-        $reportDate,
-        $input['total_calls'] ?? 0,
-        $input['total_followups'] ?? 0,
-        $input['total_demos'] ?? 0,
-        $input['total_conversions'] ?? 0,
-        $input['new_leads_contacted'] ?? 0,
-        $totalLost,
-        json_encode($input['lead_updates'] ?? []),
-        $input['summary'] ?? null,
-        $input['challenges'] ?? null,
-    ]);
 
     respond(['id' => $id, 'message' => 'Report submitted'], 201);
 }
 
 // GET team members (for managers to pick a rep)
 if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'team_summary') {
-    requireRole($tokenData, ['admin', 'manager']);
+    requireRole($tokenData, ['admin', 'manager', 'org']);
 
+    $orgScope = hierarchyOrgUserIdsScopeSql($tokenData, 'u.id', $db);
     $stmt = $db->prepare("
         SELECT u.id, u.full_name, u.email,
             COUNT(dr.id) as total_reports,
             MAX(dr.report_date) as last_report_date
         FROM users u
         LEFT JOIN daily_reports dr ON dr.user_id = u.id
-        WHERE u.role = 'sales_representative' AND u.is_active = 1
+        WHERE u.role = 'sales_representative' AND u.is_active = 1" . $orgScope['sql'] . "
         GROUP BY u.id, u.full_name, u.email
         ORDER BY u.full_name
     ");
-    $stmt->execute();
+    $stmt->execute($orgScope['params']);
     respond(['data' => $stmt->fetchAll()]);
 }
 

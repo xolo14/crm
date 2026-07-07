@@ -224,6 +224,10 @@ function handleSendPaymentLinkEmail(array $tokenData): void
     $body = getInput();
     $linkId = trim((string) ($body['link_id'] ?? $body['id'] ?? $_GET['id'] ?? ''));
 
+    if ($linkId === '') {
+        paymentLinksError('Payment link id required', 400);
+    }
+
     if (!syncpediaSmtpIsReady() && !function_exists('mail')) {
         paymentLinksError(
             'Email not configured. Set SMTP_SUPPORT_USER and SMTP_SUPPORT_PASS in api/config.php',
@@ -231,19 +235,17 @@ function handleSendPaymentLinkEmail(array $tokenData): void
         );
     }
 
-    $link = null;
-    if ($linkId !== '') {
-        try {
-            $link = razorpayFetchPaymentLink($linkId);
-        } catch (Throwable $e) {
-            paymentLinksError($e->getMessage(), 500);
-        }
-    } elseif (is_array($body['link'] ?? null)) {
-        $link = $body['link'];
+    $db = paymentLinksDb();
+    paymentLinksAssertItemAllowed($db, $tokenData, $linkId);
+
+    try {
+        $link = razorpayFetchPaymentLink($linkId);
+    } catch (Throwable $e) {
+        paymentLinksError($e->getMessage(), 500);
     }
 
     if (!is_array($link)) {
-        paymentLinksError('Payment link id or link payload required', 400);
+        paymentLinksError('Payment link not found', 404);
     }
 
     $customer = is_array($link['customer'] ?? null) ? $link['customer'] : [];
@@ -490,6 +492,8 @@ try {
             if ($id === '') {
                 paymentLinksError('Payment link id required', 400);
             }
+            $db = paymentLinksDb();
+            paymentLinksAssertItemAllowed($db, $tokenData, $id);
             paymentLinksSuccess(razorpayFetchPaymentLink($id));
             break;
 

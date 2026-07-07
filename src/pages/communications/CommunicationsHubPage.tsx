@@ -7,6 +7,7 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { communicationsApi } from "@/services/communications";
+import { api } from "@/lib/api";
 import DialerPad from "@/components/communications/DialerPad";
 import WhatsAppSetupHome from "@/components/communications/WhatsAppSetupHome";
 import WhatsAppSetupWizard from "@/components/communications/WhatsAppSetupWizard";
@@ -46,6 +47,9 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   const [setupWizardOpen, setSetupWizardOpen] = useState(false);
 
   const isOrgAdmin = ["admin", "org", "super_admin"].includes(user?.role || "");
+  const canAssignNumbers = ["admin", "org", "super_admin", "manager"].includes(user?.role || "");
+  const [assignVnId, setAssignVnId] = useState("");
+  const [assignUserId, setAssignUserId] = useState("");
 
   const { data: summary } = useQuery({ queryKey: ["comm", "summary"], queryFn: communicationsApi.hubSummary });
   const { data: assignmentsRes } = useQuery({ queryKey: ["comm", "my-numbers"], queryFn: communicationsApi.myNumberAssignments });
@@ -63,8 +67,31 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
     enabled: isOrgAdmin,
   });
   const { data: messagesRes } = useQuery({ queryKey: ["comm", "messages"], queryFn: () => communicationsApi.messages(20) });
+  const { data: orgNumbersRes } = useQuery({
+    queryKey: ["comm", "org-numbers"],
+    queryFn: () => communicationsApi.virtualNumbers(),
+    enabled: canAssignNumbers,
+  });
+  const { data: teamRes } = useQuery({
+    queryKey: ["team"],
+    queryFn: () => api.team.list(),
+    enabled: canAssignNumbers,
+  });
+
+  const assignNumberMut = useMutation({
+    mutationFn: () => communicationsApi.assignNumber(assignVnId, assignUserId),
+    onSuccess: () => {
+      toast({ title: "Number assigned", description: "Team member can now use this virtual number." });
+      setAssignVnId("");
+      setAssignUserId("");
+      qc.invalidateQueries({ queryKey: ["comm"] });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Assign failed", description: e.message }),
+  });
 
   const assignments = assignmentsRes?.data ?? [];
+  const orgNumbers = orgNumbersRes?.data ?? [];
+  const team = Array.isArray(teamRes) ? teamRes : teamRes?.data ?? [];
   const contacts = contactsRes?.data ?? [];
   const templates = templatesRes?.data ?? [];
   const messages = messagesRes?.data ?? [];
@@ -90,13 +117,14 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   }, [selectedTemplate, waVars]);
 
   const orgWa = summary?.org_whatsapp;
+  const waProvider = orgWa?.provider === "meta" ? "Meta" : orgWa?.provider === "interakt" ? "Interakt" : "WhatsApp";
   const waConnected = orgWa?.is_active && orgWa?.connection_status === "connected";
   const orgConfig = orgConfigRes?.data ?? null;
 
   const sendMutation = useMutation({
     mutationFn: communicationsApi.sendWhatsapp,
     onSuccess: () => {
-      toast({ title: "WhatsApp sent", description: "Message sent via your organization's Meta API." });
+      toast({ title: "WhatsApp sent", description: `Message sent via ${waProvider}.` });
       setWaPhone("");
       setWaName("");
       setWaVars("");
@@ -128,7 +156,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Communications Hub</h1>
           <p className="text-sm text-muted-foreground">
-            Your org&apos;s Meta WhatsApp & assigned virtual numbers — {user?.full_name || "your team"}
+            Your org&apos;s {waProvider} WhatsApp & assigned virtual numbers — {user?.full_name || "your team"}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -302,7 +330,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">Send WhatsApp</CardTitle>
-                <CardDescription>Uses your organization&apos;s Meta API — Meta-approved templates only</CardDescription>
+                <CardDescription>Uses your organization&apos;s {waProvider} account — approved templates only</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 {!waConnected ? (
@@ -320,7 +348,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
                         </button>
                       </>
                     ) : (
-                      " Ask your admin to connect Meta WhatsApp."
+                      " Ask your admin to connect WhatsApp (Interakt or Meta)."
                     )}
                   </div>
                 ) : null}
@@ -392,15 +420,23 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
         </TabsContent>
 
         {/* ── NUMBERS ── */}
-        <TabsContent value="numbers" className="mt-4">
+        <TabsContent value="numbers" className="mt-4 space-y-4">
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">My virtual numbers</CardTitle>
-              <CardDescription>Numbers assigned to you by your organization admin</CardDescription>
+              <CardDescription>
+                {isOrgAdmin
+                  ? "All virtual numbers provisioned for your organization appear here automatically."
+                  : "Numbers assigned to you by your organization admin"}
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {assignments.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No virtual numbers assigned yet. Ask your admin to assign one.</p>
+                <p className="text-sm text-muted-foreground">
+                  {isOrgAdmin
+                    ? "No virtual numbers for your organization yet. Ask Syncpedia platform admin to assign one."
+                    : "No virtual numbers assigned yet. Ask your admin to assign one."}
+                </p>
               ) : (
                 assignments.map((a) => (
                   <div key={a.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border p-4">
@@ -418,6 +454,41 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
               )}
             </CardContent>
           </Card>
+
+          {canAssignNumbers && orgNumbers.length > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Assign number to team member</CardTitle>
+                <CardDescription>
+                  Give sales reps or managers access to a virtual number for dialer and WhatsApp
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col sm:flex-row gap-3">
+                <Select value={assignVnId} onValueChange={setAssignVnId}>
+                  <SelectTrigger className="flex-1"><SelectValue placeholder="Virtual number" /></SelectTrigger>
+                  <SelectContent>
+                    {orgNumbers.map((n) => (
+                      <SelectItem key={n.id} value={n.id}>{n.label} — {n.phone_number}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select value={assignUserId} onValueChange={setAssignUserId}>
+                  <SelectTrigger className="flex-1"><SelectValue placeholder="Team member" /></SelectTrigger>
+                  <SelectContent>
+                    {team.map((u: { id: string; full_name: string; email: string }) => (
+                      <SelectItem key={u.id} value={u.id}>{u.full_name} ({u.email})</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  onClick={() => assignNumberMut.mutate()}
+                  disabled={!assignVnId || !assignUserId || assignNumberMut.isPending}
+                >
+                  Assign
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
         </TabsContent>
       </Tabs>
 

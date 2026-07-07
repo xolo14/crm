@@ -701,7 +701,17 @@ function paymentLinkMergeRazorpayWithCrm(array $item, array $crmRow): array
     );
     $crmStatus = (string) ($crm['status'] ?? 'created');
     $terminal = ['cancelled', 'expired'];
-    if (in_array($rzpStatus, $terminal, true) && $crmStatus === 'created') {
+    if ($rzpStatus === 'paid' || $crmStatus === 'paid') {
+        $picked = 'paid';
+    } elseif (in_array($rzpStatus, $terminal, true) || in_array($crmStatus, $terminal, true)) {
+        if (in_array($rzpStatus, $terminal, true) && in_array($crmStatus, $terminal, true)) {
+            $picked = paymentLinkStatusRank($crmStatus) >= paymentLinkStatusRank($rzpStatus) ? $crmStatus : $rzpStatus;
+        } elseif (in_array($rzpStatus, $terminal, true)) {
+            $picked = $rzpStatus;
+        } else {
+            $picked = $crmStatus;
+        }
+    } elseif (in_array($rzpStatus, $terminal, true) && $crmStatus === 'created') {
         $picked = $rzpStatus;
     } elseif (in_array($crmStatus, $terminal, true) && $rzpStatus === 'created') {
         $picked = $crmStatus;
@@ -844,6 +854,10 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
         $items[] = paymentLinkCrmRowToRazorpayShape($row);
     }
 
+    if ($accessScope !== null) {
+        $items = paymentLinksApplyListScope($items, $accessScope);
+    }
+
     paymentLinksRefreshStalePending($items);
 
     foreach ($items as $i => $item) {
@@ -864,10 +878,6 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
         require_once __DIR__ . '/payment_link_fulfillment.php';
     }
     paymentLinksFulfillPaidItems($items);
-
-    if ($accessScope !== null) {
-        $items = paymentLinksApplyListScope($items, $accessScope);
-    }
 
     usort($items, static function ($a, $b): int {
         $a = is_array($a) ? $a : [];

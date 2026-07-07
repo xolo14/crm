@@ -16,16 +16,44 @@ if ($method === 'GET') {
 if ($method === 'POST') {
     $input = getInput();
     $id = generateUUID();
+    $targetUserId = trim((string) ($input['user_id'] ?? $userId));
+    $orgId = resolveWriteOrgId($db, $tokenData);
 
-    $stmt = $db->prepare("INSERT INTO notifications (id, user_id, title, message, type, link) VALUES (?, ?, ?, ?, ?, ?)");
-    $stmt->execute([
-        $id,
-        $input['user_id'],
-        $input['title'],
-        $input['message'] ?? null,
-        $input['type'] ?? 'info',
-        $input['link'] ?? null,
-    ]);
+    // Only admins may create notifications for other users in the same org
+    $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($targetUserId !== $userId && !in_array($effRole, ['admin', 'super_admin', 'manager', 'org'], true)) {
+        respond(['error' => 'Forbidden'], 403);
+    }
+    if ($targetUserId !== $userId && $orgId) {
+        $chk = $db->prepare('SELECT id FROM users WHERE id = ? AND org_id = ? LIMIT 1');
+        $chk->execute([$targetUserId, $orgId]);
+        if (!$chk->fetch()) {
+            respond(['error' => 'User not in your organization'], 403);
+        }
+    }
+
+    try {
+        $stmt = $db->prepare('INSERT INTO notifications (id, user_id, title, message, type, link, org_id) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([
+            $id,
+            $targetUserId,
+            $input['title'],
+            $input['message'] ?? null,
+            $input['type'] ?? 'info',
+            $input['link'] ?? null,
+            $orgId,
+        ]);
+    } catch (Throwable $e) {
+        $stmt = $db->prepare('INSERT INTO notifications (id, user_id, title, message, type, link) VALUES (?, ?, ?, ?, ?, ?)');
+        $stmt->execute([
+            $id,
+            $targetUserId,
+            $input['title'],
+            $input['message'] ?? null,
+            $input['type'] ?? 'info',
+            $input['link'] ?? null,
+        ]);
+    }
 
     respond(['id' => $id, 'message' => 'Notification created'], 201);
 }

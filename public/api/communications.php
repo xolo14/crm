@@ -89,6 +89,90 @@ function commCanAssignNumbersToEmployees(array $tokenData): bool
     return in_array($r, ['super_admin', 'admin', 'org', 'manager'], true);
 }
 
+/** Assign a virtual number to org admin users (admin / org roles) in the target organization. */
+function commAutoAssignOrgAdmins(PDO $db, string $vnId, string $orgId, string $assignedBy): void
+{
+    if ($vnId === '' || $orgId === '') {
+        return;
+    }
+    $stmt = $db->prepare(
+        "SELECT id FROM users
+         WHERE org_id = ? AND is_active = 1
+           AND LOWER(TRIM(role)) IN ('admin', 'org')
+         ORDER BY created_at ASC",
+    );
+    $stmt->execute([$orgId]);
+    $insert = $db->prepare(
+        'INSERT INTO user_number_assignments (id, virtual_number_id, user_id, assigned_by) VALUES (?,?,?,?)',
+    );
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $uid) {
+        try {
+            $insert->execute([generateUUID(), $vnId, $uid, $assignedBy]);
+        } catch (PDOException $e) {
+            if (!isMysqlDuplicateKey($e)) {
+                throw $e;
+            }
+        }
+    }
+}
+
+/** Numbers visible to the current user — explicit assignments plus all org numbers for org admins. */
+function commFetchMyNumberAssignments(PDO $db, string $userId, array $tokenData): array
+{
+    $stmt = $db->prepare(
+        "SELECT a.*, vn.phone_number, vn.label, vn.whatsapp_enabled, vn.calls_enabled, vn.org_id, o.name AS org_name
+         FROM user_number_assignments a
+         JOIN org_virtual_numbers vn ON vn.id = a.virtual_number_id
+         LEFT JOIN organizations o ON o.id = vn.org_id
+         WHERE a.user_id = ? AND vn.is_active = 1",
+    );
+    $stmt->execute([$userId]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $seen = [];
+    foreach ($rows as $row) {
+        $seen[(string) ($row['virtual_number_id'] ?? '')] = true;
+    }
+
+    if (commCanManageOrgWhatsapp($tokenData)) {
+        $orgId = commResolveOrgId($db, $tokenData, []);
+        if ($orgId) {
+            $vStmt = $db->prepare(
+                "SELECT vn.id AS virtual_number_id, vn.phone_number, vn.label, vn.whatsapp_enabled, vn.calls_enabled, vn.org_id, o.name AS org_name
+                 FROM org_virtual_numbers vn
+                 LEFT JOIN organizations o ON o.id = vn.org_id
+                 WHERE vn.org_id = ? AND vn.is_active = 1
+                 ORDER BY vn.label",
+            );
+            $vStmt->execute([$orgId]);
+            foreach ($vStmt->fetchAll(PDO::FETCH_ASSOC) as $vn) {
+                $vnId = (string) ($vn['virtual_number_id'] ?? '');
+                if ($vnId === '' || isset($seen[$vnId])) {
+                    continue;
+                }
+                $assignId = generateUUID();
+                try {
+                    $db->prepare(
+                        'INSERT INTO user_number_assignments (id, virtual_number_id, user_id, assigned_by) VALUES (?,?,?,?)',
+                    )->execute([$assignId, $vnId, $userId, $userId]);
+                } catch (PDOException $e) {
+                    if (!isMysqlDuplicateKey($e)) {
+                        throw $e;
+                    }
+                    $assignId = 'org-' . $vnId;
+                }
+                $rows[] = array_merge($vn, [
+                    'id' => $assignId,
+                    'user_id' => $userId,
+                    'assigned_by' => $userId,
+                ]);
+                $seen[$vnId] = true;
+            }
+        }
+    }
+
+    return $rows;
+}
+
 commEnsureTables($db);
 
 /** Render template body with {{1}}, {{name}} style variables */
@@ -142,7 +226,7 @@ if ($action === 'org_config' || $action === 'platform_config') {
             foreach ($fields as $f) {
                 if (array_key_exists($f, $input)) {
                     $sets[] = "$f = ?";
-                    $params[] = $input[$f];
+                    $params[] = $f === 'provider' ? commNormalizeWhatsappProvider((string) $input[$f]) : $input[$f];
                 }
             }
             foreach (['api_key', 'app_secret', 'webhook_verify_token'] as $secretField) {
@@ -170,7 +254,7 @@ if ($action === 'org_config' || $action === 'platform_config') {
             ->execute([
                 $id,
                 $targetOrgId,
-                $input['provider'] ?? 'meta',
+                commNormalizeWhatsappProvider($input['provider'] ?? 'meta'),
                 $input['api_key'] ?? null,
                 $input['app_secret'] ?? null,
                 $input['phone_number_id'] ?? null,
@@ -200,21 +284,22 @@ if ($action === 'orgs_overview' && $method === 'GET') {
     respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
 }
 
-// ─── Meta: test org Graph API connection ───
-if ($action === 'test_meta_connection' && $method === 'POST') {
+// ─── Test WhatsApp connection (Meta or Interakt) ───
+if (($action === 'test_whatsapp_connection' || $action === 'test_meta_connection') && $method === 'POST') {
     requireRole($tokenData, ['super_admin', 'admin', 'org']);
     $orgId = commResolveOrgId($db, $tokenData, $input);
     if (!$orgId) {
         respond(['error' => 'Organization required'], 400);
     }
     commAssertOrgAccess($tokenData, $orgId);
-    $meta = commMetaClientForOrg($db, $orgId);
-    $test = $meta->testConnection();
+    $test = commTestWhatsappConnectionForOrg($db, $orgId);
     if (!$test['ok']) {
         respond(['error' => $test['error'] ?? 'Connection failed', 'details' => $test], 502);
     }
+    $provider = commOrgWhatsappProvider($db, $orgId);
     $db->prepare("UPDATE org_whatsapp_config SET connection_status = 'connected' WHERE org_id = ?")->execute([$orgId]);
-    respond(['message' => 'Connected to Meta WhatsApp Cloud API', 'data' => $test, 'org_id' => $orgId]);
+    $label = $provider === 'interakt' ? 'Interakt' : 'Meta WhatsApp Cloud API';
+    respond(['message' => "Connected to {$label}", 'data' => $test, 'org_id' => $orgId, 'provider' => $provider]);
 }
 
 // ─── Meta: sync approved templates from org WABA ───
@@ -230,6 +315,36 @@ if ($action === 'sync_meta_templates' && $method === 'POST') {
         respond(['error' => $sync['error'] ?? 'Sync failed'], 502);
     }
     respond(['message' => 'Meta templates synced for organization', 'imported' => $sync['imported'], 'updated' => $sync['updated'], 'total' => $sync['total'], 'org_id' => $orgId]);
+}
+
+// ─── Interakt: mark template approved (must match Interakt dashboard code name) ───
+if ($action === 'approve_interakt_template' && $method === 'POST') {
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    $tplId = trim((string) ($input['template_id'] ?? ''));
+    if ($tplId === '') {
+        respond(['error' => 'template_id required'], 400);
+    }
+    $stmt = $db->prepare('SELECT * FROM whatsapp_message_templates WHERE id = ?');
+    $stmt->execute([$tplId]);
+    $tpl = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$tpl) {
+        respond(['error' => 'Template not found'], 404);
+    }
+    $orgId = (string) ($tpl['org_id'] ?? '');
+    if ($orgId === '') {
+        respond(['error' => 'Template must belong to an organization'], 400);
+    }
+    commAssertOrgAccess($tokenData, $orgId);
+    if (commOrgWhatsappProvider($db, $orgId) !== 'interakt') {
+        respond(['error' => 'Organization is not using Interakt'], 400);
+    }
+    $codeName = trim((string) ($input['provider_template_id'] ?? $tpl['provider_template_id'] ?? $tpl['name'] ?? ''));
+    if ($codeName === '') {
+        respond(['error' => 'Interakt template code name required'], 400);
+    }
+    $db->prepare('UPDATE whatsapp_message_templates SET status = ?, provider_template_id = ?, meta_status = ? WHERE id = ?')
+        ->execute(['approved', $codeName, 'APPROVED', $tplId]);
+    respond(['message' => 'Template marked approved for Interakt sending', 'provider_template_id' => $codeName]);
 }
 
 // ─── Meta: submit org template to Meta for official approval ───
@@ -304,6 +419,7 @@ if ($action === 'virtual_numbers') {
                 isset($input['calls_enabled']) ? (int) $input['calls_enabled'] : 1,
                 1, $userId,
             ]);
+        commAutoAssignOrgAdmins($db, $id, $orgId, $userId);
         respond(['id' => $id, 'message' => 'Virtual number added'], 201);
     }
     if ($method === 'PUT') {
@@ -341,14 +457,8 @@ if ($action === 'number_assignments') {
             $stmt->execute([$vnId]);
             respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
         }
-        // My assignments
-        $stmt = $db->prepare("SELECT a.*, vn.phone_number, vn.label, vn.whatsapp_enabled, vn.calls_enabled, vn.org_id, o.name AS org_name
-            FROM user_number_assignments a
-            JOIN org_virtual_numbers vn ON vn.id = a.virtual_number_id
-            LEFT JOIN organizations o ON o.id = vn.org_id
-            WHERE a.user_id = ? AND vn.is_active = 1");
-        $stmt->execute([$userId]);
-        respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+        // My assignments (+ all org numbers for org admins)
+        respond(['data' => commFetchMyNumberAssignments($db, $userId, $tokenData)]);
     }
     if ($method === 'POST') {
         requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
@@ -416,6 +526,13 @@ if ($action === 'templates') {
         if ($name === '' || $body === '') respond(['error' => 'Name and body required'], 400);
         $id = generateUUID();
         $status = 'draft';
+        $providerTemplateId = trim((string) ($input['provider_template_id'] ?? ''));
+        if ($providerTemplateId === '') {
+            $providerTemplateId = $name;
+        }
+        if (commOrgWhatsappProvider($db, $orgId) === 'interakt' && !empty($input['mark_approved'])) {
+            $status = 'approved';
+        }
         $vars = $input['variables'] ?? null;
         $db->prepare('INSERT INTO whatsapp_message_templates (id, org_id, name, category, language, header_type, header_text, body, footer, variables, provider_template_id, status, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
             ->execute([
@@ -427,11 +544,14 @@ if ($action === 'templates') {
                 $body,
                 $input['footer'] ?? null,
                 $vars ? json_encode($vars) : null,
-                $input['provider_template_id'] ?? null,
+                $providerTemplateId,
                 $status,
                 $userId,
             ]);
-        respond(['id' => $id, 'status' => $status, 'message' => 'Template saved — submit to Meta for official approval'], 201);
+        $hint = commOrgWhatsappProvider($db, $orgId) === 'interakt'
+            ? 'Template saved — use the exact Interakt template code name'
+            : 'Template saved — submit to Meta for official approval';
+        respond(['id' => $id, 'status' => $status, 'message' => $hint], 201);
     }
     if ($method === 'PUT') {
         $id = $_GET['id'] ?? '';
@@ -446,7 +566,7 @@ if ($action === 'templates') {
         }
         $fields = [];
         $params = [];
-        foreach (['name', 'category', 'language', 'header_type', 'header_text', 'body', 'footer', 'provider_template_id', 'variables'] as $f) {
+        foreach (['name', 'category', 'language', 'header_type', 'header_text', 'body', 'footer', 'provider_template_id', 'variables', 'status'] as $f) {
             if (array_key_exists($f, $input)) {
                 $fields[] = "$f = ?";
                 $params[] = $f === 'variables' && is_array($input[$f]) ? json_encode($input[$f]) : $input[$f];
@@ -471,7 +591,7 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
     $tStmt = $db->prepare('SELECT * FROM whatsapp_message_templates WHERE id = ? AND status = ?');
     $tStmt->execute([$templateId, 'approved']);
     $template = $tStmt->fetch(PDO::FETCH_ASSOC);
-    if (!$template) respond(['error' => 'Template not found or not Meta-approved yet'], 400);
+    if (!$template) respond(['error' => 'Template not found or not approved for sending'], 400);
 
     $vars = $input['variables'] ?? [];
     if (!is_array($vars)) $vars = [];
@@ -484,9 +604,9 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
     commAssertOrgAccess($tokenData, $orgId);
     $vnId = $input['virtual_number_id'] ?? null;
 
-    $send = commSendViaOrgProvider($db, $orgId, $phone, $template, $vars);
-
     $msgId = generateUUID();
+    $send = commSendViaOrgProvider($db, $orgId, $phone, $template, $vars, $msgId);
+
     $status = $send['ok'] ? 'sent' : 'failed';
     $db->prepare('INSERT INTO comm_whatsapp_messages (id, org_id, user_id, virtual_number_id, template_id, recipient_phone, recipient_name, variables, message_body, status, provider_message_id, error_message, lead_id, sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         ->execute([
@@ -535,7 +655,7 @@ if ($action === 'messages' && $method === 'GET') {
 if ($action === 'dialer_contacts' && $method === 'GET') {
     $orgId = commResolveOrgId($db, $tokenData, $_GET);
     $search = trim((string) ($_GET['search'] ?? ''));
-    $sql = "SELECT id, full_name, phone, email, status, source FROM leads WHERE phone IS NOT NULL AND TRIM(phone) != ''";
+    $sql = "SELECT id, name AS full_name, phone, email, status, source FROM leads WHERE phone IS NOT NULL AND TRIM(phone) != ''";
     $params = [];
     if ($orgId) {
         $sql .= ' AND org_id = ?';
@@ -548,7 +668,7 @@ if ($action === 'dialer_contacts' && $method === 'GET') {
         $params[] = $userId;
     }
     if ($search !== '') {
-        $sql .= ' AND (full_name LIKE ? OR phone LIKE ?)';
+        $sql .= ' AND (name LIKE ? OR phone LIKE ?)';
         $params[] = '%' . $search . '%';
         $params[] = '%' . $search . '%';
     }
@@ -836,9 +956,7 @@ if ($action === 'publish_partner_template' && $method === 'POST') {
 if ($action === 'hub_summary' && $method === 'GET') {
     $orgId = commResolveOrgId($db, $tokenData, $_GET);
     $orgWa = $orgId ? commLoadOrgConfig($db, $orgId) : [];
-    $aStmt = $db->prepare("SELECT COUNT(*) FROM user_number_assignments a JOIN org_virtual_numbers vn ON vn.id = a.virtual_number_id WHERE a.user_id = ? AND vn.is_active = 1");
-    $aStmt->execute([$userId]);
-    $myNumbers = (int) $aStmt->fetchColumn();
+    $myNumbers = count(commFetchMyNumberAssignments($db, $userId, $tokenData));
     $approvedTemplates = 0;
     if ($orgId) {
         $tStmt = $db->prepare("SELECT COUNT(*) FROM whatsapp_message_templates WHERE status = 'approved' AND org_id = ?");
@@ -847,7 +965,7 @@ if ($action === 'hub_summary' && $method === 'GET') {
     }
     respond([
         'org_whatsapp' => $orgWa !== [] ? [
-            'provider' => $orgWa['provider'] ?? 'meta',
+            'provider' => commNormalizeWhatsappProvider($orgWa['provider'] ?? 'meta'),
             'business_phone' => $orgWa['business_phone'] ?? null,
             'is_active' => $orgWa['is_active'] ?? 0,
             'connection_status' => $orgWa['connection_status'] ?? 'not_connected',

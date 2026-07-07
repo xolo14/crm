@@ -295,13 +295,13 @@ export function PublicFormShell({
       <div className={`${pageClass} ${className}`.trim()} style={pageStyle}>
         {brand.headerImageUrl ? (
           <div className="sp-form-header-banner">
-            <img src={brand.headerImageUrl} alt="" />
+            <img src={brand.headerImageUrl} alt="" decoding="async" fetchPriority="high" />
           </div>
         ) : null}
         {brand.logoUrl || brand.companyName.trim() ? (
           <div className="sp-form-brand-bar">
             {brand.logoUrl ? (
-              <img src={brand.logoUrl} alt={brand.companyName || "Company logo"} className="sp-form-brand-logo" />
+              <img src={brand.logoUrl} alt={brand.companyName || "Company logo"} className="sp-form-brand-logo" decoding="async" loading="lazy" />
             ) : null}
             {brand.companyName.trim() ? (
               <div className="sp-form-brand-name">{brand.companyName}</div>
@@ -335,9 +335,9 @@ export function builderBrandFromState(state: {
   sectionBorderWidth: number;
   descriptionColor: string;
   companyNameFontSize: number;
-}, orgName?: string | null): PublicFormBrand {
+}): PublicFormBrand {
   return {
-    companyName: resolveFormCompanyName(state.companyName, orgName),
+    companyName: resolveFormCompanyName(state.companyName),
     logoUrl: state.companyLogoUrl,
     headerImageUrl: state.headerImageUrl,
     formBg: state.formBg,

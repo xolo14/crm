@@ -48,8 +48,8 @@ run("npm run build:vite");
 
 // ── 2. PHP API (source of truth: php-backend/) ─────────────
 log("Syncing PHP api → dist/api + public/api");
+run("node scripts/sync-api.mjs");
 copyDir(path.join(root, "php-backend", "api"), path.join(dist, "api"));
-copyDir(path.join(root, "php-backend", "api"), path.join(root, "public", "api"));
 copyFile(
   path.join(root, "php-backend", "composer.json"),
   path.join(dist, "composer.json"),
@@ -87,10 +87,6 @@ copyDir(path.join(root, "php-backend", "vendor"), path.join(root, "public", "ven
 copyFile(
   path.join(root, "php-backend", "database.mysql.sql"),
   path.join(dist, "database.sql"),
-);
-copyFile(
-  path.join(root, "php-backend", "database.mysql.sql"),
-  path.join(root, "public", "database.sql"),
 );
 
 // ── 4. Upload + invoice storage (must exist & be writable on server) ─
@@ -141,8 +137,10 @@ No Node.js or server environment variables are required on Hostinger.
 
 ## Step 1 — Upload files
 
-1. Upload all contents of \`dist/\` to Hostinger \`public_html\`.
-2. Confirm \`.htaccess\` uploaded (show hidden files in File Manager).
+1. **Recommended:** upload \`syncpedia-crm-deploy.zip\` (created next to \`dist/\` when you run \`npm run build\`), extract into \`public_html\`.
+2. Or upload **all contents** of \`dist/\` to Hostinger \`public_html\` (not the \`dist\` folder itself).
+3. **Critical:** upload the entire \`assets/\` folder together with \`index.html\` — partial uploads cause "MIME type text/html" JS errors.
+4. Confirm \`.htaccess\` uploaded (show hidden files in File Manager).
 
 ## Step 2 — MySQL (phpMyAdmin)
 
@@ -212,3 +210,20 @@ if (fs.existsSync(staleNodeApi)) {
 log("Done. Upload the contents of /dist to Hostinger public_html.");
 log("  Then edit api/config.php on Hostinger and open /api/ping.php to verify.");
 log(`  Frontend + PHP: ${dist}`);
+
+// ── 7. Zip for one-shot Hostinger upload (avoids partial deploy / MIME errors) ─
+try {
+  const zipPath = path.join(root, "syncpedia-crm-deploy.zip");
+  if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+  const isWin = process.platform === "win32";
+  if (isWin) {
+    run(
+      `powershell -NoProfile -Command "Compress-Archive -Path '${dist.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force"`,
+    );
+  } else {
+    run(`cd "${dist}" && zip -r "${zipPath}" .`);
+  }
+  log(`Created ${zipPath} — upload & extract in public_html (overwrite files, keep api/config.php)`);
+} catch (e) {
+  log("WARN: could not create deploy zip — upload dist/ folder manually");
+}

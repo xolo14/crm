@@ -277,10 +277,13 @@ if ($method === 'POST') {
             $fstmt = $db->prepare("INSERT INTO org_features (id, org_id, feature, enabled) VALUES (?, ?, ?, ?)");
             if ($inputFeatures && is_array($inputFeatures)) {
                 foreach ($inputFeatures as $feat => $enabled) {
+                    if (!syncpediaIsAllowedOrgFeature((string) $feat)) {
+                        continue;
+                    }
                     $fstmt->execute([generateUUID(), $orgId, $feat, $enabled ? 1 : 0]);
                 }
             } else {
-                $defaultFeatures = ['leads', 'contacts', 'deals', 'tasks', 'students', 'courses', 'batches', 'payments', 'reports', 'daily_reports', 'notifications'];
+                $defaultFeatures = ['leads', 'form_management', 'tasks', 'students', 'courses', 'batches', 'payments', 'daily_reports', 'notifications', 'holidays', 'communications'];
                 foreach ($defaultFeatures as $feat) {
                     $fstmt->execute([generateUUID(), $orgId, $feat, 1]);
                 }
@@ -291,10 +294,13 @@ if ($method === 'POST') {
                 $fstmt = $db->prepare("INSERT INTO org_features (id, feature, enabled) VALUES (?, ?, ?)");
                 if ($inputFeatures && is_array($inputFeatures)) {
                     foreach ($inputFeatures as $feat => $enabled) {
+                        if (!syncpediaIsAllowedOrgFeature((string) $feat)) {
+                            continue;
+                        }
                         $fstmt->execute([generateUUID(), $feat, $enabled ? 1 : 0]);
                     }
                 } else {
-                    $defaultFeatures = ['leads', 'contacts', 'deals', 'tasks', 'students', 'courses', 'batches', 'payments', 'reports', 'daily_reports', 'notifications'];
+                    $defaultFeatures = ['leads', 'form_management', 'tasks', 'students', 'courses', 'batches', 'payments', 'daily_reports', 'notifications', 'holidays', 'communications'];
                     foreach ($defaultFeatures as $feat) {
                         $fstmt->execute([generateUUID(), $feat, 1]);
                     }
@@ -358,6 +364,13 @@ if ($method === 'PUT') {
     if (!empty($_GET['action']) && $_GET['action'] === 'features') {
         $features = $input['features'] ?? [];
         foreach ($features as $feat => $enabled) {
+            if (!syncpediaIsAllowedOrgFeature((string) $feat)) {
+                continue;
+            }
+            $bool = filter_var($enabled, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if ($bool === null) {
+                $bool = !empty($enabled);
+            }
             $upsert = syncpediaUpsertClause(
                 $db,
                 '(org_id, feature)',
@@ -365,7 +378,7 @@ if ($method === 'PUT') {
                 ['`enabled` = VALUES(`enabled`)'],
             );
             $stmt = $db->prepare("INSERT INTO org_features (id, org_id, feature, enabled) VALUES (?, ?, ?, ?) {$upsert}");
-            $stmt->execute([generateUUID(), $id, $feat, $enabled ? 1 : 0]);
+            $stmt->execute([generateUUID(), $id, $feat, $bool ? 1 : 0]);
         }
         respond(['message' => 'Features updated']);
     }

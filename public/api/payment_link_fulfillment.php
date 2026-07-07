@@ -29,8 +29,21 @@ function paymentLinkMergedNotes(array $row, array $rzpLink): array
  */
 function paymentLinkResolveLeadId(PDO $db, array $row, array $rzpLink, array $notes): ?string
 {
+    $plinkOrg = trim((string) ($row['org_id'] ?? ''));
     $leadId = trim((string) ($notes['lead_id'] ?? ''));
     if ($leadId !== '') {
+        $st = $db->prepare('SELECT id, org_id FROM leads WHERE id = ? LIMIT 1');
+        $st->execute([$leadId]);
+        $found = $st->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($found)) {
+            error_log('[payment_fulfillment] lead_id not found: ' . $leadId);
+            return null;
+        }
+        $leadOrg = trim((string) ($found['org_id'] ?? ''));
+        if ($plinkOrg !== '' && $leadOrg !== '' && $leadOrg !== $plinkOrg) {
+            error_log('[payment_fulfillment] lead_id org mismatch for payment link');
+            return null;
+        }
         return $leadId;
     }
 
@@ -166,6 +179,12 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
     $leadRow = $st->fetch(PDO::FETCH_ASSOC);
     if (!is_array($leadRow)) {
         return ['ok' => false, 'error' => 'lead_not_found', 'lead_id' => $leadId];
+    }
+
+    $plinkOrg = trim((string) ($row['org_id'] ?? ''));
+    $leadOrg = trim((string) ($leadRow['org_id'] ?? ''));
+    if ($plinkOrg !== '' && $leadOrg !== '' && $leadOrg !== $plinkOrg) {
+        return ['ok' => false, 'error' => 'lead_org_mismatch', 'lead_id' => $leadId];
     }
 
     $leadEmail = trim((string) ($leadRow['email'] ?? ''));

@@ -1,54 +1,25 @@
-# LeadOrbit CRM - Hostinger Deployment Guide
+# LeadOrbit / SYNCPedia CRM — PHP backend
 
-## 📁 Files to Upload
+**Source of truth for the API:** `php-backend/api/`  
+On build or `npm run dev`, files sync to `public/api/` and `dist/api/`.
 
-### Database
-1. Log in to **Hostinger hPanel** → **Databases** → **MySQL Databases**
-2. Create a new database and user
-3. Open **phpMyAdmin** and import `database.sql`
+## Deploy
 
-### PHP API  
-Upload the entire `api/` folder to your Hostinger `public_html/api/` directory:
-```
-public_html/
-├── api/
-│   ├── .htaccess
-│   ├── config.php      ← UPDATE with your DB credentials
-│   ├── helpers.php
-│   ├── index.php
-│   ├── auth.php
-│   ├── leads.php
-│   ├── contacts.php
-│   ├── deals.php
-│   ├── tasks.php
-│   ├── activities.php
-│   ├── reports.php
-│   └── settings.php
+Run `npm run build` and upload everything inside `dist/` to Hostinger `public_html`.  
+See `dist/DEPLOY.md` after build for full steps.
+
+## Local development
+
+```bash
+npm run dev          # syncs API, then starts Vite
+npm run sync:api     # sync php-backend/api → public/api only
+npm run build        # production bundle + deploy zip
 ```
 
-### Frontend (React Build)
-1. Run `npm run build` in the Lovable project
-2. Upload the `dist/` contents to `public_html/`
+## Database
 
-## ⚙️ Configuration
+Import `php-backend/database.mysql.sql` in phpMyAdmin (shipped as `database.sql` in dist).
 
-### 1. Update `config.php`
-```php
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'your_db_name');        // From Hostinger
-define('DB_USER', 'your_db_user');        // From Hostinger  
-define('DB_PASS', 'your_db_password');    // From Hostinger
-define('JWT_SECRET', 'random-32-char-string');
-define('FRONTEND_URL', 'https://yourdomain.com');
-```
+## Configuration
 
-### 2. Set API URL in React
-Add to your environment or update `src/lib/api.ts`:
-```
-VITE_API_URL=https://yourdomain.com/api
-```
-
-## 🔒 Security Notes
-- Change `JWT_SECRET` to a random string
-- Update `FRONTEND_URL` in config.php
-- Use HTTPS on Hostinger (free SSL available)
+Copy `api/config.example.php` → `api/config.php` and set MySQL + `JWT_SECRET`.

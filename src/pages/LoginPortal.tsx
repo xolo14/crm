@@ -12,14 +12,13 @@ import { HostingerSetupBanner } from "@/components/HostingerSetupBanner";
 import { ForgotPasswordFlow } from "@/components/auth/ForgotPasswordFlow";
 import {
   getPostLoginPath,
-  isAdminPortalRole,
   isLoginPortalRole,
   isSuperAdminPortalRole,
   resolveMarketingLoginUser,
   syncHrLocalSession,
 } from "@/lib/postLoginRoute";
-import loginHero from "@/assets/login-hero.jpg";
-import syncpediaLogo from "@/assets/syncpedia-logo.png";
+import loginHero from "@/assets/login-hero.webp";
+import syncpediaLogo from "@/assets/syncpedia-logo.webp";
 
 export default function LoginPortal() {
   const { user, loading, signIn, signOut } = useAuth();
@@ -60,11 +59,7 @@ export default function LoginPortal() {
 
       if (isSuperAdminPortalRole(role)) {
         await signOut();
-        throw new Error("This account type is not supported here.");
-      }
-      if (isAdminPortalRole(role)) {
-        await signOut();
-        throw new Error("This account type is not supported here.");
+        throw new Error("Super Admin accounts must sign in at /super_admin.");
       }
       if (!isLoginPortalRole(role)) {
         await signOut();
@@ -86,7 +81,7 @@ export default function LoginPortal() {
     <>
       <div className="flex min-h-screen min-h-[100dvh]">
         <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden items-center justify-center">
-          <img src={loginHero} alt="Syncpedia CRM" className="absolute inset-0 w-full h-full object-cover" />
+          <img src={loginHero} alt="Syncpedia CRM" className="absolute inset-0 w-full h-full object-cover" decoding="async" fetchPriority="high" />
           <div className="absolute inset-0 bg-black/50" />
           <div className="relative z-10 px-12 max-w-lg text-center">
             <div className="h-20 w-20 rounded-2xl bg-white/15 backdrop-blur-sm flex items-center justify-center mx-auto mb-6">
@@ -95,7 +90,7 @@ export default function LoginPortal() {
             <h1 className="text-4xl font-extrabold text-white mb-3 tracking-tight">Login Portal</h1>
             <p className="text-lg text-white/80 font-medium">Syncpedia CRM</p>
             <p className="text-sm text-white/60 mt-3 leading-relaxed">
-              One sign-in for sales, managers, marketing, and HR teams.
+              One sign-in for admins, sales, managers, marketing, and HR teams.
             </p>
           </div>
         </div>
@@ -104,7 +99,15 @@ export default function LoginPortal() {
           <div className="w-full max-w-md">
             <HostingerSetupBanner />
             <div className="flex flex-col items-center gap-4 mb-8 lg:hidden">
-              <img src={syncpediaLogo} alt="Syncpedia Technologies" className="h-10 object-contain" />
+              <img
+                src={syncpediaLogo}
+                alt="Syncpedia Technologies"
+                className="h-10 object-contain"
+                width={160}
+                height={40}
+                decoding="async"
+                fetchPriority="high"
+              />
               <p className="text-lg font-bold text-foreground">Login Portal</p>
             </div>
 

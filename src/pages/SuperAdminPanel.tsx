@@ -16,6 +16,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Building2, Users, TrendingUp, IndianRupee, Plus, Settings, Eye, Loader2, BarChart3, Shield, Globe, GraduationCap, Monitor, KeyRound } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
+import {
+  IMPLEMENTED_FEATURE_KEYS,
+  defaultFeaturesForNewOrg,
+  implementedFeaturesBySection,
+} from '@/lib/orgFeatures';
+import { generateTempPassword } from '@/lib/randomPassword';
 
 // Industry-specific feature sections
 const INDUSTRY_PRESETS: Record<string, {
@@ -179,17 +185,12 @@ const INDUSTRY_PRESETS: Record<string, {
   },
 };
 
-// Flatten all unique feature keys across all presets
-const ALL_FEATURE_KEYS = Array.from(
-  new Set(
-    Object.values(INDUSTRY_PRESETS).flatMap(p =>
-      p.sections.flatMap(s => s.features.map(f => f.key))
-    )
-  )
-);
+// Flatten implemented feature keys (only pages that exist in this CRM)
+const ALL_FEATURE_KEYS = IMPLEMENTED_FEATURE_KEYS;
+const FEATURE_SECTIONS = implementedFeaturesBySection();
 
 export default function SuperAdminPanel() {
-  const { role, switchOrg } = useAuth();
+  const { role, switchOrg, organization, refreshOrganization } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -210,11 +211,11 @@ export default function SuperAdminPanel() {
   const [createFeatures, setCreateFeatures] = useState<Record<string, boolean>>({});
   const [form, setForm] = useState({
     name: '', slug: '', plan: 'starter', max_users: '10',
-    admin_name: '', admin_email: '', admin_password: 'Welcome@123',
+    admin_name: '', admin_email: '', admin_password: generateTempPassword(),
   });
   const [createAdminAccount, setCreateAdminAccount] = useState(true);
   const [provisionOrg, setProvisionOrg] = useState<any | null>(null);
-  const [provisionForm, setProvisionForm] = useState({ admin_name: '', admin_email: '', admin_password: 'Welcome@123' });
+  const [provisionForm, setProvisionForm] = useState({ admin_name: '', admin_email: '', admin_password: generateTempPassword() });
   const [provisioning, setProvisioning] = useState(false);
   const [syncPlatformSalesLoading, setSyncPlatformSalesLoading] = useState(false);
 
@@ -249,12 +250,7 @@ export default function SuperAdminPanel() {
 
   const selectIndustry = (key: string) => {
     setSelectedIndustry(key);
-    const preset = INDUSTRY_PRESETS[key];
-    if (!preset) return;
-    const feats: Record<string, boolean> = {};
-    // Enable all features from this preset by default
-    preset.sections.forEach(s => s.features.forEach(f => { feats[f.key] = f.key === 'certificates' ? false : true; }));
-    setCreateFeatures(feats);
+    setCreateFeatures(defaultFeaturesForNewOrg());
   };
 
   const handleCreate = async () => {
@@ -285,7 +281,7 @@ export default function SuperAdminPanel() {
         toast({ title: 'Organization created!' });
       }
       setShowCreate(false);
-      setForm({ name: '', slug: '', plan: 'starter', max_users: '10', admin_name: '', admin_email: '', admin_password: 'Welcome@123' });
+      setForm({ name: '', slug: '', plan: 'starter', max_users: '10', admin_name: '', admin_email: '', admin_password: generateTempPassword() });
       setCreateAdminAccount(true);
       setSelectedIndustry('');
       setCreateFeatures({});
@@ -308,7 +304,7 @@ export default function SuperAdminPanel() {
 
   const openProvisionAdmin = (org: any) => {
     setProvisionOrg(org);
-    setProvisionForm({ admin_name: '', admin_email: '', admin_password: 'Welcome@123' });
+    setProvisionForm({ admin_name: '', admin_email: '', admin_password: generateTempPassword() });
   };
 
   const handleSyncPlatformSales = async () => {
@@ -345,7 +341,7 @@ export default function SuperAdminPanel() {
         admin_email: provisionForm.admin_email.trim(),
         admin_password: provisionForm.admin_password,
       });
-      toast({ title: 'Admin credentials saved', description: `${provisionForm.admin_email} can sign in at Admin Portal (/admin).` });
+      toast({ title: 'Admin credentials saved', description: `${provisionForm.admin_email} can sign in at the Login Portal (/login).` });
       setProvisionOrg(null);
       fetchOrgs();
     } catch (err: any) {
@@ -378,7 +374,10 @@ export default function SuperAdminPanel() {
     if (!showFeatures) return;
     try {
       await api.organizations.updateFeatures(showFeatures, features);
-      toast({ title: 'Features updated' });
+      if (organization?.id === showFeatures) {
+        await refreshOrganization();
+      }
+      toast({ title: 'Features updated', description: 'Org members will see changes after they refresh or refocus the app.' });
       setShowFeatures(null);
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };
@@ -442,14 +441,6 @@ export default function SuperAdminPanel() {
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
-
-  const currentPreset = selectedIndustry ? INDUSTRY_PRESETS[selectedIndustry] : null;
-
-  // Get the industry preset for a given org (for features dialog)
-  const getOrgIndustryPreset = () => {
-    // We show all features grouped by all industries in the edit dialog
-    return Object.values(INDUSTRY_PRESETS);
-  };
 
   return (
     <div>
@@ -542,17 +533,16 @@ export default function SuperAdminPanel() {
                 </div>
 
                 {/* Step 3: Feature Checkboxes (visible after industry selected) */}
-                {currentPreset && (
+                {selectedIndustry && (
                   <div className="border-t pt-4">
                     <div className="flex items-center gap-2 mb-4">
-                      <currentPreset.icon className={`h-4 w-4 ${currentPreset.color}`} />
-                      <Label className="text-sm font-semibold">{currentPreset.label} Features</Label>
+                      <Label className="text-sm font-semibold">Enabled modules</Label>
                       <Badge variant="outline" className="text-[10px] ml-auto">
                         {Object.values(createFeatures).filter(Boolean).length} selected
                       </Badge>
                     </div>
                     <div className="space-y-5">
-                      {currentPreset.sections.map(section => (
+                      {FEATURE_SECTIONS.map(section => (
                         <div key={section.title} className="space-y-2">
                           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{section.title}</p>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -589,7 +579,7 @@ export default function SuperAdminPanel() {
                     <Checkbox id="create-org-admin" checked={createAdminAccount} onCheckedChange={v => setCreateAdminAccount(!!v)} className="mt-1" />
                     <div>
                       <Label htmlFor="create-org-admin" className="text-sm font-semibold cursor-pointer">Create org admin login</Label>
-                      <p className="text-[11px] text-muted-foreground mt-1 leading-snug">Each organization has exactly one admin account. They sign in at the Admin Portal (<span className="font-mono text-[10px]">/admin</span>) and can add managers, sales reps, and marketing users when those features are enabled.</p>
+                      <p className="text-[11px] text-muted-foreground mt-1 leading-snug">Each organization has exactly one admin account. They sign in at the Login Portal (<span className="font-mono text-[10px]">/login</span>) and can add managers, sales reps, and marketing users when those features are enabled.</p>
                     </div>
                   </div>
                   {createAdminAccount && (
@@ -755,36 +745,23 @@ export default function SuperAdminPanel() {
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Manage Features</DialogTitle></DialogHeader>
           <div className="space-y-5">
-            {getOrgIndustryPreset().map(preset => (
-              <div key={preset.label}>
-                <div className="flex items-center gap-2 mb-3">
-                  <preset.icon className={`h-4 w-4 ${preset.color}`} />
-                  <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{preset.label}</p>
-                </div>
-                {preset.sections.map(section => {
-                  const sectionFeatureKeys = section.features.map(f => f.key);
-                  const hasAnyUnique = sectionFeatureKeys.some(k => !Object.keys(features).length || features[k] !== undefined);
-                  if (!hasAnyUnique && Object.keys(features).length > 0) return null;
-                  return (
-                    <div key={section.title} className="ml-2 mb-3">
-                      <p className="text-[11px] font-semibold text-muted-foreground mb-2">{section.title}</p>
-                      <div className="space-y-1.5">
-                        {section.features.map(feat => (
-                          <div key={feat.key} className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-accent/50">
-                            <div>
-                              <Label className="text-sm cursor-pointer">{feat.label}</Label>
-                              <p className="text-[10px] text-muted-foreground">{feat.description}</p>
-                            </div>
-                            <Switch
-                              checked={features[feat.key] ?? false}
-                              onCheckedChange={v => setFeatures(prev => ({ ...prev, [feat.key]: v }))}
-                            />
-                          </div>
-                        ))}
+            {FEATURE_SECTIONS.map(section => (
+              <div key={section.title}>
+                <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-3">{section.title}</p>
+                <div className="space-y-1.5">
+                  {section.features.map(feat => (
+                    <div key={feat.key} className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-accent/50 gap-3">
+                      <div className="min-w-0 flex-1">
+                        <Label className="text-sm cursor-pointer">{feat.label}</Label>
+                        <p className="text-[10px] text-muted-foreground">{feat.description}</p>
                       </div>
+                      <Switch
+                        checked={features[feat.key] ?? false}
+                        onCheckedChange={v => setFeatures(prev => ({ ...prev, [feat.key]: v }))}
+                      />
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
             ))}
           </div>
@@ -867,7 +844,7 @@ export default function SuperAdminPanel() {
           </DialogHeader>
           {provisionOrg && (
             <div className="space-y-3 text-sm">
-              <p className="text-muted-foreground text-xs">Each organization has one admin. Use this to set or change their email, name, and password for <span className="font-medium text-foreground">{provisionOrg.name}</span>. They sign in at <span className="font-mono text-[10px]">/admin</span>.</p>
+              <p className="text-muted-foreground text-xs">Each organization has one admin. Use this to set or change their email, name, and password for <span className="font-medium text-foreground">{provisionOrg.name}</span>. They sign in at <span className="font-mono text-[10px]">/login</span>.</p>
               <div className="space-y-2">
                 <Label className="text-xs">Admin name *</Label>
                 <Input value={provisionForm.admin_name} onChange={e => setProvisionForm(f => ({ ...f, admin_name: e.target.value }))} placeholder="Jane Admin" className="h-10" />

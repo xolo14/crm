@@ -84,7 +84,7 @@ export default function CommunicationsAdminPage() {
 
       <Card className="border-primary/20 bg-primary/5">
         <CardContent className="pt-6 text-sm text-muted-foreground">
-          You assign virtual call numbers. Organization admins connect Meta WhatsApp and submit templates for official Meta approval in WhatsApp Setup.
+          Step 1: Assign a virtual number to an organization. Step 2: Assign that number to employees (org admins also receive numbers automatically).
         </CardContent>
       </Card>
 

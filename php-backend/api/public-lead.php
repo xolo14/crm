@@ -127,6 +127,11 @@ if ($formSlug !== '' && !is_array($formRow)) {
     respond(['error' => 'Form not found or inactive'], 404);
 }
 
+// Public form submissions always use form_{slug} as source (ignore client override).
+if ($formSlug !== '') {
+    $source = 'form_' . $formSlug;
+}
+
 $formMeta = [];
 if (is_array($formRow) && !empty($formRow['meta_json'])) {
     $tmp = is_array($formRow['meta_json']) ? $formRow['meta_json'] : json_decode((string) $formRow['meta_json'], true);
@@ -172,7 +177,10 @@ if (is_array($formRow)) {
             ?? $_GET['api_key']
             ?? ($_SERVER['HTTP_X_FORM_API_KEY'] ?? '')
         ));
-        if ($providedApiKey !== '' && !formExternalApiKeyVerify($providedApiKey, $storedHash)) {
+        if ($providedApiKey === '') {
+            respond(['error' => 'Form API key is required'], 401);
+        }
+        if (!formExternalApiKeyVerify($providedApiKey, $storedHash)) {
             respond(['error' => 'Invalid form API key'], 401);
         }
     }

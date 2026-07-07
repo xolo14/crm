@@ -15,6 +15,8 @@ import {
 import { DEFAULT_PUBLIC_FORM_BRAND, parseFormMetaJson, publicFormBrandFromMeta, type PublicFormBrand } from '@/components/forms/publicFormTypes';
 import { getApiBase } from '@/lib/apiBase';
 import { reportLeadFormConversion } from '@/lib/gtagConversion';
+import { loadPublicAnalytics } from '@/lib/loadPublicAnalytics';
+import { setPageMeta, SEO_CRM_ORIGIN } from '@/lib/seo';
 
 const SPECIALIZATIONS = [
   { group: 'AI & Data', options: ['Artificial Intelligence', 'Machine Learning', 'Data Science & Analytics', 'n8n Workflow Automation'] },
@@ -46,7 +48,12 @@ export default function Apply() {
   const [formDisplayDescription, setFormDisplayDescription] = useState('Fill in your details to begin the screening process.');
   const [collectEmail, setCollectEmail] = useState(true);
   const [confirmationMessage, setConfirmationMessage] = useState('');
+  const [formLoadState, setFormLoadState] = useState<'idle' | 'loading' | 'ready' | 'inactive' | 'error'>('idle');
   const apiBase = getApiBase();
+
+  useEffect(() => {
+    void loadPublicAnalytics();
+  }, []);
 
   const formSections = useMemo(() => {
     const parsed = builderQuestions ?? [];
@@ -277,9 +284,9 @@ export default function Apply() {
       if (!response.ok) throw new Error(data.error || 'Submission failed');
       reportLeadFormConversion();
       setSubmitted(true);
-    } catch (err: any) {
-      console.error('Submit error:', err);
-      toast({ title: 'Something went wrong. Please try again.', variant: 'destructive' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Something went wrong. Please try again.';
+      toast({ title: message, variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -320,14 +327,26 @@ export default function Apply() {
   }, [formBrand.formBg, view, isDirectFormLink]);
 
   useEffect(() => {
-    if (!formSlug) return;
+    if (!formSlug) {
+      setFormLoadState('idle');
+      return;
+    }
     let mounted = true;
+    setFormLoadState('loading');
     (async () => {
       try {
         const res = await fetch(`${apiBase}/public-lead.php?form=${encodeURIComponent(formSlug)}`);
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         const row = data?.data;
-        if (!row || !mounted) return;
+        if (!mounted) return;
+        if (!row) {
+          setFormLoadState('inactive');
+          return;
+        }
+        if (Number(row.is_active) === 0) {
+          setFormLoadState('inactive');
+          return;
+        }
         const meta = parseFormMetaJson(row?.meta_json);
         const customFields = Array.isArray(row?.fields_json) ? row.fields_json : [];
         const parsedQuestions = parseBuilderQuestions(meta);
@@ -346,19 +365,44 @@ export default function Apply() {
           if (f.key && initVals[f.key] === undefined) initVals[f.key] = '';
         }
         setFormValues(initVals);
-        setFormBrand(publicFormBrandFromMeta(meta, { orgName: row?.org_name }));
+        setFormBrand(publicFormBrandFromMeta(meta));
         setFormDisplayTitle(String(row?.name || 'Application'));
         setFormDisplayDescription(String(row?.description || 'Fill in your details to submit this form.'));
         setCollectEmail(meta.collect_email !== false);
         setConfirmationMessage(String(meta.confirmation_message || '').trim());
+        setFormLoadState('ready');
       } catch {
-        // keep defaults for branding
+        if (mounted) setFormLoadState('error');
       }
     })();
     return () => {
       mounted = false;
     };
   }, [formSlug, apiBase]);
+
+  useEffect(() => {
+    if (!formSlug || formLoadState !== 'ready') return;
+    const title = formDisplayTitle.trim() || 'Application';
+    const description =
+      formDisplayDescription.trim() ||
+      (formSlug === 'career-guidance'
+        ? 'Get free career guidance from our experts. Discover the right course and career path for you in India.'
+        : 'Submit your application or enquiry with Syncpedia partner training organizations.');
+    setPageMeta({
+      title: `${title} | Apply — Syncpedia`,
+      description,
+      canonical: `${SEO_CRM_ORIGIN}/apply?form=${encodeURIComponent(formSlug)}`,
+      robots: 'index, follow',
+      jsonLd: {
+        '@context': 'https://schema.org',
+        '@type': 'WebPage',
+        name: title,
+        description,
+        url: `${SEO_CRM_ORIGIN}/apply?form=${encodeURIComponent(formSlug)}`,
+        isPartOf: { '@type': 'WebSite', name: 'Syncpedia', url: 'https://syncpedia.in' },
+      },
+    });
+  }, [formSlug, formLoadState, formDisplayTitle, formDisplayDescription]);
 
   return (
     <>
@@ -507,9 +551,11 @@ export default function Apply() {
         {view !== 'form' && (
         <header className="sp-header">
           {formBrand.logoUrl ? (
-            <img src={formBrand.logoUrl} alt={formBrand.companyName} className="sp-logo" style={{ height: 30, objectFit: 'contain' }} />
+            <img src={formBrand.logoUrl} alt={formBrand.companyName || "Company logo"} className="sp-logo" style={{ height: 30, objectFit: 'contain' }} />
           ) : null}
-          <span className="sp-logo" style={{ marginTop: formBrand.logoUrl ? 8 : 0 }}>{formBrand.companyName || 'Student Survey Form'}</span>
+          {formBrand.companyName.trim() ? (
+            <span className="sp-logo" style={{ marginTop: formBrand.logoUrl ? 8 : 0 }}>{formBrand.companyName}</span>
+          ) : null}
         </header>
         )}
 
@@ -673,7 +719,27 @@ export default function Apply() {
         )}
 
         {/* FORM VIEW — Google Forms layout: header image → brand → fields */}
-        {view === 'form' && !submitted && (
+        {view === 'form' && !submitted && isDirectFormLink && formLoadState === 'loading' && (
+          <div className="sp-slide-right sp-form-shell" style={{ padding: '48px 24px', textAlign: 'center' }}>
+            <p style={{ color: 'var(--text-muted)' }}>Loading form…</p>
+          </div>
+        )}
+
+        {view === 'form' && !submitted && isDirectFormLink && (formLoadState === 'inactive' || formLoadState === 'error') && (
+          <div className="sp-slide-right sp-form-shell" style={{ padding: '48px 24px', textAlign: 'center', maxWidth: 480, margin: '0 auto' }}>
+            <div style={{ fontSize: '2.5rem', marginBottom: 16 }}>⚠️</div>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 8 }}>
+              {formLoadState === 'inactive' ? 'This form is not available' : 'Could not load form'}
+            </h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', lineHeight: 1.5 }}>
+              {formLoadState === 'inactive'
+                ? 'The link may be incorrect, or the form has been deactivated by the organization.'
+                : 'Please check your connection and try again later.'}
+            </p>
+          </div>
+        )}
+
+        {view === 'form' && !submitted && (!isDirectFormLink || formLoadState === 'ready' || formLoadState === 'idle') && (
           <div className="sp-slide-right">
             {!isCustomForm && (
               <div className="sp-content" style={{ paddingBottom: 0 }}>

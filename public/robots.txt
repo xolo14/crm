@@ -1,14 +1,22 @@
-User-agent: Googlebot
-Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Twitterbot
-Allow: /
-
-User-agent: facebookexternalhit
-Allow: /
+# CRM app (crm.syncpedia.in) — block internal tools; allow public forms & certificate verify.
+# Marketing site sitemap: https://syncpedia.in/sitemap.xml
 
 User-agent: *
-Allow: /
+Disallow: /api/
+Disallow: /leads
+Disallow: /leads-management
+Disallow: /my-leads
+Disallow: /login
+Disallow: /superadmin
+Disallow: /super_admin
+Disallow: /settings
+Disallow: /form-management
+Disallow: /students
+Disallow: /team
+Disallow: /payments
+Disallow: /hr/
+Allow: /apply
+Allow: /verify/
+
+Sitemap: https://crm.syncpedia.in/sitemap.xml
+Sitemap: https://syncpedia.in/sitemap.xml

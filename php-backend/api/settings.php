@@ -8,35 +8,49 @@ requireRole($tokenData, ['admin', 'super_admin', 'org']);
 
 $method = $_SERVER['REQUEST_METHOD'];
 
-// Team management
 if ($method === 'GET') {
-    $stmt = $db->prepare("SELECT id, email, full_name, phone, role, is_active, created_at FROM users ORDER BY created_at DESC");
-    $stmt->execute();
+    if (tenantIsMasterView($tokenData)) {
+        $stmt = $db->prepare('SELECT id, email, full_name, phone, role, is_active, created_at, org_id FROM users ORDER BY created_at DESC');
+        $stmt->execute();
+    } else {
+        $orgId = resolveCreatorOrgId($db, $tokenData);
+        if ($orgId === null || $orgId === '') {
+            respond(['data' => []]);
+        }
+        $stmt = $db->prepare('SELECT id, email, full_name, phone, role, is_active, created_at, org_id FROM users WHERE org_id = ? ORDER BY created_at DESC');
+        $stmt->execute([$orgId]);
+    }
     respond(['data' => $stmt->fetchAll()]);
 }
 
 if ($method === 'PUT') {
     $input = getInput();
     $id = $_GET['id'] ?? '';
-    if (!$id) respond(['error' => 'ID required'], 400);
+    if (!$id) {
+        respond(['error' => 'ID required'], 400);
+    }
+    syncpediaAssertTargetUserEditable($db, $tokenData, $id);
 
     $fields = [];
     $params = [];
     foreach (['role', 'is_active', 'full_name'] as $f) {
-        if (array_key_exists($f, $input)) { $fields[] = "$f = ?"; $params[] = $input[$f]; }
+        if (array_key_exists($f, $input)) {
+            $fields[] = "$f = ?";
+            $params[] = $input[$f];
+        }
     }
-    if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
+    if (empty($fields)) {
+        respond(['error' => 'Nothing to update'], 400);
+    }
 
     $params[] = $id;
-    $stmt = $db->prepare("UPDATE users SET " . implode(', ', $fields) . " WHERE id = ?");
+    $stmt = $db->prepare('UPDATE users SET ' . implode(', ', $fields) . ' WHERE id = ?');
     $stmt->execute($params);
     respond(['message' => 'User updated']);
 }
 
-// Pipeline stages
 if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'stages') {
-    $input = getInput();
-    $stmt = $db->prepare("SELECT * FROM pipeline_stages ORDER BY position");
+    $stmt = $db->prepare('SELECT * FROM pipeline_stages ORDER BY position');
     $stmt->execute();
     respond(['data' => $stmt->fetchAll()]);
 }

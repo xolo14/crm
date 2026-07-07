@@ -11,8 +11,9 @@ $role = $tokenData['role'];
 if ($method === 'GET') {
     // Check if requesting stages
     if (isset($_GET['stages'])) {
-        $stmt = $db->prepare("SELECT * FROM pipeline_stages ORDER BY position");
-        $stmt->execute();
+        $stg = pipelineStagesOrgFilter($tokenData, 'ps', $db);
+        $stmt = $db->prepare("SELECT ps.* FROM pipeline_stages ps WHERE {$stg['where']} ORDER BY ps.position");
+        $stmt->execute($stg['params']);
         respond(['data' => $stmt->fetchAll()]);
     }
 
@@ -52,7 +53,7 @@ if ($method === 'POST') {
     $input = getInput();
     $id = generateUUID();
 
-    $dealOrgId = $tokenData['org_id'] ?? null;
+    $dealOrgId = resolveWriteOrgId($db, $tokenData);
     if (($role ?? '') === 'super_admin' && !empty($input['org_id'])) {
         $dealOrgId = $input['org_id'];
     }
@@ -79,18 +80,34 @@ if ($method === 'PUT') {
     }
     if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
 
-    $params[] = $id;
-    $stmt = $db->prepare("UPDATE deals SET " . implode(', ', $fields) . " WHERE id = ?");
+    $orgAnd = orgFilterSqlAnd($tokenData, 'd', $db);
+    $params = array_merge($params, [$id], $orgAnd['params']);
+    $stmt = $db->prepare('UPDATE deals d SET ' . implode(', ', $fields) . ' WHERE d.id = ?' . $orgAnd['sql']);
     $stmt->execute($params);
+    if ($stmt->rowCount() === 0) {
+        respond(['error' => 'Deal not found'], 404);
+    }
     respond(['message' => 'Deal updated']);
 }
 
 if ($method === 'DELETE') {
-    requireRole($tokenData, ['admin', 'manager']);
+    requireRole($tokenData, ['admin', 'manager', 'org']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
-    trashArchiveRow($db, 'deal', 'deals', $id, $tokenData);
-    $stmt = $db->prepare("DELETE FROM deals WHERE id = ?");
-    $stmt->execute([$id]);
+
+    $orgAnd = orgFilterSqlAnd($tokenData, 'd', $db);
+    $params = array_merge([$id], $orgAnd['params']);
+    $chk = $db->prepare('SELECT * FROM deals d WHERE d.id = ?' . $orgAnd['sql'] . ' LIMIT 1');
+    $chk->execute($params);
+    $row = $chk->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        respond(['error' => 'Deal not found'], 404);
+    }
+
+    trashArchivePayload($db, 'deal', $row, $tokenData);
+    $stmt = $db->prepare('DELETE FROM deals d WHERE d.id = ?' . $orgAnd['sql']);
+    $stmt->execute($params);
     respond(['message' => 'Deal deleted']);
 }
+
+respond(['error' => 'Method not allowed'], 405);

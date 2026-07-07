@@ -112,6 +112,9 @@ if ($action === 'list' && $method === 'GET') {
         if ($orgQ !== '' && $orgQ !== 'all') {
             $sql .= " AND org_id = ?";
             $params[] = $orgQ;
+        } elseif ($callerOrgId !== null && trim((string) $callerOrgId) !== '') {
+            $sql .= " AND org_id = ?";
+            $params[] = $callerOrgId;
         }
     } else {
         $sql .= " AND org_id = ?";

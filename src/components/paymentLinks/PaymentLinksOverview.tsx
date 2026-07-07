@@ -1,5 +1,7 @@
 import { Link2, Plus, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useAuth } from "@/hooks/useAuth";
+import { canAccessPaymentRecords } from "@/lib/orgAccess";
 import type { RazorpayPaymentLink } from "@/types/paymentLinks";
 import PaymentLinkCard from "./PaymentLinkCard";
 
@@ -42,6 +44,8 @@ export default function PaymentLinksOverview({
   onCopyShortUrl,
   onCreate,
 }: Props) {
+  const { user } = useAuth();
+  const showRecordsLink = canAccessPaymentRecords(user?.role ?? null);
   const recent = links.slice(0, RECENT_LIMIT);
 
   return (
@@ -99,7 +103,7 @@ export default function PaymentLinksOverview({
               />
             ))}
           </div>
-          {links.length > RECENT_LIMIT && (
+          {links.length > RECENT_LIMIT && showRecordsLink && (
             <div className="mt-4 text-right">
               <Link
                 to="/payments/records"

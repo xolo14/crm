@@ -40,19 +40,15 @@ function parseTeamList(res: unknown): TeamMemberLookup[] {
 }
 
 export default function PaymentLinksRecordsPage() {
-  const { user, profile } = useAuth();
+  const { user } = useAuth();
   const role = user?.role ?? "";
-  const isSalesRep = role === "sales_representative";
 
   const [links, setLinks] = useState<RazorpayPaymentLink[]>([]);
   const [team, setTeam] = useState<TeamMemberLookup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [period, setPeriod] = useState<PaymentLinkPeriod>("all");
-  const [filters, setFilters] = useState<RecordsTableFilters>(() => ({
-    ...initialFilters,
-    memberId: isSalesRep && user?.id ? String(user.id) : "",
-  }));
+  const [filters, setFilters] = useState<RecordsTableFilters>(initialFilters);
 
   const loadData = useCallback(async () => {
     setLoading(true);

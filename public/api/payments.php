@@ -68,6 +68,16 @@ if ($method === 'GET') {
 if ($method === 'POST') {
     requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager', 'finance']);
     $input = getInput();
+    $studentId = trim((string) ($input['student_id'] ?? ''));
+    if ($studentId === '') {
+        respond(['error' => 'student_id is required'], 400);
+    }
+    $stSt = $db->prepare('SELECT id, org_id, lead_id, email FROM students WHERE id = ? LIMIT 1');
+    $stSt->execute([$studentId]);
+    $studentRow = $stSt->fetch(PDO::FETCH_ASSOC);
+    if (!$studentRow || !userCanAccessStudentRow($db, $tokenData, (string) $tokenData['user_id'], $role, $studentRow)) {
+        respond(['error' => 'Student not found or access denied'], 404);
+    }
     $id = generateUUID();
     $orgId = getOrgId($tokenData);
     if ($role === 'super_admin' && !empty($input['org_id'])) {
@@ -113,9 +123,13 @@ if ($method === 'PUT') {
     if ($fields === []) {
         respond(['error' => 'Nothing to update'], 400);
     }
+    $of = orgFilterSqlAnd($tokenData, 'p', $db);
     $params[] = $id;
-    $stmt = $db->prepare('UPDATE payments SET ' . implode(', ', $fields) . ' WHERE id = ?');
-    $stmt->execute($params);
+    $stmt = $db->prepare('UPDATE payments SET ' . implode(', ', $fields) . ' WHERE id = ?' . $of['sql']);
+    $stmt->execute(array_merge($params, $of['params']));
+    if ($stmt->rowCount() < 1) {
+        respond(['error' => 'Payment not found or access denied'], 404);
+    }
     respond(['message' => 'Payment updated']);
 }
 
@@ -125,8 +139,12 @@ if ($method === 'DELETE') {
     if ($id === '') {
         respond(['error' => 'ID required'], 400);
     }
-    $stmt = $db->prepare('DELETE FROM payments WHERE id = ?');
-    $stmt->execute([$id]);
+    $of = orgFilterSqlAnd($tokenData, 'p', $db);
+    $stmt = $db->prepare('DELETE FROM payments WHERE id = ?' . $of['sql']);
+    $stmt->execute(array_merge([$id], $of['params']));
+    if ($stmt->rowCount() < 1) {
+        respond(['error' => 'Payment not found or access denied'], 404);
+    }
     respond(['message' => 'Payment deleted']);
 }
 

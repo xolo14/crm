@@ -86,7 +86,7 @@ if ($method === 'GET') {
     /** Same-org roster for reps / HR / marketing (assign-to lists, read-only on Team page). */
     $orgPeerRoles = ['sales_representative', 'hr', 'marketing', 'sales_marketing'];
 
-    if ($effRole === 'super_admin' && empty($_GET['org_id'])) {
+    if ($effRole === 'super_admin' && empty($_GET['org_id']) && empty(trim((string) ($tokenData['org_id'] ?? '')))) {
         $where = '1=1';
         $params = [];
     } elseif (in_array($effRole, $orgPeerRoles, true)) {
@@ -391,6 +391,7 @@ if ($method === 'PUT') {
     if (!$id) {
         respond(['error' => 'ID required'], 400);
     }
+    syncpediaAssertTargetUserEditable($db, $tokenData, $id);
 
     $input = getInput();
     $fields = [];
@@ -510,7 +511,7 @@ if ($method === 'DELETE') {
     }
     // Org admins can remove only members in their own organization.
     if ($role === 'admin') {
-        $adminOrg = $tokenData['org_id'] ?? null;
+        $adminOrg = resolveCreatorOrgId($db, $tokenData);
         $targetOrg = $target['org_id'] ?? null;
         if (!$adminOrg || !$targetOrg || $adminOrg !== $targetOrg) {
             respond(['error' => 'You can remove members only from your own organization'], 403);

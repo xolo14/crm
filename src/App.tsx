@@ -5,65 +5,70 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Outlet } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import AppLayout from "@/components/AppLayout";
-import Auth from "@/pages/Auth";
+import RouteSeo from "@/components/seo/RouteSeo";
+import { ReactNode, Suspense } from "react";
 import LoginPortal from "@/pages/LoginPortal";
-import Dashboard from "@/pages/Dashboard";
-import Leads from "@/pages/Leads";
-import Students from "@/pages/Students";
-import Courses from "@/pages/Courses";
-import Batches from "@/pages/Batches";
-import PaymentLinksPage from "@/pages/payment-links/PaymentLinksPage";
-import PaymentLinksRecordsPage from "@/pages/payment-links/PaymentLinksRecordsPage";
-import Team from "@/pages/Team";
-import SettingsPage from "@/pages/settings/SettingsPage";
-import Tasks from "@/pages/Tasks";
-import Apply from "@/pages/Apply";
-import MyReferrals from "@/pages/MyReferrals";
-import ReferralAnalytics from "@/pages/ReferralAnalytics";
-import FormLeads from "@/pages/FormLeads";
-import ImportedLeads from "@/pages/ImportedLeads";
-import LeadHistory from "@/pages/LeadHistory";
-import FormLeadHistory from "@/pages/FormLeadHistory";
-import AssignedLeads from "@/pages/AssignedLeads";
-import DailyReports from "@/pages/DailyReports";
-import DailyReportsAnalytics from "@/pages/DailyReportsAnalytics";
-import Notifications from "@/pages/Notifications";
-import MarketingDashboard from "@/pages/MarketingDashboard";
-import MarketingPortal from "@/pages/MarketingPortal";
-import MarketingPortalDashboard from "@/pages/MarketingPortalDashboard";
-import EmailAnalytics from "@/pages/EmailAnalytics";
-import WhatsAppPortal from "@/pages/WhatsAppPortal";
-import WhatsAppAnalytics from "@/pages/WhatsAppAnalytics";
-import Holidays from "@/pages/Holidays";
-import Trash from "@/pages/Trash";
-import OfferLetters from "@/pages/OfferLetters";
-import CertificatesPage, { CertificateVerifyPage } from "./pages/CertificatesPage";
-import PayslipPage from "@/pages/payslip/PayslipPage";
-import FormsManagerPage from "@/pages/FormsManagerPage";
-import FormApiIntegrationsPage from "@/pages/FormApiIntegrationsPage";
-import SuperAdminPanel from "@/pages/SuperAdminPanel";
-import SuperAdminOrgDashboard from "@/pages/SuperAdminOrgDashboard";
-import NotFound from "./pages/NotFound";
-import { ReactNode } from "react";
+import Auth from "@/pages/Auth";
 import { getPortalLoginRedirect, AUTH_PORTAL } from "@/lib/portalAuth";
 import HRLayout from "@/layouts/HRLayout";
-import HRDashboard from "@/pages/hr/HRDashboard";
-import HRMyLeads from "@/pages/hr/MyLeads";
-import HRAssignedLeads from "@/pages/hr/AssignedLeads";
-import HRTasks from "@/pages/hr/Tasks";
-import HRReports from "@/pages/hr/Reports";
-import HRNotifications from "@/pages/hr/Notifications";
-import HRHolidays from "@/pages/hr/Holidays";
-import HRCommunicationsPage from "@/pages/hr/HRCommunicationsPage";
-import HRLeadsPage from "@/pages/leads/HRLeadsPage";
-import CommunicationsHubPage from "@/pages/communications/CommunicationsHubPage";
-import CommunicationsAdminPage from "@/pages/communications/CommunicationsAdminPage";
-import OrgWhatsAppSetupPage from "@/pages/communications/OrgWhatsAppSetupPage";
-import MetaPartnerPage from "@/pages/communications/MetaPartnerPage";
-import TemplateLibraryPage from "@/pages/communications/TemplateLibraryPage";
-import FresherSalaryTrackerPage from "@/pages/FresherSalaryTrackerPage";
-import CallLogPage from "@/pages/sales/CallLogPage";
-import { canAccessFresherSalary, canAccessOfferLetters } from "@/lib/orgAccess";
+import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords } from "@/lib/orgAccess";
+import { isPathAllowedByOrgFeatures, FEATURE_FORM_MANAGEMENT } from "@/lib/orgFeatures";
+import {
+  Apply,
+  AssignedLeads,
+  Batches,
+  CallLogPage,
+  CertificateVerifyPage,
+  CertificatesPage,
+  CommunicationsAdminPage,
+  CommunicationsHubPage,
+  Courses,
+  DailyReports,
+  DailyReportsAnalytics,
+  Dashboard,
+  EmailAnalytics,
+  FormApiIntegrationsPage,
+  FormLeadHistory,
+  FormLeads,
+  FormsManagerPage,
+  FresherSalaryTrackerPage,
+  Holidays,
+  HRAssignedLeads,
+  HRCommunicationsPage,
+  HRDashboard,
+  HRHolidays,
+  HRLeadsPage,
+  HRMyLeads,
+  HRNotifications,
+  HRReports,
+  HRTasks,
+  ImportedLeads,
+  LeadHistory,
+  Leads,
+  MarketingDashboard,
+  MarketingPortal,
+  MarketingPortalDashboard,
+  MetaPartnerPage,
+  MyReferrals,
+  NotFound,
+  Notifications,
+  OfferLetters,
+  OrgWhatsAppSetupPage,
+  PaymentLinksPage,
+  PaymentLinksRecordsPage,
+  PayslipPage,
+  ReferralAnalytics,
+  SettingsPage,
+  Students,
+  SuperAdminOrgDashboard,
+  SuperAdminPanel,
+  Tasks,
+  Team,
+  TemplateLibraryPage,
+  Trash,
+  WhatsAppAnalytics,
+  WhatsAppPortal,
+} from "@/routes/lazyPages";
 
 const queryClient = new QueryClient();
 
@@ -92,7 +97,25 @@ function MainLayoutRoute() {
   }
   return (
     <AppLayout>
-      <Outlet />
+      <OrgFeatureRoute>
+        <Outlet />
+      </OrgFeatureRoute>
+    </AppLayout>
+  );
+}
+
+/** Home route: render login immediately for guests (no / → /login redirect round-trip). */
+function RootHome() {
+  const { user, loading } = useAuth();
+  if (loading) return <AuthLoading />;
+  if (!user) return <LoginPortal />;
+  return (
+    <AppLayout>
+      <OrgFeatureRoute>
+        <Suspense fallback={<AuthLoading />}>
+          <Dashboard />
+        </Suspense>
+      </OrgFeatureRoute>
     </AppLayout>
   );
 }
@@ -108,6 +131,38 @@ function FresherSalaryGate({ children }: { children: ReactNode }) {
   const { user, organization } = useAuth();
   const role = normalizePlatformRole(user);
   if (!canAccessFresherSalary(role, organization)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+function CertificatesGate({ children }: { children: ReactNode }) {
+  const { user, organization } = useAuth();
+  const role = normalizePlatformRole(user);
+  if (!canAccessCertificates(role, organization)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+function PayslipGate({ children }: { children: ReactNode }) {
+  const { user, organization } = useAuth();
+  const role = normalizePlatformRole(user);
+  if (!canAccessPayslip(role, organization)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+function PaymentRecordsGate({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const role = normalizePlatformRole(user);
+  if (!canAccessPaymentRecords(role)) return <Navigate to="/payments" replace />;
+  return <>{children}</>;
+}
+
+/** Blocks routes when the org feature toggle is off. */
+function OrgFeatureRoute({ children }: { children: ReactNode }) {
+  const { user, organization } = useAuth();
+  const location = useLocation();
+  const role = normalizePlatformRole(user);
+  if (!isPathAllowedByOrgFeatures(role, organization, location.pathname)) {
+    return <Navigate to="/" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -134,9 +189,14 @@ function AdminOrSuperAdminGate({ children }: { children: ReactNode }) {
 }
 
 function FormManagementGate({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, organization, hasFeature } = useAuth();
   const role = normalizePlatformRole(user);
-  if (!role || !["super_admin", "admin", "sales_marketing"].includes(role)) return <Navigate to="/" replace />;
+  if (!role || !["super_admin", "admin", "org", "marketing", "sales_marketing"].includes(role)) {
+    return <Navigate to="/" replace />;
+  }
+  if (!hasFeature(FEATURE_FORM_MANAGEMENT)) {
+    return <Navigate to="/" replace />;
+  }
   return <>{children}</>;
 }
 
@@ -157,6 +217,25 @@ function AdminSuperOrOrgGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function RoleGate({ allow, children }: { allow: string[]; children: ReactNode }) {
+  const { user } = useAuth();
+  const role = normalizePlatformRole(user);
+  if (!role || !allow.includes(role)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+function SettingsGate({ children }: { children: ReactNode }) {
+  return <RoleGate allow={["super_admin", "admin", "org"]}>{children}</RoleGate>;
+}
+
+function TrashGate({ children }: { children: ReactNode }) {
+  return <RoleGate allow={["super_admin", "admin", "manager", "org"]}>{children}</RoleGate>;
+}
+
+function MarketingGate({ children }: { children: ReactNode }) {
+  return <RoleGate allow={["super_admin", "admin", "manager", "marketing", "sales_marketing", "org"]}>{children}</RoleGate>;
+}
+
 function HRProtectedRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <AuthLoading />;
@@ -174,12 +253,14 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <AuthProvider>
+          <RouteSeo />
+          <Suspense fallback={<AuthLoading />}>
           <Routes>
             <Route path="/apply" element={<Apply />} />
             <Route path="/login" element={<LoginPortal />} />
             <Route path="/super_admin" element={<Auth />} />
-            <Route path="/admin" element={<Auth />} />
-            <Route path="/organisation" element={<Navigate to="/admin" replace />} />
+            <Route path="/admin" element={<Navigate to="/login" replace />} />
+            <Route path="/organisation" element={<Navigate to="/login" replace />} />
             <Route path="/sales_rep_portal" element={<Navigate to="/login" replace />} />
             <Route path="/manager" element={<Navigate to="/login" replace />} />
             <Route path="/marketing" element={<Navigate to="/login" replace />} />
@@ -187,15 +268,15 @@ const App = () => (
             <Route path="/hr-login" element={<Navigate to="/login" replace />} />
             <Route path="/sales-rep" element={<Navigate to="/login" replace />} />
             <Route path="/verify/:certId" element={<CertificateVerifyPage />} />
+            <Route path="/" element={<RootHome />} />
 
             <Route element={<MainLayoutRoute />}>
-              <Route path="/" element={<Dashboard />} />
               <Route path="/superadmin" element={<SuperAdminGate><SuperAdminPanel /></SuperAdminGate>} />
               <Route path="/super-admin" element={<Navigate to="/superadmin" replace />} />
-              <Route path="/marketing-admin" element={<MarketingDashboard />} />
-              <Route path="/marketing-user" element={<MarketingPortalDashboard />} />
-              <Route path="/marketing-email" element={<MarketingPortal />} />
-              <Route path="/marketing-whatsapp" element={<WhatsAppPortal />} />
+              <Route path="/marketing-admin" element={<MarketingGate><MarketingDashboard /></MarketingGate>} />
+              <Route path="/marketing-user" element={<MarketingGate><MarketingPortalDashboard /></MarketingGate>} />
+              <Route path="/marketing-email" element={<MarketingGate><MarketingPortal /></MarketingGate>} />
+              <Route path="/marketing-whatsapp" element={<MarketingGate><WhatsAppPortal /></MarketingGate>} />
               <Route path="/organizations" element={<SuperAdminGate><SuperAdminPanel /></SuperAdminGate>} />
               <Route path="/org-crm" element={<SuperAdminGate><SuperAdminOrgDashboard /></SuperAdminGate>} />
               <Route path="/leads" element={<Leads />} />
@@ -230,7 +311,7 @@ const App = () => (
               <Route path="/courses" element={<Courses />} />
               <Route path="/batches" element={<Batches />} />
               <Route path="/payments" element={<PaymentLinksPage />} />
-              <Route path="/payments/records" element={<PaymentLinksRecordsPage />} />
+              <Route path="/payments/records" element={<PaymentRecordsGate><PaymentLinksRecordsPage /></PaymentRecordsGate>} />
               <Route path="/payment-links" element={<Navigate to="/payments" replace />} />
               <Route path="/payment-links/records" element={<Navigate to="/payments/records" replace />} />
               <Route path="/payments/students" element={<Navigate to="/payments" replace />} />
@@ -239,17 +320,17 @@ const App = () => (
               <Route path="/fresher-salary-tracker" element={<FresherSalaryGate><FresherSalaryTrackerPage /></FresherSalaryGate>} />
               <Route path="/tasks" element={<Tasks />} />
               <Route path="/reports" element={<Navigate to="/daily-reports" replace />} />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/marketing/dashboard" element={<MarketingPortalDashboard />} />
-              <Route path="/marketing/portal" element={<MarketingPortal />} />
-              <Route path="/marketing/analytics" element={<EmailAnalytics />} />
-              <Route path="/marketing/whatsapp" element={<WhatsAppPortal />} />
-              <Route path="/marketing/whatsapp-analytics" element={<WhatsAppAnalytics />} />
+              <Route path="/settings" element={<SettingsGate><SettingsPage /></SettingsGate>} />
+              <Route path="/marketing/dashboard" element={<MarketingGate><MarketingPortalDashboard /></MarketingGate>} />
+              <Route path="/marketing/portal" element={<MarketingGate><MarketingPortal /></MarketingGate>} />
+              <Route path="/marketing/analytics" element={<MarketingGate><EmailAnalytics /></MarketingGate>} />
+              <Route path="/marketing/whatsapp" element={<MarketingGate><WhatsAppPortal /></MarketingGate>} />
+              <Route path="/marketing/whatsapp-analytics" element={<MarketingGate><WhatsAppAnalytics /></MarketingGate>} />
               <Route path="/holidays" element={<Holidays />} />
-              <Route path="/trash" element={<Trash />} />
+              <Route path="/trash" element={<TrashGate><Trash /></TrashGate>} />
               <Route path="/offer-letters" element={<OfferLettersGate><OfferLetters /></OfferLettersGate>} />
-              <Route path="/certificates" element={<SuperAdminGate><CertificatesPage /></SuperAdminGate>} />
-              <Route path="/payslip" element={<PayslipPage />} />
+              <Route path="/certificates" element={<CertificatesGate><CertificatesPage /></CertificatesGate>} />
+              <Route path="/payslip" element={<PayslipGate><PayslipPage /></PayslipGate>} />
               <Route path="/form-management" element={<FormManagementGate><FormsManagerPage /></FormManagementGate>} />
               <Route path="/form-api-integrations" element={<FormManagementGate><FormApiIntegrationsPage /></FormManagementGate>} />
               <Route path="*" element={<NotFound />} />
@@ -264,6 +345,7 @@ const App = () => (
             <Route path="/hr/communications" element={<HRProtectedRoute><HRCommunicationsPage /></HRProtectedRoute>} />
             <Route path="/hr/holidays" element={<HRProtectedRoute><HRHolidays /></HRProtectedRoute>} />
           </Routes>
+          </Suspense>
         </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>

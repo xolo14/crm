@@ -12,9 +12,16 @@ define('DB_CHARSET', 'utf8mb4');
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 define('JWT_SECRET', 'change-this-to-a-random-secret-key-at-least-32-chars');
-define('FRONTEND_URL', '*'); // same-origin deploy: leave * (auto-detected per request)
+define('FRONTEND_URL', 'https://your-domain.com'); // set your real domain (not * in production)
 define('TOKEN_EXPIRY', 86400);
 define('GOOGLE_CLIENT_ID', ''); // optional
+define('APP_DEBUG', false); // true only on local dev — hides server paths in API errors
+define('SIGNUP_ENABLED', false); // public self-registration (requires invite codes below)
+define('MIN_PASSWORD_LENGTH', 8);
+// Uncomment and set strong random values if SIGNUP_ENABLED is true:
+// define('SIGNUP_INVITE_ADMIN', '');
+// define('SIGNUP_INVITE_MANAGER', '');
+// define('SIGNUP_INVITE_SALES', '');
 
 // ── Email (optional) ────────────────────────────────────────────────────────
 define('SMTP_ENABLED', true);
@@ -32,9 +39,11 @@ define('RAZORPAY_KEY_SECRET', '');
 define('RAZORPAY_WEBHOOK_SECRET', '');
 define('CRM_PUBLIC_URL', ''); // leave empty to auto-detect from your domain
 
-// ── WhatsApp Meta (optional) ────────────────────────────────────────────────
+// ── WhatsApp (optional — per-org config in Communications → WhatsApp Setup) ─
+// Meta Cloud API (direct):
 define('META_WHATSAPP_ACCESS_TOKEN', '');
 define('META_WHATSAPP_PHONE_NUMBER_ID', '');
 define('META_WHATSAPP_WABA_ID', '');
 define('META_WHATSAPP_APP_SECRET', '');
 define('META_WHATSAPP_WEBHOOK_VERIFY_TOKEN', '');
+// Interakt: configure per organization in CRM (api_key + webhook secret in org_whatsapp_config).

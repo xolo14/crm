@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { api } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
 import { SaveButton } from "@/components/settings/ui/SaveButton";
 import { SettingsInput } from "@/components/settings/ui/SettingsInput";
 import { SettingsRow } from "@/components/settings/ui/SettingsRow";
@@ -7,6 +9,7 @@ import { SettingsSelect } from "@/components/settings/ui/SettingsSelect";
 import { ToggleSwitch } from "@/components/settings/ui/ToggleSwitch";
 
 export function Security() {
+  const { toast } = useToast();
   const [minPasswordLength, setMinPasswordLength] = useState("8");
   const [requireUppercase, setRequireUppercase] = useState(true);
   const [requireNumbers, setRequireNumbers] = useState(true);
@@ -21,8 +24,9 @@ export function Security() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
 
-  const onUpdatePassword = () => {
+  const onUpdatePassword = async () => {
     if (!currentPassword || !newPassword || !confirmPassword) {
       setError("All password fields are required.");
       return;
@@ -36,7 +40,19 @@ export function Security() {
       return;
     }
     setError("");
-    window.alert("Password updated successfully.");
+    setChangingPassword(true);
+    try {
+      await api.auth.changePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      toast({ title: "Password updated successfully" });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Could not update password";
+      setError(msg);
+    } finally {
+      setChangingPassword(false);
+    }
   };
 
   const onSave = () => {
@@ -115,7 +131,7 @@ export function Security() {
           <SettingsInput value={newPassword} onChange={setNewPassword} type="password" placeholder="New Password" />
           <SettingsInput value={confirmPassword} onChange={setConfirmPassword} type="password" placeholder="Confirm Password" />
           {error && <p className="text-xs text-red-600">{error}</p>}
-          <SaveButton onClick={onUpdatePassword} label="Update Password" />
+          <SaveButton onClick={onUpdatePassword} loading={changingPassword} label="Update Password" />
         </div>
       </SettingsSection>
 

@@ -1,0 +1,60 @@
+import { lazy } from "react";
+
+export const Dashboard = lazy(() => import("@/pages/Dashboard"));
+export const Leads = lazy(() => import("@/pages/Leads"));
+export const Students = lazy(() => import("@/pages/Students"));
+export const Courses = lazy(() => import("@/pages/Courses"));
+export const Batches = lazy(() => import("@/pages/Batches"));
+export const PaymentLinksPage = lazy(() => import("@/pages/payment-links/PaymentLinksPage"));
+export const PaymentLinksRecordsPage = lazy(() => import("@/pages/payment-links/PaymentLinksRecordsPage"));
+export const Team = lazy(() => import("@/pages/Team"));
+export const SettingsPage = lazy(() => import("@/pages/settings/SettingsPage"));
+export const Tasks = lazy(() => import("@/pages/Tasks"));
+export const Apply = lazy(() => import("@/pages/Apply"));
+export const MyReferrals = lazy(() => import("@/pages/MyReferrals"));
+export const ReferralAnalytics = lazy(() => import("@/pages/ReferralAnalytics"));
+export const FormLeads = lazy(() => import("@/pages/FormLeads"));
+export const ImportedLeads = lazy(() => import("@/pages/ImportedLeads"));
+export const LeadHistory = lazy(() => import("@/pages/LeadHistory"));
+export const FormLeadHistory = lazy(() => import("@/pages/FormLeadHistory"));
+export const AssignedLeads = lazy(() => import("@/pages/AssignedLeads"));
+export const DailyReports = lazy(() => import("@/pages/DailyReports"));
+export const DailyReportsAnalytics = lazy(() => import("@/pages/DailyReportsAnalytics"));
+export const Notifications = lazy(() => import("@/pages/Notifications"));
+export const MarketingDashboard = lazy(() => import("@/pages/MarketingDashboard"));
+export const MarketingPortal = lazy(() => import("@/pages/MarketingPortal"));
+export const MarketingPortalDashboard = lazy(() => import("@/pages/MarketingPortalDashboard"));
+export const EmailAnalytics = lazy(() => import("@/pages/EmailAnalytics"));
+export const WhatsAppPortal = lazy(() => import("@/pages/WhatsAppPortal"));
+export const WhatsAppAnalytics = lazy(() => import("@/pages/WhatsAppAnalytics"));
+export const Holidays = lazy(() => import("@/pages/Holidays"));
+export const Trash = lazy(() => import("@/pages/Trash"));
+export const OfferLetters = lazy(() => import("@/pages/OfferLetters"));
+export const CertificatesPage = lazy(() => import("@/pages/CertificatesPage"));
+export const PayslipPage = lazy(() => import("@/pages/payslip/PayslipPage"));
+export const FormsManagerPage = lazy(() => import("@/pages/FormsManagerPage"));
+export const FormApiIntegrationsPage = lazy(() => import("@/pages/FormApiIntegrationsPage"));
+export const SuperAdminPanel = lazy(() => import("@/pages/SuperAdminPanel"));
+export const SuperAdminOrgDashboard = lazy(() => import("@/pages/SuperAdminOrgDashboard"));
+export const NotFound = lazy(() => import("@/pages/NotFound"));
+export const HRDashboard = lazy(() => import("@/pages/hr/HRDashboard"));
+export const HRMyLeads = lazy(() => import("@/pages/hr/MyLeads"));
+export const HRAssignedLeads = lazy(() => import("@/pages/hr/AssignedLeads"));
+export const HRTasks = lazy(() => import("@/pages/hr/Tasks"));
+export const HRReports = lazy(() => import("@/pages/hr/Reports"));
+export const HRNotifications = lazy(() => import("@/pages/hr/Notifications"));
+export const HRHolidays = lazy(() => import("@/pages/hr/Holidays"));
+export const HRCommunicationsPage = lazy(() => import("@/pages/hr/HRCommunicationsPage"));
+export const HRLeadsPage = lazy(() => import("@/pages/leads/HRLeadsPage"));
+export const CommunicationsHubPage = lazy(() => import("@/pages/communications/CommunicationsHubPage"));
+export const CommunicationsAdminPage = lazy(() => import("@/pages/communications/CommunicationsAdminPage"));
+export const OrgWhatsAppSetupPage = lazy(() => import("@/pages/communications/OrgWhatsAppSetupPage"));
+export const MetaPartnerPage = lazy(() => import("@/pages/communications/MetaPartnerPage"));
+export const TemplateLibraryPage = lazy(() => import("@/pages/communications/TemplateLibraryPage"));
+export const FresherSalaryTrackerPage = lazy(() => import("@/pages/FresherSalaryTrackerPage"));
+export const CallLogPage = lazy(() => import("@/pages/sales/CallLogPage"));
+
+/** Certificate verify is a named export on CertificatesPage. */
+export const CertificateVerifyPage = lazy(() =>
+  import("@/pages/CertificatesPage").then((m) => ({ default: m.CertificateVerifyPage })),
+);

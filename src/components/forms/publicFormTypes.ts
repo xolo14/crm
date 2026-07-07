@@ -103,23 +103,17 @@ export function normalizeFormColor(value: unknown, fallback: string): string {
   return fb;
 }
 
-/** Company name on public forms: explicit meta value, else organization name. */
-export function resolveFormCompanyName(
-  companyName: unknown,
-  orgName?: string | null,
-): string {
-  const trimmed = String(companyName ?? "").trim();
-  if (trimmed) return trimmed;
-  return String(orgName ?? "").trim();
+/** Company name on public forms: only the explicit meta value (no org fallback). */
+export function resolveFormCompanyName(companyName: unknown): string {
+  return String(companyName ?? "").trim();
 }
 
 export function publicFormBrandFromMeta(
   meta: Record<string, unknown> | null | undefined,
-  options?: { orgName?: string | null },
 ): PublicFormBrand {
   const m = parseFormMetaJson(meta);
   return {
-    companyName: resolveFormCompanyName(m.company_name, options?.orgName),
+    companyName: resolveFormCompanyName(m.company_name),
     logoUrl: String(m.logo_url || ""),
     headerImageUrl: String(m.header_image_url || ""),
     formBg: normalizeFormColor(m.form_bg, DEFAULT_PUBLIC_FORM_BRAND.formBg),

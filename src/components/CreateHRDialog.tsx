@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { generateTempPassword } from "@/lib/randomPassword";
 import { useToast } from "@/hooks/use-toast";
 
 const schema = z.object({
@@ -25,7 +26,7 @@ export default function CreateHRDialog({ onSuccess }: { onSuccess?: () => void }
   const [open, setOpen] = useState(false);
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: { full_name: "", email: "", password: "Welcome@123", phone: "", department: "HR" },
+    defaultValues: { full_name: "", email: "", password: generateTempPassword(), phone: "", department: "HR" },
   });
 
   const mutation = useMutation({

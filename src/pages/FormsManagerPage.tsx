@@ -24,6 +24,8 @@ import { normalizeFormColor, parseFormMetaJson } from "@/components/forms/public
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { FormDetailDialog } from "@/components/forms/FormDetailDialog";
+import { formsManagerCacheKey } from "@/lib/formsManagerCache";
 
 type LeadDestination = "form_leads" | "hr_leads";
 
@@ -41,6 +43,7 @@ interface LeadForm {
   fields_json?: FormField[];
   source?: "system" | "custom";
   assigned_count?: number;
+  submission_count?: number;
   created_at?: string;
   created_by?: string | null;
   org_id?: string | null;
@@ -154,6 +157,7 @@ interface FormBuilderState {
   companyNameFontSize: number;
   questions: Question[];
   leadDestination: LeadDestination;
+  orgId: string;
 }
 
 const PRIMARY_GREEN = "#1D9E75";
@@ -246,6 +250,7 @@ const INITIAL_BUILDER: FormBuilderState = {
   companyNameFontSize: 17,
   questions: DEFAULT_BUILDER_QUESTIONS(),
   leadDestination: "form_leads",
+  orgId: "",
 };
 
 type BuilderAction =
@@ -465,19 +470,13 @@ function isRetiredGlobalBuiltinLeadForm(form: LeadForm): boolean {
 export default function FormsManagerPage() {
   const { role, profile, user, organization } = useAuth();
   const { toast } = useToast();
+  const formsCacheKey = useMemo(
+    () => formsManagerCacheKey(String(role || ""), organization?.id),
+    [role, organization?.id],
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [forms, setForms] = useState<LeadForm[]>(() => {
-    try {
-      const raw = localStorage.getItem("forms_manager_cache_v2");
-      if (!raw) return [];
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed as LeadForm[];
-    } catch {
-      return [];
-    }
-  });
+  const [forms, setForms] = useState<LeadForm[]>([]);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [assignmentsByForm, setAssignmentsByForm] = useState<Record<string, FormAssignment[]>>({});
   const [builderOpen, setBuilderOpen] = useState(false);
@@ -491,15 +490,18 @@ export default function FormsManagerPage() {
   const [future, setFuture] = useState<FormBuilderState[]>([]);
   const [backfillRunning, setBackfillRunning] = useState(false);
   const [destinationDialogOpen, setDestinationDialogOpen] = useState(false);
+  const [detailForm, setDetailForm] = useState<LeadForm | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [organizations, setOrganizations] = useState<{ id: string; name: string; slug?: string }[]>([]);
   const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
 
   const canAssignForms = role === "super_admin" || role === "admin";
+  const isSuperAdmin = role === "super_admin";
   const canEditForms = canAssignForms || role === "sales_marketing";
+  const tableColCount = 6 + (isSuperAdmin ? 1 : 0) + (canAssignForms ? 2 : 0) + (canEditForms ? 1 : 0);
   const canAccess = canEditForms;
   const isSalesMarketing = role === "sales_marketing";
   const myReferralCode = String(profile?.referral_code ?? "").trim();
-
-  const formOrgName = editing?.org_name?.trim() || organization?.name?.trim() || "";
 
   const baseApplyUrl = useMemo(() => `${window.location.origin}/apply`, []);
 
@@ -514,7 +516,21 @@ export default function FormsManagerPage() {
     [baseApplyUrl, isSalesMarketing, myReferralCode],
   );
 
-  const tableColCount = canAssignForms ? 8 : 6;
+  const syncpediaOrgId = useMemo(() => {
+    const hit = organizations.find((o) => String(o.slug || "").toLowerCase() === "syncpedia");
+    if (hit?.id) return hit.id;
+    const byName = organizations.find((o) => String(o.name || "").toLowerCase().includes("syncpedia"));
+    return byName?.id || "";
+  }, [organizations]);
+
+  const resolveSuperAdminFormOrgId = useCallback(
+    (rawOrgId: string) => {
+      const trimmed = String(rawOrgId || "").trim();
+      if (trimmed) return trimmed;
+      return syncpediaOrgId || null;
+    },
+    [syncpediaOrgId],
+  );
 
   const canEditFormRow = useCallback(
     (form: LeadForm) => {
@@ -528,16 +544,25 @@ export default function FormsManagerPage() {
   useEffect(() => {
     if (!canAccess) return;
     void bootstrap();
-  }, [canAccess]);
+  }, [canAccess, formsCacheKey]);
 
   useEffect(() => {
-    localStorage.setItem("forms_manager_cache_v2", JSON.stringify(forms));
-  }, [forms]);
+    if (!canAccess || loading) return;
+    try {
+      localStorage.setItem(formsCacheKey, JSON.stringify(forms));
+    } catch {
+      /* ignore */
+    }
+  }, [forms, formsCacheKey, canAccess, loading]);
 
   async function bootstrap() {
     setLoading(true);
     try {
-      const [formsRes, teamRes] = await Promise.all([api.forms.list(), api.team.list()]);
+      const orgsPromise = isSuperAdmin
+        ? api.organizations.list().then((r) => (Array.isArray(r) ? r : r?.data || []) as { id: string; name: string; slug?: string }[])
+        : Promise.resolve([] as { id: string; name: string; slug?: string }[]);
+      const [formsRes, teamRes, orgRows] = await Promise.all([api.forms.list(), api.team.list(), orgsPromise]);
+      if (isSuperAdmin) setOrganizations(orgRows);
       const rows = Array.isArray(formsRes) ? formsRes : (formsRes?.data || []);
       const mapped: LeadForm[] = rows
         .map((row: any) => ({
@@ -609,6 +634,11 @@ export default function FormsManagerPage() {
     setBuilderOpen(true);
   }
 
+  function openFormDetail(form: LeadForm) {
+    setDetailForm(form);
+    setDetailOpen(true);
+  }
+
   function openEdit(form: LeadForm) {
     setEditing(form);
     const meta = parseFormMetaJson(form.meta_json);
@@ -643,6 +673,7 @@ export default function FormsManagerPage() {
       companyNameFontSize: Math.min(48, Math.max(12, Number(meta.company_name_font_size) || 17)),
       questions,
       leadDestination: formLeadDestinationFromMeta(meta),
+      orgId: String(form.org_id ?? "").trim(),
     };
     dispatchBuilder({
       type: "reset",
@@ -715,6 +746,9 @@ export default function FormsManagerPage() {
         },
         is_active: publish ? true : builder.isActive,
       };
+      if (isSuperAdmin) {
+        (payload as { org_id?: string | null }).org_id = resolveSuperAdminFormOrgId(builder.orgId);
+      }
       if (editing) {
         await api.forms.update(editing.id, payload);
         toast({ title: "Form updated" });
@@ -963,12 +997,34 @@ export default function FormsManagerPage() {
             {builderTab === "settings" && (
               <div className="max-w-[720px] mx-auto space-y-4">
                 <Card><CardHeader><CardTitle className="text-base">General</CardTitle></CardHeader><CardContent className="space-y-3">
+                  {isSuperAdmin ? (
+                    <div>
+                      <Label>Organization</Label>
+                      <Select
+                        value={builder.orgId || syncpediaOrgId || ""}
+                        onValueChange={(v) => dispatchBuilder({ type: "set", patch: { orgId: v } })}
+                      >
+                        <SelectTrigger><SelectValue placeholder="Select organization" /></SelectTrigger>
+                        <SelectContent>
+                          {syncpediaOrgId ? (
+                            <SelectItem value={syncpediaOrgId}>Syncpedia (platform)</SelectItem>
+                          ) : null}
+                          {organizations
+                            .filter((o) => o.id !== syncpediaOrgId)
+                            .map((o) => (
+                              <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground mt-1">Forms belong to one organization. Groot/Nivon admins only see forms assigned to their org. Syncpedia admins see super-admin forms assigned to Syncpedia.</p>
+                    </div>
+                  ) : null}
                   <div><Label>Form URL slug</Label><Input value={builder.slug} onChange={(e) => dispatchBuilder({ type: "set", patch: { slug: makeSlug(e.target.value) } })} /></div>
                   <div>
                     <Label>Company Name</Label>
                     <Input
                       value={builder.companyName}
-                      placeholder={formOrgName ? `Leave empty to use ${formOrgName}` : "Leave empty to use organization name"}
+                      placeholder="Optional — leave blank to hide on the public form"
                       onChange={(e) => dispatchBuilder({ type: "set", patch: { companyName: e.target.value } })}
                     />
                   </div>
@@ -1100,7 +1156,7 @@ export default function FormsManagerPage() {
                     <p className="text-xs text-muted-foreground px-3 py-2 border-b bg-muted/30">Live preview — updates as you change colors</p>
                     <PublicFormShell
                       preview
-                      brand={builderBrandFromState(builder, formOrgName)}
+                      brand={builderBrandFromState(builder)}
                       formTitle={builder.title || "Form title"}
                       formDescription={builder.description || "Fill in your details to submit this form."}
                     >
@@ -1206,7 +1262,7 @@ export default function FormsManagerPage() {
             {builderTab === "preview" && (
               <div className="max-w-[720px] mx-auto rounded-xl overflow-hidden border">
                 <PublicFormShell
-                  brand={builderBrandFromState(builder, formOrgName)}
+                  brand={builderBrandFromState(builder)}
                   formTitle={builder.title}
                   formDescription={builder.description || "Fill in your details to submit this form."}
                 >
@@ -1325,6 +1381,21 @@ export default function FormsManagerPage() {
         </DialogContent>
       </Dialog>
 
+      <FormDetailDialog
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        form={detailForm}
+        assignments={detailForm ? assignmentsByForm[detailForm.id] || [] : []}
+        publicLink={detailForm ? buildApplyLink(detailForm.slug) : ""}
+        canEdit={detailForm ? canEditFormRow(detailForm) : false}
+        onEdit={() => {
+          if (!detailForm) return;
+          setDetailOpen(false);
+          openEdit(detailForm);
+        }}
+        onCopyLink={copy}
+      />
+
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Form Management</h1>
@@ -1362,9 +1433,11 @@ export default function FormsManagerPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                {isSuperAdmin ? <TableHead>Organization</TableHead> : null}
                 <TableHead>Destination</TableHead>
                 <TableHead>Slug</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Submissions</TableHead>
                 <TableHead>Public Link</TableHead>
                 {canAssignForms ? <TableHead>Assign to Team</TableHead> : null}
                 {canAssignForms ? <TableHead>Assigned Links</TableHead> : null}
@@ -1390,7 +1463,11 @@ export default function FormsManagerPage() {
                   const standaloneSalesReps = assignableMembers.filter((m) => isSalesRepRole(m.role) && (!m.reports_to_id || !managerIds.has(String(m.reports_to_id))));
                   const leadDest = formLeadDestinationFromMeta(parseFormMetaJson(form.meta_json));
                   return (
-                    <TableRow key={form.id}>
+                    <TableRow
+                      key={form.id}
+                      className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => openFormDetail(form)}
+                    >
                       <TableCell>
                         <div className="font-medium">{form.name}</div>
                         <div className="mt-1">
@@ -1400,6 +1477,11 @@ export default function FormsManagerPage() {
                         </div>
                         {form.description ? <div className="text-xs text-muted-foreground mt-0.5">{form.description}</div> : null}
                       </TableCell>
+                      {isSuperAdmin ? (
+                        <TableCell>
+                          <span className="text-sm">{form.org_name || "—"}</span>
+                        </TableCell>
+                      ) : null}
                       <TableCell>
                         <Badge variant={leadDest === "hr_leads" ? "secondary" : "default"} className="text-[10px] whitespace-nowrap">
                           {leadDest === "hr_leads" ? "HR Leads" : "Form Leads"}
@@ -1411,7 +1493,10 @@ export default function FormsManagerPage() {
                       <TableCell>
                         <Badge variant={isOn ? "default" : "secondary"}>{isOn ? "Active" : "Inactive"}</Badge>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {Number(form.submission_count ?? 0)}
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-2">
                           <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => copy(directLink, "Form link")}>
                             <Copy className="h-3.5 w-3.5" />
@@ -1420,7 +1505,7 @@ export default function FormsManagerPage() {
                         </div>
                       </TableCell>
                       {canAssignForms ? (
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="outline" size="sm" className="h-8 gap-1.5">
@@ -1523,7 +1608,7 @@ export default function FormsManagerPage() {
                       </TableCell>
                       ) : null}
                       {canAssignForms ? (
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         {assigned.length === 0 ? (
                           <span className="text-xs text-muted-foreground">No team member assigned</span>
                         ) : (
@@ -1546,7 +1631,7 @@ export default function FormsManagerPage() {
                       </TableCell>
                       ) : null}
                       {canEditForms ? (
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-2">
                           {canEditFormRow(form) ? (
                           <>

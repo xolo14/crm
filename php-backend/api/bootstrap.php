@@ -30,6 +30,9 @@ register_shutdown_function(static function (): void {
     syncpedia_json_die([
         'error' => 'PHP fatal error',
         'message' => 'Check Hostinger → Advanced → Error Logs. Common causes: missing api/config.php, wrong PHP version (use 8.1+), or syntax error in config.php.',
+        'detail' => isset($err['message'])
+            ? preg_replace('#(/[^\s:]+)+/#', '', (string) $err['message'])
+            : null,
     ], 500);
 });
 
@@ -64,6 +67,21 @@ if (in_array((string) DB_NAME, $placeholderDbNames, true) || in_array((string) D
         'message' => 'Edit api/config.php with Hostinger MySQL credentials (then import database.mysql.sql in phpMyAdmin).',
         'hint' => 'DB_HOST is usually localhost on Hostinger.',
     ], 503);
+}
+
+$weakJwtSecrets = ['change-this-to-a-random-secret-key-at-least-32-chars', 'your-jwt-secret', ''];
+if (strlen((string) JWT_SECRET) < 32 || in_array((string) JWT_SECRET, $weakJwtSecrets, true)) {
+    syncpedia_json_die([
+        'error' => 'Insecure JWT_SECRET',
+        'message' => 'Set JWT_SECRET in api/config.php to a random string of at least 32 characters.',
+    ], 503);
+}
+
+if (!defined('APP_DEBUG')) {
+    define('APP_DEBUG', false);
+}
+if (!defined('SIGNUP_ENABLED')) {
+    define('SIGNUP_ENABLED', false);
 }
 
 if (!defined('FRONTEND_URL')) {

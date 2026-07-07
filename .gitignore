@@ -25,6 +25,13 @@ php-backend/vendor
 dist
 dist-ssr
 *.local
+*.tsbuildinfo
+syncpedia-crm-deploy.zip
+leads-fix-patch.zip
+
+# Runtime rate-limit cache (created by PHP on server)
+php-backend/storage/rate_limits/
+public/storage/rate_limits/
 
 # Editor directories and files
 .vscode/*

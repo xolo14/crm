@@ -18,12 +18,16 @@ function marketingIsPrivileged(array $tokenData): bool {
     return in_array($r, ['super_admin', 'admin', 'marketing', 'manager'], true);
 }
 
-/** WHERE fragment + params: SuperAdmin → all rows; everyone else → own org only */
+/** WHERE fragment + params: SuperAdmin master view → all rows; switched org / tenant → own org only */
 function marketingOrgScope(array $tokenData, string $alias): array {
     $role = marketingNormRole($tokenData);
     $prefix = $alias !== '' ? $alias . '.' : '';
     if ($role === 'super_admin') {
-        return ['1=1', []];
+        $oid = getOrgId($tokenData);
+        if ($oid === null || trim((string) $oid) === '') {
+            return ['1=1', []];
+        }
+        return ["{$prefix}org_id = ?", [$oid]];
     }
     $orgId = $tokenData['org_id'] ?? null;
     if ($orgId !== null && $orgId !== '') {

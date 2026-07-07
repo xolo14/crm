@@ -147,7 +147,7 @@ function requireRole($tokenData, $roles) {
     }
 }
 
-// Get org_id from token - super_admin can override via query param
+// Get org_id from token - super_admin uses JWT/switch_org only (no users.org_id fallback)
 function getOrgId($tokenData) {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     if ($role === 'super_admin' && !empty($_GET['org_id'])) {
@@ -156,6 +156,9 @@ function getOrgId($tokenData) {
     $fromToken = $tokenData['org_id'] ?? null;
     if ($fromToken !== null && trim((string) $fromToken) !== '') {
         return trim((string) $fromToken);
+    }
+    if ($role === 'super_admin') {
+        return null;
     }
     $userId = trim((string) ($tokenData['user_id'] ?? ''));
     if ($userId !== '') {
@@ -175,8 +178,412 @@ function getOrgId($tokenData) {
     return null;
 }
 
+/** Minimum password length for signup / change-password. */
+function syncpediaMinPasswordLength(): int
+{
+    if (defined('MIN_PASSWORD_LENGTH') && (int) MIN_PASSWORD_LENGTH >= 8) {
+        return (int) MIN_PASSWORD_LENGTH;
+    }
+    return 8;
+}
+
+/** Whether public self-registration is allowed (default: disabled). */
+function syncpediaPublicSignupEnabled(): bool
+{
+    return defined('SIGNUP_ENABLED') && SIGNUP_ENABLED === true;
+}
+
+/** Validate invite code for signup from api/config.php (never hardcode in source). */
+function syncpediaValidateSignupInvite(string $role, string $inviteCode): bool
+{
+    $role = strtolower(trim($role));
+    $inviteCode = trim($inviteCode);
+    if ($inviteCode === '') {
+        return false;
+    }
+    $map = [];
+    if (defined('SIGNUP_INVITE_ADMIN') && SIGNUP_INVITE_ADMIN !== '') {
+        $map['admin'] = (string) SIGNUP_INVITE_ADMIN;
+    }
+    if (defined('SIGNUP_INVITE_MANAGER') && SIGNUP_INVITE_MANAGER !== '') {
+        $map['manager'] = (string) SIGNUP_INVITE_MANAGER;
+    }
+    if (defined('SIGNUP_INVITE_SALES') && SIGNUP_INVITE_SALES !== '') {
+        $map['sales_representative'] = (string) SIGNUP_INVITE_SALES;
+    }
+    if (!isset($map[$role])) {
+        return false;
+    }
+    return hash_equals($map[$role], $inviteCode);
+}
+
+/** Simple file-based rate limiter (per IP + bucket). */
+function syncpediaRateLimitConsume(string $bucket, int $maxAttempts = 10, int $windowSeconds = 900): void
+{
+    $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $key = hash('sha256', $bucket . '|' . $ip);
+    $dir = dirname(__DIR__) . '/storage/rate_limits';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0750, true);
+    }
+    $file = $dir . '/' . $key . '.json';
+    $now = time();
+    $data = ['attempts' => [], 'blocked_until' => 0];
+    if (is_file($file)) {
+        $decoded = json_decode((string) @file_get_contents($file), true);
+        if (is_array($decoded)) {
+            $data = $decoded;
+        }
+    }
+    if ((int) ($data['blocked_until'] ?? 0) > $now) {
+        respond(['error' => 'Too many attempts. Please try again later.'], 429);
+    }
+    $attempts = array_values(array_filter(
+        $data['attempts'] ?? [],
+        static fn($t) => ($now - (int) $t) < $windowSeconds,
+    ));
+    if (count($attempts) >= $maxAttempts) {
+        @file_put_contents($file, json_encode(['attempts' => $attempts, 'blocked_until' => $now + $windowSeconds]));
+        respond(['error' => 'Too many attempts. Please try again later.'], 429);
+    }
+    $attempts[] = $now;
+    @file_put_contents($file, json_encode(['attempts' => $attempts, 'blocked_until' => 0]));
+}
+
+/**
+ * Ensure caller may manage a target user row (tenant boundary).
+ *
+ * @return array<string, mixed>
+ */
+function syncpediaAssertTargetUserEditable(PDO $db, array $tokenData, string $targetUserId): array
+{
+    if ($targetUserId === '') {
+        respond(['error' => 'ID required'], 400);
+    }
+    $st = $db->prepare('SELECT id, org_id, role, email, full_name FROM users WHERE id = ? LIMIT 1');
+    $st->execute([$targetUserId]);
+    $target = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$target) {
+        respond(['error' => 'User not found'], 404);
+    }
+    $targetRole = syncpediaNormalizeRoleKey((string) ($target['role'] ?? ''));
+    $callerRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($targetRole === 'super_admin' && $callerRole !== 'super_admin') {
+        respond(['error' => 'Forbidden'], 403);
+    }
+    if (tenantIsMasterView($tokenData)) {
+        return $target;
+    }
+    $callerOrg = resolveCreatorOrgId($db, $tokenData);
+    $targetOrg = trim((string) ($target['org_id'] ?? ''));
+    if ($callerOrg === null || $callerOrg === '' || $targetOrg === '' || $callerOrg !== $targetOrg) {
+        respond(['error' => 'You can only manage users in your organization'], 403);
+    }
+    return $target;
+}
+
+/** Ensure assignee belongs to caller's tenant org. */
+function syncpediaAssertUserInCallerOrg(PDO $db, array $tokenData, string $userId): void
+{
+    if ($userId === '' || tenantIsMasterView($tokenData)) {
+        return;
+    }
+    $callerOrg = resolveCreatorOrgId($db, $tokenData);
+    if ($callerOrg === null || $callerOrg === '') {
+        respond(['error' => 'Organization context required'], 403);
+    }
+    $st = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
+    $st->execute([$userId]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    $userOrg = trim((string) ($row['org_id'] ?? ''));
+    if ($userOrg === '' || $userOrg !== $callerOrg) {
+        respond(['error' => 'Assignee must belong to your organization'], 403);
+    }
+}
+
+/**
+ * Ensure lead is visible under tenant + hierarchy scope.
+ *
+ * @return array<string, mixed>
+ */
+function syncpediaAssertLeadInScope(PDO $db, array $tokenData, string $leadId): array
+{
+    if ($leadId === '') {
+        respond(['error' => 'Lead ID required'], 400);
+    }
+    $scope = tenantLeadsScopeSql($db, $tokenData, 'l');
+    $stmt = $db->prepare("SELECT l.* FROM leads l WHERE l.id = ? AND 1=1{$scope['sql']} LIMIT 1");
+    $stmt->execute(array_merge([$leadId], $scope['params']));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        respond(['error' => 'Lead not found or access denied'], 404);
+    }
+    return $row;
+}
+
+/** Generate a random temporary password for new team members. */
+function syncpediaGenerateTempPassword(int $length = 14): string
+{
+    $chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789!@#$%';
+    $out = '';
+    $max = strlen($chars) - 1;
+    for ($i = 0; $i < $length; $i++) {
+        $out .= $chars[random_int(0, $max)];
+    }
+    return $out;
+}
+
+/** Feature keys that map to real CRM modules (must match src/lib/orgFeatures.ts). */
+function syncpediaImplementedOrgFeatures(): array
+{
+    return [
+        'leads',
+        'form_management',
+        'tasks',
+        'notifications',
+        'students',
+        'courses',
+        'batches',
+        'communications',
+        'marketing_access',
+        'payments',
+        'payslip',
+        'daily_reports',
+        'holidays',
+        'certificates',
+        'offer_letters',
+        'fresher_salary',
+    ];
+}
+
+function syncpediaIsAllowedOrgFeature(string $feature): bool
+{
+    return in_array($feature, syncpediaImplementedOrgFeatures(), true);
+}
+
+/** Platform super_admin with no org context (master panel / all tenants). */
+function tenantIsMasterView(array $tokenData): bool
+{
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($role !== 'super_admin') {
+        return false;
+    }
+    if (!empty($_GET['org_id'])) {
+        return false;
+    }
+    $jwtOrg = $tokenData['org_id'] ?? null;
+    return $jwtOrg === null || trim((string) $jwtOrg) === '';
+}
+
+/**
+ * Org id for tenant list queries; null only in super_admin master view.
+ */
+function tenantListOrgId(PDO $db, array $tokenData): ?string
+{
+    if (tenantIsMasterView($tokenData)) {
+        return null;
+    }
+    return resolveCreatorOrgId($db, $tokenData);
+}
+
+/**
+ * AND clause restricting a row alias to the caller's tenant org.
+ *
+ * @return array{sql: string, params: array}
+ */
+function tenantOrgScopeSql(PDO $db, array $tokenData, string $alias = ''): array
+{
+    if (tenantIsMasterView($tokenData)) {
+        return ['sql' => '', 'params' => []];
+    }
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    if ($orgId === null || $orgId === '') {
+        return ['sql' => ' AND 1=0', 'params' => []];
+    }
+    $col = $alias !== '' ? "{$alias}." : '';
+    return ['sql' => " AND {$col}org_id = ?", 'params' => [$orgId]];
+}
+
+/**
+ * Leads list scope: tenant org + L1 self / L2 manager downline.
+ *
+ * @return array{sql: string, params: array}
+ */
+function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): array
+{
+    if (tenantIsMasterView($tokenData)) {
+        if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+            return hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
+        }
+        if (hierarchyRoleUsesDownlineScope($tokenData)) {
+            return hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias);
+        }
+        return ['sql' => '', 'params' => []];
+    }
+
+    $tenant = orgFilterLeadsTenant($db, $tokenData, $alias);
+    $sql = ' AND (' . $tenant['where'] . ')';
+    $params = $tenant['params'];
+
+    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+        $l1 = hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
+        return ['sql' => $sql . $l1['sql'], 'params' => array_merge($params, $l1['params'])];
+    }
+    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+        $dl = hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias);
+        return ['sql' => $sql . $dl['sql'], 'params' => array_merge($params, $dl['params'])];
+    }
+    return ['sql' => $sql, 'params' => $params];
+}
+
+/**
+ * Students list scope: tenant org + hierarchy (manager downline / L1 own leads).
+ *
+ * @return array{sql: string, params: array}
+ */
+function tenantStudentListScopeSql(PDO $db, array $tokenData): array
+{
+    $sql = '';
+    $params = [];
+    if (!tenantIsMasterView($tokenData)) {
+        $orgId = resolveCreatorOrgId($db, $tokenData);
+        if ($orgId === null || $orgId === '') {
+            return ['sql' => ' AND 1=0', 'params' => []];
+        }
+        $tenant = orgFilterStudentsTenantSql($orgId);
+        $sql .= $tenant['sql'];
+        $params = array_merge($params, $tenant['params']);
+    }
+    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+        $scope = hierarchyStudentListScopeSql(hierarchyGetVisibleUserIds($db, $tokenData));
+        $sql .= $scope['sql'];
+        $params = array_merge($params, $scope['params']);
+    } elseif (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+        $uid = (string) ($tokenData['user_id'] ?? '');
+        $scope = hierarchyStudentListScopeSql($uid !== '' ? [$uid] : []);
+        $sql .= $scope['sql'];
+        $params = array_merge($params, $scope['params']);
+    }
+    return ['sql' => $sql, 'params' => $params];
+}
+
+/**
+ * Tasks list scope: tenant org + hierarchy.
+ *
+ * @return array{sql: string, params: array}
+ */
+function tenantTaskListScopeSql(PDO $db, array $tokenData): array
+{
+    if (tenantIsMasterView($tokenData)) {
+        return ['sql' => '', 'params' => []];
+    }
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = (string) ($tokenData['user_id'] ?? '');
+
+    $orgSql = $orgId
+        ? ' AND (org_id = ? OR assigned_to IN (SELECT id FROM users WHERE org_id = ?) OR created_by IN (SELECT id FROM users WHERE org_id = ?))'
+        : ' AND 1=0';
+    $orgParams = $orgId ? [$orgId, $orgId, $orgId] : [];
+
+    if (in_array($effRole, ['admin', 'org', 'trainer', 'finance'], true)) {
+        return ['sql' => $orgSql, 'params' => $orgParams];
+    }
+    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+        $scope = hierarchyTaskListScopeSql(hierarchyGetVisibleUserIds($db, $tokenData));
+        return ['sql' => $orgSql . $scope['sql'], 'params' => array_merge($orgParams, $scope['params'])];
+    }
+    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+        return [
+            'sql' => $orgSql . ' AND (assigned_to = ? OR created_by = ?)',
+            'params' => array_merge($orgParams, [$userId, $userId]),
+        ];
+    }
+    return ['sql' => $orgSql, 'params' => $orgParams];
+}
+
+/**
+ * Daily reports list scope: tenant org + hierarchy.
+ *
+ * @return array{sql: string, params: array}
+ */
+function tenantDailyReportsScopeSql(PDO $db, array $tokenData): array
+{
+    $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = (string) ($tokenData['user_id'] ?? '');
+    if (tenantIsMasterView($tokenData)) {
+        return ['sql' => '', 'params' => []];
+    }
+
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    if ($orgId === null || $orgId === '') {
+        return ['sql' => ' AND 1=0', 'params' => []];
+    }
+
+    $sql = ' AND (dr.org_id = ? OR (dr.org_id IS NULL AND dr.user_id IN (SELECT id FROM users WHERE org_id = ?)))';
+    $params = [$orgId, $orgId];
+
+    if (in_array($effRole, ['sales_representative', 'sales_marketing'], true)) {
+        $sql .= ' AND dr.user_id = ?';
+        $params[] = $userId;
+    } elseif (hierarchyRoleUsesDownlineScope($tokenData)) {
+        $scope = hierarchyBuildInClause('dr.user_id', hierarchyGetVisibleUserIds($db, $tokenData));
+        $sql .= $scope['sql'];
+        $params = array_merge($params, $scope['params']);
+    } elseif (!in_array($effRole, ['admin', 'org'], true)) {
+        $sql .= ' AND dr.user_id = ?';
+        $params[] = $userId;
+    }
+
+    return ['sql' => $sql, 'params' => $params];
+}
+
+/**
+ * Courses catalog WHERE (org-owned or batches in org).
+ *
+ * @return array{where: string, params: array}
+ */
+function tenantCourseCatalogWhere(PDO $db, array $tokenData, string $courseAlias = 'c'): array
+{
+    if (tenantIsMasterView($tokenData)) {
+        return ['where' => '1=1', 'params' => []];
+    }
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    if ($orgId === null || $orgId === '') {
+        return ['where' => '1=0', 'params' => []];
+    }
+    $c = $courseAlias;
+    return [
+        'where' => "({$c}.org_id = ? OR EXISTS (SELECT 1 FROM batches b WHERE b.course_id = {$c}.id AND b.org_id = ?))",
+        'params' => [$orgId, $orgId],
+    ];
+}
+
+/**
+ * Batches catalog WHERE (batch org or parent course org).
+ *
+ * @return array{where: string, params: array}
+ */
+function tenantBatchCatalogWhere(PDO $db, array $tokenData, string $batchAlias = 'b', string $courseAlias = 'c'): array
+{
+    if (tenantIsMasterView($tokenData)) {
+        return ['where' => '1=1', 'params' => []];
+    }
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    if ($orgId === null || $orgId === '') {
+        return ['where' => '1=0', 'params' => []];
+    }
+    return [
+        'where' => "({$batchAlias}.org_id = ? OR {$courseAlias}.org_id = ?)",
+        'params' => [$orgId, $orgId],
+    ];
+}
+
 // Build org filter for queries - returns WHERE clause fragment + params
 function orgFilter($tokenData, $tableAlias = '', ?PDO $db = null) {
+    if (tenantIsMasterView($tokenData)) {
+        return ['where' => '1=1', 'params' => []];
+    }
     $prefix = $tableAlias ? "$tableAlias." : '';
     $orgId = $db ? resolveCreatorOrgId($db, $tokenData) : getOrgId($tokenData);
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
@@ -189,9 +596,134 @@ function orgFilter($tokenData, $tableAlias = '', ?PDO $db = null) {
     if ($orgId) {
         return ['where' => "{$prefix}org_id = ?", 'params' => [$orgId]];
     }
-    
-    // Fallback: no org filter (backward compat for users without org)
-    return ['where' => "({$prefix}org_id IS NULL)", 'params' => []];
+
+    if ($role === 'super_admin') {
+        return ['where' => '1=1', 'params' => []];
+    }
+
+    return ['where' => '1=0', 'params' => []];
+}
+
+/**
+ * Append org scope to UPDATE/DELETE (e.g. " AND t.org_id = ?").
+ *
+ * @return array{sql: string, params: array}
+ */
+function orgFilterSqlAnd(array $tokenData, string $tableAlias = '', ?PDO $db = null): array
+{
+    $f = orgFilter($tokenData, $tableAlias, $db);
+    if ($f['where'] === '1=1') {
+        return ['sql' => '', 'params' => []];
+    }
+
+    return ['sql' => ' AND ' . $f['where'], 'params' => $f['params']];
+}
+
+/**
+ * Activities list: tenant org_id on row OR actor belongs to tenant.
+ *
+ * @return array{sql: string, params: array}
+ */
+function activitiesListScopeSql(PDO $db, array $tokenData, string $alias = 'a'): array
+{
+    $prefix = $alias !== '' ? "{$alias}." : '';
+    $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = (string) ($tokenData['user_id'] ?? '');
+
+    if ($effRole === 'super_admin' && !getOrgId($tokenData)) {
+        return ['sql' => '', 'params' => []];
+    }
+
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    if ($orgId) {
+        return [
+            'sql' => " AND ({$prefix}org_id = ? OR {$prefix}user_id IN (SELECT id FROM users WHERE org_id = ?))",
+            'params' => [$orgId, $orgId],
+        ];
+    }
+
+    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
+        return hierarchyBuildInClause("{$prefix}user_id", $visibleIds);
+    }
+
+    return ['sql' => " AND {$prefix}user_id = ?", 'params' => [$userId]];
+}
+
+/**
+ * Pipeline stages: org-specific rows plus shared global defaults (org_id IS NULL).
+ *
+ * @return array{where: string, params: array}
+ */
+function pipelineStagesOrgFilter(array $tokenData, string $tableAlias = 'ps', ?PDO $db = null): array
+{
+    $prefix = $tableAlias ? "{$tableAlias}." : '';
+    $f = orgFilter($tokenData, $tableAlias, $db);
+    if ($f['where'] === '1=1' || empty($f['params'])) {
+        return $f;
+    }
+
+    return [
+        'where' => "({$prefix}org_id = ? OR {$prefix}org_id IS NULL)",
+        'params' => $f['params'],
+    ];
+}
+
+/**
+ * Return a task row if the caller may read/update/delete it.
+ *
+ * @return array<string,mixed>|null
+ */
+function taskFetchIfAccessible(PDO $db, array $tokenData, string $taskId): ?array
+{
+    $stmt = $db->prepare('SELECT * FROM tasks WHERE id = ? LIMIT 1');
+    $stmt->execute([$taskId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!is_array($row)) {
+        return null;
+    }
+
+    $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = (string) ($tokenData['user_id'] ?? '');
+
+    if ($effRole === 'super_admin' && !getOrgId($tokenData)) {
+        return $row;
+    }
+
+    $orgId = resolveCreatorOrgId($db, $tokenData);
+    $rowOrg = trim((string) ($row['org_id'] ?? ''));
+    if ($orgId !== null && $orgId !== '' && $rowOrg === $orgId) {
+        return $row;
+    }
+
+    if (in_array($effRole, ['admin', 'org'], true) && $orgId) {
+        $assigned = trim((string) ($row['assigned_to'] ?? ''));
+        $created = trim((string) ($row['created_by'] ?? ''));
+        $uids = array_values(array_filter(array_unique([$assigned, $created])));
+        if (!empty($uids)) {
+            $ph = implode(',', array_fill(0, count($uids), '?'));
+            $chk = $db->prepare("SELECT COUNT(*) FROM users WHERE org_id = ? AND id IN ($ph)");
+            $chk->execute(array_merge([$orgId], $uids));
+            if ((int) $chk->fetchColumn() > 0) {
+                return $row;
+            }
+        }
+    }
+
+    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
+        $assigned = (string) ($row['assigned_to'] ?? '');
+        $created = (string) ($row['created_by'] ?? '');
+        if (in_array($assigned, $visibleIds, true) || in_array($created, $visibleIds, true)) {
+            return $row;
+        }
+    }
+
+    if ((string) ($row['assigned_to'] ?? '') === $userId || (string) ($row['created_by'] ?? '') === $userId) {
+        return $row;
+    }
+
+    return null;
 }
 
 /**
@@ -199,7 +731,7 @@ function orgFilter($tokenData, $tableAlias = '', ?PDO $db = null) {
  *
  * @return array{where: string, params: array}
  */
-function orgFilterLeadsTenant(PDO $db, array $tokenData): array
+function orgFilterLeadsTenant(PDO $db, array $tokenData, string $alias = ''): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     if ($role === 'super_admin' && !getOrgId($tokenData)) {
@@ -207,12 +739,14 @@ function orgFilterLeadsTenant(PDO $db, array $tokenData): array
     }
     $orgId = resolveCreatorOrgId($db, $tokenData);
     if (!$orgId) {
-        return ['where' => '(org_id IS NULL)', 'params' => []];
+        $col = $alias !== '' ? "{$alias}." : '';
+        return ['where' => "({$col}org_id IS NULL)", 'params' => []];
     }
-    $sql = '(org_id = ? OR ((org_id IS NULL OR org_id = \'\') AND (
-        assigned_to IN (SELECT id FROM users WHERE org_id = ?)
-        OR created_by IN (SELECT id FROM users WHERE org_id = ?)
-    )))';
+    $col = $alias !== '' ? "{$alias}." : '';
+    $sql = "({$col}org_id = ? OR (({$col}org_id IS NULL OR {$col}org_id = '') AND (
+        {$col}assigned_to IN (SELECT id FROM users WHERE org_id = ?)
+        OR {$col}created_by IN (SELECT id FROM users WHERE org_id = ?)
+    )))";
 
     return ['where' => $sql, 'params' => [$orgId, $orgId, $orgId]];
 }
@@ -335,13 +869,16 @@ function hierarchyVisibleUserIds(PDO $db, array $tokenData): array {
                   AND u.is_active = 1
                   AND LOWER(TRIM(u.role)) NOT IN ('admin','super_admin')
                   AND (
-                    (p.org_id IS NULL OR TRIM(CAST(p.org_id AS TEXT)) = '')
-                    AND (u.org_id IS NULL OR TRIM(CAST(u.org_id AS TEXT)) = '')
-                  OR (
-                    p.org_id IS NOT NULL AND TRIM(CAST(p.org_id AS TEXT)) <> ''
-                    AND u.org_id IS NOT NULL AND TRIM(CAST(u.org_id AS TEXT)) <> ''
-                    AND u.org_id = p.org_id
-                  ))
+                    (
+                      (p.org_id IS NULL OR TRIM(p.org_id) = '')
+                      AND (u.org_id IS NULL OR TRIM(u.org_id) = '')
+                    )
+                    OR (
+                      p.org_id IS NOT NULL AND TRIM(p.org_id) <> ''
+                      AND u.org_id IS NOT NULL AND TRIM(u.org_id) <> ''
+                      AND u.org_id = p.org_id
+                    )
+                  )
             ");
             $stmt->execute([$current]);
             $children = $stmt->fetchAll(PDO::FETCH_COLUMN);
@@ -482,11 +1019,11 @@ function hierarchyStudentListScopeSql(array $visibleIds): array
  *
  * @return array{sql: string, params: array}
  */
-function hierarchyOrgUserIdsScopeSql(array $tokenData, string $columnExpr): array
+function hierarchyOrgUserIdsScopeSql(array $tokenData, string $columnExpr, ?PDO $db = null): array
 {
-    $orgId = getOrgId($tokenData);
-    if (!$orgId) {
-        return ['sql' => '', 'params' => []];
+    $orgId = $db instanceof PDO ? resolveCreatorOrgId($db, $tokenData) : getOrgId($tokenData);
+    if ($orgId === null || $orgId === '') {
+        return ['sql' => ' AND 1=0', 'params' => []];
     }
     return [
         'sql' => " AND {$columnExpr} IN (SELECT id FROM users WHERE org_id = ?)",
@@ -557,14 +1094,14 @@ function hierarchyL1OwnLeadsScopeSql(array $tokenData, string $alias = ''): arra
  *
  * @return array{sql: string, params: array}
  */
-function reportsOrgScopeSql(array $tokenData, string $alias = ''): array
+function reportsOrgScopeSql(array $tokenData, string $alias = '', ?PDO $db = null): array
 {
-    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+    if (tenantIsMasterView($tokenData)) {
         return ['sql' => '', 'params' => []];
     }
-    $orgId = getOrgId($tokenData);
-    if (!$orgId) {
-        return ['sql' => '', 'params' => []];
+    $orgId = $db instanceof PDO ? resolveCreatorOrgId($db, $tokenData) : getOrgId($tokenData);
+    if ($orgId === null || $orgId === '') {
+        return ['sql' => ' AND 1=0', 'params' => []];
     }
     $col = $alias !== '' ? "{$alias}." : '';
     return ['sql' => " AND {$col}org_id = ?", 'params' => [$orgId]];
@@ -577,14 +1114,7 @@ function reportsOrgScopeSql(array $tokenData, string $alias = ''): array
  */
 function reportsLeadOwnershipScopeSql(PDO $db, array $tokenData, string $alias = 'l'): array
 {
-    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
-        return hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
-    }
-    if (hierarchyRoleUsesDownlineScope($tokenData)) {
-        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        return hierarchyLeadDownlineScopeSql($visibleIds, $alias);
-    }
-    return reportsOrgScopeSql($tokenData, $alias);
+    return tenantLeadsScopeSql($db, $tokenData, $alias);
 }
 
 /**
@@ -593,11 +1123,17 @@ function reportsLeadOwnershipScopeSql(PDO $db, array $tokenData, string $alias =
 function reportsDealScopeSql(PDO $db, array $tokenData, string $alias = 'd'): array
 {
     $col = $alias !== '' ? "{$alias}." : '';
+    $org = tenantOrgScopeSql($db, $tokenData, $alias);
     if (hierarchyRoleUsesDownlineScope($tokenData)) {
         $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        return hierarchyBuildInClause("{$col}owner_id", $visibleIds);
+        $dl = hierarchyBuildInClause("{$col}owner_id", $visibleIds);
+        return ['sql' => $org['sql'] . $dl['sql'], 'params' => array_merge($org['params'], $dl['params'])];
     }
-    return reportsOrgScopeSql($tokenData, $alias);
+    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+        $uid = (string) ($tokenData['user_id'] ?? '');
+        return ['sql' => $org['sql'] . " AND {$col}owner_id = ?", 'params' => array_merge($org['params'], [$uid])];
+    }
+    return $org;
 }
 
 /**
@@ -606,11 +1142,20 @@ function reportsDealScopeSql(PDO $db, array $tokenData, string $alias = 'd'): ar
 function reportsTaskScopeSql(PDO $db, array $tokenData, string $alias = 't'): array
 {
     $col = $alias !== '' ? "{$alias}." : '';
+    $org = tenantOrgScopeSql($db, $tokenData, $alias);
     if (hierarchyRoleUsesDownlineScope($tokenData)) {
         $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        return hierarchyTaskListScopeSql($visibleIds, $alias);
+        $dl = hierarchyTaskListScopeSql($visibleIds, $alias);
+        return ['sql' => $org['sql'] . $dl['sql'], 'params' => array_merge($org['params'], $dl['params'])];
     }
-    return reportsOrgScopeSql($tokenData, $alias);
+    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+        $uid = (string) ($tokenData['user_id'] ?? '');
+        return [
+            'sql' => $org['sql'] . " AND ({$col}assigned_to = ? OR {$col}created_by = ?)",
+            'params' => array_merge($org['params'], [$uid, $uid]),
+        ];
+    }
+    return $org;
 }
 
 /**
@@ -619,11 +1164,17 @@ function reportsTaskScopeSql(PDO $db, array $tokenData, string $alias = 't'): ar
 function reportsContactScopeSql(PDO $db, array $tokenData, string $alias = 'c'): array
 {
     $col = $alias !== '' ? "{$alias}." : '';
+    $org = tenantOrgScopeSql($db, $tokenData, $alias);
     if (hierarchyRoleUsesDownlineScope($tokenData)) {
         $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        return hierarchyBuildInClause("{$col}owner_id", $visibleIds);
+        $dl = hierarchyBuildInClause("{$col}owner_id", $visibleIds);
+        return ['sql' => $org['sql'] . $dl['sql'], 'params' => array_merge($org['params'], $dl['params'])];
     }
-    return reportsOrgScopeSql($tokenData, $alias);
+    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+        $uid = (string) ($tokenData['user_id'] ?? '');
+        return ['sql' => $org['sql'] . " AND {$col}owner_id = ?", 'params' => array_merge($org['params'], [$uid])];
+    }
+    return $org;
 }
 
 /**
@@ -634,7 +1185,7 @@ function reportsContactScopeSql(PDO $db, array $tokenData, string $alias = 'c'):
 function reportsPaymentScopeSql(PDO $db, array $tokenData, string $alias = 'p'): array
 {
     if (!hierarchyRoleUsesDownlineScope($tokenData)) {
-        return reportsOrgScopeSql($tokenData, $alias);
+        return reportsOrgScopeSql($tokenData, $alias, $db);
     }
     $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
     if (empty($visibleIds)) {
@@ -662,11 +1213,12 @@ function reportsPaymentScopeSql(PDO $db, array $tokenData, string $alias = 'p'):
  */
 function reportsTeamUserScopeSql(PDO $db, array $tokenData): array
 {
+    $org = tenantOrgScopeSql($db, $tokenData, 'u');
     if (hierarchyRoleUsesDownlineScope($tokenData)) {
-        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        return hierarchyBuildInClause('u.id', $visibleIds);
+        $dl = hierarchyBuildInClause('u.id', hierarchyGetVisibleUserIds($db, $tokenData));
+        return ['sql' => $org['sql'] . $dl['sql'], 'params' => array_merge($org['params'], $dl['params'])];
     }
-    return reportsOrgScopeSql($tokenData, 'u');
+    return $org;
 }
 
 /**
@@ -960,15 +1512,12 @@ function syncpediaCrmAppBaseUrl(): string {
     return 'https://crm.syncpedia.in';
 }
 
-/** Browser login path for welcome / reset emails (staff → /login, org admin → /admin, platform → /super_admin). */
+/** Browser login path for welcome / reset emails (all except super_admin → /login). */
 function syncpediaRoleLoginPath(string $roleKey): string
 {
     $r = syncpediaNormalizeRoleKey($roleKey);
     if ($r === 'super_admin') {
         return '/super_admin';
-    }
-    if ($r === 'admin' || $r === 'org') {
-        return '/admin';
     }
     return '/login';
 }
@@ -1526,7 +2075,8 @@ function userEffectiveOrgId(PDO $db, array $tokenData, string $userId): ?string 
 
 /** Org-scoped student access for PUT/DELETE (super_admin bypasses). */
 function userCanAccessStudentRow(PDO $db, array $tokenData, string $userId, string $rawRole, array $studentRow): bool {
-    if ($rawRole === 'super_admin') {
+    $role = syncpediaNormalizeRoleKey($rawRole);
+    if ($role === 'super_admin' && tenantIsMasterView($tokenData)) {
         return true;
     }
     $orgId = userEffectiveOrgId($db, $tokenData, $userId);
@@ -3255,7 +3805,16 @@ register_shutdown_function(static function () {
     if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) {
         $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
     }
-    $payload = ['error' => 'Internal server error', 'detail' => $detail, 'file' => $file, 'line' => $line];
+    $payload = ['error' => 'Internal server error'];
+    if (defined('APP_DEBUG') && APP_DEBUG === true) {
+        $payload['detail'] = $detail;
+        if ($file !== '') {
+            $payload['file'] = $file;
+        }
+        if ($line > 0) {
+            $payload['line'] = $line;
+        }
+    }
     $json = json_encode($payload, $flags);
     echo $json !== false ? $json : '{"error":"Internal server error"}';
 });

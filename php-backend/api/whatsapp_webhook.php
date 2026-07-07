@@ -67,6 +67,40 @@ function waWebhookMapStatus(string $metaStatus): string
     return 'queued';
 }
 
+function waWebhookMapInteraktType(string $type): ?string
+{
+    $map = [
+        'message_api_sent' => 'sent',
+        'message_api_delivered' => 'delivered',
+        'message_api_read' => 'read',
+        'message_api_failed' => 'failed',
+    ];
+    return $map[strtolower($type)] ?? null;
+}
+
+function waWebhookUpdateMessageStatus(PDO $db, string $providerMessageId, string $status, ?string $ts, ?string $err = null): void
+{
+    if ($providerMessageId === '') {
+        return;
+    }
+    try {
+        if ($status === 'delivered') {
+            $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
+                ->execute([$status, $ts, $providerMessageId]);
+        } elseif ($status === 'read') {
+            $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, read_at = COALESCE(read_at, ?), delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
+                ->execute([$status, $ts, $ts, $providerMessageId]);
+        } elseif ($status === 'failed') {
+            $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, error_message = ? WHERE provider_message_id = ?')
+                ->execute([$status, $err, $providerMessageId]);
+        } else {
+            $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, sent_at = COALESCE(sent_at, ?) WHERE provider_message_id = ?')
+                ->execute([$status, $ts, $providerMessageId]);
+        }
+    } catch (Throwable $e) {
+    }
+}
+
 // ─── GET: Meta webhook verification ───
 if ($method === 'GET') {
     $mode = $_GET['hub_mode'] ?? $_GET['hub.mode'] ?? '';
@@ -94,6 +128,33 @@ if ($method === 'GET') {
 if ($method === 'POST') {
     $raw = file_get_contents('php://input') ?: '';
     $payload = json_decode($raw, true);
+
+    // Interakt webhooks (JSON with "type": message_api_*)
+    $interaktSig = $_SERVER['HTTP_INTERAKT_SIGNATURE'] ?? null;
+    if (is_array($payload) && !empty($payload['type']) && is_string($payload['type']) && str_starts_with(strtolower($payload['type']), 'message_api_')) {
+        $msg = is_array($payload['data']['message'] ?? null) ? $payload['data']['message'] : [];
+        $providerMessageId = (string) ($msg['id'] ?? '');
+        $callbackData = (string) ($msg['meta_data']['source_data']['callback_data'] ?? '');
+        $orgId = commResolveOrgFromInteraktWebhook($db, $providerMessageId, $callbackData);
+        if ($orgCfg !== [] && !empty($orgCfg['app_secret'])) {
+            $interakt = InteraktWhatsApp::fromPlatformConfig($orgCfg);
+            if (!$interakt->verifyWebhookSignature($raw, is_string($interaktSig) ? $interaktSig : null)) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Invalid Interakt signature']);
+                exit;
+            }
+        }
+        $mapped = waWebhookMapInteraktType((string) $payload['type']);
+        if ($mapped && $providerMessageId !== '') {
+            $ts = isset($payload['timestamp']) ? date('Y-m-d H:i:s', strtotime((string) $payload['timestamp'])) : date('Y-m-d H:i:s');
+            $err = $msg['channel_failure_reason'] ?? null;
+            waWebhookUpdateMessageStatus($db, $providerMessageId, $mapped, $ts, is_string($err) ? $err : null);
+        }
+        http_response_code(200);
+        echo json_encode(['success' => true]);
+        exit;
+    }
+
     $phoneNumberId = null;
     $wabaId = null;
     if (is_array($payload)) {
@@ -105,14 +166,19 @@ if ($method === 'POST') {
         }
     }
     $orgCfg = waWebhookFindOrgConfigForSignature($db, $phoneNumberId, $wabaId);
+    $sig = $_SERVER['HTTP_X_HUB_SIGNATURE_256'] ?? null;
+    $verified = false;
     if ($orgCfg) {
         $meta = MetaWhatsApp::fromPlatformConfig($orgCfg);
-        $sig = $_SERVER['HTTP_X_HUB_SIGNATURE_256'] ?? null;
-        if (!$meta->verifyWebhookSignature($raw, $sig)) {
-            http_response_code(403);
-            echo json_encode(['error' => 'Invalid signature']);
-            exit;
-        }
+        $verified = $meta->verifyWebhookSignature($raw, $sig);
+    } elseif (defined('META_WHATSAPP_APP_SECRET') && META_WHATSAPP_APP_SECRET !== '') {
+        $expected = 'sha256=' . hash_hmac('sha256', $raw, META_WHATSAPP_APP_SECRET);
+        $verified = is_string($sig) && hash_equals($expected, $sig);
+    }
+    if (!$verified) {
+        http_response_code(403);
+        echo json_encode(['error' => 'Invalid signature']);
+        exit;
     }
 
     if (!is_array($payload)) {
@@ -134,22 +200,7 @@ if ($method === 'POST') {
                 if ($wamid === '') continue;
                 $ts = isset($st['timestamp']) ? date('Y-m-d H:i:s', (int) $st['timestamp']) : date('Y-m-d H:i:s');
                 $err = $st['errors'][0]['message'] ?? null;
-                try {
-                    if ($status === 'delivered') {
-                        $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
-                            ->execute([$status, $ts, $wamid]);
-                    } elseif ($status === 'read') {
-                        $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, read_at = COALESCE(read_at, ?), delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
-                            ->execute([$status, $ts, $ts, $wamid]);
-                    } elseif ($status === 'failed') {
-                        $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, error_message = ? WHERE provider_message_id = ?')
-                            ->execute([$status, $err, $wamid]);
-                    } else {
-                        $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, sent_at = COALESCE(sent_at, ?) WHERE provider_message_id = ?')
-                            ->execute([$status, $ts, $wamid]);
-                    }
-                } catch (Throwable $e) {
-                }
+                waWebhookUpdateMessageStatus($db, (string) $wamid, $status, $ts, is_string($err) ? $err : null);
 
                 // Template status updates (account_update / message_template_status_update)
             }

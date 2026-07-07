@@ -117,6 +117,7 @@ export default function Leads() {
   const [assignSelectedReps, setAssignSelectedReps] = useState<Set<string>>(new Set());
   const [assignSaving, setAssignSaving] = useState(false);
   const [enrollLead, setEnrollLead] = useState<any | null>(null);
+  const [leadForms, setLeadForms] = useState<{ slug: string; name: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const hasCreate = perms.canCreate(role);
@@ -160,6 +161,18 @@ export default function Leads() {
       fetchTeam();
       fetchProfiles();
       fetchAssignments();
+    }
+    if (!isFormLeadsPage) {
+      api.forms.list()
+        .then((res) => {
+          const rows = Array.isArray(res) ? res : res?.data || [];
+          setLeadForms(
+            rows
+              .filter((f: { slug?: string; name?: string }) => f?.slug && f?.name)
+              .map((f: { slug: string; name: string }) => ({ slug: String(f.slug), name: String(f.name) })),
+          );
+        })
+        .catch(() => {});
     }
   }, [isFormLeadsPage, isSalesRepMyLeadsPage, role, profile?.referral_code]);
 
@@ -572,6 +585,46 @@ export default function Leads() {
     return Array.from(sources);
   }, [leads]);
 
+  const formSourceKey = (slug: string) => `form_${slug}`;
+
+  const extendedSourceLabels = useMemo(() => {
+    const labels: Record<string, string> = { ...SOURCE_LABELS };
+    leadForms.forEach((f) => {
+      labels[formSourceKey(f.slug)] = f.name;
+    });
+    availableSources.forEach((s) => {
+      if (s.startsWith('form_') && !labels[s]) {
+        labels[s] = s.replace(/^form_/, '').replace(/_/g, ' ');
+      }
+    });
+    return labels;
+  }, [leadForms, availableSources]);
+
+  const sourceFilterOptions = useMemo(() => {
+    const formOpts = leadForms.map((f) => ({
+      value: formSourceKey(f.slug),
+      label: f.name,
+    }));
+    const seen = new Set(formOpts.map((o) => o.value));
+    availableSources.forEach((s) => {
+      if (s.startsWith('form_') && !seen.has(s)) {
+        formOpts.push({
+          value: s,
+          label: extendedSourceLabels[s] || s.replace(/^form_/, '').replace(/_/g, ' '),
+        });
+        seen.add(s);
+      }
+    });
+    const staticOpts = LEAD_SOURCES.filter((s) => !String(s).startsWith('form_')).map((s) => ({
+      value: s,
+      label: SOURCE_LABELS[s] || s.replace(/_/g, ' '),
+    }));
+    return [
+      ...formOpts.sort((a, b) => a.label.localeCompare(b.label)),
+      ...staticOpts,
+    ];
+  }, [leadForms, availableSources, extendedSourceLabels]);
+
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
   return (
@@ -687,7 +740,7 @@ export default function Leads() {
             <SelectTrigger className="w-[140px] h-9"><SelectValue placeholder="Source" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Sources</SelectItem>
-              {LEAD_SOURCES.map(s => <SelectItem key={s} value={s} className="capitalize">{SOURCE_LABELS[s]}</SelectItem>)}
+              {sourceFilterOptions.map(s => <SelectItem key={s.value} value={s.value} className="capitalize">{s.label}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -704,7 +757,7 @@ export default function Leads() {
           )}
           {sourceFilter !== 'all' && (
             <Badge variant="secondary" className="text-xs gap-1 cursor-pointer" onClick={() => setSourceFilter('all')}>
-              Source: {SOURCE_LABELS[sourceFilter]} <XCircle className="h-3 w-3" />
+              Source: {extendedSourceLabels[sourceFilter] || sourceFilter?.replace(/_/g, ' ')} <XCircle className="h-3 w-3" />
             </Badge>
           )}
           {search && (
@@ -826,7 +879,7 @@ export default function Leads() {
               </div>
               <div className="flex items-center justify-between mt-3 ml-7">
                 <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="text-[11px] capitalize rounded-md">{SOURCE_LABELS[lead.source] || lead.source?.replace(/_/g, ' ')}</Badge>
+                  <Badge variant="secondary" className="text-[11px] capitalize rounded-md">{extendedSourceLabels[lead.source] || lead.source?.replace(/_/g, ' ')}</Badge>
                   <span className="text-[11px] text-muted-foreground">{new Date(lead.created_at).toLocaleDateString()}</span>
                 </div>
                 {isManager && (() => {
@@ -879,7 +932,7 @@ export default function Leads() {
                     <div className="text-sm">{lead.email || '—'}</div>
                     {lead.phone && <div className="text-xs text-muted-foreground">{lead.phone}</div>}
                   </TableCell>
-                  <TableCell><Badge variant="secondary" className="text-xs capitalize">{SOURCE_LABELS[lead.source] || lead.source?.replace(/_/g, ' ')}</Badge></TableCell>
+                  <TableCell><Badge variant="secondary" className="text-xs capitalize">{extendedSourceLabels[lead.source] || lead.source?.replace(/_/g, ' ')}</Badge></TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     {canEditLead(lead) ? (
                       <Select
@@ -974,7 +1027,7 @@ export default function Leads() {
                 <SheetTitle className="text-lg">{detailLead.name}</SheetTitle>
                 <div className="flex items-center gap-2 mt-1">
                   <Badge variant="outline" className={`${statusColors[detailLead.status]} capitalize text-xs`}>{formatLeadStatus(detailLead.status)}</Badge>
-                  <Badge variant="secondary" className="text-xs capitalize">{SOURCE_LABELS[detailLead.source] || detailLead.source?.replace(/_/g, ' ')}</Badge>
+                  <Badge variant="secondary" className="text-xs capitalize">{extendedSourceLabels[detailLead.source] || detailLead.source?.replace(/_/g, ' ')}</Badge>
                 </div>
               </SheetHeader>
 

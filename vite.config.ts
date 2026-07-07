@@ -17,4 +17,24 @@ export default defineConfig(() => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  build: {
+    target: "es2020",
+    cssCodeSplit: true,
+    modulePreload: { polyfill: false },
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+
+          // Keep the entire React runtime in one chunk (splitting react vs react-dom causes runtime crashes).
+          if (/node_modules\/(react-dom|react-router|react|scheduler)\//.test(id)) {
+            return "vendor-react";
+          }
+          if (id.includes("@tanstack/react-query")) return "vendor-query";
+          if (id.includes("recharts") || id.includes("d3-")) return "vendor-charts";
+          if (id.includes("jspdf") || id.includes("html2canvas")) return "vendor-pdf";
+        },
+      },
+    },
+  },
 }));

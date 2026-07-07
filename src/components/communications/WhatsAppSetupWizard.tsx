@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { communicationsApi } from "@/services/communications";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -86,6 +87,7 @@ export default function WhatsAppSetupWizard({
   const [step, setStep] = useState<WizardStep>(1);
   const [draft, setDraft] = useState<WhatsAppSetupDraft>(() => loadWhatsAppSetupDraft(orgId));
   const [waForm, setWaForm] = useState({
+    provider: "interakt" as "interakt" | "meta",
     api_key: "",
     app_secret: "",
     business_phone: "",
@@ -96,12 +98,16 @@ export default function WhatsAppSetupWizard({
     is_active: true,
   });
 
+  const isInterakt = waForm.provider === "interakt";
+
   useEffect(() => {
     if (!open) return;
     setDraft(loadWhatsAppSetupDraft(orgId));
     if (existingConfig) {
+      const provider = existingConfig.provider === "meta" ? "meta" : "interakt";
       setWaForm((p) => ({
         ...p,
+        provider,
         business_phone: existingConfig.business_phone || "",
         phone_number_id: existingConfig.phone_number_id || "",
         waba_id: existingConfig.waba_id || "",
@@ -121,7 +127,12 @@ export default function WhatsAppSetupWizard({
   };
 
   const saveMut = useMutation({
-    mutationFn: () => communicationsApi.saveOrgConfig({ ...waForm, org_id: orgId }),
+    mutationFn: () =>
+      communicationsApi.saveOrgConfig({
+        ...waForm,
+        provider: waForm.provider,
+        org_id: orgId,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["comm"] });
     },
@@ -129,9 +140,14 @@ export default function WhatsAppSetupWizard({
   });
 
   const testMut = useMutation({
-    mutationFn: () => communicationsApi.testMetaConnection(orgId),
+    mutationFn: () => communicationsApi.testWhatsappConnection(orgId),
     onSuccess: (d) => {
-      toast({ title: "WhatsApp connected", description: d.data?.verified_name || d.message });
+      const detail =
+        d.data?.verified_name ||
+        d.data?.display_phone_number ||
+        d.message ||
+        "WhatsApp provider connected";
+      toast({ title: "WhatsApp connected", description: detail });
       onConnected?.();
       onOpenChange(false);
     },
@@ -139,7 +155,12 @@ export default function WhatsAppSetupWizard({
   });
 
   const handleConnect = async () => {
-    if (!waForm.phone_number_id.trim() || !waForm.waba_id.trim()) {
+    if (isInterakt) {
+      if (!waForm.api_key.trim() && !existingConfig?.api_key_set) {
+        toast({ variant: "destructive", title: "Interakt API key is required" });
+        return;
+      }
+    } else if (!waForm.phone_number_id.trim() || !waForm.waba_id.trim()) {
       toast({ variant: "destructive", title: "Phone Number ID and WABA ID are required" });
       return;
     }
@@ -149,6 +170,16 @@ export default function WhatsAppSetupWizard({
     } catch {
       /* toast from mutations */
     }
+  };
+
+  const startInteraktSetup = () => {
+    setWaForm((p) => ({ ...p, provider: "interakt" }));
+    setStep(3);
+  };
+
+  const startMetaSetup = () => {
+    setWaForm((p) => ({ ...p, provider: "meta" }));
+    setStep(2);
   };
 
   const progressPct = step === 1 ? 50 : 100;
@@ -188,7 +219,7 @@ export default function WhatsAppSetupWizard({
           </div>
           <div className="mt-3 flex justify-center">
             <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-0.5 text-xs font-medium text-emerald-800">
-              WhatsApp Business API
+              {isInterakt ? "Interakt WhatsApp API" : "Meta WhatsApp Business API"}
             </span>
           </div>
         </div>
@@ -196,11 +227,27 @@ export default function WhatsAppSetupWizard({
         {step === 1 ? (
           <div className="px-6 py-5 space-y-5">
             <div className="text-center space-y-1">
-              <h2 className="text-xl font-semibold">2 Ways to Setup WhatsApp API Number</h2>
+              <h2 className="text-xl font-semibold">Connect WhatsApp</h2>
               <p className="text-sm text-muted-foreground">
-                You can connect your number in two ways. Here&apos;s how they differ.
+                Use Interakt (recommended) or connect Meta Cloud API directly.
               </p>
             </div>
+
+            <Card className="border-emerald-200 bg-emerald-50/40">
+              <CardContent className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-emerald-900">Interakt</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Connect with your Interakt API key from Developer Settings. Templates are managed in Interakt dashboard.
+                  </p>
+                </div>
+                <Button className="bg-emerald-800 hover:bg-emerald-900 shrink-0" onClick={startInteraktSetup}>
+                  Connect Interakt
+                </Button>
+              </CardContent>
+            </Card>
+
+            <p className="text-xs text-center text-muted-foreground uppercase tracking-wide">Or connect Meta directly</p>
 
             <div className="grid md:grid-cols-2 gap-0 border rounded-xl overflow-hidden">
               <SetupOptionCard
@@ -219,7 +266,7 @@ export default function WhatsAppSetupWizard({
                 actionLabel="Proceed with WA business"
                 onProceed={() => {
                   patchDraft({ numberType: "wa_business_app" });
-                  setStep(2);
+                  startMetaSetup();
                 }}
               />
               <SetupOptionCard
@@ -239,7 +286,7 @@ export default function WhatsAppSetupWizard({
                 actionLabel="Proceed with New Number"
                 onProceed={() => {
                   patchDraft({ numberType: "new_number" });
-                  setStep(2);
+                  startMetaSetup();
                 }}
                 borderedLeft
               />
@@ -390,12 +437,31 @@ export default function WhatsAppSetupWizard({
         {step === 3 ? (
           <div className="px-6 py-5 space-y-5">
             <div className="space-y-1">
-              <h2 className="text-xl font-semibold">Connect WhatsApp API</h2>
+              <h2 className="text-xl font-semibold">
+                {isInterakt ? "Connect Interakt" : "Connect WhatsApp API"}
+              </h2>
               <p className="text-sm text-muted-foreground">
-                Paste your Meta credentials for {orgName || "your organization"}. Find these in Meta Business Suite → WhatsApp → API Setup.
+                {isInterakt
+                  ? `Paste your Interakt credentials for ${orgName || "your organization"}. API key: app.interakt.ai → Settings → Developer Settings.`
+                  : `Paste your Meta credentials for ${orgName || "your organization"}. Find these in Meta Business Suite → WhatsApp → API Setup.`}
               </p>
             </div>
 
+            <div className="space-y-1.5 max-w-xs">
+              <Label>Provider</Label>
+              <Select
+                value={waForm.provider}
+                onValueChange={(v: "interakt" | "meta") => setWaForm((p) => ({ ...p, provider: v }))}
+              >
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="interakt">Interakt</SelectItem>
+                  <SelectItem value="meta">Meta Cloud API</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {!isInterakt ? (
             <div className="rounded-lg bg-muted/40 border px-3 py-2 text-xs text-muted-foreground">
               Setup path:{" "}
               <strong>{draft.numberType === "new_number" ? "New Number" : "WA Business App"}</strong>
@@ -408,16 +474,49 @@ export default function WhatsAppSetupWizard({
                     ? "Website verification"
                     : "Skipped verification"}
             </div>
+            ) : null}
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5 sm:col-span-2">
-                <Label>Permanent access token</Label>
+                <Label>{isInterakt ? "Interakt API key (Secret Key)" : "Permanent access token"}</Label>
                 <Input
                   type="password"
-                  placeholder={existingConfig?.api_key_set ? "Leave blank to keep current token" : "EAAxxxx…"}
+                  placeholder={existingConfig?.api_key_set ? "Leave blank to keep current key" : isInterakt ? "From Interakt Developer Settings" : "EAAxxxx…"}
                   onChange={(e) => setWaForm((p) => ({ ...p, api_key: e.target.value }))}
                 />
               </div>
+              {isInterakt ? (
+                <>
+                  <div className="space-y-1.5">
+                    <Label>Business phone (display)</Label>
+                    <Input
+                      value={waForm.business_phone}
+                      onChange={(e) => setWaForm((p) => ({ ...p, business_phone: e.target.value }))}
+                      placeholder="+91…"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Webhook secret (recommended)</Label>
+                    <Input
+                      type="password"
+                      placeholder="From Interakt Developer Settings"
+                      onChange={(e) => setWaForm((p) => ({ ...p, app_secret: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <Label>Webhook URL (paste in Interakt)</Label>
+                    <Input
+                      readOnly
+                      value={existingConfig?.webhook_url_suggested || "https://your-domain.com/api/whatsapp_webhook.php"}
+                      className="text-xs font-mono"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Enable message_api_sent, message_api_delivered, message_api_read, message_api_failed webhooks in Interakt.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
               <div className="space-y-1.5">
                 <Label>Phone Number ID</Label>
                 <Input
@@ -458,10 +557,12 @@ export default function WhatsAppSetupWizard({
                   placeholder="Match in Meta App dashboard"
                 />
               </div>
+                </>
+              )}
             </div>
 
             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2 border-t">
-              <Button type="button" variant="outline" onClick={() => setStep(2)}>
+              <Button type="button" variant="outline" onClick={() => setStep(isInterakt ? 1 : 2)}>
                 Back
               </Button>
               <Button

@@ -204,4 +204,27 @@
   [role="dialog"] {
     max-height: calc(100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important;
   }
+
+  /* CRM page patterns — use on list/detail pages */
+  .crm-page-header {
+    @apply flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between;
+  }
+
+  .crm-page-actions {
+    @apply flex flex-col gap-2 w-full sm:w-auto sm:flex-row sm:flex-wrap;
+  }
+
+  .crm-page-actions > button,
+  .crm-page-actions > a {
+    @apply w-full sm:w-auto justify-center;
+  }
+
+  .crm-table-scroll {
+    @apply -mx-1 overflow-x-auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .crm-stat-grid {
+    @apply grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4;
+  }
 }

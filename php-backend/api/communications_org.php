@@ -1,8 +1,9 @@
 <?php
 /**
- * Org-scoped WhatsApp helpers (per-organization Meta API).
+ * Org-scoped WhatsApp helpers (Meta Cloud API or Interakt).
  */
 require_once __DIR__ . '/lib/MetaWhatsApp.php';
+require_once __DIR__ . '/lib/InteraktWhatsApp.php';
 
 function commEnsureOrgWhatsappTable(PDO $db): void
 {
@@ -36,6 +37,15 @@ function commEnsureOrgWhatsappTable(PDO $db): void
     $done = true;
 }
 
+function commNormalizeWhatsappProvider(?string $provider): string
+{
+    $p = strtolower(trim((string) $provider));
+    if ($p === 'interakt') {
+        return 'interakt';
+    }
+    return 'meta';
+}
+
 function commAssertOrgAccess(array $tokenData, ?string $orgId): void
 {
     if (!$orgId) {
@@ -64,10 +74,22 @@ function commLoadOrgConfig(PDO $db, string $orgId): array
     return is_array($row) ? $row : [];
 }
 
+function commOrgWhatsappProvider(PDO $db, string $orgId): string
+{
+    $cfg = commLoadOrgConfig($db, $orgId);
+    return commNormalizeWhatsappProvider($cfg['provider'] ?? 'meta');
+}
+
 function commMetaClientForOrg(PDO $db, string $orgId): MetaWhatsApp
 {
     $cfg = commLoadOrgConfig($db, $orgId);
     return MetaWhatsApp::fromPlatformConfig($cfg);
+}
+
+function commInteraktClientForOrg(PDO $db, string $orgId): InteraktWhatsApp
+{
+    $cfg = commLoadOrgConfig($db, $orgId);
+    return InteraktWhatsApp::fromPlatformConfig($cfg);
 }
 
 function commOrgWebhookUrl(): string
@@ -103,6 +125,31 @@ function commResolveOrgFromMetaIds(PDO $db, ?string $phoneNumberId, ?string $wab
     return null;
 }
 
+/** Resolve org for Interakt webhooks. */
+function commResolveOrgFromInteraktWebhook(PDO $db, ?string $providerMessageId, ?string $callbackData): ?string
+{
+    commEnsureOrgWhatsappTable($db);
+    if ($callbackData) {
+        $st = $db->prepare('SELECT org_id FROM comm_whatsapp_messages WHERE id = ? LIMIT 1');
+        $st->execute([$callbackData]);
+        $org = $st->fetchColumn();
+        if ($org) {
+            return (string) $org;
+        }
+    }
+    if ($providerMessageId) {
+        $st = $db->prepare('SELECT org_id FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
+        $st->execute([$providerMessageId]);
+        $org = $st->fetchColumn();
+        if ($org) {
+            return (string) $org;
+        }
+    }
+    $st = $db->query("SELECT org_id FROM org_whatsapp_config WHERE provider = 'interakt' AND is_active = 1 ORDER BY updated_at DESC LIMIT 1");
+    $org = $st ? $st->fetchColumn() : false;
+    return $org ? (string) $org : null;
+}
+
 function commMaskKey(?string $key): ?string
 {
     if ($key === null || $key === '') {
@@ -125,34 +172,75 @@ function commFormatOrgConfigForResponse(array $row, bool $includeSecrets): array
         $row['api_key_masked'] = commMaskKey($row['api_key'] ?? '');
         $row['app_secret_set'] = !empty($row['app_secret']);
     }
+    $row['provider'] = commNormalizeWhatsappProvider($row['provider'] ?? 'meta');
     $row['webhook_url_suggested'] = commOrgWebhookUrl();
     return $row;
 }
 
+function commTestWhatsappConnectionForOrg(PDO $db, string $orgId): array
+{
+    $provider = commOrgWhatsappProvider($db, $orgId);
+    if ($provider === 'interakt') {
+        $client = commInteraktClientForOrg($db, $orgId);
+        if (!$client->isConfigured()) {
+            return ['ok' => false, 'error' => 'Interakt API key is required'];
+        }
+        return $client->testConnection();
+    }
+
+    $meta = commMetaClientForOrg($db, $orgId);
+    if (!$meta->isConfigured()) {
+        return ['ok' => false, 'error' => 'Meta access token and Phone Number ID are required'];
+    }
+    $test = $meta->testConnection();
+    if ($test['ok']) {
+        $test['provider'] = 'meta';
+    }
+    return $test;
+}
+
 /**
- * Send via org's Meta WhatsApp Cloud API.
+ * Send via org's WhatsApp provider (Meta or Interakt).
  * @param array<int,string> $bodyParams
  */
-function commSendViaOrgProvider(PDO $db, string $orgId, string $phone, array $template, array $bodyParams = []): array
+function commSendViaOrgProvider(PDO $db, string $orgId, string $phone, array $template, array $bodyParams = [], ?string $callbackData = null): array
 {
     $cfg = commLoadOrgConfig($db, $orgId);
     if ($cfg === [] || !(int) ($cfg['is_active'] ?? 0)) {
-        return ['ok' => false, 'error' => 'Your organization has not connected Meta WhatsApp yet. Ask your admin to set it up in Communications → WhatsApp Setup.'];
+        return ['ok' => false, 'error' => 'Your organization has not connected WhatsApp yet. Ask your admin to set it up in Communications → WhatsApp Setup.'];
     }
-    $meta = commMetaClientForOrg($db, $orgId);
-    if (!$meta->isConfigured()) {
-        return ['ok' => false, 'error' => 'Meta WhatsApp credentials incomplete (access token + phone number ID required)'];
-    }
+
+    $provider = commNormalizeWhatsappProvider($cfg['provider'] ?? 'meta');
     $templateName = trim((string) ($template['provider_template_id'] ?? ''));
     if ($templateName === '') {
         $templateName = MetaWhatsApp::sanitizeTemplateName((string) ($template['name'] ?? ''));
     }
     $lang = (string) ($template['language'] ?? 'en');
+
+    if ($provider === 'interakt') {
+        $interakt = commInteraktClientForOrg($db, $orgId);
+        if (!$interakt->isConfigured()) {
+            return ['ok' => false, 'error' => 'Interakt API key is missing. Add it in WhatsApp Setup.'];
+        }
+        return $interakt->sendTemplateMessage($phone, $templateName, $lang, $bodyParams, [], $callbackData);
+    }
+
+    $meta = commMetaClientForOrg($db, $orgId);
+    if (!$meta->isConfigured()) {
+        return ['ok' => false, 'error' => 'Meta WhatsApp credentials incomplete (access token + phone number ID required)'];
+    }
     return $meta->sendTemplateMessage($phone, $templateName, $lang, $bodyParams);
 }
 
 function commSyncMetaTemplatesForOrg(PDO $db, string $orgId, string $userId): array
 {
+    if (commOrgWhatsappProvider($db, $orgId) === 'interakt') {
+        return [
+            'ok' => false,
+            'error' => 'Template sync from API is not available for Interakt. Create templates in Interakt dashboard, then add matching code names in CRM and mark them approved.',
+        ];
+    }
+
     $meta = commMetaClientForOrg($db, $orgId);
     $list = $meta->listMessageTemplates(200);
     if (!$list['ok']) {

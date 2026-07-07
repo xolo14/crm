@@ -34,19 +34,9 @@ function syncpediaPasswordResetLoginPath(string $role): string
     if ($r === 'super_admin') {
         return '/super_admin';
     }
-    if ($r === 'admin' || $r === 'org') {
-        return '/admin';
-    }
 
     return '/login';
 }
-
-// Secret invite codes for role-based signup
-define('INVITE_CODES', [
-    'admin' => 'SYNC-ADMIN-2026',
-    'manager' => 'SYNC-MG-2026',
-    'sales_representative' => 'SYNC-REP-2024',
-]);
 
 function normalizeRoleForPortal(string $role): string {
     $cleaned = strtolower(trim($role));
@@ -123,11 +113,16 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
     }
     $user['role'] = $normalizedRole;
 
-    $token = createToken($user['id'], $user['role'], $user['org_id']);
+    // Super admin master panel: no org in JWT until switch_org selects a tenant.
+    $tokenOrgId = $user['org_id'] ?? null;
+    if ($normalizedRole === 'super_admin') {
+        $tokenOrgId = null;
+    }
+    $token = createToken($user['id'], $user['role'], $tokenOrgId);
     unset($user['password_hash'], $user['is_active']);
 
     $org = null;
-    if (!empty($user['org_id'])) {
+    if ($normalizedRole !== 'super_admin' && !empty($user['org_id'])) {
         $ostmt = $db->prepare("SELECT id, name, slug, logo_url, plan FROM organizations WHERE id = ? AND is_active = 1");
         $ostmt->execute([$user['org_id']]);
         $org = $ostmt->fetch();
@@ -154,6 +149,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
     $action = $_GET['action'];
 
     if ($action === 'forgot_password') {
+        syncpediaRateLimitConsume('auth_forgot', 5, 3600);
         $email = trim($input['email'] ?? '');
         if (!$email) {
             respond(['error' => 'Email is required'], 400);
@@ -185,6 +181,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
 
     if ($action === 'verify_reset_otp') {
         $email = trim($input['email'] ?? '');
+        syncpediaRateLimitConsume('auth_otp_' . strtolower($email), 5, 900);
         $otp = trim($input['otp'] ?? '');
         if (!$email || !preg_match('/^\d{6}$/', $otp)) {
             respond(['error' => 'Valid email and 6-digit code are required'], 400);
@@ -215,10 +212,12 @@ if ($method === 'POST' && isset($_GET['action'])) {
     }
 
     if ($action === 'reset_password') {
+        syncpediaRateLimitConsume('auth_reset', 10, 900);
         $token = trim($input['token'] ?? '');
         $newPass = $input['password'] ?? '';
-        if (!$token || strlen($newPass) < 6) {
-            respond(['error' => 'Valid verification and new password (6+ characters) are required'], 400);
+        $minLen = syncpediaMinPasswordLength();
+        if (!$token || strlen($newPass) < $minLen) {
+            respond(['error' => "Valid verification and new password ({$minLen}+ characters) are required"], 400);
         }
         ensurePasswordResetsTable($db);
         $stmt = $db->prepare("SELECT user_id FROM password_resets WHERE token = ? AND expires_at > NOW()");
@@ -234,6 +233,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
     }
 
     if ($action === 'login') {
+        syncpediaRateLimitConsume('auth_login', 10, 900);
         $email = trim($input['email'] ?? '');
         $password = $input['password'] ?? '';
 
@@ -260,6 +260,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
     }
 
     if ($action === 'google_login') {
+        syncpediaRateLimitConsume('auth_google', 10, 900);
         $clientId = defined('GOOGLE_CLIENT_ID') ? (string)GOOGLE_CLIENT_ID : '';
         $credential = trim($input['credential'] ?? $input['id_token'] ?? '');
         if (!$credential) {
@@ -280,6 +281,10 @@ if ($method === 'POST' && isset($_GET['action'])) {
     }
 
     if ($action === 'signup') {
+        if (!syncpediaPublicSignupEnabled()) {
+            respond(['error' => 'Self-registration is disabled. Ask your administrator to create your account.'], 403);
+        }
+        syncpediaRateLimitConsume('auth_signup', 5, 3600);
         $email = trim($input['email'] ?? '');
         $password = $input['password'] ?? '';
         $fullName = trim($input['full_name'] ?? '');
@@ -291,21 +296,22 @@ if ($method === 'POST' && isset($_GET['action'])) {
             respond(['error' => 'Email, password, and name are required'], 400);
         }
 
-        if (strlen($password) < 6) {
-            respond(['error' => 'Password must be at least 6 characters'], 400);
+        $minLen = syncpediaMinPasswordLength();
+        if (strlen($password) < $minLen) {
+            respond(['error' => "Password must be at least {$minLen} characters"], 400);
         }
 
-        // Validate role
         $allowedRoles = ['admin', 'manager', 'sales_representative'];
-        if (!in_array($role, $allowedRoles)) {
+        if (!in_array($role, $allowedRoles, true)) {
             respond(['error' => 'Invalid role'], 400);
         }
 
-        // Validate invite code (not required for sales_representative)
-        if ($role !== 'sales_representative') {
-            if (!$inviteCode || !isset(INVITE_CODES[$role]) || INVITE_CODES[$role] !== $inviteCode) {
-                respond(['error' => 'Invalid invite code for this role'], 403);
-            }
+        if (!syncpediaValidateSignupInvite($role, $inviteCode)) {
+            respond(['error' => 'Valid invite code is required for registration'], 403);
+        }
+
+        if ($role === 'sales_representative' && $orgSlug === '') {
+            respond(['error' => 'Organization slug (org_slug) is required for sales registration'], 400);
         }
 
         $stmt = $db->prepare("SELECT id FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?))");
@@ -345,6 +351,27 @@ if ($method === 'POST' && isset($_GET['action'])) {
         ], 201);
     }
 
+    if ($action === 'change_password') {
+        $tokenData = verifyToken();
+        syncpediaRateLimitConsume('change_password_' . ($tokenData['user_id'] ?? ''), 5, 900);
+        $current = $input['current_password'] ?? '';
+        $newPass = $input['new_password'] ?? '';
+        $minLen = syncpediaMinPasswordLength();
+        if ($current === '' || strlen($newPass) < $minLen) {
+            respond(['error' => "Current password and new password ({$minLen}+ characters) are required"], 400);
+        }
+        $stmt = $db->prepare('SELECT password_hash FROM users WHERE id = ? LIMIT 1');
+        $stmt->execute([$tokenData['user_id']]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $hash = (string) ($row['password_hash'] ?? '');
+        if ($hash === '' || !password_verify($current, $hash)) {
+            respond(['error' => 'Current password is incorrect'], 401);
+        }
+        $newHash = password_hash($newPass, PASSWORD_DEFAULT);
+        $db->prepare('UPDATE users SET password_hash = ? WHERE id = ?')->execute([$newHash, $tokenData['user_id']]);
+        respond(['message' => 'Password updated successfully']);
+    }
+
     if ($action === 'me') {
         $tokenData = verifyToken();
         $stmt = $db->prepare("SELECT id, email, full_name, phone, avatar_url, role, referral_code, org_id FROM users WHERE id = ?");
@@ -364,18 +391,26 @@ if ($method === 'POST' && isset($_GET['action'])) {
         $user['role'] = $normalizedRole;
         $user['referral_code'] = ensureUserSpReferralCode($db, $user['id']);
 
-        // Get org info
+        // JWT org context: super_admin uses switch_org token only; others fall back to users.org_id
+        $effectiveOrgId = trim((string) ($tokenData['org_id'] ?? ''));
+        if ($normalizedRole !== 'super_admin' && $effectiveOrgId === '') {
+            $effectiveOrgId = trim((string) ($user['org_id'] ?? ''));
+        }
+        if ($effectiveOrgId !== '') {
+            $user['org_id'] = $effectiveOrgId;
+        }
+
         $org = null;
-        if ($user['org_id']) {
+        if ($effectiveOrgId !== '') {
             $ostmt = $db->prepare("SELECT id, name, slug, logo_url, plan FROM organizations WHERE id = ? AND is_active = 1");
-            $ostmt->execute([$user['org_id']]);
+            $ostmt->execute([$effectiveOrgId]);
             $org = $ostmt->fetch();
             if ($org) {
                 $fstmt = $db->prepare("SELECT feature, enabled FROM org_features WHERE org_id = ?");
-                $fstmt->execute([$user['org_id']]);
+                $fstmt->execute([$effectiveOrgId]);
                 $features = [];
                 foreach ($fstmt->fetchAll() as $f) {
-                    $features[$f['feature']] = (bool)$f['enabled'];
+                    $features[$f['feature']] = (int) ($f['enabled'] ?? 0) === 1;
                 }
                 $org['features'] = $features;
             }
@@ -398,6 +433,15 @@ if ($method === 'POST' && isset($_GET['action'])) {
             $ostmt = $db->prepare("SELECT id, name, slug, logo_url, plan FROM organizations WHERE id = ?");
             $ostmt->execute([$targetOrgId]);
             $org = $ostmt->fetch();
+            if ($org) {
+                $fstmt = $db->prepare("SELECT feature, enabled FROM org_features WHERE org_id = ?");
+                $fstmt->execute([$targetOrgId]);
+                $features = [];
+                foreach ($fstmt->fetchAll() as $f) {
+                    $features[$f['feature']] = (int) ($f['enabled'] ?? 0) === 1;
+                }
+                $org['features'] = $features;
+            }
         }
         
         respond(['token' => $token, 'organization' => $org]);

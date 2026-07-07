@@ -44,7 +44,6 @@ $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-$org = orgFilterLeadsTenant($db, $tokenData);
 
 /**
  * Validate batch for lead enrollment; returns course_id, counts, or error.
@@ -99,36 +98,17 @@ function leadsAttachStudentToBatch(PDO $db, string $leadId, ?string $courseId, s
 }
 
 if ($method === 'GET') {
-    $effRole = syncpediaNormalizeRoleKey((string) $role);
-    $where = $org['where'];
-    $params = $org['params'];
+    try {
+    $scope = tenantLeadsScopeSql($db, $tokenData, '');
+    $where = '1=1' . $scope['sql'];
+    $params = $scope['params'];
     $debug = !empty($_GET['debug']) && $_GET['debug'] !== '0' && $_GET['debug'] !== 'false';
     $debugMeta = [];
 
-    // Super admin should always see all leads in Leads module.
-    if ($effRole === 'super_admin') {
-        $where = '1=1';
-        $params = [];
-    }
-
-    // L3 admin/org: full tenant roster from orgFilter above (no hierarchy cap).
-    // L2 manager: assigned team + referrals only.
-    if ($effRole === 'manager') {
+    if ($debug && tenantIsMasterView($tokenData) && syncpediaNormalizeRoleKey((string) $role) === 'super_admin') {
         $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        if ($debug) {
-            $debugMeta['visible_user_ids_count'] = count($visibleIds);
-            $debugMeta['visible_user_ids_sample'] = array_slice($visibleIds, 0, 15);
-        }
-        $scope = hierarchyLeadDownlineScopeSql($visibleIds);
-        $where .= $scope['sql'];
-        $params = array_merge($params, $scope['params']);
-    }
-
-    // L1 field roles: assigned, referral-link, or self-created leads only.
-    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
-        $scope = hierarchyL1OwnLeadsScopeSql($tokenData);
-        $where .= $scope['sql'];
-        $params = array_merge($params, $scope['params']);
+        $debugMeta['visible_user_ids_count'] = count($visibleIds);
+        $debugMeta['visible_user_ids_sample'] = array_slice($visibleIds, 0, 15);
     }
 
     if (!empty($_GET['status']) && $_GET['status'] !== 'all') {
@@ -163,6 +143,14 @@ if ($method === 'GET') {
     $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT 500");
     $stmt->execute($params);
     respond(['data' => $stmt->fetchAll(), 'count' => $stmt->rowCount()]);
+    } catch (Throwable $e) {
+        error_log('leads.php GET: ' . $e->getMessage());
+        $payload = ['error' => 'Failed to load leads'];
+        if (defined('APP_DEBUG') && APP_DEBUG) {
+            $payload['detail'] = $e->getMessage();
+        }
+        respond($payload, 500);
+    }
 }
 
 if ($method === 'POST') {

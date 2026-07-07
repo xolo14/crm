@@ -7,11 +7,6 @@ $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
-    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    // Super admin should see all students unless an explicit org_id filter is requested.
-    $orgId = $role === 'super_admin' && empty($_GET['org_id']) && empty($tokenData['org_id'])
-        ? null
-        : resolveCreatorOrgId($db, $tokenData);
     $where = '1=1';
     $params = [];
 
@@ -26,20 +21,12 @@ if ($method === 'GET') {
         $params[] = $_GET['status'];
     }
 
-    // Tenant scope: org on student/lead rows, or mentor/assignee/creator in the same org.
-    if ($orgId) {
-        $tenant = orgFilterStudentsTenantSql($orgId);
-        $where .= $tenant['sql'];
-        $params = array_merge($params, $tenant['params']);
-    }
+    // Tenant + hierarchy scope
+    $scope = tenantStudentListScopeSql($db, $tokenData);
+    $where .= $scope['sql'];
+    $params = array_merge($params, $scope['params']);
 
-    // L2 manager: students tied to downline leads or mentor/user on the row (matches leads.php / profiles dashboard).
-    if (hierarchyRoleUsesDownlineScope($tokenData)) {
-        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        $scope = hierarchyStudentListScopeSql($visibleIds);
-        $where .= $scope['sql'];
-        $params = array_merge($params, $scope['params']);
-    }
+    $orgId = tenantListOrgId($db, $tokenData);
 
     $stmt = $db->prepare("
         SELECT s.*,

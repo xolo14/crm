@@ -86,6 +86,7 @@ if ($method === 'GET') {
 
     $leadId = $_GET['lead_id'] ?? '';
     if ($leadId) {
+        syncpediaAssertLeadInScope($db, $tokenData, $leadId);
         $stmt = $db->prepare("
             SELECT la.*, u.full_name as user_name, u.email as user_email 
             FROM lead_assignments la 
@@ -121,28 +122,30 @@ if ($method === 'GET') {
             ORDER BY la.created_at DESC LIMIT 500
         ");
         $stmt->execute($scope['params']);
+    } elseif (tenantIsMasterView($tokenData)) {
+        $stmt = $db->prepare("
+            SELECT la.*, u.full_name as user_name, l.name as lead_name
+            FROM lead_assignments la
+            LEFT JOIN users u ON la.user_id = u.id
+            LEFT JOIN leads l ON la.lead_id = l.id
+            ORDER BY la.created_at DESC LIMIT 500
+        ");
+        $stmt->execute();
     } else {
-        $orgId = getOrgId($tokenData);
+        $orgId = resolveCreatorOrgId($db, $tokenData);
         $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-        if ($orgId && in_array($effRole, ['admin', 'org', 'finance'], true)) {
+        if ($orgId && in_array($effRole, ['admin', 'org', 'finance', 'super_admin', 'manager'], true)) {
             $stmt = $db->prepare("
                 SELECT la.*, u.full_name as user_name, l.name as lead_name
                 FROM lead_assignments la
                 LEFT JOIN users u ON la.user_id = u.id
                 LEFT JOIN leads l ON la.lead_id = l.id
-                WHERE l.org_id = ? OR l.org_id IS NULL
+                WHERE l.org_id = ?
                 ORDER BY la.created_at DESC LIMIT 500
             ");
             $stmt->execute([$orgId]);
         } else {
-            $stmt = $db->prepare("
-                SELECT la.*, u.full_name as user_name, l.name as lead_name 
-                FROM lead_assignments la 
-                LEFT JOIN users u ON la.user_id = u.id 
-                LEFT JOIN leads l ON la.lead_id = l.id 
-                ORDER BY la.created_at DESC LIMIT 500
-            ");
-            $stmt->execute();
+            respond(['data' => []]);
         }
     }
     respond(['data' => $stmt->fetchAll()]);
@@ -158,11 +161,13 @@ if ($method === 'POST') {
         $leadIds = $input['lead_ids'] ?? [];
         $assignTo = $input['user_id'] ?? '';
         if (empty($leadIds) || !$assignTo) respond(['error' => 'lead_ids and user_id required'], 400);
+        syncpediaAssertUserInCallerOrg($db, $tokenData, $assignTo);
 
         $assignStmt = $db->prepare("INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?, ?, ?)");
         $updateStmt = $db->prepare("UPDATE leads SET assigned_to = ? WHERE id = ?");
 
         foreach ($leadIds as $leadId) {
+            syncpediaAssertLeadInScope($db, $tokenData, (string) $leadId);
             $assignStmt->execute([generateUUID(), $leadId, $assignTo]);
             $updateStmt->execute([$assignTo, $leadId]);
         }
@@ -170,11 +175,19 @@ if ($method === 'POST') {
         respond(['message' => count($leadIds) . ' leads assigned'], 201);
     }
 
+    $leadId = trim((string) ($input['lead_id'] ?? ''));
+    $assignTo = trim((string) ($input['user_id'] ?? ''));
+    if ($leadId === '' || $assignTo === '') {
+        respond(['error' => 'lead_id and user_id required'], 400);
+    }
+    syncpediaAssertLeadInScope($db, $tokenData, $leadId);
+    syncpediaAssertUserInCallerOrg($db, $tokenData, $assignTo);
+
     $id = generateUUID();
     $stmt = $db->prepare("INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?, ?, ?)");
-    $stmt->execute([$id, $input['lead_id'], $input['user_id']]);
+    $stmt->execute([$id, $leadId, $assignTo]);
 
-    $db->prepare("UPDATE leads SET assigned_to = ? WHERE id = ?")->execute([$input['user_id'], $input['lead_id']]);
+    $db->prepare("UPDATE leads SET assigned_to = ? WHERE id = ?")->execute([$assignTo, $leadId]);
 
     respond(['id' => $id, 'message' => 'Lead assigned'], 201);
 }
@@ -183,6 +196,14 @@ if ($method === 'DELETE') {
     requireRole($tokenData, ['admin', 'super_admin', 'manager']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
+
+    $chk = $db->prepare('SELECT la.id, la.lead_id FROM lead_assignments la WHERE la.id = ? LIMIT 1');
+    $chk->execute([$id]);
+    $row = $chk->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        respond(['error' => 'Assignment not found'], 404);
+    }
+    syncpediaAssertLeadInScope($db, $tokenData, (string) ($row['lead_id'] ?? ''));
 
     trashArchiveRow($db, 'lead_assignment', 'lead_assignments', $id, $tokenData);
     $stmt = $db->prepare("DELETE FROM lead_assignments WHERE id = ?");

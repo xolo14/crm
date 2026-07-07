@@ -150,11 +150,13 @@ async function request(endpoint: string, options: RequestInit = {}) {
     const message = typeof data.message === 'string' ? data.message.trim() : '';
     const hint = typeof data.hint === 'string' ? data.hint.trim() : '';
     const det = typeof data.detail === 'string' ? data.detail.trim() : '';
-    const file = typeof data.file === 'string' ? data.file.trim() : '';
-    const line = data.line;
     let msg = [errMsg, message, det, hint].filter(Boolean).join(' — ');
-    if (file && line != null && line !== '') {
-      msg += ` (${file}:${line})`;
+    if (import.meta.env.DEV) {
+      const file = typeof data.file === 'string' ? data.file.trim() : '';
+      const line = data.line;
+      if (file && line != null && line !== '') {
+        msg += ` (${file}:${line})`;
+      }
     }
     throw new Error(msg || 'Request failed');
   }
@@ -234,7 +236,7 @@ export const api = {
     me: async () => {
       const data = await request('/auth.php?action=me', { method: 'POST' });
       setStoredUser(data.user);
-      if (data.organization) setStoredOrg(data.organization);
+      setStoredOrg(data.organization ?? null);
       return data;
     },
     switchOrg: async (orgId: string | null) => {
@@ -244,6 +246,7 @@ export const api = {
       });
       setToken(data.token);
       if (data.organization) setStoredOrg(data.organization);
+      else setStoredOrg(null);
       return data;
     },
     forgotPassword: (email: string) =>
@@ -252,6 +255,11 @@ export const api = {
       request('/auth.php?action=verify_reset_otp', { method: 'POST', body: JSON.stringify({ email, otp }) }),
     resetPassword: (token: string, password: string) =>
       request('/auth.php?action=reset_password', { method: 'POST', body: JSON.stringify({ token, password }) }),
+    changePassword: (current_password: string, new_password: string) =>
+      request('/auth.php?action=change_password', {
+        method: 'POST',
+        body: JSON.stringify({ current_password, new_password }),
+      }),
     logout: () => {
       clearToken();
     },
@@ -581,6 +589,7 @@ export const api = {
       is_active?: boolean;
       fields_json?: unknown;
       meta_json?: Record<string, unknown>;
+      org_id?: string | null;
     }) => request('/forms.php', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: {
       name?: string;
@@ -589,6 +598,7 @@ export const api = {
       is_active?: boolean;
       fields_json?: unknown;
       meta_json?: Record<string, unknown>;
+      org_id?: string | null;
     }) => request(`/forms.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/forms.php?id=${id}`, { method: 'DELETE' }),
     assignments: (formId: string) => request(`/forms.php?action=assignments&form_id=${formId}`),
@@ -610,6 +620,17 @@ export const api = {
       request(`/forms.php?action=revoke_api_key&form_id=${encodeURIComponent(formId)}`, {
         method: 'DELETE',
       }),
+    submissions: (
+      formId: string,
+      params?: { page?: number; limit?: number; search?: string; status?: string },
+    ) => {
+      const q = new URLSearchParams({ action: 'submissions', form_id: formId });
+      if (params?.page) q.set('page', String(params.page));
+      if (params?.limit) q.set('limit', String(params.limit));
+      if (params?.search) q.set('search', params.search);
+      if (params?.status) q.set('status', params.status);
+      return request(`/forms.php?${q.toString()}`);
+    },
   },
 
   trash: {
@@ -711,6 +732,8 @@ export const api = {
     },
     deleteTemplate: (id: string) => request(`/certificate-templates.php?id=${id}`, { method: 'DELETE' }),
     listIssued: () => request('/issued-certificates.php'),
+    verifyPublic: (id: string, token: string) =>
+      request(`/public-certificate-verify.php?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`),
     createIssuedBulk: (certificates: any[]) =>
       request('/issued-certificates.php', { method: 'POST', body: JSON.stringify({ certificates }) }),
     updateIssuedStatus: (id: string, status: 'issued' | 'revoked' | 'expired') =>

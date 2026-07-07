@@ -77,16 +77,29 @@ export const communicationsApi = {
     if (params?.orgId) q.set('org_id', params.orgId);
     return commRequest<{ data: WhatsappTemplate[] }>(`/communications.php?${q}`);
   },
-  createTemplate: (body: Partial<WhatsappTemplate> & { name: string; body: string }) =>
+  createTemplate: (body: Partial<WhatsappTemplate> & { name: string; body: string; mark_approved?: boolean; provider_template_id?: string }) =>
     commRequest('/communications.php?action=templates', { method: 'POST', body: JSON.stringify(body) }),
   updateTemplate: (id: string, body: Record<string, unknown>) =>
     commRequest(`/communications.php?action=templates&id=${id}`, { method: 'PUT', body: JSON.stringify(body) }),
 
-  testMetaConnection: (orgId?: string) =>
-    commRequest<{ message: string; data: { display_phone_number?: string; verified_name?: string } }>(
-      '/communications.php?action=test_meta_connection',
+  testWhatsappConnection: (orgId?: string) =>
+    commRequest<{ message: string; provider?: string; data: { display_phone_number?: string; verified_name?: string } }>(
+      '/communications.php?action=test_whatsapp_connection',
       { method: 'POST', body: JSON.stringify(orgId ? { org_id: orgId } : {}) },
     ),
+
+  /** @deprecated Use testWhatsappConnection */
+  testMetaConnection: (orgId?: string) =>
+    commRequest<{ message: string; provider?: string; data: { display_phone_number?: string; verified_name?: string } }>(
+      '/communications.php?action=test_whatsapp_connection',
+      { method: 'POST', body: JSON.stringify(orgId ? { org_id: orgId } : {}) },
+    ),
+
+  approveInteraktTemplate: (templateId: string, providerTemplateId?: string) =>
+    commRequest('/communications.php?action=approve_interakt_template', {
+      method: 'POST',
+      body: JSON.stringify({ template_id: templateId, provider_template_id: providerTemplateId }),
+    }),
 
   syncMetaTemplates: (orgId?: string) =>
     commRequest<{ message: string; imported: number; updated: number; total: number }>(

@@ -3,8 +3,9 @@ require_once __DIR__ . '/helpers.php';
 cors();
 
 $db = (new Database())->getConnection();
-$tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
+
+$tokenData = verifyToken();
 $userId = $tokenData['user_id'] ?? null;
 
 function tableHasColumn(PDO $db, string $table, string $column): bool {
@@ -12,13 +13,10 @@ function tableHasColumn(PDO $db, string $table, string $column): bool {
 }
 
 if ($method === 'GET') {
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
     $org = orgFilter($tokenData);
-    $sql = "SELECT id, template_id, template_name, recipient_name, course_name, cert_type, issue_date, status, created_at";
-    if (tableHasColumn($db, 'issued_certificates', 'verify_token')) {
-        $sql .= ", verify_token";
-    }
-    $sql .= " FROM issued_certificates WHERE {$org['where']} ORDER BY created_at DESC LIMIT 2000";
-    $stmt = $db->prepare($sql);
+    $sql = 'SELECT id, template_id, template_name, recipient_name, course_name, cert_type, issue_date, status, verify_token, created_at';
+    $sql .= " FROM issued_certificates WHERE {$org['where']} ORDER BY created_at DESC LIMIT 2000";    $stmt = $db->prepare($sql);
     $stmt->execute($org['params']);
     respond(['data' => $stmt->fetchAll()]);
 }
@@ -31,11 +29,12 @@ if ($method === 'POST') {
         respond(['error' => 'certificates array is required'], 400);
     }
 
-    $orgId = getOrgId($tokenData);
+    $orgId = resolveWriteOrgId($db, $tokenData);
     $hasVerifyToken = tableHasColumn($db, 'issued_certificates', 'verify_token');
     $created = 0;
     $ids = [];
     $errors = [];
+    $tplOrg = orgFilter($tokenData, 'ct', $db);
 
     if ($hasVerifyToken) {
         $stmt = $db->prepare("
@@ -71,6 +70,14 @@ if ($method === 'POST') {
         }
         if (!in_array($status, ['issued', 'revoked', 'expired'], true)) {
             $status = 'issued';
+        }
+
+        $tplParams = array_merge([$templateId], $tplOrg['params']);
+        $tplChk = $db->prepare("SELECT ct.id FROM certificate_templates ct WHERE ct.id = ? AND {$tplOrg['where']} LIMIT 1");
+        $tplChk->execute($tplParams);
+        if (!$tplChk->fetch()) {
+            $errors[] = ['id' => $id, 'error' => 'Template not in your organization'];
+            continue;
         }
 
         try {
