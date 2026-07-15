@@ -14,8 +14,9 @@ import syncpediaIcon from '@/assets/syncpedia-icon.webp';
 import syncpediaLogo from '@/assets/syncpedia-logo.webp';
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet';
 import { NotificationBell } from '@/components/NotificationBell';
-import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords } from '@/lib/orgAccess';
+import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from '@/lib/orgAccess';
 import { featureKeyForPath, isOrgFeatureEnabled } from '@/lib/orgFeatures';
+import { useToast } from '@/hooks/use-toast';
 
 type AppRole = string;
 
@@ -28,7 +29,7 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance', 'sales_marketing'] },
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance', 'marketing'] },
   { to: '/organizations', icon: Building2, label: 'Organizations', roles: ['super_admin'] },
   {
     to: '/leads', icon: Users, label: 'Leads', roles: ['super_admin', 'admin', 'org', 'manager', 'marketing', 'hr'],
@@ -37,8 +38,8 @@ const navItems: NavItem[] = [
       { to: '/leads/hr-leads', icon: UserCheck, label: 'HR Leads', roles: ['super_admin', 'admin', 'org'] },
     ],
   },
-  { to: '/form-management', icon: ClipboardList, label: 'Form Management', roles: ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing'] },
-  { to: '/my-leads', icon: ClipboardList, label: 'My Leads', roles: ['sales_marketing'] },
+  { to: '/form-management', icon: ClipboardList, label: 'Form Management', roles: ['super_admin', 'admin', 'org', 'marketing', 'manager'] },
+  { to: '/my-leads', icon: ClipboardList, label: 'My Leads', roles: ['marketing'] },
   {
     to: '/leads-management',
     icon: Users,
@@ -83,7 +84,7 @@ const navItems: NavItem[] = [
     label: 'Payment Records',
     roles: ['super_admin', 'admin', 'manager'],
   },
-  { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'sales_marketing', 'trainer', 'finance', 'hr'] },
+  { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'trainer', 'finance', 'hr'] },
   {
     to: '/daily-reports', icon: ClipboardList, label: 'Daily Reports', roles: ['super_admin', 'admin', 'manager', 'sales_representative'],
     children: [
@@ -92,10 +93,12 @@ const navItems: NavItem[] = [
     ],
   },
   {
-    to: '/marketing-admin', icon: Mail, label: 'Marketing', roles: ['super_admin', 'admin'],
+    to: '/marketing-admin', icon: Mail, label: 'Marketing', roles: ['super_admin', 'admin', 'org'],
     children: [
-      { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['super_admin', 'admin'] },
-      { to: '/marketing/whatsapp-analytics', icon: MessageSquare, label: 'WhatsApp Analytics', roles: ['super_admin', 'admin'] },
+      { to: '/marketing-email', icon: Mail, label: 'Email Templates', roles: ['super_admin', 'admin', 'org'] },
+      { to: '/marketing-whatsapp', icon: MessageSquare, label: 'WhatsApp Templates', roles: ['super_admin', 'admin', 'org'] },
+      { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['super_admin', 'admin', 'org'] },
+      { to: '/marketing/whatsapp-analytics', icon: MessageSquare, label: 'WhatsApp Analytics', roles: ['super_admin', 'admin', 'org'] },
     ],
   },
   { to: '/marketing/dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['marketing'] },
@@ -114,8 +117,8 @@ const navItems: NavItem[] = [
   { to: '/marketing/form-leads', icon: FileText, label: 'Form Leads', roles: ['marketing'] },
   { to: '/marketing/imported-leads', icon: Users, label: 'Imported Leads', roles: ['marketing'] },
   { to: '/assigned-leads', icon: ClipboardList, label: 'Assigned Leads', roles: ['marketing'] },
-  { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'admin'] },
-  { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'admin'] },
+  { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'admin', 'manager', 'hr'] },
+  { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'admin', 'manager'] },
   { to: '/payslip', icon: Receipt, label: 'Payslip', roles: ['super_admin', 'admin', 'org'] },
   {
     to: '/team',
@@ -129,16 +132,16 @@ const navItems: NavItem[] = [
     label: 'Fresher Salary',
     roles: ['super_admin', 'admin'],
   },
-  { to: '/tasks', icon: CheckSquare, label: 'Tasks', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'sales_marketing'] },
-  { to: '/notifications', icon: Bell, label: 'Notifications', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance', 'sales_marketing'] },
-  { to: '/holidays', icon: CalendarDays, label: 'Holidays', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'marketing', 'sales_marketing'] },
-  { to: '/trash', icon: Trash2, label: 'Trash', roles: ['super_admin', 'admin', 'manager'] },
-  { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'admin'] },
+  { to: '/tasks', icon: CheckSquare, label: 'Tasks', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'marketing'] },
+  { to: '/notifications', icon: Bell, label: 'Notifications', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance', 'marketing'] },
+  { to: '/holidays', icon: CalendarDays, label: 'Holidays', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'marketing'] },
+  { to: '/trash', icon: Trash2, label: 'Trash', roles: ['super_admin', 'admin', 'org', 'manager'] },
+  { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'hr', 'marketing', 'trainer', 'finance'] },
 ];
 
-function SidebarNavItem({ item, collapsed, role, organization, currentPath, onNavigate, showNewBadge }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean }) {
+function SidebarNavItem({ item, collapsed, role, organization, pageAccess, currentPath, onNavigate, showNewBadge }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; pageAccess?: { payments?: boolean; offer_letters?: boolean } | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean }) {
   const hasChildren = item.children && item.children.length > 0;
-  const filteredChildren = hasChildren ? item.children!.filter(c => navItemAllowed(c, role as AppRole | null, organization)) : [];
+  const filteredChildren = hasChildren ? item.children!.filter(c => navItemAllowed(c, role as AppRole | null, organization, pageAccess)) : [];
   const isActive = currentPath === item.to;
   const isChildActive = filteredChildren.some(c => currentPath === c.to);
   const open = isActive || isChildActive || currentPath.startsWith(item.to + '/');
@@ -200,7 +203,7 @@ function SidebarNavItem({ item, collapsed, role, organization, currentPath, onNa
   return (
     <NavLink
       to={item.to}
-      end={item.to === '/'}
+      end
       onClick={onNavigate}
       className={({ isActive: active }) => cn(
         "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
@@ -225,19 +228,25 @@ function SidebarNavItem({ item, collapsed, role, organization, currentPath, onNa
   );
 }
 
-function navItemAllowed(item: NavItem, role: AppRole | null, organization: { slug?: string | null; features?: Record<string, boolean> | null } | null): boolean {
+function navItemAllowed(
+  item: NavItem,
+  role: AppRole | null,
+  organization: { slug?: string | null; features?: Record<string, boolean> | null } | null,
+  pageAccess?: { payments?: boolean; offer_letters?: boolean } | null,
+): boolean {
   if (!role || !item.roles.includes(role)) return false;
-  if (item.to === "/offer-letters") return canAccessOfferLetters(role, organization);
+  if (item.to === "/offer-letters") return canAccessOfferLetters(role, organization, pageAccess);
   if (item.to === "/fresher-salary-tracker") return canAccessFresherSalary(role, organization);
   if (item.to === "/certificates") return canAccessCertificates(role, organization);
   if (item.to === "/payslip") return canAccessPayslip(role, organization);
   if (item.to === "/payments/records") return canAccessPaymentRecords(role);
+  if (item.to === "/payments") return canAccessPaymentsPage(role, pageAccess);
 
   const feat = featureKeyForPath(item.to);
   if (feat && !isOrgFeatureEnabled(role, organization, feat)) return false;
 
   if (item.children) {
-    const visibleChildren = item.children.filter((c) => navItemAllowed(c, role, organization));
+    const visibleChildren = item.children.filter((c) => navItemAllowed(c, role, organization, pageAccess));
     if (visibleChildren.length === 0 && item.children.length > 0) return false;
   }
 
@@ -248,6 +257,7 @@ function SidebarContent({
   collapsed,
   role,
   organization,
+  pageAccess,
   onSignOut,
   profile,
   onNavigate,
@@ -255,13 +265,14 @@ function SidebarContent({
   collapsed: boolean;
   role: AppRole | null;
   organization: { slug?: string | null; features?: Record<string, boolean> | null } | null;
+  pageAccess?: { payments?: boolean; offer_letters?: boolean } | null;
   onSignOut: () => void;
   profile: any;
   onNavigate?: () => void;
 }) {
   const location = useLocation();
   const currentPath = location.pathname;
-  const filteredNav = navItems.filter((item) => navItemAllowed(item, role, organization));
+  const filteredNav = navItems.filter((item) => navItemAllowed(item, role, organization, pageAccess));
   const [showNewBadge, setShowNewBadge] = React.useState<boolean>(
     !localStorage.getItem("cert_nav_seen")
   );
@@ -291,7 +302,7 @@ function SidebarContent({
 
       <nav className="flex-1 py-1 px-2 space-y-0.5 overflow-y-auto">
         {filteredNav.map(item => (
-          <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} />
+          <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} />
         ))}
       </nav>
 
@@ -312,7 +323,9 @@ function SidebarContent({
 }
 
 export default function AppLayout({ children }: { children: ReactNode }) {
-  const { role, profile, signOut, organization, switchOrg } = useAuth();
+  const { role, profile, signOut, organization, switchOrg, user } = useAuth();
+  const { toast } = useToast();
+  const pageAccess = (user as { page_access?: { payments?: boolean; offer_letters?: boolean } } | null)?.page_access ?? null;
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -332,30 +345,36 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
   const handleBackToMaster = async () => {
     try {
-      await switchOrg(null as any);
+      await switchOrg(null);
       navigate('/');
-    } catch {}
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Could not return to master view.';
+      toast({ variant: 'destructive', title: 'Switch failed', description: message });
+    }
   };
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-dvh max-h-dvh bg-background overflow-hidden">
       {/* Desktop sidebar */}
       <aside className={cn(
-        "hidden md:flex flex-col transition-all duration-200 relative",
+        "hidden md:flex flex-col transition-all duration-200 relative shrink-0",
         collapsed ? "w-16" : "w-60"
       )}>
-        <SidebarContent collapsed={collapsed} role={role} organization={organization} onSignOut={handleSignOut} profile={profile} />
+        <SidebarContent collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} onSignOut={handleSignOut} profile={profile} />
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="absolute -right-3 top-7 z-10 h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground transition-all hidden md:flex shadow-sm"
+          className="absolute -right-3 top-7 z-10 h-8 w-8 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground transition-all hidden md:flex shadow-sm touch-target"
         >
           {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />}
         </button>
       </aside>
 
-      {/* Mobile header */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-50 border-b border-border bg-card/95 backdrop-blur-md shadow-sm">
-        <div className="flex items-center gap-3 px-4 py-3" style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top))' }}>
+      {/* Mobile header — owns safe-area-inset-top (not html) */}
+      <div
+        className="md:hidden fixed top-0 left-0 right-0 z-50 border-b border-border bg-card/95 backdrop-blur-md shadow-sm"
+        style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
+      >
+        <div className="flex items-center gap-3 px-4 py-3 min-h-[52px]">
           <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="h-10 w-10 rounded-xl touch-target shrink-0"><Menu className="h-5 w-5" /></Button>
@@ -366,20 +385,21 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 collapsed={false}
                 role={role}
                 organization={organization}
+                pageAccess={pageAccess}
                 onSignOut={handleSignOut}
                 profile={profile}
                 onNavigate={() => setSheetOpen(false)}
               />
             </SheetContent>
           </Sheet>
-          <img src={syncpediaLogo} alt="Syncpedia Technologies" className="h-7 object-contain" />
-          <div className="ml-auto flex items-center gap-1">
+          <img src={syncpediaLogo} alt="Syncpedia Technologies" className="h-7 object-contain min-w-0" />
+          <div className="ml-auto flex items-center gap-1 shrink-0">
             <NotificationBell />
           </div>
         </div>
       </div>
 
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 min-w-0 overflow-auto">
         {/* Desktop top bar */}
         <div className="hidden md:flex items-center justify-between px-6 py-2 border-b border-border bg-card">
           <div className="flex items-center gap-2">
@@ -392,8 +412,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
           <NotificationBell />
         </div>
-        {/* Mobile top spacing */}
-        <div className="md:hidden h-[60px]" style={{ height: 'calc(60px + env(safe-area-inset-top, 0px))' }} />
+        {/* Spacer matches mobile header content (~52px) + safe-area (already on header) */}
+        <div
+          className="md:hidden shrink-0"
+          style={{ height: "calc(52px + env(safe-area-inset-top, 0px))" }}
+          aria-hidden
+        />
         {showOrgViewingBadge && (
           <div className="md:hidden px-4 py-1.5 border-b border-primary/20 bg-primary/5">
             <div className="inline-flex items-center gap-1.5 rounded-md border border-primary/20 bg-background px-2 py-1">

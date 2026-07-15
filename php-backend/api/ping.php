@@ -33,6 +33,7 @@ if (!is_file(__DIR__ . '/db.php')) {
 
 require_once $configPath;
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/mail_transport.php';
 
 $dbOk = false;
 $dbMessage = 'Database connection failed — verify DB_HOST/DB_NAME/DB_USER/DB_PASS in api/config.php (Hostinger: use localhost + MySQL user from hPanel).';
@@ -48,6 +49,11 @@ if (defined('DB_HOST') && defined('DB_NAME') && defined('DB_USER') && defined('D
     $dbMessage = 'api/config.php is missing DB_* defines.';
 }
 
+$smtpReady = function_exists('syncpediaSmtpIsReady') ? syncpediaSmtpIsReady() : false;
+$smtpHint = $smtpReady
+    ? 'ready'
+    : (function_exists('syncpediaSmtpNotReadyReason') ? syncpediaSmtpNotReadyReason() : 'not_configured');
+
 $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
 $host = $_SERVER['HTTP_HOST'] ?? '';
 $site = (defined('CRM_PUBLIC_URL') && CRM_PUBLIC_URL !== '')
@@ -59,21 +65,18 @@ $invoiceStorage = syncpediaDocumentStorageHealth('payment_invoices');
 
 $debug = defined('APP_DEBUG') && APP_DEBUG === true;
 http_response_code($dbOk ? 200 : 503);
+$payload = [
+    'status' => $dbOk ? 'ok' : 'error',
+    'api' => 'reachable',
+    'database' => $dbOk ? 'connected' : 'failed',
+    'smtp' => $smtpReady ? 'ready' : 'not_ready',
+];
 if ($debug) {
-    echo json_encode([
-        'status' => $dbOk ? 'ok' : 'error',
-        'php' => PHP_VERSION,
-        'api' => 'reachable',
-        'database' => $dbOk ? 'connected' : 'failed',
-        'storage' => [
-            'payment_invoices' => $invoiceStorage['writable'] ? 'writable' : 'not_writable',
-        ],
-        'message' => $dbOk ? 'Syncpedia CRM API is ready' : $dbMessage,
-    ], JSON_UNESCAPED_UNICODE);
-} else {
-    echo json_encode([
-        'status' => $dbOk ? 'ok' : 'error',
-        'api' => 'reachable',
-        'database' => $dbOk ? 'connected' : 'failed',
-    ], JSON_UNESCAPED_UNICODE);
+    $payload['php'] = PHP_VERSION;
+    $payload['smtp_detail'] = $smtpHint;
+    $payload['storage'] = [
+        'payment_invoices' => $invoiceStorage['writable'] ? 'writable' : 'not_writable',
+    ];
+    $payload['message'] = $dbOk ? 'Syncpedia CRM API is ready' : $dbMessage;
 }
+echo json_encode($payload, JSON_UNESCAPED_UNICODE);

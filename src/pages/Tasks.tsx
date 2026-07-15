@@ -77,7 +77,7 @@ export default function Tasks() {
   const isOverdue = (t: any) => t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed';
   const getAssigneeName = (userId: string | null) => {
     if (!userId) return null;
-    const m = teamMembers.find((m: any) => m.user_id === userId);
+    const m = teamMembers.find((m: any) => (m.user_id || m.id) === userId);
     return m?.full_name || m?.email || null;
   };
 
@@ -92,7 +92,7 @@ export default function Tasks() {
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild><Button size="sm" className="gap-1.5 h-8"><Plus className="h-3.5 w-3.5" /><span className="hidden sm:inline">Add Task</span></Button></DialogTrigger>
-          <DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>Add Task</DialogTitle></DialogHeader>
+          <DialogContent className="max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto"><DialogHeader><DialogTitle>Add Task</DialogTitle></DialogHeader>
             <TaskForm onSubmit={data => createTask.mutate(data)} submitting={createTask.isPending} teamMembers={teamMembers} />
           </DialogContent>
         </Dialog>
@@ -175,7 +175,7 @@ export default function Tasks() {
       )}
 
       <Dialog open={editDialogOpen} onOpenChange={(o) => { setEditDialogOpen(o); if (!o) setEditingTask(null); }}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto"><DialogHeader><DialogTitle>Edit Task</DialogTitle></DialogHeader>
+        <DialogContent className="max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto"><DialogHeader><DialogTitle>Edit Task</DialogTitle></DialogHeader>
           {editingTask && <TaskForm initialData={editingTask} onSubmit={data => updateTask.mutate({ id: editingTask.id, ...data })} submitting={updateTask.isPending} teamMembers={teamMembers} isEdit />}
         </DialogContent>
       </Dialog>
@@ -204,7 +204,14 @@ function TaskForm({ onSubmit, submitting, teamMembers, initialData, isEdit }: an
       </div>}
       <div className="space-y-2"><Label>Assign To</Label>
         <Select value={form.assigned_to || ''} onValueChange={v => setForm({ ...form, assigned_to: v })}><SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-          <SelectContent>{teamMembers.map((m: any) => <SelectItem key={m.user_id} value={m.user_id}>{m.full_name || m.email}</SelectItem>)}</SelectContent>
+          <SelectContent>
+            {teamMembers.map((m: any) => {
+              const uid = m.user_id || m.id;
+              return (
+                <SelectItem key={uid} value={uid}>{m.full_name || m.email}</SelectItem>
+              );
+            })}
+          </SelectContent>
         </Select>
       </div>
       <Button type="submit" className="w-full" disabled={submitting}>{submitting ? 'Saving...' : (isEdit ? 'Update' : 'Create')}</Button>

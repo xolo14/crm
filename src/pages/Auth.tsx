@@ -3,6 +3,7 @@ import { Navigate, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
@@ -75,7 +76,7 @@ export default function Auth() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-dvh items-center justify-center">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
     );
@@ -148,13 +149,13 @@ export default function Auth() {
                   </div>
                   <div className="space-y-2">
                     <Label className="text-sm">Password</Label>
-                    <Input
-                      type="password"
+                    <PasswordInput
                       required
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
                       placeholder="••••••••"
                       className="h-12 rounded-xl"
+                      autoComplete="current-password"
                     />
                   </div>
                   <Button type="submit" className="w-full h-12 rounded-xl text-sm font-semibold" disabled={submitting}>

@@ -61,7 +61,7 @@ function trashRestoreRow(PDO $db, array $trashRow, array $typeMap): void {
 }
 
 if ($method === 'GET') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
     $purged = trashPurgeExpired($db, 30);
 
     if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
@@ -74,7 +74,7 @@ if ($method === 'GET') {
         }
     } else {
         $org = orgFilter($tokenData);
-        $where = '(' . $org['where'] . ' OR org_id IS NULL OR org_id = \'\')';
+        $where = '(' . $org['where'] . ')';
         $params = $org['params'];
     }
 
@@ -110,9 +110,62 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
     $input = getInput();
-    if (($input['action'] ?? '') !== 'restore') {
+    if (!is_array($input)) {
+        $input = [];
+    }
+    $action = trim((string) ($input['action'] ?? $_GET['action'] ?? ''));
+
+    // Permanently empty trash (no restore) — scoped like the list, not waiting for 30-day purge
+    if ($action === 'clear' || $action === 'empty') {
+        @set_time_limit(120);
+        if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
+            if (!empty($_GET['org_id']) && $_GET['org_id'] !== 'all') {
+                $where = 'org_id = ?';
+                $params = [(string) $_GET['org_id']];
+            } else {
+                $where = '1=1';
+                $params = [];
+            }
+        } else {
+            $org = orgFilter($tokenData);
+            $where = '(' . $org['where'] . ')';
+            $params = $org['params'];
+        }
+
+        $deleted = 0;
+        if (hierarchyRoleUsesDownlineScope($tokenData)) {
+            $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
+            $sel = $db->prepare("SELECT id, entity_type, entity_id, org_id, deleted_by, payload FROM trash_items WHERE $where");
+            $sel->execute($params);
+            $ids = [];
+            while ($r = $sel->fetch(PDO::FETCH_ASSOC)) {
+                if (is_array($r) && trashRowVisibleToDownline($r, $visibleIds)) {
+                    $ids[] = (string) $r['id'];
+                }
+            }
+            if ($ids !== []) {
+                $del = $db->prepare('DELETE FROM trash_items WHERE id = ?');
+                foreach ($ids as $tid) {
+                    $del->execute([$tid]);
+                    $deleted += $del->rowCount();
+                }
+            }
+        } else {
+            $stmt = $db->prepare("DELETE FROM trash_items WHERE $where");
+            $stmt->execute($params);
+            $deleted = (int) $stmt->rowCount();
+        }
+        syncpediaAuditLog($db, $tokenData, 'deleted', 'trash', null, "Cleared trash ({$deleted} item(s) permanently deleted)");
+        respond([
+            'message' => 'Trash cleared',
+            'deleted' => $deleted,
+            'handler' => 'trash_clear',
+        ]);
+    }
+
+    if ($action !== 'restore') {
         respond(['error' => 'Invalid action'], 400);
     }
     $trashId = $input['id'] ?? '';
@@ -130,7 +183,7 @@ if ($method === 'POST') {
         }
     } else {
         $org = orgFilter($tokenData);
-        $stmt = $db->prepare('SELECT * FROM trash_items WHERE id = ? AND (' . $org['where'] . ' OR org_id IS NULL OR org_id = \'\') LIMIT 1');
+        $stmt = $db->prepare('SELECT * FROM trash_items WHERE id = ? AND (' . $org['where'] . ') LIMIT 1');
         $stmt->execute(array_merge([$trashId], $org['params']));
     }
 
@@ -162,6 +215,7 @@ if ($method === 'POST') {
         }
         respond(['error' => 'Restore failed: ' . (strlen($msg) > 400 ? substr($msg, 0, 400) . '…' : $msg)], 500);
     }
+    syncpediaAuditLog($db, $tokenData, 'restored', 'trash', (string) $trashId, 'Restored item from trash');
     respond(['message' => 'Restored successfully']);
 }
 

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/form_campaigns.php';
 cors();
 
 /** Shim when production helpers.php predates publicFormLeadDestination (submissions fatal otherwise). */
@@ -105,11 +106,11 @@ function formsGetScopedForm(PDO $db, string $formId, array $tokenData): ?array {
     $userId = (string) ($tokenData['user_id'] ?? '');
     $params = [$formId];
     $orgClause = '';
-    if ($role === 'marketing' || $role === 'sales_marketing') {
+    if ($role === 'marketing') {
         $orgClause = ' AND created_by = ?';
         $params[] = $userId;
         $tenantOrg = formsEffectiveTenantOrgId($db, $tokenData);
-        if ($tenantOrg && ($role === 'sales_marketing' || formsResolveOrgSlug($db, $tenantOrg) !== 'syncpedia')) {
+        if ($tenantOrg && formsResolveOrgSlug($db, $tenantOrg) !== 'syncpedia') {
             $orgClause .= ' AND org_id = ?';
             $params[] = $tenantOrg;
         }
@@ -180,19 +181,12 @@ function formsBuildListScope(PDO $db, array $tokenData): array {
             $where .= '1=0';
         }
         $where .= ')';
-    } elseif ($role === 'org') {
+    } elseif ($role === 'org' || $role === 'manager') {
         if ($tenantOrgId) {
             $where .= ' AND lf.is_active = 1 AND lf.org_id = ?';
             $params[] = $tenantOrgId;
         } else {
             $where .= ' AND 1=0';
-        }
-    } elseif ($role === 'sales_marketing') {
-        $where .= ' AND lf.is_active = 1 AND lf.created_by = ?';
-        $params[] = $userId;
-        if ($tenantOrgId) {
-            $where .= ' AND lf.org_id = ?';
-            $params[] = $tenantOrgId;
         }
     } else {
         $where .= ' AND lf.is_active = 1 AND EXISTS (
@@ -257,6 +251,23 @@ function formsSubmissionFormOrgScope(?string $formOrgId, string $alias = 'l'): a
     return ['sql' => " AND ({$alias}.org_id IS NULL OR TRIM({$alias}.org_id) = '')", 'params' => []];
 }
 
+/** Limit submission rows to leads the caller may view (reps/managers on assigned forms). */
+function formsSubmissionAssigneeScope(PDO $db, array $tokenData, string $role, string $alias = 'l'): array {
+    $roleNorm = syncpediaNormalizeRoleKey($role);
+    // Org-wide viewers (admins / marketing). Managers must use downline scope below —
+    // they were incorrectly treated as org-wide and saw every form lead in the tenant.
+    if (in_array($roleNorm, ['super_admin', 'admin', 'org', 'marketing'], true)) {
+        return ['sql' => '', 'params' => []];
+    }
+    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+        return hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias, $db);
+    }
+    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+        return hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
+    }
+    return ['sql' => '', 'params' => []];
+}
+
 /** @return array{where: string, params: array} */
 function formsSubmissionLeadFilters(PDO $db, array $tokenData, string $role, string $search, string $status, ?string $formOrgId = null): array {
     $where = '';
@@ -272,6 +283,9 @@ function formsSubmissionLeadFilters(PDO $db, array $tokenData, string $role, str
     $formScope = formsSubmissionFormOrgScope($formOrgId, 'l');
     $where .= $formScope['sql'];
     $params = array_merge($params, $formScope['params']);
+    $assignee = formsSubmissionAssigneeScope($db, $tokenData, $role, 'l');
+    $where .= $assignee['sql'];
+    $params = array_merge($params, $assignee['params']);
     if ($status !== '' && $status !== 'all') {
         $where .= ' AND l.status = ?';
         $params[] = $status;
@@ -330,7 +344,7 @@ function formsNormalizeFormRow(array &$row): void {
 retireGlobalBuiltinLeadForms($db);
 
 if ($method === 'GET') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'sales_marketing']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing']);
     $action = $_GET['action'] ?? '';
 
     if ($action === 'assignments') {
@@ -356,7 +370,7 @@ if ($method === 'GET') {
     }
 
     if ($action === 'external_api') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing']);
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $row = formsGetScopedForm($db, $formId, $tokenData);
@@ -461,6 +475,21 @@ if ($method === 'GET') {
         }
     }
 
+    if ($action === 'campaign_templates') {
+        $formId = trim((string) ($_GET['form_id'] ?? ''));
+        if ($formId === '') {
+            respond(['error' => 'form_id required'], 400);
+        }
+        $formRow = formsGetScopedForm($db, $formId, $tokenData);
+        if (!$formRow) {
+            respond(['error' => 'Form not found'], 404);
+        }
+        if (!formCampaignCanManage($db, $tokenData, $formRow)) {
+            respond(['error' => 'Forbidden — super admin, org admin, or marketing users with access to this form can manage campaigns'], 403);
+        }
+        respond(['data' => formCampaignListTemplates($db, $tokenData, $formRow)]);
+    }
+
     $scope = formsBuildListScope($db, $tokenData);
     $params = $scope['params'];
     $where = $scope['where'];
@@ -484,26 +513,82 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager']);
     $input = getInput();
     $action = $_GET['action'] ?? '';
 
+    if ($action === 'send_campaign') {
+        $formId = trim((string) ($input['form_id'] ?? ''));
+        $channel = strtolower(trim((string) ($input['channel'] ?? '')));
+        $source = strtolower(trim((string) ($input['template_source'] ?? 'marketing')));
+        $templateId = trim((string) ($input['template_id'] ?? ''));
+        if ($formId === '' || $templateId === '' || !in_array($channel, ['email', 'whatsapp'], true)) {
+            respond(['error' => 'form_id, channel (email|whatsapp), and template_id are required'], 400);
+        }
+        $formRow = formsGetScopedForm($db, $formId, $tokenData);
+        if (!$formRow) {
+            respond(['error' => 'Form not found'], 404);
+        }
+        $result = formCampaignSendBulk($db, $tokenData, $formRow, $channel, $source, $templateId);
+        if (empty($result['ok'])) {
+            respond(['error' => $result['error'] ?? 'Campaign send failed', 'details' => $result], 502);
+        }
+        respond(['message' => 'Campaign sent', 'data' => $result]);
+    }
+
+    if ($action === 'campaign_settings') {
+        $formId = trim((string) ($input['form_id'] ?? ''));
+        $campaignInput = $input['campaign'] ?? null;
+        if ($formId === '' || !is_array($campaignInput)) {
+            respond(['error' => 'form_id and campaign object are required'], 400);
+        }
+        $formRow = formsGetScopedForm($db, $formId, $tokenData);
+        if (!$formRow) {
+            respond(['error' => 'Form not found'], 404);
+        }
+        if (!formCampaignCanManage($db, $tokenData, $formRow)) {
+            respond(['error' => 'Forbidden — super admin, org admin, or marketing users with access to this form can manage campaigns'], 403);
+        }
+        $meta = formsParseMetaJson($formRow['meta_json'] ?? null);
+        $meta = formCampaignMergeIntoMeta($meta, $campaignInput);
+        $db->prepare('UPDATE lead_forms SET meta_json = ? WHERE id = ?')->execute([json_encode($meta), $formId]);
+        $formRow['meta_json'] = $meta;
+        $publishSend = !empty($input['send_to_existing']);
+        $sendResult = null;
+        if ($publishSend) {
+            $sendResult = formCampaignSendAssignedOnPublish($db, $tokenData, $formRow, formCampaignParseConfig($meta));
+        }
+        respond([
+            'message' => 'Campaign settings saved',
+            'campaign' => formCampaignParseConfig($meta),
+            'send_result' => $sendResult,
+        ]);
+    }
+
     if ($action === 'assign') {
-        requireRole($tokenData, ['super_admin', 'admin']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
         $formId = trim($input['form_id'] ?? '');
         $memberIds = $input['member_ids'] ?? [];
         if (!$formId || !is_array($memberIds)) respond(['error' => 'form_id and member_ids are required'], 400);
 
+        $isManagerAssign = $role === 'manager';
+        $managerVisibleIds = $isManagerAssign ? hierarchyGetVisibleUserIds($db, $tokenData) : [];
+
         $chkParams = [$formId];
         $orgClause = '';
         if ($role !== 'super_admin') {
-            $orgClause = ' AND org_id = ?';
-            $chkParams[] = $orgId;
+            // Managers may assign members on forms they can already see (own org / assigned).
+            $accessible = formsGetAccessibleFormDetail($db, $formId, $tokenData);
+            if (!$accessible) {
+                respond(['error' => 'Form not found'], 404);
+            }
+            $formRow = ['id' => $accessible['id'], 'slug' => $accessible['slug'] ?? '', 'org_id' => $accessible['org_id'] ?? null];
+        } else {
+            $chk = $db->prepare("SELECT id, slug, org_id FROM lead_forms WHERE id = ? LIMIT 1");
+            $chk->execute($chkParams);
+            $formRow = $chk->fetch();
+            if (!$formRow) respond(['error' => 'Form not found'], 404);
         }
-        $chk = $db->prepare("SELECT id, slug, org_id FROM lead_forms WHERE id = ? $orgClause LIMIT 1");
-        $chk->execute($chkParams);
-        $formRow = $chk->fetch();
-        if (!$formRow) respond(['error' => 'Form not found'], 404);
 
         $cleanMemberIds = [];
         foreach ($memberIds as $memberId) {
@@ -525,16 +610,18 @@ if ($method === 'POST') {
             if (!$member) respond(['error' => 'Invalid member in assignment list'], 400);
 
             $memberOrg = isset($member['org_id']) ? trim((string)$member['org_id']) : '';
-            $memberOrgSlug = isset($member['org_slug']) ? trim((string)$member['org_slug']) : '';
 
             if ($role !== 'super_admin') {
                 $formOrg = isset($formRow['org_id']) ? trim((string)$formRow['org_id']) : '';
-                if ($memberOrg === '' || $memberOrg !== (string)$orgId) {
+                if ($memberOrg === '' || ($orgId && $memberOrg !== (string)$orgId)) {
                     respond(['error' => 'You can only assign members from your own organization'], 403);
                 }
-                if ($formOrg !== '' && $formOrg !== (string)$orgId) {
+                if ($formOrg !== '' && $orgId && $formOrg !== (string)$orgId) {
                     respond(['error' => 'You can only assign members from your own organization'], 403);
                 }
+            }
+            if ($isManagerAssign && !in_array($mid, $managerVisibleIds, true)) {
+                respond(['error' => 'Managers can only assign form links to their own team'], 403);
             }
         }
 
@@ -549,6 +636,23 @@ if ($method === 'POST') {
                 $delParams = array_merge([$formId], $cleanMemberIds);
                 $db->prepare("DELETE FROM lead_form_assignments WHERE form_id = ? AND member_id NOT IN ($placeholders)")
                     ->execute($delParams);
+            }
+        } elseif ($isManagerAssign) {
+            // Managers only add/remove assignments among their downline (never wipe other teams).
+            if ($managerVisibleIds === []) {
+                respond(['error' => 'No team members available to assign'], 400);
+            }
+            $visPh = implode(',', array_fill(0, count($managerVisibleIds), '?'));
+            if (empty($cleanMemberIds)) {
+                $db->prepare("DELETE FROM lead_form_assignments WHERE form_id = ? AND member_id IN ($visPh)")
+                    ->execute(array_merge([$formId], $managerVisibleIds));
+            } else {
+                $keepPh = implode(',', array_fill(0, count($cleanMemberIds), '?'));
+                $delParams = array_merge([$formId], $managerVisibleIds, $cleanMemberIds);
+                $db->prepare("
+                    DELETE FROM lead_form_assignments
+                    WHERE form_id = ? AND member_id IN ($visPh) AND member_id NOT IN ($keepPh)
+                ")->execute($delParams);
             }
         } else {
             // Tenant admin: only touch assignments for members in their own org.
@@ -595,7 +699,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'generate_api_key') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing']);
         $formId = trim((string) ($input['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $row = formsGetScopedForm($db, $formId, $tokenData);
@@ -660,7 +764,7 @@ if ($method === 'POST') {
 }
 
 if ($method === 'PUT') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'id required'], 400);
     $input = getInput();
@@ -737,7 +841,7 @@ if ($method === 'PUT') {
 if ($method === 'DELETE') {
     $action = $_GET['action'] ?? '';
     if ($action === 'revoke_api_key') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'sales_marketing']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing']);
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $row = formsGetScopedForm($db, $formId, $tokenData);

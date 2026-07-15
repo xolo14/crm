@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import { formatCallDuration } from "@/lib/callDuration";
 import { useAddCallLog, useUpdateCallLog } from "@/hooks/useCallLogs";
 import { useToast } from "@/hooks/use-toast";
-import { resumePublicHref } from "@/lib/resumeHref";
+import { openProtectedUpload } from "@/lib/resumeHref";
 import type { CallLog, CreateCallLogInput } from "@/types/callLog";
 
 /** Mirrors CRM lead statuses (`leads.status`). Labels aligned with Leads UI; enroll maps to DB `enrolled`. */
@@ -220,7 +220,7 @@ export default function LogCallDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         ref={(node) => setDialogContentEl(node)}
-        className="max-w-lg max-h-[90vh] flex flex-col gap-0 overflow-hidden p-6"
+        className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 overflow-hidden p-6"
       >
         <DialogHeader className="shrink-0 space-y-1.5 pb-4">
           <DialogTitle>{editLog ? "Edit Call" : "Log Call"}</DialogTitle>
@@ -362,14 +362,15 @@ export default function LogCallDialog({
               {editLog?.attachment_path ? (
                 <p className="text-xs mt-2">
                   Current file:{" "}
-                  <a
-                    href={resumePublicHref(editLog.attachment_path)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-teal-600 hover:underline"
+                  <button
+                    type="button"
+                    className="text-teal-600 hover:underline bg-transparent border-0 p-0 cursor-pointer"
+                    onClick={() => {
+                      void openProtectedUpload(editLog.attachment_path).catch(() => {});
+                    }}
                   >
                     Open
-                  </a>
+                  </button>
                 </p>
               ) : null}
             </div>

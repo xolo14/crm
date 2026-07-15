@@ -13,9 +13,8 @@ export default function Dashboard() {
   // Super admin dashboard is always platform overview
   if (role === 'super_admin') return <SuperAdminDashboard />;
 
-  // Marketing users see their portal; sales_marketing uses the sales rep dashboard (limited nav)
+  // Marketing users see their portal (includes former sales_marketing capabilities).
   if (role === 'marketing') return <MarketingPortalDashboard />;
-  if (role === 'sales_marketing') return <SalesRepDashboard />;
 
   // Industry-specific dashboards for admin/super_admin
   if (role === 'admin' || role === 'org') {

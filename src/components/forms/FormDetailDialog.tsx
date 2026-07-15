@@ -8,10 +8,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Copy, Download, ExternalLink, Loader2, Pencil, ChevronDown, ChevronRight } from "lucide-react";
-import { resumePublicHref } from "@/lib/resumeHref";
+import { Copy, Download, ExternalLink, Loader2, Pencil, ChevronDown, ChevronRight, Mail, MessageSquare } from "lucide-react";
+import { openProtectedUpload, resumeStoragePath } from "@/lib/resumeHref";
+import { Switch } from "@/components/ui/switch";
+import { FormCampaignSendDialog } from "@/components/forms/FormCampaignSendDialog";
+import { canManageFormCampaigns, parseFormCampaign, type FormCampaignConfig } from "@/components/forms/formCampaignTypes";
+import { useAuth } from "@/hooks/useAuth";
+import * as perms from "@/lib/permissions";
 
 type LeadDestination = "form_leads" | "hr_leads";
 
@@ -31,6 +37,7 @@ export type FormDetailLeadForm = {
   is_active?: number | boolean;
   org_name?: string | null;
   created_at?: string;
+  created_by?: string | null;
   submission_count?: number;
   meta_json?: Record<string, unknown>;
 };
@@ -56,6 +63,7 @@ type Props = {
   assignments?: FormAssignment[];
   publicLink?: string;
   canEdit?: boolean;
+  canManageCampaigns?: boolean;
   onEdit?: () => void;
   onCopyLink?: (url: string, label: string) => void;
 };
@@ -94,7 +102,7 @@ function exportSubmissionsCsv(
           row.email || "",
           row.status || "",
           row.created_at || "",
-          row.resume_path ? resumePublicHref(row.resume_path) : "",
+          row.resume_path ? resumeStoragePath(row.resume_path) || row.resume_path : "",
         ]
           .map(escape)
           .join(","),
@@ -130,10 +138,13 @@ export function FormDetailDialog({
   assignments = [],
   publicLink = "",
   canEdit = false,
+  canManageCampaigns = false,
   onEdit,
   onCopyLink,
 }: Props) {
   const { toast } = useToast();
+  const { role } = useAuth();
+  const hasExport = perms.canExport(role);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [submissions, setSubmissions] = useState<FormSubmission[]>([]);
@@ -144,6 +155,9 @@ export function FormDetailDialog({
   const [status, setStatus] = useState("all");
   const [destination, setDestination] = useState<LeadDestination>("form_leads");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [campaignCfg, setCampaignCfg] = useState<FormCampaignConfig>(() => parseFormCampaign(form?.meta_json));
+  const [campaignChannel, setCampaignChannel] = useState<"email" | "whatsapp" | null>(null);
+  const [savingCampaign, setSavingCampaign] = useState(false);
   const limit = 25;
 
   const meta = useMemo(() => parseFormMetaJson(form?.meta_json), [form?.meta_json]);
@@ -166,6 +180,10 @@ export function FormDetailDialog({
       setLoading(false);
     }
   }, [form?.id, page, limit, search, status, toast]);
+
+  useEffect(() => {
+    setCampaignCfg(parseFormCampaign(form?.meta_json));
+  }, [form?.id, form?.meta_json]);
 
   useEffect(() => {
     if (!open || !form?.id) return;
@@ -214,13 +232,31 @@ export function FormDetailDialog({
     }
   }
 
+  async function patchCampaign(patch: Partial<FormCampaignConfig>) {
+    if (!form?.id) return;
+    const previous = campaignCfg;
+    const next = { ...previous, ...patch };
+    setCampaignCfg(next);
+    setSavingCampaign(true);
+    try {
+      await api.forms.saveCampaignSettings({ form_id: form.id, campaign: next });
+      toast({ title: "Campaign settings saved" });
+    } catch (error: unknown) {
+      setCampaignCfg(previous);
+      const message = error instanceof Error ? error.message : "Try again.";
+      toast({ variant: "destructive", title: "Save failed", description: message });
+    } finally {
+      setSavingCampaign(false);
+    }
+  }
+
   if (!form) return null;
 
   const isActive = form.is_active === true || form.is_active === 1;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[calc(100vw-1rem)] max-w-4xl max-h-[min(90vh,100dvh)] overflow-y-auto p-4 sm:p-6">
+      <DialogContent className="w-[calc(100vw-1rem)] max-w-4xl max-h-[min(90dvh,100%)] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
           <DialogTitle className="flex flex-wrap items-center gap-2 pr-6">
             {form.name}
@@ -297,6 +333,18 @@ export function FormDetailDialog({
               Edit form
             </Button>
           ) : null}
+          {canManageCampaigns ? (
+            <>
+              <Button variant="outline" size="sm" onClick={() => setCampaignChannel("email")}>
+                <Mail className="h-3.5 w-3.5 mr-1" />
+                Email Campaign
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setCampaignChannel("whatsapp")}>
+                <MessageSquare className="h-3.5 w-3.5 mr-1 text-emerald-600" />
+                WhatsApp Campaign
+              </Button>
+            </>
+          ) : null}
           <Button variant="outline" size="sm" asChild>
             <Link to={leadDest === "hr_leads" ? "/leads/hr-leads" : "/leads/form-leads"}>
               Open {leadDest === "hr_leads" ? "HR Leads" : "Form Leads"}
@@ -304,13 +352,50 @@ export function FormDetailDialog({
           </Button>
         </div>
 
+        {canManageCampaigns ? (
+          <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+            <p className="text-sm font-medium">Auto-send for new submissions</p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3 flex-1">
+                <Label htmlFor="auto-email" className="text-sm font-normal">
+                  Auto send email campaign
+                </Label>
+                <Switch
+                  id="auto-email"
+                  checked={Boolean(campaignCfg.auto_send_email)}
+                  disabled={savingCampaign || !campaignCfg.email_template_id}
+                  onCheckedChange={(v) => void patchCampaign({ auto_send_email: v })}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3 flex-1">
+                <Label htmlFor="auto-wa" className="text-sm font-normal">
+                  Auto send WhatsApp campaign
+                </Label>
+                <Switch
+                  id="auto-wa"
+                  checked={Boolean(campaignCfg.auto_send_whatsapp)}
+                  disabled={savingCampaign || !campaignCfg.whatsapp_template_id}
+                  onCheckedChange={(v) => void patchCampaign({ auto_send_whatsapp: v })}
+                />
+              </div>
+            </div>
+            {!campaignCfg.email_template_id && !campaignCfg.whatsapp_template_id ? (
+              <p className="text-xs text-muted-foreground">
+                Assign templates on publish to enable auto-send toggles.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
         <div className="border-t pt-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="font-semibold text-sm">Submissions ({total})</h3>
-            <Button variant="outline" size="sm" disabled={exporting || total === 0} onClick={() => void handleExportCsv()}>
-              {exporting ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
-              Export CSV
-            </Button>
+            {hasExport ? (
+              <Button variant="outline" size="sm" disabled={exporting || total === 0} onClick={() => void handleExportCsv()}>
+                {exporting ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Download className="h-3.5 w-3.5 mr-1" />}
+                Export CSV
+              </Button>
+            ) : null}
           </div>
 
           <div className="flex flex-col sm:flex-row flex-wrap gap-2">
@@ -413,10 +498,15 @@ export function FormDetailDialog({
                               <FormSubmissionDetails notes={row.notes} resumePath={row.resume_path} />
                               {row.resume_path ? (
                                 <div className="mt-2">
-                                  <Button variant="link" className="h-auto p-0 text-sm" asChild>
-                                    <a href={resumePublicHref(row.resume_path)} target="_blank" rel="noopener noreferrer">
+                                  <Button
+                                    variant="link"
+                                    className="h-auto p-0 text-sm"
+                                    type="button"
+                                    onClick={() => {
+                                      void openProtectedUpload(row.resume_path).catch(() => {});
+                                    }}
+                                  >
                                       View resume / attachment
-                                    </a>
                                   </Button>
                                 </div>
                               ) : null}
@@ -448,6 +538,18 @@ export function FormDetailDialog({
           ) : null}
         </div>
       </DialogContent>
+
+      {form?.id && campaignChannel ? (
+        <FormCampaignSendDialog
+          open={Boolean(campaignChannel)}
+          onOpenChange={(o) => {
+            if (!o) setCampaignChannel(null);
+          }}
+          formId={form.id}
+          channel={campaignChannel}
+          submissionCount={total || form.submission_count || 0}
+        />
+      ) : null}
     </Dialog>
   );
 }

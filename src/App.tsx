@@ -11,7 +11,7 @@ import LoginPortal from "@/pages/LoginPortal";
 import Auth from "@/pages/Auth";
 import { getPortalLoginRedirect, AUTH_PORTAL } from "@/lib/portalAuth";
 import HRLayout from "@/layouts/HRLayout";
-import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords } from "@/lib/orgAccess";
+import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from "@/lib/orgAccess";
 import { isPathAllowedByOrgFeatures, FEATURE_FORM_MANAGEMENT } from "@/lib/orgFeatures";
 import {
   Apply,
@@ -68,6 +68,8 @@ import {
   Trash,
   WhatsAppAnalytics,
   WhatsAppPortal,
+  PrivacyPolicyPage,
+  TermsOfServicePage,
 } from "@/routes/lazyPages";
 
 const queryClient = new QueryClient();
@@ -81,7 +83,7 @@ function normalizePlatformRole(user: { role?: string } | null): string | null {
 
 function AuthLoading() {
   return (
-    <div className="flex min-h-screen items-center justify-center">
+    <div className="flex min-h-dvh items-center justify-center">
       <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
     </div>
   );
@@ -123,7 +125,14 @@ function RootHome() {
 function OfferLettersGate({ children }: { children: ReactNode }) {
   const { user, organization } = useAuth();
   const role = normalizePlatformRole(user);
-  if (!canAccessOfferLetters(role, organization)) return <Navigate to="/" replace />;
+  if (!canAccessOfferLetters(role, organization, user?.page_access)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+function PaymentsPageGate({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const role = normalizePlatformRole(user);
+  if (!canAccessPaymentsPage(role, user?.page_access)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
@@ -182,16 +191,10 @@ function SuperAdminGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-function AdminOrSuperAdminGate({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
-  if (user?.role !== "super_admin" && user?.role !== "admin") return <Navigate to="/" replace />;
-  return <>{children}</>;
-}
-
 function FormManagementGate({ children }: { children: ReactNode }) {
   const { user, organization, hasFeature } = useAuth();
   const role = normalizePlatformRole(user);
-  if (!role || !["super_admin", "admin", "org", "marketing", "sales_marketing"].includes(role)) {
+  if (!role || !["super_admin", "admin", "org", "marketing", "manager"].includes(role)) {
     return <Navigate to="/" replace />;
   }
   if (!hasFeature(FEATURE_FORM_MANAGEMENT)) {
@@ -225,7 +228,23 @@ function RoleGate({ allow, children }: { allow: string[]; children: ReactNode })
 }
 
 function SettingsGate({ children }: { children: ReactNode }) {
-  return <RoleGate allow={["super_admin", "admin", "org"]}>{children}</RoleGate>;
+  return (
+    <RoleGate
+      allow={[
+        "super_admin",
+        "admin",
+        "org",
+        "manager",
+        "sales_representative",
+        "hr",
+        "marketing",
+        "trainer",
+        "finance",
+      ]}
+    >
+      {children}
+    </RoleGate>
+  );
 }
 
 function TrashGate({ children }: { children: ReactNode }) {
@@ -233,7 +252,7 @@ function TrashGate({ children }: { children: ReactNode }) {
 }
 
 function MarketingGate({ children }: { children: ReactNode }) {
-  return <RoleGate allow={["super_admin", "admin", "manager", "marketing", "sales_marketing", "org"]}>{children}</RoleGate>;
+  return <RoleGate allow={["super_admin", "admin", "manager", "marketing", "org"]}>{children}</RoleGate>;
 }
 
 function HRProtectedRoute({ children }: { children: ReactNode }) {
@@ -257,6 +276,8 @@ const App = () => (
           <Suspense fallback={<AuthLoading />}>
           <Routes>
             <Route path="/apply" element={<Apply />} />
+            <Route path="/privacy" element={<PrivacyPolicyPage />} />
+            <Route path="/terms" element={<TermsOfServicePage />} />
             <Route path="/login" element={<LoginPortal />} />
             <Route path="/super_admin" element={<Auth />} />
             <Route path="/admin" element={<Navigate to="/login" replace />} />
@@ -274,7 +295,7 @@ const App = () => (
               <Route path="/superadmin" element={<SuperAdminGate><SuperAdminPanel /></SuperAdminGate>} />
               <Route path="/super-admin" element={<Navigate to="/superadmin" replace />} />
               <Route path="/marketing-admin" element={<MarketingGate><MarketingDashboard /></MarketingGate>} />
-              <Route path="/marketing-user" element={<MarketingGate><MarketingPortalDashboard /></MarketingGate>} />
+              <Route path="/marketing-user" element={<Navigate to="/marketing/dashboard" replace />} />
               <Route path="/marketing-email" element={<MarketingGate><MarketingPortal /></MarketingGate>} />
               <Route path="/marketing-whatsapp" element={<MarketingGate><WhatsAppPortal /></MarketingGate>} />
               <Route path="/organizations" element={<SuperAdminGate><SuperAdminPanel /></SuperAdminGate>} />
@@ -310,7 +331,7 @@ const App = () => (
               <Route path="/students" element={<Students />} />
               <Route path="/courses" element={<Courses />} />
               <Route path="/batches" element={<Batches />} />
-              <Route path="/payments" element={<PaymentLinksPage />} />
+              <Route path="/payments" element={<PaymentsPageGate><PaymentLinksPage /></PaymentsPageGate>} />
               <Route path="/payments/records" element={<PaymentRecordsGate><PaymentLinksRecordsPage /></PaymentRecordsGate>} />
               <Route path="/payment-links" element={<Navigate to="/payments" replace />} />
               <Route path="/payment-links/records" element={<Navigate to="/payments/records" replace />} />

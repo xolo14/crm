@@ -15,13 +15,27 @@ function ensurePasswordResetsTable(PDO $db): void {
         $db->exec("CREATE TABLE IF NOT EXISTS password_resets (
             id CHAR(36) NOT NULL,
             user_id CHAR(36) NOT NULL,
-            token VARCHAR(128) NOT NULL,
-            expires_at TIMESTAMP NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            token VARCHAR(255) NOT NULL,
+            expires_at DATETIME NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             UNIQUE (token)
         )");
-        $db->exec('CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets (user_id)');
+        try {
+            $db->exec('CREATE INDEX idx_password_resets_user ON password_resets (user_id)');
+        } catch (Exception $e) {
+            // Index may already exist
+        }
+        // Older installs may lack created_at or use a short token column
+        try {
+            $cols = $db->query('SHOW COLUMNS FROM password_resets')->fetchAll(PDO::FETCH_COLUMN);
+            $colSet = array_map('strtolower', array_map('strval', $cols ?: []));
+            if (!in_array('created_at', $colSet, true)) {
+                $db->exec('ALTER TABLE password_resets ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
+            }
+            $db->exec('ALTER TABLE password_resets MODIFY token VARCHAR(255) NOT NULL');
+        } catch (Exception $e) {
+        }
     } catch (Exception $e) {
     }
     $ok = true;
@@ -104,7 +118,7 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
     }
 
     $normalizedRole = normalizeRoleForPortal($user['role'] ?? '');
-    if ($normalizedRole !== 'marketing' && $normalizedRole !== 'sales_marketing' && $normalizedRole !== 'super_admin') {
+    if ($normalizedRole !== 'marketing' && $normalizedRole !== 'super_admin') {
         $mstmt = $db->prepare("SELECT id FROM marketing_members WHERE user_id = ? OR email = ? LIMIT 1");
         $mstmt->execute([$user['id'], $user['email']]);
         if ($mstmt->fetch()) {
@@ -112,6 +126,19 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
         }
     }
     $user['role'] = $normalizedRole;
+
+    // Attach page access toggles (payments / offer letters).
+    ensureUsersPageAccessColumn($db);
+    if (!array_key_exists('page_access_json', $user)) {
+        try {
+            $pa = $db->prepare('SELECT page_access_json FROM users WHERE id = ? LIMIT 1');
+            $pa->execute([$user['id']]);
+            $user['page_access_json'] = $pa->fetchColumn() ?: null;
+        } catch (Throwable $e) {
+            $user['page_access_json'] = null;
+        }
+    }
+    userAttachPageAccess($user);
 
     // Super admin master panel: no org in JWT until switch_org selects a tenant.
     $tokenOrgId = $user['org_id'] ?? null;
@@ -166,14 +193,16 @@ if ($method === 'POST' && isset($_GET['action'])) {
         $otpHash = password_hash($otp, PASSWORD_DEFAULT);
         $db->prepare("DELETE FROM password_resets WHERE user_id = ?")->execute([$u['id']]);
         $rid = generateUUID();
-        $exp = date('Y-m-d H:i:s', time() + 600);
+        // Store expiry in UTC so PHP/MySQL timezone skew does not expire codes immediately
+        $exp = gmdate('Y-m-d H:i:s', time() + 600);
         $db->prepare("INSERT INTO password_resets (id, user_id, token, expires_at) VALUES (?, ?, ?, ?)")->execute([$rid, $u['id'], $otpHash, $exp]);
         $mail = syncpediaSendPasswordResetOtpEmail($email, (string) ($u['full_name'] ?? ''), $otp);
         if (!($mail['email_sent'] ?? false)) {
             $db->prepare("DELETE FROM password_resets WHERE id = ?")->execute([$rid]);
+            $detail = (string) ($mail['email_error'] ?? 'Email send failed');
             respond([
-                'error' => 'Could not send the reset code email. Check SMTP settings in api/config.php or try again later.',
-                'email_error' => $mail['email_error'] ?? 'Email send failed',
+                'error' => 'Could not send the reset code email. ' . $detail,
+                'email_error' => $detail,
             ], 503);
         }
         respond(['message' => $genericMsg]);
@@ -193,7 +222,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
             INNER JOIN users u ON u.id = pr.user_id
             WHERE LOWER(TRIM(u.email)) = LOWER(TRIM(?))
               AND u.is_active = 1
-              AND pr.expires_at > NOW()
+              AND pr.expires_at > UTC_TIMESTAMP()
             ORDER BY pr.created_at DESC
             LIMIT 1
         ");
@@ -203,7 +232,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
             respond(['error' => 'Invalid or expired code. Request a new one from Forgot password.'], 400);
         }
         $resetToken = bin2hex(random_bytes(32));
-        $exp = date('Y-m-d H:i:s', time() + 900);
+        $exp = gmdate('Y-m-d H:i:s', time() + 900);
         $db->prepare("UPDATE password_resets SET token = ?, expires_at = ? WHERE id = ?")->execute([$resetToken, $exp, $row['reset_id']]);
         respond([
             'message' => 'Code verified. Choose a new password.',
@@ -220,7 +249,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
             respond(['error' => "Valid verification and new password ({$minLen}+ characters) are required"], 400);
         }
         ensurePasswordResetsTable($db);
-        $stmt = $db->prepare("SELECT user_id FROM password_resets WHERE token = ? AND expires_at > NOW()");
+        $stmt = $db->prepare("SELECT user_id FROM password_resets WHERE token = ? AND expires_at > UTC_TIMESTAMP()");
         $stmt->execute([$token]);
         $row = $stmt->fetch();
         if (!$row) {
@@ -228,6 +257,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
         }
         $hash = password_hash($newPass, PASSWORD_DEFAULT);
         $db->prepare("UPDATE users SET password_hash = ? WHERE id = ?")->execute([$hash, $row['user_id']]);
+        syncpediaStoreUserLoginPassword($db, (string) $row['user_id'], null);
         $db->prepare("DELETE FROM password_resets WHERE token = ?")->execute([$token]);
         respond(['message' => 'Your password has been changed successfully. You can sign in now.']);
     }
@@ -256,6 +286,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
             respond(['error' => 'Invalid email or password'], 401);
         }
 
+        syncpediaAuditLog($db, ['user_id' => $user['id'], 'org_id' => $user['org_id'] ?? null], 'logged_in', 'auth', (string) $user['id'], 'User logged in');
         respond(authLoginSuccessResponse($db, $user));
     }
 
@@ -369,6 +400,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
         }
         $newHash = password_hash($newPass, PASSWORD_DEFAULT);
         $db->prepare('UPDATE users SET password_hash = ? WHERE id = ?')->execute([$newHash, $tokenData['user_id']]);
+        syncpediaStoreUserLoginPassword($db, (string) $tokenData['user_id'], null);
         respond(['message' => 'Password updated successfully']);
     }
 
@@ -381,7 +413,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
 
         // Keep role consistent with login behavior for portal routing
         $normalizedRole = normalizeRoleForPortal($user['role'] ?? '');
-        if ($normalizedRole !== 'marketing' && $normalizedRole !== 'sales_marketing' && $normalizedRole !== 'super_admin') {
+        if ($normalizedRole !== 'marketing' && $normalizedRole !== 'super_admin') {
             $mstmt = $db->prepare("SELECT id FROM marketing_members WHERE user_id = ? OR email = ? LIMIT 1");
             $mstmt->execute([$user['id'], $user['email']]);
             if ($mstmt->fetch()) {
@@ -390,6 +422,15 @@ if ($method === 'POST' && isset($_GET['action'])) {
         }
         $user['role'] = $normalizedRole;
         $user['referral_code'] = ensureUserSpReferralCode($db, $user['id']);
+        ensureUsersPageAccessColumn($db);
+        try {
+            $pa = $db->prepare('SELECT page_access_json FROM users WHERE id = ? LIMIT 1');
+            $pa->execute([$user['id']]);
+            $user['page_access_json'] = $pa->fetchColumn() ?: null;
+        } catch (Throwable $e) {
+            $user['page_access_json'] = null;
+        }
+        userAttachPageAccess($user);
 
         // JWT org context: super_admin uses switch_org token only; others fall back to users.org_id
         $effectiveOrgId = trim((string) ($tokenData['org_id'] ?? ''));

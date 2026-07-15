@@ -7,10 +7,20 @@
   RewriteEngine On
   RewriteBase /
 
-  # Block sensitive files from direct download
-  <FilesMatch "^(\.env|\.git|database\.sql|config\.example\.php)$">
-    Require all denied
+  # Block sensitive files from direct download (root + common names)
+  <FilesMatch "^(\.env|\.git|database\.sql|database\.mysql\.sql|config\.php|config\.example\.php)$">
+    <IfModule mod_authz_core.c>
+      Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+      Order deny,allow
+      Deny from all
+    </IfModule>
   </FilesMatch>
+
+  # Scanner / legacy paths — return 404 instead of SPA index.html (stops dirb false positives)
+  RewriteRule ^~ - [R=404,L]
+  RewriteRule ^(cgi-bin|scripts|administrator|wp-admin|wp-content|wp-includes|phpmyadmin|mysql|\.git|\.env|\.svn|\.hg)(/|$) - [R=404,L,NC]
 
   # Wrong-path fallback (when frontend called /payment-links.php without /api)
   RewriteRule ^payment-links\.php$ api/payment-links.php [L,QSA,NC]
@@ -36,6 +46,9 @@
   RewriteCond %{REQUEST_URI} \.(js|mjs|css|woff2?|ttf|eot|ico|png|jpg|jpeg|webp|svg|gif|map)$ [NC]
   RewriteRule ^ - [R=404,L]
 
+  # WhatsApp Meta webhook (pretty URL for App Dashboard callback)
+  RewriteRule ^api/whatsapp/webhook/?$ api/whatsapp/webhook.php [L,QSA]
+
   # Pretty URLs for payment links (optional; .php URLs also work)
   RewriteRule ^api/payment-links/([^/]+)/cancel/?$ api/payment-links.php?action=cancel&id=$1 [L,QSA]
   RewriteRule ^api/payment-links/([^/]+)/remind/?$ api/payment-links.php?action=remind&id=$1 [L,QSA]
@@ -48,7 +61,7 @@
   RewriteRule ^api/ - [L]
 
   # SPA login portals (explicit for shared hosting)
-  RewriteRule ^(sales_rep_portal|super_admin|admin|manager|marketing|hr-login|auth)/?$ index.html [L]
+  RewriteRule ^(sales_rep_portal|super_admin|admin|manager|marketing|hr-login|auth|privacy|terms)/?$ index.html [L]
 
   # React SPA — all other client routes
   RewriteRule ^ index.html [L]
@@ -59,8 +72,14 @@
   AddOutputFilterByType DEFLATE text/html text/plain text/css text/xml application/javascript application/json application/xml image/svg+xml
 </IfModule>
 
-# Cache static assets (LCP / repeat visits)
+# Security + cache headers
 <IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
+
   <FilesMatch "\.(js|css|woff2?|ttf|eot|ico|png|jpg|jpeg|webp|svg|gif)$">
     Header set Cache-Control "public, max-age=31536000, immutable"
   </FilesMatch>

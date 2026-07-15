@@ -6,14 +6,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Search, Plus, Shield, Users, UserCheck, ChevronDown, ChevronRight, MoreHorizontal, Phone, Mail, Edit, Trash2, ClipboardList, Loader2, Send } from 'lucide-react';
+import { Search, Plus, Shield, Users, UserCheck, ChevronDown, ChevronRight, MoreHorizontal, Phone, Mail, Edit, Trash2, ClipboardList, Loader2, Send, Copy, RefreshCw } from 'lucide-react';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useToast } from '@/hooks/use-toast';
@@ -45,6 +47,10 @@ type TeamMember = {
   org_name?: string | null;
   org_admin_name?: string | null;
   org_admin_email?: string | null;
+  /** Last admin-set password removed — use one-time reveal on create/reset only. */
+  login_password?: string | null;
+  /** Per-member page toggles (payments for sales rep, offer letters for HR). */
+  page_access?: { payments?: boolean; offer_letters?: boolean } | null;
 };
 
 function normalizeRole(roleKey: string) {
@@ -76,7 +82,6 @@ function getRoleBadgeColor(role: string): string {
     admin: 'bg-purple-500/10 text-purple-600 border-purple-200',
     org: 'bg-violet-500/10 text-violet-700 border-violet-200',
     manager: 'bg-blue-500/10 text-blue-600 border-blue-200',
-    sales_marketing: 'bg-fuchsia-500/10 text-fuchsia-600 border-fuchsia-200',
     marketing: 'bg-fuchsia-500/10 text-fuchsia-600 border-fuchsia-200',
     hr: 'bg-sky-500/10 text-sky-700 border-sky-200',
     sales_representative: 'bg-teal-500/10 text-teal-600 border-teal-200',
@@ -119,7 +124,7 @@ export default function Team() {
   const isTenantAdmin = authNorm === 'admin';
   const isManagerViewer = authNorm === 'manager';
   /** Matches backend team GET scope for reps / HR / marketing — defence-in-depth vs stale merges */
-  const orgScopedViewer = ['sales_representative', 'hr', 'marketing', 'sales_marketing'].includes(authNorm);
+  const orgScopedViewer = ['sales_representative', 'hr', 'marketing'].includes(authNorm);
   const callerOrgIdTrim = String(user?.org_id || '').trim();
   const isMobile = useIsMobile();
   const { toast } = useToast();
@@ -136,6 +141,7 @@ export default function Team() {
   const [sendWelcomeLoading, setSendWelcomeLoading] = useState(false);
   const [createdMemberId, setCreatedMemberId] = useState<string | null>(null);
   const [editingMember, setEditingMember] = useState<TeamMember | null>(null);
+  const [editPassword, setEditPassword] = useState('');
   const [editOpen, setEditOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
@@ -147,7 +153,6 @@ export default function Team() {
     org: true,
     manager: true,
     marketing: true,
-    sales_marketing: true,
     hr: true,
     sales_representative: true,
   });
@@ -159,6 +164,7 @@ export default function Team() {
     role: 'sales_representative',
     password: generateTempPassword(),
     reports_to_id: '' as string,
+    page_access: { payments: false, offer_letters: false },
   });
   const currentLevel = getRoleLevel(currentRole);
   /** L4/L3: full roster CRUD. L2: add L1 members assigned to self only. */
@@ -166,12 +172,16 @@ export default function Team() {
   const canAddMembers = canManageMembers || isManagerViewer;
   /** Assign L1 members to a manager (reports_to) — Super Admin / Admin only. */
   const canAssignTeam = canManageMembers;
+  /** Admin + Manager can edit page-access toggles (managers: their L1 only). */
+  const canEditPageAccess = canManageMembers || isManagerViewer;
   const isReadOnly = !canAddMembers;
-  const assignableRoles = canManageMembers
+  const assignableRoles = (canManageMembers
     ? TEAM_ROLE_GROUPS.filter((r) => r.level < currentLevel)
     : isManagerViewer
       ? TEAM_ROLE_GROUPS.filter((r) => isL1OperationalRole(r.key))
-      : [];
+      : []
+  // Org admins are created only at org provision time / Organizations credentials — not via Add Team Member
+  ).filter((r) => r.key !== 'admin' && r.key !== 'org');
 
   useEffect(() => {
     if (!isSuperAdmin) return;
@@ -238,14 +248,15 @@ export default function Team() {
             }) as TeamMember[])
           : [];
 
-      // Merge marketing stubs + CRM users by email — users row last so JOINed org_name / owner survives.
-      const mergedByEmail = new Map<string, TeamMember>();
+      // Merge marketing stubs + CRM users — prefer users rows (org_name). Key by email, else id.
+      const mergedByKey = new Map<string, TeamMember>();
       [...marketingRows, ...teamRows].forEach((member) => {
-        const key = String(member.email || '').trim().toLowerCase();
-        if (!key) return;
-        mergedByEmail.set(key, member);
+        const emailKey = String(member.email || '').trim().toLowerCase();
+        const key = emailKey || `id:${String(member.id || '').trim()}`;
+        if (!key || key === 'id:') return;
+        mergedByKey.set(key, member);
       });
-      let merged = Array.from(mergedByEmail.values());
+      let merged = Array.from(mergedByKey.values());
       if (orgScopedViewer || isTenantAdmin || isManagerViewer) {
         merged = callerOrgIdTrim
           ? merged.filter((m) => String(m.org_id || '').trim() === callerOrgIdTrim)
@@ -282,7 +293,15 @@ export default function Team() {
   };
 
   const resetNewMemberForm = () => {
-    setNewMember({ full_name: '', email: '', phone: '', role: 'sales_representative', password: generateTempPassword(), reports_to_id: '' });
+    setNewMember({
+      full_name: '',
+      email: '',
+      phone: '',
+      role: 'sales_representative',
+      password: generateTempPassword(),
+      reports_to_id: '',
+      page_access: { payments: false, offer_letters: false },
+    });
     setCreatedMemberId(null);
   };
 
@@ -302,6 +321,10 @@ export default function Team() {
       role: newMember.role,
       password: newMember.password,
       send_welcome_email: false,
+      page_access: {
+        payments: normalizeRole(newMember.role) === 'sales_representative' ? Boolean(newMember.page_access.payments) : false,
+        offer_letters: normalizeRole(newMember.role) === 'hr' ? Boolean(newMember.page_access.offer_letters) : false,
+      },
     };
     if (isL1OperationalRole(newMember.role)) {
       if (isManagerViewer && user?.id) {
@@ -385,24 +408,94 @@ export default function Team() {
     closeAddMemberFlow();
   };
 
+  const openEditMember = (member: TeamMember) => {
+    setEditingMember({
+      ...member,
+      page_access: {
+        payments: Boolean(member.page_access?.payments),
+        offer_letters: Boolean(member.page_access?.offer_letters),
+      },
+    });
+    setEditPassword('');
+    setEditOpen(true);
+  };
+
   const handleEdit = async () => {
     if (!editingMember) return;
+    if (!editingMember.full_name?.trim() || !editingMember.email?.trim()) {
+      toast({ variant: 'destructive', title: 'Name and email are required' });
+      return;
+    }
     try {
-      const payload: Record<string, unknown> = {
-        full_name: editingMember.full_name,
-        phone: editingMember.phone,
-        role: editingMember.role,
-      };
-      if (canAssignTeam && isL1OperationalRole(editingMember.role)) {
-        payload.reports_to_id = editingMember.reports_to_id || null;
+      if (isManagerViewer && !canManageMembers) {
+        // Managers may only update page-access toggles
+        await api.team.update(editingMember.id, {
+          page_access: {
+            payments: normalizeRole(editingMember.role) === 'sales_representative' ? Boolean(editingMember.page_access?.payments) : false,
+            offer_letters: normalizeRole(editingMember.role) === 'hr' ? Boolean(editingMember.page_access?.offer_letters) : false,
+          },
+        });
+      } else {
+        const payload: Record<string, unknown> = {
+          full_name: editingMember.full_name.trim(),
+          email: editingMember.email.trim(),
+          phone: editingMember.phone || '',
+          role: editingMember.role,
+          page_access: {
+            payments: normalizeRole(editingMember.role) === 'sales_representative' ? Boolean(editingMember.page_access?.payments) : false,
+            offer_letters: normalizeRole(editingMember.role) === 'hr' ? Boolean(editingMember.page_access?.offer_letters) : false,
+          },
+        };
+        if (canAssignTeam && isL1OperationalRole(editingMember.role)) {
+          payload.reports_to_id = editingMember.reports_to_id || null;
+        }
+        if (editPassword.trim()) {
+          payload.password = editPassword.trim();
+        }
+        await api.team.update(editingMember.id, payload);
       }
-      await api.team.update(editingMember.id, payload);
       toast({ title: 'Member updated' });
       setEditOpen(false);
       setEditingMember(null);
+      setEditPassword('');
       fetchTeam();
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
+    }
+  };
+
+  const managerLabelForMember = (member: Pick<TeamMember, 'role' | 'reports_to_id' | 'reports_to_name'> & { password?: string }) => {
+    if (!isL1OperationalRole(member.role)) return '—';
+    return member.reports_to_name || 'Unassigned';
+  };
+
+  const formatMemberShareText = (opts: {
+    full_name: string;
+    email: string;
+    phone?: string | null;
+    password?: string | null;
+    role: string;
+    manager?: string | null;
+  }) => {
+    const lines = [
+      `Full name: ${opts.full_name.trim() || '—'}`,
+      `Email: ${opts.email.trim() || '—'}`,
+      `Phone: ${(opts.phone || '').trim() || '—'}`,
+      `Password: ${(opts.password || '').trim() || '—'}`,
+      `Role: ${getRoleInfo(opts.role).label}`,
+    ];
+    if (isL1OperationalRole(opts.role)) {
+      lines.push(`Manager: ${(opts.manager || '').trim() || 'Unassigned'}`);
+    }
+    return lines.join('\n');
+  };
+
+  const copyShareText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({ title: 'Copied', description: 'Member details copied — ready to share.' });
+    } catch {
+      toast({ variant: 'destructive', title: 'Copy failed', description: 'Could not access clipboard.' });
     }
   };
 
@@ -428,11 +521,29 @@ export default function Team() {
   };
 
   const handleAssignTask = async () => {
+    if (!taskForm.title.trim()) {
+      toast({ variant: 'destructive', title: 'Title is required' });
+      return;
+    }
+    if (!taskAssignTo?.id) {
+      toast({ variant: 'destructive', title: 'Select a team member to assign' });
+      return;
+    }
     try {
-      await api.tasks.create({ title: taskForm.title, description: taskForm.description || null, due_date: taskForm.due_date || null, priority: taskForm.priority, assigned_to: taskAssignTo?.id || null, created_by: user?.id });
-      toast({ title: 'Task assigned', description: `Task assigned to ${taskAssignTo?.full_name}` });
-      setTaskDialogOpen(false); setTaskAssignTo(null); setTaskForm({ title: '', description: '', due_date: '', priority: 'medium' });
-    } catch (err: any) { toast({ variant: 'destructive', title: err.message }); }
+      await api.tasks.create({
+        title: taskForm.title.trim(),
+        description: taskForm.description || null,
+        due_date: taskForm.due_date || null,
+        priority: taskForm.priority,
+        assigned_to: taskAssignTo.id,
+      });
+      toast({ title: 'Task assigned', description: `${taskAssignTo.full_name} will see this under Tasks and get a notification.` });
+      setTaskDialogOpen(false);
+      setTaskAssignTo(null);
+      setTaskForm({ title: '', description: '', due_date: '', priority: 'medium' });
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: err.message });
+    }
   };
 
   const stats = { total: visibleTeam.length, active: visibleTeam.filter(m => m.is_active).length };
@@ -470,7 +581,7 @@ export default function Team() {
     }
     return (
       <Select value={member.reports_to_id || 'none'} onValueChange={(v) => handleChangeReportsTo(member, v)}>
-        <SelectTrigger className={compact ? 'h-8 text-xs mt-1' : 'h-8 text-xs'}>
+        <SelectTrigger className={compact ? 'h-8 text-xs mt-1 w-full max-w-[180px]' : 'h-8 text-xs w-full max-w-[180px]'}>
           <SelectValue placeholder="Select manager" />
         </SelectTrigger>
         <SelectContent>
@@ -516,12 +627,12 @@ export default function Team() {
           )}
           {isManagerViewer && (
             <p className="text-xs text-muted-foreground mt-1">
-              Showing members assigned to you only. New Sales Rep, HR, Marketing, and Sales Marketing members are auto-assigned to you.
+              Showing members assigned to you. You can add Sales Rep, HR, and Marketing members (auto-assigned to you). Editing and removing members is limited to Admin / Super Admin.
             </p>
           )}
           {canAssignTeam && (
             <p className="text-xs text-muted-foreground mt-1.5 max-w-xl">
-              Use the Manager column on Sales Rep, HR, Marketing, and Sales Marketing rows to assign a manager. Only Super Admin and Admin can change assignments.
+              Use Edit on a member to update credentials, role, and manager. Only Super Admin and Admin can edit or remove members.
             </p>
           )}
         </div>
@@ -566,6 +677,8 @@ export default function Team() {
           const roleInfo = getRoleInfo(roleKey);
           const isExpanded = expandedGroups[roleKey] !== false;
           const manageable = canManageMembers && canManage(currentRole || '', roleKey);
+          const canPageAccessEdit = canEditPageAccess && isL1OperationalRole(roleKey);
+          const showMemberMenu = manageable || canPageAccessEdit || (isManagerViewer && isL1OperationalRole(roleKey));
 
           const roleCollapsible = (
             <Collapsible key={roleKey} open={isExpanded} onOpenChange={() => toggleGroup(roleKey)}>
@@ -593,15 +706,25 @@ export default function Team() {
                                 <Avatar className="h-7 w-7"><AvatarFallback className="text-xs bg-primary/10 text-primary">{getInitials(member.full_name)}</AvatarFallback></Avatar>
                                 <div><p className="text-sm font-medium">{member.full_name}</p><p className="text-xs text-muted-foreground">{member.email}</p></div>
                               </div>
-                              {manageable && (
+                              {showMemberMenu && (
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-7 w-7"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                                   <DropdownMenuContent align="end">
-                                    <DropdownMenuItem onClick={() => { setEditingMember({ ...member }); setEditOpen(true); }}><Edit className="h-4 w-4 mr-2" /> Edit</DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => handleToggleStatus(member)}>{member.is_active ? 'Deactivate' : 'Activate'}</DropdownMenuItem>
-                                    <DropdownMenuItem onClick={() => { setTaskAssignTo(member); setTaskDialogOpen(true); }}><ClipboardList className="h-4 w-4 mr-2" /> Assign Task</DropdownMenuItem>
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuItem className="text-destructive" onClick={() => setDeleteConfirmId(member.id)}><Trash2 className="h-4 w-4 mr-2" /> Remove</DropdownMenuItem>
+                                    {(manageable || canPageAccessEdit) && (
+                                      <DropdownMenuItem onClick={() => openEditMember(member)}><Edit className="h-4 w-4 mr-2" /> Edit</DropdownMenuItem>
+                                    )}
+                                    {manageable && (
+                                      <DropdownMenuItem onClick={() => handleToggleStatus(member)}>{member.is_active ? 'Deactivate' : 'Activate'}</DropdownMenuItem>
+                                    )}
+                                    {(manageable || isManagerViewer) && (
+                                      <DropdownMenuItem onClick={() => { setTaskAssignTo(member); setTaskDialogOpen(true); }}><ClipboardList className="h-4 w-4 mr-2" /> Assign Task</DropdownMenuItem>
+                                    )}
+                                    {manageable && (
+                                      <>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem className="text-destructive" onClick={() => setDeleteConfirmId(member.id)}><Trash2 className="h-4 w-4 mr-2" /> Remove</DropdownMenuItem>
+                                      </>
+                                    )}
                                   </DropdownMenuContent>
                                 </DropdownMenu>
                               )}
@@ -624,12 +747,17 @@ export default function Team() {
                         ))}
                       </div>
                     ) : (
-                      <Table>
+                      <div className="overflow-x-auto">
+                      <Table className="table-fixed w-full min-w-[640px]">
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
-                            <TableHead className="pl-6 w-12">#</TableHead><TableHead>Member</TableHead><TableHead>Contact</TableHead>
-                            <TableHead>Org name</TableHead><TableHead>Manager</TableHead>
-                            <TableHead>Status</TableHead><TableHead>Joined</TableHead>{manageable && <TableHead className="w-10"></TableHead>}
+                            <TableHead className="pl-4 w-12 h-10 px-3">#</TableHead>
+                            <TableHead className={`h-10 px-3 ${isSuperAdmin ? 'w-[30%]' : 'w-[38%]'}`}>Member</TableHead>
+                            {isSuperAdmin && <TableHead className="h-10 px-3 w-[16%]">Org name</TableHead>}
+                            <TableHead className="h-10 px-3 w-[180px]">Manager</TableHead>
+                            <TableHead className="h-10 px-3 w-[88px]">Status</TableHead>
+                            <TableHead className="h-10 px-3 w-[88px]">Joined</TableHead>
+                            {showMemberMenu && <TableHead className="h-10 w-12 px-2 pr-3" />}
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -637,42 +765,69 @@ export default function Team() {
                             const orgLabel = memberOrgDisplayName(member);
                             return (
                             <TableRow key={member.id}>
-                              <TableCell className="pl-6 text-muted-foreground font-medium">{index + 1}</TableCell>
-                              <TableCell>
-                                <div className="flex items-center gap-3"><Avatar className="h-8 w-8"><AvatarFallback className="text-xs bg-primary/10 text-primary">{getInitials(member.full_name)}</AvatarFallback></Avatar>
-                                  <div><p className="text-sm font-medium">{member.full_name}</p></div>
+                              <TableCell className="pl-4 px-3 py-2.5 text-muted-foreground font-medium text-xs tabular-nums align-middle">{index + 1}</TableCell>
+                              <TableCell className="px-3 py-2.5 align-middle">
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <Avatar className="h-8 w-8 shrink-0">
+                                    <AvatarFallback className="text-xs bg-primary/10 text-primary">{getInitials(member.full_name)}</AvatarFallback>
+                                  </Avatar>
+                                  <div className="min-w-0">
+                                    <p className="text-sm font-medium truncate leading-tight">{member.full_name}</p>
+                                    <p className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-0.5">
+                                      <Mail className="h-3 w-3 shrink-0" />
+                                      <span className="truncate">{member.email}</span>
+                                    </p>
+                                    {member.phone ? (
+                                      <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
+                                        <Phone className="h-3 w-3 shrink-0" />
+                                        <span className="truncate">{member.phone}</span>
+                                      </p>
+                                    ) : null}
+                                  </div>
                                 </div>
                               </TableCell>
-                              <TableCell>
-                                <div className="space-y-0.5"><div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Mail className="h-3 w-3" />{member.email}</div>
-                                  {member.phone && <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Phone className="h-3 w-3" />{member.phone}</div>}</div>
-                              </TableCell>
-                              <TableCell className="text-xs text-muted-foreground max-w-[140px]">
-                                {orgLabel ? (
-                                  <span className="line-clamp-2" title={orgLabel}>{orgLabel}</span>
-                                ) : (
-                                  '—'
-                                )}
-                              </TableCell>
-                              <TableCell className="min-w-[160px]">
+                              {isSuperAdmin && (
+                                <TableCell className="px-3 py-2.5 text-xs text-muted-foreground align-middle">
+                                  {orgLabel ? (
+                                    <span className="line-clamp-2" title={orgLabel}>{orgLabel}</span>
+                                  ) : (
+                                    '—'
+                                  )}
+                                </TableCell>
+                              )}
+                              <TableCell className="px-3 py-2.5 align-middle">
                                 {isL1OperationalRole(member.role)
                                   ? renderManagerAssignSelect(member)
                                   : (
                                     <span className="text-sm text-muted-foreground">{member.reports_to_name || '—'}</span>
                                   )}
                               </TableCell>
-                              <TableCell><Badge variant={member.is_active ? 'default' : 'secondary'} className={member.is_active ? 'bg-emerald-500/10 text-emerald-600 border-emerald-200 hover:bg-emerald-500/20' : ''}>{member.is_active ? 'active' : 'inactive'}</Badge></TableCell>
-                              <TableCell className="text-sm text-muted-foreground">{new Date(member.created_at).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}</TableCell>
-                              {manageable && (
-                                <TableCell>
+                              <TableCell className="px-3 py-2.5 align-middle">
+                                <Badge variant={member.is_active ? 'default' : 'secondary'} className={member.is_active ? 'bg-emerald-500/10 text-emerald-600 border-emerald-200 hover:bg-emerald-500/20' : ''}>{member.is_active ? 'active' : 'inactive'}</Badge>
+                              </TableCell>
+                              <TableCell className="px-3 py-2.5 text-sm text-muted-foreground align-middle whitespace-nowrap">
+                                {new Date(member.created_at).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}
+                              </TableCell>
+                              {showMemberMenu && (
+                                <TableCell className="px-2 py-2.5 pr-3 align-middle">
                                   <DropdownMenu>
                                     <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                                     <DropdownMenuContent align="end">
-                                      <DropdownMenuItem onClick={() => { setEditingMember({ ...member }); setEditOpen(true); }}><Edit className="h-4 w-4 mr-2" /> Edit</DropdownMenuItem>
-                                      <DropdownMenuItem onClick={() => handleToggleStatus(member)}>{member.is_active ? 'Deactivate' : 'Activate'}</DropdownMenuItem>
-                                      <DropdownMenuItem onClick={() => { setTaskAssignTo(member); setTaskDialogOpen(true); }}><ClipboardList className="h-4 w-4 mr-2" /> Assign Task</DropdownMenuItem>
-                                      <DropdownMenuSeparator />
-                                      <DropdownMenuItem className="text-destructive" onClick={() => setDeleteConfirmId(member.id)}><Trash2 className="h-4 w-4 mr-2" /> Remove</DropdownMenuItem>
+                                      {(manageable || canPageAccessEdit) && (
+                                        <DropdownMenuItem onClick={() => openEditMember(member)}><Edit className="h-4 w-4 mr-2" /> Edit</DropdownMenuItem>
+                                      )}
+                                      {manageable && (
+                                        <DropdownMenuItem onClick={() => handleToggleStatus(member)}>{member.is_active ? 'Deactivate' : 'Activate'}</DropdownMenuItem>
+                                      )}
+                                      {(manageable || isManagerViewer) && (
+                                        <DropdownMenuItem onClick={() => { setTaskAssignTo(member); setTaskDialogOpen(true); }}><ClipboardList className="h-4 w-4 mr-2" /> Assign Task</DropdownMenuItem>
+                                      )}
+                                      {manageable && (
+                                        <>
+                                          <DropdownMenuSeparator />
+                                          <DropdownMenuItem className="text-destructive" onClick={() => setDeleteConfirmId(member.id)}><Trash2 className="h-4 w-4 mr-2" /> Remove</DropdownMenuItem>
+                                        </>
+                                      )}
                                     </DropdownMenuContent>
                                   </DropdownMenu>
                                 </TableCell>
@@ -682,6 +837,7 @@ export default function Team() {
                           })}
                         </TableBody>
                       </Table>
+                      </div>
                     )}
                   </CardContent>
                 </CollapsibleContent>
@@ -739,10 +895,11 @@ export default function Team() {
             </div>
             <div className="space-y-1.5">
               <Label>Default Password</Label>
-              <Input
+              <PasswordInput
                 value={newMember.password}
                 onChange={(e) => setNewMember((p) => ({ ...p, password: e.target.value }))}
                 placeholder="Auto-generated secure password"
+                autoComplete="new-password"
               />
             </div>
             <div className="space-y-1.5">
@@ -754,6 +911,7 @@ export default function Team() {
                     ...p,
                     role: v,
                     reports_to_id: isL1OperationalRole(v) ? p.reports_to_id : '',
+                    page_access: { payments: false, offer_letters: false },
                   }))
                 }
               >
@@ -769,6 +927,30 @@ export default function Team() {
                 </SelectContent>
               </Select>
             </div>
+            {normalizeRole(newMember.role) === 'sales_representative' && canEditPageAccess && (
+              <div className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2.5">
+                <div className="pr-3">
+                  <p className="text-sm font-medium">Payment links access</p>
+                  <p className="text-xs text-muted-foreground">Allow this sales rep to open the Payments page. Off by default.</p>
+                </div>
+                <Switch
+                  checked={Boolean(newMember.page_access.payments)}
+                  onCheckedChange={(on) => setNewMember((p) => ({ ...p, page_access: { ...p.page_access, payments: on } }))}
+                />
+              </div>
+            )}
+            {normalizeRole(newMember.role) === 'hr' && canEditPageAccess && (
+              <div className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2.5">
+                <div className="pr-3">
+                  <p className="text-sm font-medium">Offer Letters access</p>
+                  <p className="text-xs text-muted-foreground">Allow this HR user to open the Offer Letters page. Off by default.</p>
+                </div>
+                <Switch
+                  checked={Boolean(newMember.page_access.offer_letters)}
+                  onCheckedChange={(on) => setNewMember((p) => ({ ...p, page_access: { ...p.page_access, offer_letters: on } }))}
+                />
+              </div>
+            )}
             {isL1OperationalRole(newMember.role) && canAssignTeam && (
               <div className="space-y-1.5">
                 <Label>Assign to manager</Label>
@@ -867,85 +1049,273 @@ export default function Team() {
             <Button
               type="button"
               variant="outline"
+              className="gap-1.5"
               disabled={sendWelcomeLoading}
-              onClick={handleSkipWelcomeEmail}
+              onClick={() => {
+                void copyShareText(
+                  formatMemberShareText({
+                    full_name: newMember.full_name,
+                    email: newMember.email,
+                    phone: newMember.phone,
+                    password: newMember.password,
+                    role: newMember.role,
+                    manager: isManagerViewer
+                      ? (user as { full_name?: string })?.full_name || 'You'
+                      : newMember.reports_to_id
+                        ? activeManagers.find((m) => m.id === newMember.reports_to_id)?.full_name || 'Unassigned'
+                        : 'Unassigned',
+                  }),
+                );
+              }}
             >
-              Skip for now
+              <Copy className="h-4 w-4" /> Copy details
             </Button>
-            <Button
-              type="button"
-              className="gap-2 bg-[#2ed573] text-[#0f2318] hover:bg-[#26c968]"
-              disabled={sendWelcomeLoading || !createdMemberId}
-              onClick={() => void handleSendWelcomeEmail()}
-            >
-              {sendWelcomeLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              Send mail
-            </Button>
+            <div className="flex flex-col-reverse sm:flex-row gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={sendWelcomeLoading}
+                onClick={handleSkipWelcomeEmail}
+              >
+                Skip for now
+              </Button>
+              <Button
+                type="button"
+                className="gap-2 bg-[#2ed573] text-[#0f2318] hover:bg-[#26c968]"
+                disabled={sendWelcomeLoading || !createdMemberId}
+                onClick={() => void handleSendWelcomeEmail()}
+              >
+                {sendWelcomeLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                Send mail
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Edit Member Dialog */}
-      <Dialog open={editOpen} onOpenChange={(open) => { setEditOpen(open); if (!open) setEditingMember(null); }}>
-        <DialogContent className="max-w-[95vw] sm:max-w-lg">
-          <DialogHeader><DialogTitle>Edit Team Member</DialogTitle></DialogHeader>
+      <Dialog
+        open={editOpen}
+        onOpenChange={(open) => {
+          setEditOpen(open);
+          if (!open) {
+            setEditingMember(null);
+            setEditPassword('');
+          }
+        }}
+      >
+        <DialogContent className="max-w-[95vw] sm:max-w-lg max-h-[min(92dvh,100%)] sm:max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 p-0 overflow-hidden">
+          <DialogHeader className="shrink-0 px-6 pt-6 pb-3 pr-12">
+            <DialogTitle>Edit Team Member</DialogTitle>
+            <p className="text-sm text-muted-foreground text-left">
+              {isManagerViewer && !canManageMembers
+                ? 'Managers can turn page access on or off for their team members. Other profile fields are managed by Admin.'
+                : 'Update details below. Leave password blank to keep the current one, or generate a new password to reset login.'}
+            </p>
+          </DialogHeader>
           {editingMember && (
-            <div className="space-y-4 py-2">
-              <div className="space-y-1.5"><Label>Full Name</Label><Input value={editingMember.full_name} onChange={e => setEditingMember(p => p ? { ...p, full_name: e.target.value } : p)} /></div>
-              <div className="space-y-1.5"><Label>Phone</Label><Input value={editingMember.phone || ''} onChange={e => setEditingMember(p => p ? { ...p, phone: e.target.value } : p)} /></div>
-              <div className="space-y-1.5"><Label>Role</Label>
-                <Select
-                  value={editingMember.role}
-                  onValueChange={(v) =>
-                    setEditingMember((p) =>
-                      p
-                        ? {
-                            ...p,
-                            role: v,
-                            reports_to_id: isL1OperationalRole(v) ? p.reports_to_id : null,
-                            reports_to_name: isL1OperationalRole(v) ? p.reports_to_name : null,
-                          }
-                        : p,
-                    )
-                  }
-                >
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{assignableRoles.map(r => <SelectItem key={r.key} value={r.key}>{r.label}</SelectItem>)}</SelectContent>
-                </Select>
-              </div>
-              {canAssignTeam && isL1OperationalRole(editingMember.role) && (
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-1">
+              <div className="rounded-lg border border-border/80 bg-muted/20 px-4 py-3 space-y-3.5 text-sm">
                 <div className="space-y-1.5">
-                  <Label>Assign to manager</Label>
-                  <Select
-                    value={editingMember.reports_to_id || 'none'}
-                    onValueChange={(v) =>
-                      setEditingMember((p) =>
-                        p
-                          ? {
-                              ...p,
-                              reports_to_id: v === 'none' ? null : v,
-                              reports_to_name:
-                                v === 'none'
-                                  ? null
-                                  : managersForL1Member(p).find((m) => m.id === v)?.full_name ?? p.reports_to_name,
-                            }
-                          : p,
-                      )
-                    }
-                  >
-                    <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Unassigned</SelectItem>
-                      {managersForL1Member(editingMember).map((m) => (
-                        <SelectItem key={m.id} value={m.id}>{m.full_name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Label className="text-muted-foreground">Full name</Label>
+                  <Input
+                    value={editingMember.full_name}
+                    disabled={isManagerViewer && !canManageMembers}
+                    onChange={(e) => setEditingMember((p) => (p ? { ...p, full_name: e.target.value } : p))}
+                  />
                 </div>
-              )}
+                <div className="space-y-1.5">
+                  <Label className="text-muted-foreground">Email</Label>
+                  <Input
+                    type="email"
+                    value={editingMember.email}
+                    disabled={isManagerViewer && !canManageMembers}
+                    onChange={(e) => setEditingMember((p) => (p ? { ...p, email: e.target.value } : p))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-muted-foreground">Phone</Label>
+                  <Input
+                    value={editingMember.phone || ''}
+                    disabled={isManagerViewer && !canManageMembers}
+                    onChange={(e) => setEditingMember((p) => (p ? { ...p, phone: e.target.value } : p))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-muted-foreground">Password</Label>
+                  <div className="flex items-stretch gap-2">
+                    <div className="min-w-0 flex-1">
+                      <PasswordInput
+                        value={editPassword}
+                        disabled={isManagerViewer && !canManageMembers}
+                        onChange={(e) => setEditPassword(e.target.value)}
+                        placeholder="Leave blank to keep current password"
+                        autoComplete="new-password"
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-10 shrink-0 gap-1.5 px-3"
+                      disabled={isManagerViewer && !canManageMembers}
+                      onClick={() => setEditPassword(generateTempPassword())}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      <span className="hidden sm:inline">Generate</span>
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-snug">
+                    Leave blank to keep their current password. Generated passwords are shown once here for sharing.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-muted-foreground">Role</Label>
+                    {['admin', 'org'].includes(normalizeAppRole(editingMember.role)) ? (
+                      <>
+                        <Input value={getRoleInfo(editingMember.role).label} disabled className="bg-muted" />
+                        <p className="text-[11px] text-muted-foreground sm:col-span-2">
+                          Org admin credentials are managed from Organizations, not Team.
+                        </p>
+                      </>
+                    ) : (
+                      <Select
+                        value={editingMember.role}
+                        disabled={isManagerViewer && !canManageMembers}
+                        onValueChange={(v) =>
+                          setEditingMember((p) =>
+                            p
+                              ? {
+                                  ...p,
+                                  role: v,
+                                  reports_to_id: isL1OperationalRole(v) ? p.reports_to_id : null,
+                                  reports_to_name: isL1OperationalRole(v) ? p.reports_to_name : null,
+                                  page_access: { payments: false, offer_letters: false },
+                                }
+                              : p,
+                          )
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {assignableRoles.map((r) => (
+                            <SelectItem key={r.key} value={r.key}>
+                              {r.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  </div>
+                  {isL1OperationalRole(editingMember.role) && (
+                    <div className="space-y-1.5">
+                      <Label className="text-muted-foreground">Manager</Label>
+                      <Select
+                        value={editingMember.reports_to_id || 'none'}
+                        disabled={isManagerViewer && !canManageMembers}
+                        onValueChange={(v) =>
+                          setEditingMember((p) =>
+                            p
+                              ? {
+                                  ...p,
+                                  reports_to_id: v === 'none' ? null : v,
+                                  reports_to_name:
+                                    v === 'none'
+                                      ? null
+                                      : managersForL1Member(p).find((m) => m.id === v)?.full_name ?? p.reports_to_name,
+                                }
+                              : p,
+                          )
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select manager" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Unassigned</SelectItem>
+                          {managersForL1Member(editingMember).map((m) => (
+                            <SelectItem key={m.id} value={m.id}>
+                              {m.full_name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+                {normalizeRole(editingMember.role) === 'sales_representative' && canEditPageAccess && (
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background px-3 py-2.5">
+                    <div className="min-w-0 pr-2">
+                      <p className="text-sm font-medium">Payment links access</p>
+                      <p className="text-xs text-muted-foreground">Allow this sales rep to open Payments. Off by default.</p>
+                    </div>
+                    <Switch
+                      className="shrink-0"
+                      checked={Boolean(editingMember.page_access?.payments)}
+                      onCheckedChange={(on) =>
+                        setEditingMember((p) => (p ? { ...p, page_access: { ...(p.page_access || {}), payments: on, offer_letters: Boolean(p.page_access?.offer_letters) } } : p))
+                      }
+                    />
+                  </div>
+                )}
+                {normalizeRole(editingMember.role) === 'hr' && canEditPageAccess && (
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background px-3 py-2.5">
+                    <div className="min-w-0 pr-2">
+                      <p className="text-sm font-medium">Offer Letters access</p>
+                      <p className="text-xs text-muted-foreground">Allow this HR user to open Offer Letters. Off by default.</p>
+                    </div>
+                    <Switch
+                      className="shrink-0"
+                      checked={Boolean(editingMember.page_access?.offer_letters)}
+                      onCheckedChange={(on) =>
+                        setEditingMember((p) => (p ? { ...p, page_access: { ...(p.page_access || {}), offer_letters: on, payments: Boolean(p.page_access?.payments) } } : p))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
             </div>
           )}
-          <DialogFooter className="flex-col sm:flex-row gap-2"><Button variant="outline" onClick={() => { setEditOpen(false); setEditingMember(null); }}>Cancel</Button><Button onClick={handleEdit}>Save Changes</Button></DialogFooter>
+          <DialogFooter className="shrink-0 border-t bg-background px-6 py-4 flex-col-reverse sm:flex-row sm:items-center gap-2 sm:justify-between sm:space-x-0">
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-1.5 w-full sm:w-auto"
+              disabled={!editingMember}
+              onClick={() => {
+                if (!editingMember) return;
+                void copyShareText(
+                  formatMemberShareText({
+                    full_name: editingMember.full_name,
+                    email: editingMember.email,
+                    phone: editingMember.phone,
+                    password: editPassword.trim() || '(unchanged)',
+                    role: editingMember.role,
+                    manager: managerLabelForMember(editingMember),
+                  }),
+                );
+              }}
+            >
+              <Copy className="h-4 w-4" /> Copy details
+            </Button>
+            <div className="flex flex-col-reverse sm:flex-row gap-2 w-full sm:w-auto">
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto"
+                onClick={() => {
+                  setEditOpen(false);
+                  setEditingMember(null);
+                  setEditPassword('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button className="w-full sm:w-auto" onClick={() => void handleEdit()}>Save Changes</Button>
+            </div>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

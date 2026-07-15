@@ -18,17 +18,10 @@ export const CAN_CREATE_ROLES = [
 ];
 export const CAN_EDIT_ALL_ROLES = ["super_admin", "admin", "org", "manager"];
 export const CAN_DELETE_ROLES = ["super_admin", "admin", "org", "manager"];
-export const CAN_BULK_DELETE_ROLES = ["super_admin", "admin", "org"];
+export const CAN_BULK_DELETE_ROLES = ["super_admin", "admin", "org", "manager"];
 export const CAN_IMPORT_ROLES = ["super_admin", "admin", "org", "manager"];
-export const CAN_EXPORT_ROLES = [
-  "super_admin",
-  "admin",
-  "org",
-  "manager",
-  "sales_representative",
-  "trainer",
-  "finance",
-];
+/** Export is L2+ only — L1 (sales rep / HR / marketing / trainer / finance) never gets export. */
+export const CAN_EXPORT_ROLES = ["super_admin", "admin", "org", "manager"];
 
 function roleKey(role: string | null): string {
   return normalizeAppRole(role);
@@ -49,8 +42,9 @@ export const canBulkDelete = (role: string | null): boolean =>
 export const canImport = (role: string | null): boolean =>
   CAN_IMPORT_ROLES.includes(roleKey(role));
 
+/** True for manager / admin / org / super_admin only (not L1). */
 export const canExport = (role: string | null): boolean =>
-  CAN_EXPORT_ROLES.includes(roleKey(role));
+  getRoleLevel(role) >= 2;
 
 export const canEditRecord = (
   role: string | null,

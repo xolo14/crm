@@ -51,8 +51,14 @@ export default function SalesRepDashboard() {
         api.forms.list().catch(() => ({ data: [] as AssignedLeadForm[] })),
       ]);
       setLeads(dashData.leads || []);
-      const allTasks = Array.isArray(tasksData) ? tasksData : tasksData.tasks || [];
-      setTasks(allTasks.filter((t: any) => t.assigned_to === user.id || t.created_by === user.id).slice(0, 8));
+      const allTasks = Array.isArray(tasksData)
+        ? tasksData
+        : (tasksData?.data || tasksData?.tasks || []);
+      setTasks(
+        allTasks
+          .filter((t: any) => t.assigned_to === user.id || t.created_by === user.id)
+          .slice(0, 8),
+      );
       const raw = Array.isArray(formsRes?.data) ? formsRes.data : [];
       setAssignedForms(
         raw.filter((f: AssignedLeadForm) => f.is_active !== 0 && f.is_active !== false && f.is_active !== '0'),

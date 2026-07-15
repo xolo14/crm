@@ -8,6 +8,7 @@ import { communicationsApi } from "@/services/communications";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -23,7 +24,7 @@ const PARTNER_STEPS = [
   { key: "business_verification", label: "Meta Business Verification", desc: "Verify Syncpedia business in Meta Business Manager" },
   { key: "tech_provider", label: "Apply as Tech Provider", desc: "Submit at developers.facebook.com → WhatsApp → Become a Partner" },
   { key: "master_waba", label: "Master WABA templates", desc: "Publish official library templates to partner WABA first" },
-  { key: "embedded_signup", label: "Embedded Signup for orgs", desc: "Orgs connect WhatsApp via your partner onboarding link" },
+  { key: "embedded_signup", label: "Embedded Signup v4 for orgs", desc: "Create v4 config in Embedded Signup Builder; orgs connect via Facebook Login for Business" },
 ];
 
 export default function MetaPartnerPage() {
@@ -34,6 +35,7 @@ export default function MetaPartnerPage() {
     partner_status: "pending",
     business_verification: "not_started",
     meta_app_id: "",
+    meta_app_secret: "",
     meta_partner_business_id: "",
     master_waba_id: "",
     system_user_token: "",
@@ -168,6 +170,14 @@ export default function MetaPartnerPage() {
                 <Input value={form.meta_app_id} onChange={(e) => setForm((p) => ({ ...p, meta_app_id: e.target.value }))} />
               </div>
               <div className="space-y-1.5">
+                <Label>Meta App Secret</Label>
+                <PasswordInput
+                  placeholder={config?.meta_app_secret_set ? "Leave blank to keep" : "Required for Embedded Signup token exchange"}
+                  onChange={(e) => setForm((p) => ({ ...p, meta_app_secret: e.target.value }))}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="space-y-1.5">
                 <Label>Partner Business ID</Label>
                 <Input value={form.meta_partner_business_id} onChange={(e) => setForm((p) => ({ ...p, meta_partner_business_id: e.target.value }))} />
               </div>
@@ -176,12 +186,12 @@ export default function MetaPartnerPage() {
                 <Input value={form.master_waba_id} onChange={(e) => setForm((p) => ({ ...p, master_waba_id: e.target.value }))} />
               </div>
               <div className="space-y-1.5">
-                <Label>Embedded Signup Config ID</Label>
-                <Input value={form.embedded_signup_config_id} onChange={(e) => setForm((p) => ({ ...p, embedded_signup_config_id: e.target.value }))} />
+                <Label>Embedded Signup Config ID (v4)</Label>
+                <Input value={form.embedded_signup_config_id} onChange={(e) => setForm((p) => ({ ...p, embedded_signup_config_id: e.target.value }))} placeholder="From App Dashboard → WhatsApp → Embedded Signup Builder" />
               </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>System user token</Label>
-                <Input type="password" placeholder={config?.system_user_token_set ? "Leave blank to keep" : "From Meta Business Settings"} onChange={(e) => setForm((p) => ({ ...p, system_user_token: e.target.value }))} />
+                <PasswordInput placeholder={config?.system_user_token_set ? "Leave blank to keep" : "From Meta Business Settings"} onChange={(e) => setForm((p) => ({ ...p, system_user_token: e.target.value }))} autoComplete="off" />
               </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>Org onboarding URL (share with organizations)</Label>

@@ -9,7 +9,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useToast } from "@/hooks/use-toast";
 import { useAssignedLeads, useUpdateLead } from "@/hooks/useHRLeads";
 import type { HRLead } from "@/types/hrLeads";
-import { resumePublicHref } from "@/lib/resumeHref";
+import { openProtectedUpload } from "@/lib/resumeHref";
 
 export default function AssignedLeads() {
   const isMobile = useIsMobile();
@@ -55,9 +55,15 @@ export default function AssignedLeads() {
                 <div className="mt-2 space-y-2">
                   <p className="text-xs text-muted-foreground">Assigned by: {lead.assigned_by_name || "—"}</p>
                   {lead.resume_path ? (
-                    <a href={resumePublicHref(lead.resume_path)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-teal-600 font-medium">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 text-xs text-teal-600 font-medium bg-transparent border-0 p-0 cursor-pointer"
+                      onClick={() => {
+                        void openProtectedUpload(lead.resume_path).catch(() => {});
+                      }}
+                    >
                       <FileText className="h-3 w-3" /> View resume
-                    </a>
+                    </button>
                   ) : (
                     <span className="text-[10px] text-muted-foreground">Resume —</span>
                   )}
@@ -96,11 +102,17 @@ export default function AssignedLeads() {
                   <TableCell className="text-muted-foreground">{lead.assigned_by_name || "—"}</TableCell>
                   <TableCell>
                     {lead.resume_path ? (
-                      <Button variant="ghost" size="sm" className="h-7 gap-1 text-teal-600 px-2" asChild>
-                        <a href={resumePublicHref(lead.resume_path)} target="_blank" rel="noopener noreferrer">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1 text-teal-600 px-2"
+                        type="button"
+                        onClick={() => {
+                          void openProtectedUpload(lead.resume_path).catch(() => {});
+                        }}
+                      >
                           <FileText className="h-3.5 w-3.5" />
                           View
-                        </a>
                       </Button>
                     ) : (
                       <span className="text-xs text-muted-foreground">—</span>

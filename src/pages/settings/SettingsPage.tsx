@@ -1,39 +1,62 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useAuth } from "@/hooks/useAuth";
+import { getRoleLevel, isL3AdminRole, normalizeAppRole } from "@/lib/roleUtils";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import { AuditLogs } from "@/components/settings/sections/AuditLogs";
+import { ChangePassword } from "@/components/settings/sections/ChangePassword";
 import { CompanyProfile } from "@/components/settings/sections/CompanyProfile";
 import { DataPrivacy } from "@/components/settings/sections/DataPrivacy";
 import { GeneralSettings } from "@/components/settings/sections/GeneralSettings";
 import { Localization } from "@/components/settings/sections/Localization";
-import { PipelineStages } from "@/components/settings/sections/PipelineStages";
 import { Security } from "@/components/settings/sections/Security";
-import { TagsAndLabels } from "@/components/settings/sections/TagsAndLabels";
 
-const sectionComponents: Record<string, React.FC> = {
+const adminSectionComponents: Record<string, React.FC> = {
   general: GeneralSettings,
   "company-profile": CompanyProfile,
   localization: Localization,
-  "pipeline-stages": PipelineStages,
-  "tags-labels": TagsAndLabels,
   security: Security,
   "audit-logs": AuditLogs,
   "data-privacy": DataPrivacy,
 };
 
+const limitedSectionComponents: Record<string, React.FC> = {
+  general: GeneralSettings,
+  password: ChangePassword,
+};
+
+/** Manager (L2) and L1 roles get General + Password Change only. */
+function usesLimitedSettings(role?: string | null): boolean {
+  const r = normalizeAppRole(role);
+  if (r === "super_admin" || isL3AdminRole(r)) return false;
+  return getRoleLevel(r) <= 2;
+}
+
 export default function SettingsPage() {
+  const { user } = useAuth();
+  const limited = usesLimitedSettings(user?.role);
+  const sectionComponents = limited ? limitedSectionComponents : adminSectionComponents;
   const [activeSection, setActiveSection] = useState<string>("general");
+
+  useEffect(() => {
+    if (!(activeSection in sectionComponents)) {
+      setActiveSection("general");
+    }
+  }, [limited, activeSection]);
+
   const ActiveSection = sectionComponents[activeSection] ?? GeneralSettings;
 
   return (
-    <div className="bg-gray-50">
-      <div className="mb-6">
-        <h1 className="text-2xl font-semibold text-gray-900">Settings</h1>
-        <p className="mt-1 text-sm text-gray-500">Manage your CRM configuration</p>
+    <div className="min-w-0">
+      <div className="mb-4 md:mb-6">
+        <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">Settings</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {limited ? "Manage your account preferences" : "Manage your CRM configuration"}
+        </p>
       </div>
 
-      <div className="flex min-h-[calc(100vh-160px)] gap-6">
-        <SettingsNav active={activeSection} onChange={setActiveSection} />
-        <div className="min-w-0 flex-1 overflow-y-auto">
+      <div className="flex flex-col md:flex-row md:min-h-[calc(100dvh-160px)] gap-4 md:gap-6 md:rounded-lg md:border md:border-border md:bg-card md:overflow-hidden">
+        <SettingsNav active={activeSection} onChange={setActiveSection} limited={limited} />
+        <div className="min-w-0 flex-1 md:overflow-y-auto md:p-6">
           <ActiveSection />
         </div>
       </div>

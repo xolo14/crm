@@ -27,8 +27,10 @@ export default function Trash() {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
   const [lastPurged, setLastPurged] = useState<number | null>(null);
   const canRestore = perms.canDelete(role);
+  const canClear = perms.canBulkDelete(role) || perms.canDelete(role);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -64,26 +66,67 @@ export default function Trash() {
     }
   };
 
+  const handleClearTrash = async () => {
+    if (rows.length === 0) return;
+    if (
+      !confirm(
+        `Permanently delete all ${rows.length} item(s) from trash?\n\nThis cannot be undone. Items will be removed from the database immediately (you will not wait for the 30-day auto-delete).`,
+      )
+    ) {
+      return;
+    }
+    setClearing(true);
+    try {
+      const res = await api.trash.clearAll();
+      const deleted = typeof res?.deleted === 'number' ? res.deleted : rows.length;
+      toast({
+        title: 'Trash cleared',
+        description: `${deleted} item(s) permanently deleted from the database.`,
+      });
+      await load();
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: 'Clear trash failed', description: e?.message || 'Error' });
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-          <Trash2 className="h-7 w-7 text-muted-foreground" />
-          Trash
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Items you delete from Leads, Students, Contacts, Deals, Tasks, Courses, Batches, Payments, Holidays, and lead assignments appear here.
-          Records older than <strong>30 days</strong> are removed automatically when you open this page.
-        </p>
-        {lastPurged !== null && lastPurged > 0 && (
-          <p className="text-xs text-muted-foreground mt-2">Just cleared {lastPurged} expired item(s) (older than 30 days).</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+            <Trash2 className="h-7 w-7 text-muted-foreground" />
+            Trash
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Items you delete from Leads, Students, Contacts, Deals, Tasks, Courses, Batches, Payments, Holidays, and lead assignments appear here.
+            Records older than <strong>30 days</strong> are removed automatically when you open this page. Use <strong>Clear trash</strong> to remove everything now.
+          </p>
+          {lastPurged !== null && lastPurged > 0 && (
+            <p className="text-xs text-muted-foreground mt-2">Just cleared {lastPurged} expired item(s) (older than 30 days).</p>
+          )}
+        </div>
+        {canClear && (
+          <Button
+            type="button"
+            variant="destructive"
+            className="gap-1.5 shrink-0"
+            disabled={loading || clearing || rows.length === 0}
+            onClick={handleClearTrash}
+          >
+            {clearing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            Clear trash
+          </Button>
         )}
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Deleted items</CardTitle>
-          <CardDescription>Newest first. Restore brings the row back with the same id when possible.</CardDescription>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div className="space-y-1.5">
+            <CardTitle>Deleted items</CardTitle>
+            <CardDescription>Newest first. Restore brings the row back with the same id when possible. Clear trash permanently deletes all listed items.</CardDescription>
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (

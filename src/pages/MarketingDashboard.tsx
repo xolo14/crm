@@ -9,17 +9,19 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
-  Mail, Send, AlertTriangle, Clock, Users, Plus, Eye, Loader2,
+  Mail, Send, AlertTriangle, Clock, Users, Eye, Loader2,
   BarChart3, Filter, Calendar, TrendingUp, CheckCircle2, XCircle, Search,
   MessageSquare, UserPlus, Shuffle
 } from 'lucide-react';
 import { format, subDays, startOfDay, endOfDay, startOfWeek, endOfWeek } from 'date-fns';
+import { useNavigate } from 'react-router-dom';
+import { isL3AdminRole, normalizeAppRole } from '@/lib/roleUtils';
 
 interface MarketingMember {
   id: string;
@@ -52,6 +54,7 @@ export default function MarketingDashboard() {
   const { role, user } = useAuth();
   const { toast } = useToast();
   const isMobile = useIsMobile();
+  const navigate = useNavigate();
 
   const [members, setMembers] = useState<MarketingMember[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
@@ -67,12 +70,6 @@ export default function MarketingDashboard() {
   const [customTo, setCustomTo] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Add member dialog
-  const [showAddMember, setShowAddMember] = useState(false);
-  const [newMember, setNewMember] = useState({ name: '', email: '', phone: '' });
-  const [generatedCredentials, setGeneratedCredentials] = useState<{ email: string; password: string } | null>(null);
-  const [addingMember, setAddingMember] = useState(false);
-
   // Lead assignment
   const [formLeads, setFormLeads] = useState<any[]>([]);
   const [formLeadAssignments, setFormLeadAssignments] = useState<Record<string, string[]>>({});
@@ -81,7 +78,9 @@ export default function MarketingDashboard() {
   const [showAssignDialog, setShowAssignDialog] = useState(false);
   const [assigning, setAssigning] = useState(false);
 
-  const isSuperAdmin = role === 'super_admin' || role === 'admin';
+  const normalizedRole = normalizeAppRole(role);
+  const canFilterByMember = normalizedRole === 'super_admin' || isL3AdminRole(normalizedRole);
+  const isMarketingAdmin = normalizedRole === 'super_admin' || isL3AdminRole(normalizedRole);
   const isMarketingRole = (value?: string | null) =>
     String(value || '').trim().toLowerCase().startsWith('marketing');
 
@@ -213,67 +212,6 @@ export default function MarketingDashboard() {
     }
   };
 
-  const generatePassword = () => {
-    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$';
-    let pw = '';
-    for (let i = 0; i < 12; i++) pw += chars[Math.floor(Math.random() * chars.length)];
-    return pw;
-  };
-
-  const handleAddMember = async () => {
-    if (!newMember.name || !newMember.email) {
-      toast({ variant: 'destructive', title: 'Name and email required' });
-      return;
-    }
-    setAddingMember(true);
-    try {
-      const password = generatePassword();
-      const createRes = await api.team.create({
-        full_name: newMember.name,
-        email: newMember.email,
-        phone: newMember.phone || null,
-        role: 'marketing',
-        password,
-      }) as { id?: string; email_sent?: boolean; email_error?: string };
-
-      // Optimistic UI update so member appears instantly.
-      const createdMember: MarketingMember = {
-        id: createRes?.id || `${Date.now()}`,
-        user_id: createRes?.id || `${Date.now()}`,
-        name: newMember.name,
-        email: newMember.email,
-        phone: newMember.phone || null,
-        status: 'active',
-        created_at: new Date().toISOString(),
-      };
-      setMembers((prev) => {
-        const exists = prev.some((m) => String(m.email || '').toLowerCase() === String(createdMember.email || '').toLowerCase());
-        if (exists) return prev;
-        return [createdMember, ...prev];
-      });
-
-      setGeneratedCredentials({ email: newMember.email, password });
-      if (createRes?.email_sent) {
-        toast({ title: 'Marketing member created!', description: 'Welcome email sent with login credentials.' });
-      } else if (createRes?.email_error) {
-        toast({
-          variant: 'destructive',
-          title: 'Marketing member created',
-          description: `Welcome email failed: ${createRes.email_error}`,
-        });
-      } else {
-        toast({ title: 'Marketing member created!' });
-      }
-      // Immediate + delayed sync to handle server/db propagation delay.
-      fetchData();
-      setTimeout(() => { fetchData(); }, 1200);
-    } catch (err: any) {
-      toast({ variant: 'destructive', title: 'Error', description: err.message });
-    } finally {
-      setAddingMember(false);
-    }
-  };
-
   // Stats calculations
   const totalCampaigns = campaigns.length;
   const totalSent = campaigns.reduce((sum, c) => sum + (c.sent_count || 0), 0);
@@ -354,54 +292,33 @@ export default function MarketingDashboard() {
             Marketing Dashboard
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-0.5">
-            Email campaigns, member activity & analytics
+            Email & WhatsApp campaigns, templates, member activity & analytics
           </p>
         </div>
-        {isSuperAdmin && (
-          <Dialog open={showAddMember} onOpenChange={(open) => { setShowAddMember(open); if (!open) { setNewMember({ name: '', email: '', phone: '' }); setGeneratedCredentials(null); } }}>
-            <DialogTrigger asChild>
-              <Button size="sm" className="gap-1.5">
-                <Plus className="h-3.5 w-3.5" />Add Member
+        <div className="flex flex-wrap items-center gap-2">
+          {isMarketingAdmin ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={() => navigate('/marketing-email?create=1')}
+              >
+                <Mail className="h-3.5 w-3.5" />
+                Email Template
               </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>Add Marketing Member</DialogTitle></DialogHeader>
-              {generatedCredentials ? (
-                <div className="space-y-4">
-                  <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl p-4">
-                    <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400 mb-3">✅ Member Created! Share these credentials:</p>
-                    <div className="space-y-2 font-mono text-sm">
-                      <div className="flex items-center gap-2">
-                        <span className="text-muted-foreground w-20">Email:</span>
-                        <span className="font-semibold">{generatedCredentials.email}</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-muted-foreground w-20">Password:</span>
-                        <span className="font-semibold">{generatedCredentials.password}</span>
-                      </div>
-                    </div>
-                  </div>
-                  <Button className="w-full" onClick={() => {
-                    navigator.clipboard.writeText(`Email: ${generatedCredentials.email}\nPassword: ${generatedCredentials.password}`);
-                    toast({ title: 'Credentials copied!' });
-                  }}>Copy Credentials</Button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div><Label className="text-xs">Full Name *</Label><Input value={newMember.name} onChange={e => setNewMember(m => ({ ...m, name: e.target.value }))} placeholder="John Doe" /></div>
-                  <div><Label className="text-xs">Email *</Label><Input type="email" value={newMember.email} onChange={e => setNewMember(m => ({ ...m, email: e.target.value }))} placeholder="john@company.com" /></div>
-                  <div><Label className="text-xs">Phone</Label><Input value={newMember.phone} onChange={e => setNewMember(m => ({ ...m, phone: e.target.value }))} placeholder="+91 9876543210" /></div>
-                  <DialogFooter>
-                    <Button onClick={handleAddMember} disabled={addingMember} className="w-full gap-1.5">
-                      {addingMember && <Loader2 className="h-4 w-4 animate-spin" />}
-                      Generate Credentials & Create
-                    </Button>
-                  </DialogFooter>
-                </div>
-              )}
-            </DialogContent>
-          </Dialog>
-        )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 border-emerald-200 text-emerald-800 hover:bg-emerald-50"
+                onClick={() => navigate('/marketing-whatsapp?create=1')}
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                WhatsApp Template
+              </Button>
+            </>
+          ) : null}
+        </div>
       </div>
 
       {/* Filters */}
@@ -412,7 +329,7 @@ export default function MarketingDashboard() {
               <Filter className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="text-xs font-medium text-muted-foreground">Filters:</span>
             </div>
-            {isSuperAdmin && (
+            {canFilterByMember && (
               <Select value={memberFilter} onValueChange={setMemberFilter}>
                 <SelectTrigger className="h-8 w-[160px] text-xs"><SelectValue placeholder="All Members" /></SelectTrigger>
                 <SelectContent>

@@ -21,8 +21,9 @@ import { LeadContactBlock } from "@/components/leads/LeadContactBlock";
 import type { HRLead, HRLeadStats } from "@/types/hrLeads";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import * as perms from "@/lib/permissions";
 import { getISTLastWeekRangeYYYYMMDD, getISTMonthRangeYYYYMMDD, getISTWeekRangeYYYYMMDD } from "@/lib/hrLeadsWeek";
-import { resumePublicHref } from "@/lib/resumeHref";
+import { openProtectedUpload } from "@/lib/resumeHref";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 const STATUSES = ["new", "contacted", "interested", "not_interested", "converted", "lost"];
@@ -52,6 +53,7 @@ export default function HRLeadsPage() {
   const isSuperAdmin = normalizedRole === "super_admin";
   const isAdmin = normalizedRole === "admin";
   const isOrg = normalizedRole === "org";
+  const hasExport = perms.canExport(normalizedRole);
   const canAssign = isSuperAdmin || isAdmin;
   const canDelete = isSuperAdmin || isAdmin;
   const canAddLead = isSuperAdmin || isAdmin;
@@ -165,9 +167,11 @@ export default function HRLeadsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => onExport(rows)}>
-            <Download className="h-3.5 w-3.5" /> Export
-          </Button>
+          {hasExport && (
+            <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => onExport(rows)}>
+              <Download className="h-3.5 w-3.5" /> Export
+            </Button>
+          )}
           {canAssign && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -342,9 +346,11 @@ export default function HRLeadsPage() {
           <Button size="sm" className="h-7 gap-1" onClick={openBulkAssign}>
             <Shuffle className="h-3 w-3" /> Bulk Assign to HR
           </Button>
-          <Button size="sm" variant="outline" className="h-7" onClick={() => onExport(selectedRows)}>
-            Export Selected
-          </Button>
+          {hasExport && (
+            <Button size="sm" variant="outline" className="h-7" onClick={() => onExport(selectedRows)}>
+              Export Selected
+            </Button>
+          )}
         </div>
       )}
 
@@ -418,11 +424,17 @@ export default function HRLeadsPage() {
                 <TableCell>{new Date(lead.created_at).toLocaleDateString()}</TableCell>
                 <TableCell>
                   {lead.resume_path ? (
-                    <Button variant="ghost" size="sm" className="h-7 gap-1 text-teal-600 px-2" asChild>
-                      <a href={resumePublicHref(lead.resume_path)} target="_blank" rel="noopener noreferrer">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 gap-1 text-teal-600 px-2"
+                      type="button"
+                      onClick={() => {
+                        void openProtectedUpload(lead.resume_path).catch(() => {});
+                      }}
+                    >
                         <FileText className="h-3.5 w-3.5" />
                         View
-                      </a>
                     </Button>
                   ) : (
                     <span className="text-xs text-muted-foreground">—</span>
@@ -539,10 +551,15 @@ export default function HRLeadsPage() {
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">Resume</p>
-                        <Button variant="link" className="h-auto p-0 text-teal-600 text-sm" asChild>
-                          <a href={resumePublicHref(detailLead.resume_path)} target="_blank" rel="noopener noreferrer">
+                        <Button
+                          variant="link"
+                          className="h-auto p-0 text-teal-600 text-sm"
+                          type="button"
+                          onClick={() => {
+                            void openProtectedUpload(detailLead.resume_path).catch(() => {});
+                          }}
+                        >
                             View file
-                          </a>
                         </Button>
                       </div>
                     </div>

@@ -412,6 +412,23 @@ if ($action === 'webhook' && $method === 'POST') {
 
 $tokenData = verifyToken();
 
+// Sales reps only when page_access.payments is enabled (admins/managers always).
+$__payRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+if ($__payRole === 'sales_representative') {
+    $__db = paymentLinksDb();
+    ensureUsersPageAccessColumn($__db);
+    try {
+        $__st = $__db->prepare('SELECT role, page_access_json FROM users WHERE id = ? LIMIT 1');
+        $__st->execute([(string) ($tokenData['user_id'] ?? '')]);
+        $__row = $__st->fetch(PDO::FETCH_ASSOC) ?: null;
+    } catch (Throwable $e) {
+        $__row = null;
+    }
+    if (!userCanAccessPaymentsPage($tokenData, is_array($__row) ? $__row : null)) {
+        respond(['error' => 'Forbidden — Payment links access is disabled for this account'], 403);
+    }
+}
+
 try {
     switch ($action) {
         case 'crm_list':

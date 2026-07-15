@@ -25,6 +25,8 @@ interface AuthUser {
 
   org_id?: string | null;
 
+  page_access?: { payments?: boolean; offer_letters?: boolean } | null;
+
 }
 
 

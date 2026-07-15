@@ -1,9 +1,8 @@
 <?php
 /**
- * Org-scoped WhatsApp helpers (Meta Cloud API or Interakt).
+ * Org-scoped WhatsApp helpers (Meta Cloud API).
  */
 require_once __DIR__ . '/lib/MetaWhatsApp.php';
-require_once __DIR__ . '/lib/InteraktWhatsApp.php';
 
 function commEnsureOrgWhatsappTable(PDO $db): void
 {
@@ -39,10 +38,6 @@ function commEnsureOrgWhatsappTable(PDO $db): void
 
 function commNormalizeWhatsappProvider(?string $provider): string
 {
-    $p = strtolower(trim((string) $provider));
-    if ($p === 'interakt') {
-        return 'interakt';
-    }
     return 'meta';
 }
 
@@ -76,8 +71,7 @@ function commLoadOrgConfig(PDO $db, string $orgId): array
 
 function commOrgWhatsappProvider(PDO $db, string $orgId): string
 {
-    $cfg = commLoadOrgConfig($db, $orgId);
-    return commNormalizeWhatsappProvider($cfg['provider'] ?? 'meta');
+    return 'meta';
 }
 
 function commMetaClientForOrg(PDO $db, string $orgId): MetaWhatsApp
@@ -86,20 +80,12 @@ function commMetaClientForOrg(PDO $db, string $orgId): MetaWhatsApp
     return MetaWhatsApp::fromPlatformConfig($cfg);
 }
 
-function commInteraktClientForOrg(PDO $db, string $orgId): InteraktWhatsApp
-{
-    $cfg = commLoadOrgConfig($db, $orgId);
-    return InteraktWhatsApp::fromPlatformConfig($cfg);
-}
-
 function commOrgWebhookUrl(): string
 {
-    if (defined('CRM_PUBLIC_URL') && CRM_PUBLIC_URL !== '') {
-        return rtrim((string) CRM_PUBLIC_URL, '/') . '/api/whatsapp_webhook.php';
-    }
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-    return $scheme . '://' . $host . '/api/whatsapp_webhook.php';
+    $base = (defined('CRM_PUBLIC_URL') && CRM_PUBLIC_URL !== '')
+        ? rtrim((string) CRM_PUBLIC_URL, '/')
+        : syncpediaPublicSiteUrl();
+    return $base . '/api/whatsapp/webhook';
 }
 
 /** Find org_id from Meta phone_number_id or WABA id (webhook routing). */
@@ -125,31 +111,6 @@ function commResolveOrgFromMetaIds(PDO $db, ?string $phoneNumberId, ?string $wab
     return null;
 }
 
-/** Resolve org for Interakt webhooks. */
-function commResolveOrgFromInteraktWebhook(PDO $db, ?string $providerMessageId, ?string $callbackData): ?string
-{
-    commEnsureOrgWhatsappTable($db);
-    if ($callbackData) {
-        $st = $db->prepare('SELECT org_id FROM comm_whatsapp_messages WHERE id = ? LIMIT 1');
-        $st->execute([$callbackData]);
-        $org = $st->fetchColumn();
-        if ($org) {
-            return (string) $org;
-        }
-    }
-    if ($providerMessageId) {
-        $st = $db->prepare('SELECT org_id FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
-        $st->execute([$providerMessageId]);
-        $org = $st->fetchColumn();
-        if ($org) {
-            return (string) $org;
-        }
-    }
-    $st = $db->query("SELECT org_id FROM org_whatsapp_config WHERE provider = 'interakt' AND is_active = 1 ORDER BY updated_at DESC LIMIT 1");
-    $org = $st ? $st->fetchColumn() : false;
-    return $org ? (string) $org : null;
-}
-
 function commMaskKey(?string $key): ?string
 {
     if ($key === null || $key === '') {
@@ -164,31 +125,35 @@ function commMaskKey(?string $key): ?string
 
 function commFormatOrgConfigForResponse(array $row, bool $includeSecrets): array
 {
-    if (!$includeSecrets) {
-        unset($row['api_key'], $row['app_secret'], $row['webhook_verify_token']);
-        $row['api_key_set'] = !empty($row['api_key']);
-        $row['app_secret_set'] = !empty($row['app_secret']);
-    } else {
-        $row['api_key_masked'] = commMaskKey($row['api_key'] ?? '');
-        $row['app_secret_set'] = !empty($row['app_secret']);
+    $apiSet = !empty($row['api_key']);
+    $secretSet = !empty($row['app_secret']);
+    $tokenSet = !empty($row['webhook_verify_token']);
+    // Never return raw secrets — even to privileged callers.
+    unset($row['api_key'], $row['app_secret'], $row['webhook_verify_token']);
+    $row['api_key_set'] = $apiSet;
+    $row['app_secret_set'] = $secretSet;
+    $row['webhook_verify_token_set'] = $tokenSet;
+    if ($includeSecrets) {
+        $row['api_key_masked'] = $apiSet ? '••••set••••' : '';
     }
-    $row['provider'] = commNormalizeWhatsappProvider($row['provider'] ?? 'meta');
+    $row['provider'] = 'meta';
     $row['webhook_url_suggested'] = commOrgWebhookUrl();
     return $row;
 }
 
-function commTestWhatsappConnectionForOrg(PDO $db, string $orgId): array
+function commTestWhatsappConnectionForOrg(PDO $db, string $orgId, array $overrides = []): array
 {
-    $provider = commOrgWhatsappProvider($db, $orgId);
-    if ($provider === 'interakt') {
-        $client = commInteraktClientForOrg($db, $orgId);
-        if (!$client->isConfigured()) {
-            return ['ok' => false, 'error' => 'Interakt API key is required'];
+    $cfg = commLoadOrgConfig($db, $orgId);
+    if ($cfg === []) {
+        $cfg = ['org_id' => $orgId, 'provider' => 'meta'];
+    }
+    foreach (['api_key', 'app_secret', 'phone_number_id', 'waba_id', 'graph_api_version'] as $field) {
+        if (isset($overrides[$field]) && trim((string) $overrides[$field]) !== '') {
+            $cfg[$field] = trim((string) $overrides[$field]);
         }
-        return $client->testConnection();
     }
 
-    $meta = commMetaClientForOrg($db, $orgId);
+    $meta = MetaWhatsApp::fromPlatformConfig($cfg);
     if (!$meta->isConfigured()) {
         return ['ok' => false, 'error' => 'Meta access token and Phone Number ID are required'];
     }
@@ -200,7 +165,119 @@ function commTestWhatsappConnectionForOrg(PDO $db, string $orgId): array
 }
 
 /**
- * Send via org's WhatsApp provider (Meta or Interakt).
+ * Finish Meta Embedded Signup: exchange code, persist org config, verify connection.
+ *
+ * @return array{ok:bool,error?:string,data?:array}
+ */
+function commCompleteEmbeddedSignup(PDO $db, string $orgId, string $userId, string $code, string $phoneNumberId, string $wabaId, string $appSecret): array
+{
+    $appId = commResolveMetaAppId($db);
+    if ($appId === '') {
+        return ['ok' => false, 'error' => 'Meta App ID is not configured. Ask your platform admin to complete Meta Partner setup.'];
+    }
+    if ($appSecret === '') {
+        return ['ok' => false, 'error' => 'Meta App Secret is not configured on the server.'];
+    }
+
+    $exchange = commExchangeEmbeddedSignupCode($appId, $appSecret, $code);
+    if (!$exchange['ok']) {
+        return ['ok' => false, 'error' => $exchange['error'] ?? 'Token exchange failed'];
+    }
+    $accessToken = (string) $exchange['access_token'];
+
+    $meta = new MetaWhatsApp([
+        'api_key' => $accessToken,
+        'phone_number_id' => $phoneNumberId,
+        'waba_id' => $wabaId,
+        'app_secret' => $appSecret,
+        'graph_api_version' => 'v21.0',
+    ]);
+
+    $register = $meta->registerCloudApiPhone();
+    $phoneRegistered = $register['ok'];
+    if (!$register['ok']) {
+        $regErr = strtolower((string) ($register['error'] ?? ''));
+        $phoneRegistered = str_contains($regErr, 'already') || str_contains($regErr, 'registered');
+        if (!$phoneRegistered) {
+            error_log('[embedded_signup] register phone: ' . ($register['error'] ?? 'unknown'));
+        }
+    }
+
+    $subscribe = $meta->subscribeAppToWaba();
+    $webhooksSubscribed = $subscribe['ok'];
+    if (!$subscribe['ok']) {
+        error_log('[embedded_signup] subscribe waba: ' . ($subscribe['error'] ?? 'unknown'));
+    }
+
+    $test = $meta->testConnection();
+    if (!$test['ok']) {
+        return ['ok' => false, 'error' => $test['error'] ?? 'Connected to Meta but could not verify the phone number'];
+    }
+
+    $businessPhone = (string) ($test['display_phone_number'] ?? '');
+    $existing = commLoadOrgConfig($db, $orgId);
+    $verifyToken = trim((string) ($existing['webhook_verify_token'] ?? ''));
+    if ($verifyToken === '') {
+        $verifyToken = bin2hex(random_bytes(16));
+    }
+
+    if ($existing !== []) {
+        $db->prepare(
+            'UPDATE org_whatsapp_config SET provider = ?, api_key = ?, app_secret = ?, phone_number_id = ?, business_phone = ?, waba_id = ?, webhook_verify_token = ?, graph_api_version = ?, connection_status = ?, is_active = 1, configured_by = ? WHERE id = ?',
+        )->execute([
+            'meta',
+            $accessToken,
+            $appSecret,
+            $phoneNumberId,
+            $businessPhone !== '' ? $businessPhone : ($existing['business_phone'] ?? null),
+            $wabaId,
+            $verifyToken,
+            'v21.0',
+            'connected',
+            $userId,
+            $existing['id'],
+        ]);
+    } else {
+        $id = generateUUID();
+        $db->prepare(
+            'INSERT INTO org_whatsapp_config (id, org_id, provider, api_key, app_secret, phone_number_id, business_phone, waba_id, webhook_verify_token, graph_api_version, connection_status, is_active, configured_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        )->execute([
+            $id,
+            $orgId,
+            'meta',
+            $accessToken,
+            $appSecret,
+            $phoneNumberId,
+            $businessPhone !== '' ? $businessPhone : null,
+            $wabaId,
+            $verifyToken,
+            'v21.0',
+            'connected',
+            1,
+            $userId,
+        ]);
+    }
+
+    return [
+        'ok' => true,
+        'data' => [
+            'display_phone_number' => $test['display_phone_number'] ?? null,
+            'verified_name' => $test['verified_name'] ?? null,
+            'phone_number_id' => $phoneNumberId,
+            'waba_id' => $wabaId,
+            'webhook_verify_token' => $verifyToken,
+            'webhook_url_suggested' => commOrgWebhookUrl(),
+            'onboarding' => [
+                'phone_registered' => $phoneRegistered,
+                'webhooks_subscribed' => $webhooksSubscribed,
+                'embedded_signup_version' => 'v4',
+            ],
+        ],
+    ];
+}
+
+/**
+ * Send via org's Meta WhatsApp Cloud API.
  * @param array<int,string> $bodyParams
  */
 function commSendViaOrgProvider(PDO $db, string $orgId, string $phone, array $template, array $bodyParams = [], ?string $callbackData = null): array
@@ -210,20 +287,11 @@ function commSendViaOrgProvider(PDO $db, string $orgId, string $phone, array $te
         return ['ok' => false, 'error' => 'Your organization has not connected WhatsApp yet. Ask your admin to set it up in Communications → WhatsApp Setup.'];
     }
 
-    $provider = commNormalizeWhatsappProvider($cfg['provider'] ?? 'meta');
     $templateName = trim((string) ($template['provider_template_id'] ?? ''));
     if ($templateName === '') {
         $templateName = MetaWhatsApp::sanitizeTemplateName((string) ($template['name'] ?? ''));
     }
     $lang = (string) ($template['language'] ?? 'en');
-
-    if ($provider === 'interakt') {
-        $interakt = commInteraktClientForOrg($db, $orgId);
-        if (!$interakt->isConfigured()) {
-            return ['ok' => false, 'error' => 'Interakt API key is missing. Add it in WhatsApp Setup.'];
-        }
-        return $interakt->sendTemplateMessage($phone, $templateName, $lang, $bodyParams, [], $callbackData);
-    }
 
     $meta = commMetaClientForOrg($db, $orgId);
     if (!$meta->isConfigured()) {
@@ -232,15 +300,23 @@ function commSendViaOrgProvider(PDO $db, string $orgId, string $phone, array $te
     return $meta->sendTemplateMessage($phone, $templateName, $lang, $bodyParams);
 }
 
-function commSyncMetaTemplatesForOrg(PDO $db, string $orgId, string $userId): array
+/** Send a session text message (Meta Cloud API — 24h customer care window). */
+function commSendTextViaOrgProvider(PDO $db, string $orgId, string $phone, string $text): array
 {
-    if (commOrgWhatsappProvider($db, $orgId) === 'interakt') {
-        return [
-            'ok' => false,
-            'error' => 'Template sync from API is not available for Interakt. Create templates in Interakt dashboard, then add matching code names in CRM and mark them approved.',
-        ];
+    $cfg = commLoadOrgConfig($db, $orgId);
+    if ($cfg === [] || !(int) ($cfg['is_active'] ?? 0)) {
+        return ['ok' => false, 'error' => 'Your organization has not connected WhatsApp yet.'];
     }
 
+    $meta = commMetaClientForOrg($db, $orgId);
+    if (!$meta->isConfigured()) {
+        return ['ok' => false, 'error' => 'Meta access token and Phone Number ID are required'];
+    }
+    return $meta->sendTextMessage($phone, $text);
+}
+
+function commSyncMetaTemplatesForOrg(PDO $db, string $orgId, string $userId): array
+{
     $meta = commMetaClientForOrg($db, $orgId);
     $list = $meta->listMessageTemplates(200);
     if (!$list['ok']) {

@@ -87,6 +87,7 @@ export function setPageMeta(input: PageMetaInput) {
 export function isPublicIndexablePath(pathname: string): boolean {
   const p = pathname.split("?")[0].replace(/\/+$/, "") || "/";
   if (p === "/apply") return true;
+  if (p === "/privacy" || p === "/terms") return true;
   if (p.startsWith("/verify/")) return true;
   return false;
 }
@@ -101,6 +102,26 @@ export function defaultCrmNoIndexMeta() {
 
 export function applyRouteMeta(pathname: string, search: string) {
   const base = typeof window !== "undefined" ? window.location.origin : SEO_CRM_ORIGIN;
+
+  if (pathname === "/privacy") {
+    setPageMeta({
+      title: "Privacy Policy | Syncpedia",
+      description: "Privacy Policy for Syncpedia CRM — data collection, WhatsApp messaging, and your rights.",
+      canonical: `${base}/privacy`,
+      robots: "index, follow",
+    });
+    return;
+  }
+
+  if (pathname === "/terms") {
+    setPageMeta({
+      title: "Terms of Service | Syncpedia",
+      description: "Terms of Service for using the Syncpedia CRM platform.",
+      canonical: `${base}/terms`,
+      robots: "index, follow",
+    });
+    return;
+  }
 
   if (pathname.startsWith("/verify/")) {
     setPageMeta({

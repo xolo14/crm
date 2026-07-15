@@ -92,7 +92,7 @@ export function PayslipComposeEmailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+      <DialogContent className="max-h-[min(90dvh,100%)] max-w-4xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Compose Email</DialogTitle>
           <p className="text-sm text-muted-foreground">Resend the payslip PDF to the employee.</p>

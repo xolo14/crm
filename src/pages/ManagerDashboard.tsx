@@ -54,7 +54,12 @@ export default function ManagerDashboard() {
       setStudentsCount(dashData.students_count || 0);
       setTotalRevenue(dashData.total_revenue || 0);
       setPendingRevenue(dashData.pending_revenue || 0);
-      setTasks(Array.isArray(tasksData) ? tasksData.slice(0, 8) : (tasksData.tasks || []).slice(0, 8));
+      {
+        const allTasks = Array.isArray(tasksData)
+          ? tasksData
+          : (tasksData?.data || tasksData?.tasks || []);
+        setTasks(allTasks.slice(0, 8));
+      }
 
       const profiles = dashData.profiles || [];
       const refLeads = dashData.leads || [];

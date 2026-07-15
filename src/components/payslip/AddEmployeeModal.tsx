@@ -273,7 +273,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto sm:max-w-xl">
+      <DialogContent className="max-h-[min(90dvh,100%)] max-w-lg overflow-y-auto md:max-w-xl">
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit employee" : "Add employee"}</DialogTitle>
         </DialogHeader>

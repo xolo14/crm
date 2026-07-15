@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
@@ -13,7 +14,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Building2, Users, TrendingUp, IndianRupee, Plus, Settings, Eye, Loader2, BarChart3, Shield, Globe, GraduationCap, Monitor, KeyRound } from 'lucide-react';
+import { Building2, Users, TrendingUp, IndianRupee, Plus, Settings, Eye, Loader2, Shield, KeyRound, BarChart3 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -23,169 +24,6 @@ import {
 } from '@/lib/orgFeatures';
 import { generateTempPassword } from '@/lib/randomPassword';
 
-// Industry-specific feature sections
-const INDUSTRY_PRESETS: Record<string, {
-  label: string;
-  icon: typeof Globe;
-  color: string;
-  bg: string;
-  description: string;
-  sections: { title: string; features: { key: string; label: string; description: string }[] }[];
-}> = {
-  abroad_consultant: {
-    label: 'Abroad Consultant',
-    icon: Globe,
-    color: 'text-blue-600',
-    bg: 'bg-blue-500/10 border-blue-200',
-    description: 'Study abroad, visa consulting, immigration services',
-    sections: [
-      {
-        title: 'Core CRM',
-        features: [
-          { key: 'leads', label: 'Leads Management', description: 'Track & manage student inquiries' },
-          { key: 'contacts', label: 'Contacts', description: 'Manage student & parent contacts' },
-          { key: 'tasks', label: 'Tasks', description: 'Follow-up tasks & reminders' },
-          { key: 'notifications', label: 'Notifications', description: 'Real-time alerts & updates' },
-        ],
-      },
-      {
-        title: 'Student Management',
-        features: [
-          { key: 'students', label: 'Student Profiles', description: 'Manage enrolled students' },
-          { key: 'courses', label: 'Courses / Programs', description: 'University programs & courses' },
-          { key: 'batches', label: 'Batches / Intakes', description: 'Intake seasons & batches' },
-        ],
-      },
-      {
-        title: 'Visa & Applications',
-        features: [
-          { key: 'deals', label: 'Application Pipeline', description: 'Track visa & admission stages' },
-          { key: 'visa_tracking', label: 'Visa Tracking', description: 'Track visa application status' },
-          { key: 'document_checklist', label: 'Document Checklist', description: 'Required documents tracker' },
-        ],
-      },
-      {
-        title: 'Finance & Reports',
-        features: [
-          { key: 'payments', label: 'Payments', description: 'Service fees & installments' },
-          { key: 'daily_reports', label: 'Daily Reports', description: 'Team daily activity reports' },
-        ],
-      },
-      {
-        title: 'Portals & Access',
-        features: [
-          { key: 'marketing_access', label: 'Marketing Portal', description: 'Enable marketing portal for this org. Admin can create marketing accounts.' },
-          { key: 'certificates', label: 'Certificates', description: 'Enable certificates module for this organization.' },
-          { key: 'offer_letters', label: 'Offer Letters', description: 'Offer letter templates and sending. Off by default; enable per organization.' },
-          { key: 'fresher_salary', label: 'Fresher Salary Tracker', description: 'Sales fresher salary evaluation. Off by default; enable per organization.' },
-        ],
-      },
-    ],
-  },
-  edutech: {
-    label: 'EdTech',
-    icon: GraduationCap,
-    color: 'text-emerald-600',
-    bg: 'bg-emerald-500/10 border-emerald-200',
-    description: 'Online courses, training institutes, coaching centers',
-    sections: [
-      {
-        title: 'Core CRM',
-        features: [
-          { key: 'leads', label: 'Leads Management', description: 'Capture & nurture student leads' },
-          { key: 'contacts', label: 'Contacts', description: 'Student & parent directory' },
-          { key: 'tasks', label: 'Tasks', description: 'Team task management' },
-          { key: 'notifications', label: 'Notifications', description: 'Push notifications & alerts' },
-        ],
-      },
-      {
-        title: 'Learning Management',
-        features: [
-          { key: 'students', label: 'Student Profiles', description: 'Track enrolled learners' },
-          { key: 'courses', label: 'Course Catalog', description: 'Manage courses & curriculum' },
-          { key: 'batches', label: 'Batch Management', description: 'Cohorts, schedules & trainers' },
-          { key: 'lms_integration', label: 'LMS Integration', description: 'Learning platform connection' },
-        ],
-      },
-      {
-        title: 'Sales Pipeline',
-        features: [
-          { key: 'deals', label: 'Deals Pipeline', description: 'Track enrollment conversions' },
-          { key: 'referral_system', label: 'Referral System', description: 'Student referral tracking' },
-          { key: 'demo_scheduling', label: 'Demo Scheduling', description: 'Schedule free demo classes' },
-        ],
-      },
-      {
-        title: 'Finance & Reports',
-        features: [
-          { key: 'payments', label: 'Payments & EMI', description: 'Fee collection & installments' },
-          { key: 'daily_reports', label: 'Daily Reports', description: 'Team performance tracking' },
-        ],
-      },
-      {
-        title: 'Portals & Access',
-        features: [
-          { key: 'marketing_access', label: 'Marketing Portal', description: 'Enable marketing portal for this org. Admin can create marketing accounts.' },
-          { key: 'certificates', label: 'Certificates', description: 'Enable certificates module for this organization.' },
-          { key: 'offer_letters', label: 'Offer Letters', description: 'Offer letter templates and sending. Off by default; enable per organization.' },
-          { key: 'fresher_salary', label: 'Fresher Salary Tracker', description: 'Sales fresher salary evaluation. Off by default; enable per organization.' },
-        ],
-      },
-    ],
-  },
-  it_services: {
-    label: 'IT Services',
-    icon: Monitor,
-    color: 'text-purple-600',
-    bg: 'bg-purple-500/10 border-purple-200',
-    description: 'Software companies, IT staffing, tech consulting',
-    sections: [
-      {
-        title: 'Core CRM',
-        features: [
-          { key: 'leads', label: 'Leads Management', description: 'Track client inquiries' },
-          { key: 'contacts', label: 'Contacts', description: 'Client & vendor directory' },
-          { key: 'tasks', label: 'Tasks', description: 'Project tasks & follow-ups' },
-          { key: 'notifications', label: 'Notifications', description: 'Alerts & reminders' },
-        ],
-      },
-      {
-        title: 'Project & Deals',
-        features: [
-          { key: 'deals', label: 'Deals Pipeline', description: 'Track project proposals & deals' },
-          { key: 'project_tracking', label: 'Project Tracking', description: 'Active project management' },
-          { key: 'client_portal', label: 'Client Portal', description: 'Client self-service access' },
-        ],
-      },
-      {
-        title: 'Talent & Training',
-        features: [
-          { key: 'students', label: 'Candidates / Trainees', description: 'Manage IT trainees' },
-          { key: 'courses', label: 'Training Programs', description: 'Tech courses & certifications' },
-          { key: 'batches', label: 'Training Batches', description: 'Cohort-based training' },
-        ],
-      },
-      {
-        title: 'Finance & Reports',
-        features: [
-          { key: 'payments', label: 'Invoicing & Payments', description: 'Client billing & payments' },
-          { key: 'daily_reports', label: 'Daily Reports', description: 'Developer activity logs' },
-        ],
-      },
-      {
-        title: 'Portals & Access',
-        features: [
-          { key: 'marketing_access', label: 'Marketing Portal', description: 'Enable marketing portal for this org. Admin can create marketing accounts.' },
-          { key: 'certificates', label: 'Certificates', description: 'Enable certificates module for this organization.' },
-          { key: 'offer_letters', label: 'Offer Letters', description: 'Offer letter templates and sending. Off by default; enable per organization.' },
-          { key: 'fresher_salary', label: 'Fresher Salary Tracker', description: 'Sales fresher salary evaluation. Off by default; enable per organization.' },
-        ],
-      },
-    ],
-  },
-};
-
-// Flatten implemented feature keys (only pages that exist in this CRM)
 const ALL_FEATURE_KEYS = IMPLEMENTED_FEATURE_KEYS;
 const FEATURE_SECTIONS = implementedFeaturesBySection();
 
@@ -207,7 +45,6 @@ export default function SuperAdminPanel() {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [viewOrg, setViewOrg] = useState<any | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'disabled'>('all');
-  const [selectedIndustry, setSelectedIndustry] = useState<string>('');
   const [createFeatures, setCreateFeatures] = useState<Record<string, boolean>>({});
   const [form, setForm] = useState({
     name: '', slug: '', plan: 'starter', max_users: '10',
@@ -248,14 +85,8 @@ export default function SuperAdminPanel() {
     finally { setLoading(false); }
   };
 
-  const selectIndustry = (key: string) => {
-    setSelectedIndustry(key);
-    setCreateFeatures(defaultFeaturesForNewOrg());
-  };
-
   const handleCreate = async () => {
     if (!form.name || !form.slug) { toast({ variant: 'destructive', title: 'Name and slug required' }); return; }
-    if (!selectedIndustry) { toast({ variant: 'destructive', title: 'Please select an industry type' }); return; }
     if (createAdminAccount && (!form.admin_name.trim() || !form.admin_email.trim())) {
       toast({ variant: 'destructive', title: 'Admin name and email required', description: 'Turn off “Create org admin login” if you want to add credentials later from the org row.' });
       return;
@@ -266,7 +97,6 @@ export default function SuperAdminPanel() {
         ...form,
         create_admin: createAdminAccount,
         max_users: parseInt(form.max_users) || 10,
-        industry: selectedIndustry,
         features: createFeatures,
       }) as { email_sent?: boolean; email_error?: string };
       if (data?.email_sent) {
@@ -283,7 +113,6 @@ export default function SuperAdminPanel() {
       setShowCreate(false);
       setForm({ name: '', slug: '', plan: 'starter', max_users: '10', admin_name: '', admin_email: '', admin_password: generateTempPassword() });
       setCreateAdminAccount(true);
-      setSelectedIndustry('');
       setCreateFeatures({});
       fetchOrgs();
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
@@ -355,7 +184,7 @@ export default function SuperAdminPanel() {
     try {
       await switchOrg(null as any);
       toast({ title: 'Back to master view' });
-      fetchOrgs();
+      navigate('/');
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };
 
@@ -455,7 +284,7 @@ export default function SuperAdminPanel() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={handleBackToMaster} className="gap-1.5"><BarChart3 className="h-3.5 w-3.5" />All Organizations</Button>
+          <Button variant="outline" size="sm" onClick={handleBackToMaster} className="gap-1.5"><BarChart3 className="h-3.5 w-3.5" />Dashboard</Button>
           <Button
             variant="outline"
             size="sm"
@@ -467,52 +296,21 @@ export default function SuperAdminPanel() {
             {syncPlatformSalesLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Users className="h-3.5 w-3.5" />}
             Sync platform sales
           </Button>
-          <Dialog open={showCreate} onOpenChange={(open) => { setShowCreate(open); if (!open) { setSelectedIndustry(''); setCreateFeatures({}); } }}>
+          <Dialog open={showCreate} onOpenChange={(open) => {
+            setShowCreate(open);
+            if (open) setCreateFeatures(defaultFeaturesForNewOrg());
+            else setCreateFeatures({});
+          }}>
             <DialogTrigger asChild>
               <Button size="sm" className="gap-1.5"><Plus className="h-3.5 w-3.5" />Add Organization</Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogContent className="max-w-2xl max-h-[min(90dvh,100%)] overflow-y-auto">
               <DialogHeader><DialogTitle>Create New Organization</DialogTitle></DialogHeader>
               <div className="space-y-5">
-                {/* Step 1: Industry Type Selection */}
                 <div>
-                  <Label className="text-sm font-semibold mb-3 block">Select Industry Type *</Label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {Object.entries(INDUSTRY_PRESETS).map(([key, preset]) => {
-                      const Icon = preset.icon;
-                      const isSelected = selectedIndustry === key;
-                      return (
-                        <button
-                          key={key}
-                          type="button"
-                          onClick={() => selectIndustry(key)}
-                          className={`relative p-4 rounded-xl border-2 text-left transition-all hover:shadow-md ${
-                            isSelected
-                              ? `${preset.bg} border-current shadow-md ring-2 ring-offset-2 ring-current`
-                              : 'border-border/50 hover:border-border'
-                          }`}
-                        >
-                          <div className={`h-10 w-10 rounded-lg ${preset.bg.split(' ')[0]} flex items-center justify-center mb-2.5`}>
-                            <Icon className={`h-5 w-5 ${preset.color}`} />
-                          </div>
-                          <p className={`text-sm font-bold ${isSelected ? preset.color : 'text-foreground'}`}>{preset.label}</p>
-                          <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{preset.description}</p>
-                          {isSelected && (
-                            <div className={`absolute top-2 right-2 h-5 w-5 rounded-full ${preset.bg.split(' ')[0]} flex items-center justify-center`}>
-                              <svg className={`h-3 w-3 ${preset.color}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
-                            </div>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Step 2: Org Details */}
-                <div className="border-t pt-4">
                   <Label className="text-sm font-semibold mb-3 block">Organization Details</Label>
                   <div className="grid grid-cols-2 gap-3">
-                    <div><Label className="text-xs">Name *</Label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value, slug: e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '-') }))} placeholder="Acme Consulting" className="h-10" /></div>
+                    <div><Label className="text-xs">Name *</Label><Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value, slug: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-') }))} placeholder="Acme Consulting" className="h-10" /></div>
                     <div><Label className="text-xs">Slug *</Label><Input value={form.slug} onChange={e => setForm(f => ({ ...f, slug: e.target.value }))} placeholder="acme-consulting" className="h-10 font-mono text-xs" /></div>
                   </div>
                   <div className="grid grid-cols-2 gap-3 mt-3">
@@ -532,48 +330,42 @@ export default function SuperAdminPanel() {
                   </div>
                 </div>
 
-                {/* Step 3: Feature Checkboxes (visible after industry selected) */}
-                {selectedIndustry && (
-                  <div className="border-t pt-4">
-                    <div className="flex items-center gap-2 mb-4">
-                      <Label className="text-sm font-semibold">Enabled modules</Label>
-                      <Badge variant="outline" className="text-[10px] ml-auto">
-                        {Object.values(createFeatures).filter(Boolean).length} selected
-                      </Badge>
-                    </div>
-                    <div className="space-y-5">
-                      {FEATURE_SECTIONS.map(section => (
-                        <div key={section.title} className="space-y-2">
-                          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{section.title}</p>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                            {section.features.map(feat => (
-                              <label
-                                key={feat.key}
-                                className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all hover:bg-accent/50 ${
-                                  createFeatures[feat.key] ? 'border-primary/30 bg-primary/5' : 'border-border/50'
-                                }`}
-                              >
-                                <Checkbox
-                                  checked={createFeatures[feat.key] ?? false}
-                                  onCheckedChange={(checked) =>
-                                    setCreateFeatures(prev => ({ ...prev, [feat.key]: !!checked }))
-                                  }
-                                  className="mt-0.5"
-                                />
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-sm font-medium leading-none">{feat.label}</p>
-                                  <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{feat.description}</p>
-                                </div>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                <div className="border-t pt-4">
+                  <div className="flex items-center gap-2 mb-4">
+                    <Label className="text-sm font-semibold">Enabled modules</Label>
+                    <Badge variant="outline" className="text-[10px] ml-auto">
+                      {Object.values(createFeatures).filter(Boolean).length} selected
+                    </Badge>
                   </div>
-                )}
+                  <div className="space-y-5">
+                    {FEATURE_SECTIONS.map(section => (
+                      <div key={section.title} className="space-y-2">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{section.title}</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {section.features.map(feat => (
+                            <label
+                              key={feat.key}
+                              className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all hover:bg-accent/50 ${createFeatures[feat.key] ? 'border-primary/30 bg-primary/5' : 'border-border/50'}`}
+                            >
+                              <Checkbox
+                                checked={createFeatures[feat.key] ?? false}
+                                onCheckedChange={(checked) =>
+                                  setCreateFeatures(prev => ({ ...prev, [feat.key]: !!checked }))
+                                }
+                                className="mt-0.5"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium leading-none">{feat.label}</p>
+                                <p className="text-[11px] text-muted-foreground mt-1 leading-snug">{feat.description}</p>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
 
-                {/* Step 4: Admin Account */}
                 <div className="border-t pt-4">
                   <div className="flex items-start gap-3 mb-3">
                     <Checkbox id="create-org-admin" checked={createAdminAccount} onCheckedChange={v => setCreateAdminAccount(!!v)} className="mt-1" />
@@ -588,7 +380,7 @@ export default function SuperAdminPanel() {
                         <div><Label className="text-xs">Admin Name *</Label><Input value={form.admin_name} onChange={e => setForm(f => ({ ...f, admin_name: e.target.value }))} placeholder="John Doe" className="h-10" /></div>
                         <div><Label className="text-xs">Admin Email *</Label><Input type="email" value={form.admin_email} onChange={e => setForm(f => ({ ...f, admin_email: e.target.value }))} placeholder="admin@acme.com" className="h-10" /></div>
                       </div>
-                      <div className="mt-3"><Label className="text-xs">Initial Password</Label><Input value={form.admin_password} onChange={e => setForm(f => ({ ...f, admin_password: e.target.value }))} className="h-10" /></div>
+                      <div className="mt-3"><Label className="text-xs">Initial Password</Label><PasswordInput value={form.admin_password} onChange={e => setForm(f => ({ ...f, admin_password: e.target.value }))} className="h-10" autoComplete="new-password" /></div>
                     </>
                   )}
                 </div>
@@ -638,21 +430,12 @@ export default function SuperAdminPanel() {
           </div>
           {isMobile ? (
             <div className="space-y-2 px-3">
-              {filteredOrgs.length === 0 ? <p className="text-center py-6 text-muted-foreground text-sm">No organizations for this filter</p> : filteredOrgs.map(o => {
-                const industryPreset = o.industry ? INDUSTRY_PRESETS[o.industry] : null;
-                return (
+              {filteredOrgs.length === 0 ? <p className="text-center py-6 text-muted-foreground text-sm">No organizations for this filter</p> : filteredOrgs.map(o => (
                   <div key={o.id} className="border border-border/50 rounded-lg p-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-sm font-semibold">{o.name}</p>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <p className="text-[10px] text-muted-foreground font-mono">{o.slug}</p>
-                          {industryPreset && (
-                            <Badge variant="outline" className={`text-[9px] ${industryPreset.bg}`}>
-                              {industryPreset.label}
-                            </Badge>
-                          )}
-                        </div>
+                        <p className="text-[10px] text-muted-foreground font-mono mt-0.5">{o.slug}</p>
                       </div>
                       <Badge variant={o.is_active ? 'default' : 'secondary'} className="text-[10px]">{o.is_active ? 'Active' : 'Inactive'}</Badge>
                     </div>
@@ -674,15 +457,13 @@ export default function SuperAdminPanel() {
                       </Button>
                     </div>
                   </div>
-                );
-              })}
+              ))}
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Organization</TableHead>
-                  <TableHead>Industry</TableHead>
                   <TableHead>Plan</TableHead>
                   <TableHead className="text-center">Users</TableHead>
                   <TableHead className="text-center">Leads</TableHead>
@@ -694,23 +475,11 @@ export default function SuperAdminPanel() {
               </TableHeader>
               <TableBody>
                 {filteredOrgs.length === 0 ? (
-                  <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">No organizations. Click "Add Organization" to get started.</TableCell></TableRow>
-                ) : filteredOrgs.map(o => {
-                  const industryPreset = o.industry ? INDUSTRY_PRESETS[o.industry] : null;
-                  return (
+                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">No organizations. Click "Add Organization" to get started.</TableCell></TableRow>
+                ) : filteredOrgs.map(o => (
                     <TableRow key={o.id}>
                       <TableCell>
                         <div><p className="font-medium">{o.name}</p><p className="text-xs text-muted-foreground font-mono">{o.slug}</p></div>
-                      </TableCell>
-                      <TableCell>
-                        {industryPreset ? (
-                          <Badge variant="outline" className={`text-xs ${industryPreset.bg}`}>
-                            <industryPreset.icon className={`h-3 w-3 mr-1 ${industryPreset.color}`} />
-                            {industryPreset.label}
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
                       </TableCell>
                       <TableCell><Badge variant="outline" className="capitalize text-xs">{o.plan}</Badge></TableCell>
                       <TableCell className="text-center font-medium">{o.user_count}</TableCell>
@@ -732,15 +501,14 @@ export default function SuperAdminPanel() {
                         </div>
                       </TableCell>
                     </TableRow>
-                  );
-                })}
+                ))}
               </TableBody>
             </Table>
           )}
         </CardContent>
       </Card>
 
-      {/* Edit Features Dialog - Grouped by industry sections */}
+      {/* Edit Features Dialog */}
       <Dialog open={!!showFeatures} onOpenChange={() => setShowFeatures(null)}>
         <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Manage Features</DialogTitle></DialogHeader>
@@ -855,7 +623,7 @@ export default function SuperAdminPanel() {
               </div>
               <div className="space-y-2">
                 <Label className="text-xs">Password *</Label>
-                <Input type="password" value={provisionForm.admin_password} onChange={e => setProvisionForm(f => ({ ...f, admin_password: e.target.value }))} className="h-10" />
+                <PasswordInput value={provisionForm.admin_password} onChange={e => setProvisionForm(f => ({ ...f, admin_password: e.target.value }))} className="h-10" autoComplete="new-password" />
               </div>
             </div>
           )}

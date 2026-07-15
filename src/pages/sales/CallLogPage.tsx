@@ -25,7 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCallDuration } from "@/lib/callDuration";
-import { resumePublicHref } from "@/lib/resumeHref";
+import { openProtectedUpload } from "@/lib/resumeHref";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import type { CallLog, CallLogPeriod, CallLogStats } from "@/types/callLog";
@@ -267,15 +267,16 @@ function DailyLogsStrip({
                     {showRepColumn ? <TableCell>{log.sales_rep_name || "—"}</TableCell> : null}
                     <TableCell>
                       {log.attachment_path ? (
-                        <a
-                          href={resumePublicHref(log.attachment_path)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-teal-600 hover:underline text-xs"
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 text-teal-600 hover:underline text-xs bg-transparent border-0 p-0 cursor-pointer"
+                          onClick={() => {
+                            void openProtectedUpload(log.attachment_path).catch(() => {});
+                          }}
                         >
                           <Paperclip className="h-3 w-3 shrink-0" />
                           <span className="truncate max-w-[140px]">{attachmentBasename(log.attachment_path)}</span>
-                        </a>
+                        </button>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}

@@ -10,6 +10,30 @@ $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 $role = $tokenData['role'];
 
+/** Admins/managers always; HR only when page_access.offer_letters is enabled. */
+function offerLettersRequireCallerAccess(PDO $db, array $tokenData): void {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if (in_array($role, ['super_admin', 'admin', 'manager', 'org'], true)) {
+        return;
+    }
+    if ($role === 'hr') {
+        ensureUsersPageAccessColumn($db);
+        try {
+            $st = $db->prepare('SELECT role, page_access_json FROM users WHERE id = ? LIMIT 1');
+            $st->execute([(string) ($tokenData['user_id'] ?? '')]);
+            $row = $st->fetch(PDO::FETCH_ASSOC) ?: ['role' => 'hr', 'page_access_json' => null];
+        } catch (Throwable $e) {
+            $row = ['role' => 'hr', 'page_access_json' => null];
+        }
+        if (userCanAccessOfferLettersPage($tokenData, is_array($row) ? $row : null)) {
+            return;
+        }
+    }
+    respond(['error' => 'Forbidden — Offer Letters access is disabled for this account'], 403);
+}
+
+offerLettersRequireCallerAccess($db, $tokenData);
+
 function offerLetterStorageDir(): string {
     return syncpediaDocumentStorageDir('offer_letters');
 }
@@ -105,7 +129,7 @@ $actionGet = $_GET['action'] ?? '';
 
 // GET — stream stored PDF (same auth as list; JS uses fetch + Bearer token)
 if ($method === 'GET' && $actionGet === 'pdf') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'hr']);
     $id = trim((string) ($_GET['id'] ?? ''));
     if ($id === '') {
         respond(['error' => 'id required'], 400);
@@ -135,7 +159,7 @@ if ($method === 'GET') {
     $action = $_GET['action'] ?? 'templates';
 
     if ($action === 'templates') {
-        requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
+        requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org', 'hr']);
         $org = offerLetterTemplateOrgFilter($tokenData, 't');
         $stmt = $db->prepare("SELECT t.* FROM offer_letter_templates t WHERE {$org['where']} ORDER BY t.created_at DESC");
         $stmt->execute($org['params']);
@@ -156,7 +180,7 @@ if ($method === 'GET') {
     }
 
     if ($action === 'template' && !empty($_GET['id'])) {
-        requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
+        requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org', 'hr']);
         $template = offerLettersFetchTemplateInScope($db, $tokenData, (string) $_GET['id']);
         if (!$template) {
             respond(['error' => 'Template not found'], 404);
@@ -169,7 +193,7 @@ if ($method === 'GET') {
 
 // POST - Create template or send letter
 if ($method === 'POST') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'hr']);
     $input = getInput();
     $action = $_GET['action'] ?? 'create_template';
 

@@ -280,7 +280,7 @@ export default function DailyReports() {
       </Card>
 
       <Dialog open={submitOpen} onOpenChange={setSubmitOpen}>
-        <DialogContent className="max-w-[95vw] sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-[95vw] sm:max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Submit Daily Report</DialogTitle>
           </DialogHeader>
@@ -389,7 +389,7 @@ export default function DailyReports() {
           if (!open) setViewReport(null);
         }}
       >
-        <DialogContent className="max-w-[95vw] sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-[95vw] sm:max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               Daily Report —{' '}

@@ -61,7 +61,8 @@ export default function Students() {
 
   const hasCreate = perms.canCreate(role);
   const hasEditAll = perms.canEditAll(role);
-  const hasDelete = perms.canDelete(role);
+  // Student hard-delete is admin/org only (API requireRole); managers may create/edit but not delete.
+  const hasDelete = perms.canDelete(role) && ["super_admin", "admin", "org"].includes(String(role || "").toLowerCase());
   const hasBulkDelete = perms.canBulkDelete(role);
   const hasImport = perms.canImport(role);
   const hasExport = perms.canExport(role);

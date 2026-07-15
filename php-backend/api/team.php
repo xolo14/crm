@@ -41,6 +41,8 @@ function teamEnsureReportsToColumn(PDO $db): void {
 }
 
 teamEnsureReportsToColumn($db);
+syncpediaEnsureLoginPasswordColumn($db);
+ensureUsersPageAccessColumn($db);
 
 function teamNormalizeRoleForRead(array $tokenData): string {
     $r = strtolower(trim((string) ($tokenData['role'] ?? '')));
@@ -78,17 +80,21 @@ function teamResolveCallerOrgId(PDO $db, array $tokenData): ?string {
 // GET - List team members (scoped by org when applicable)
 if ($method === 'GET') {
     $effRole = teamNormalizeRoleForRead($tokenData);
-    $allowedRead = ['admin', 'org', 'super_admin', 'manager', 'sales_representative', 'hr', 'marketing', 'sales_marketing'];
+    $allowedRead = ['admin', 'org', 'super_admin', 'manager', 'sales_representative', 'hr', 'marketing'];
     if (!in_array($effRole, $allowedRead, true)) {
         respond(['error' => 'Insufficient permissions'], 403);
     }
 
     /** Same-org roster for reps / HR / marketing (assign-to lists, read-only on Team page). */
-    $orgPeerRoles = ['sales_representative', 'hr', 'marketing', 'sales_marketing'];
+    $orgPeerRoles = ['sales_representative', 'hr', 'marketing'];
 
-    if ($effRole === 'super_admin' && empty($_GET['org_id']) && empty(trim((string) ($tokenData['org_id'] ?? '')))) {
+    // Super Admin: no ?org_id → all tenants (ignore JWT switch_org). Explicit ?org_id → that tenant only.
+    if ($effRole === 'super_admin' && empty($_GET['org_id'])) {
         $where = '1=1';
         $params = [];
+    } elseif ($effRole === 'super_admin' && !empty($_GET['org_id'])) {
+        $where = 'u.org_id = ?';
+        $params = [(string) $_GET['org_id']];
     } elseif (in_array($effRole, $orgPeerRoles, true)) {
         $orgId = teamResolveCallerOrgId($db, $tokenData);
         if ($orgId === null || $orgId === '') {
@@ -114,15 +120,10 @@ if ($method === 'GET') {
         $where = "u.org_id = ? AND u.is_active = 1 AND u.id IN ($in)";
         $params = array_merge([$orgId], $visibleIds);
     } else {
-        // Super admin filtering one org, or tenant admins/managers/leads.
-        if ($effRole === 'super_admin' && !empty($_GET['org_id'])) {
-            $where = 'u.org_id = ?';
-            $params = [(string) $_GET['org_id']];
-        } else {
-            $orgFilter = orgFilter($tokenData, 'u');
-            $where = $orgFilter['where'];
-            $params = $orgFilter['params'];
-        }
+        // Tenant admins (admin / org) and other roles — org-scoped roster.
+        $orgFilter = orgFilter($tokenData, 'u');
+        $where = $orgFilter['where'];
+        $params = $orgFilter['params'];
 
         // L2 managers use dedicated org roster branch above; other non-admin roles use hierarchy subtree.
         if (!in_array($effRole, ['super_admin', 'admin'], true)) {
@@ -134,7 +135,7 @@ if ($method === 'GET') {
     }
 
     $sql = "
-        SELECT u.id, u.email, u.full_name, u.phone, u.avatar_url, u.referral_code, u.role, u.is_active, u.created_at, u.created_by, u.org_id, u.reports_to_id,
+        SELECT u.id, u.email, u.full_name, u.phone, u.avatar_url, u.referral_code, u.role, u.is_active, u.created_at, u.created_by, u.org_id, u.reports_to_id, u.page_access_json,
             tl.full_name AS reports_to_name,
             CASE
                 WHEN LOWER(TRIM(u.role)) = 'super_admin' AND (o.name IS NULL OR TRIM(o.name) = '') THEN 'Syncpedia'
@@ -149,9 +150,24 @@ if ($method === 'GET') {
         WHERE ($where)
         ORDER BY FIELD(u.role, 'super_admin', 'admin', 'manager', 'marketing', 'hr', 'sales_representative', 'trainer', 'finance', 'student'), u.full_name
     ";
-    $stmt = $db->prepare($sql);
-    $stmt->execute($params);
-    respond(['data' => $stmt->fetchAll()]);
+    try {
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        // Older schema without page_access_json
+        $sqlFallback = str_replace(', u.page_access_json', '', $sql);
+        $stmt = $db->prepare($sqlFallback);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    foreach ($rows as &$row) {
+        if (is_array($row)) {
+            userAttachPageAccess($row);
+        }
+    }
+    unset($row);
+    respond(['data' => $rows]);
 }
 
 /** Whether the caller may send welcome email to an existing team member. */
@@ -249,7 +265,10 @@ if ($method === 'POST') {
     $input = getInput();
 
     $email = trim($input['email'] ?? '');
-    $password = $input['password'] ?? 'Welcome@123';
+    $password = trim((string) ($input['password'] ?? ''));
+    if ($password === '' || $password === 'Welcome@123') {
+        $password = syncpediaGenerateTempPassword();
+    }
     $fullName = trim($input['full_name'] ?? '');
     $phone = $input['phone'] ?? null;
     $memberRole = normalizeRoleValue($input['role'] ?? 'sales_representative');
@@ -275,12 +294,18 @@ if ($method === 'POST') {
         respond(['error' => 'Email and name are required'], 400);
     }
 
-    // Role hierarchy: L4/L3 may assign L3–L1; L2 may assign L1 operational roles only.
+    // Role hierarchy: L4/L3 may assign L2–L1 staff. Org admins are provisioned via Organizations, not Team.
     $allowedRoles = [];
     if (in_array($callerRole, ['super_admin', 'admin'], true)) {
-        $allowedRoles = array_merge(['admin', 'manager'], syncpediaL1AssignableRoles(), ['trainer', 'finance', 'student']);
+        $allowedRoles = array_merge(['manager'], syncpediaL1AssignableRoles(), ['trainer', 'finance', 'student']);
     } elseif ($isManagerCreator) {
         $allowedRoles = syncpediaL1AssignableRoles();
+    }
+
+    if (in_array($memberRole, ['admin', 'org'], true)) {
+        respond([
+            'error' => 'Organization admins are created when the org is provisioned, or via Organizations → Admin credentials. They cannot be added from Team.',
+        ], 403);
     }
 
     if (!in_array($memberRole, $allowedRoles, true)) {
@@ -292,15 +317,6 @@ if ($method === 'POST') {
     $stmt->execute([$email]);
     if ($stmt->fetch()) {
         respond(['error' => 'Email already exists'], 409);
-    }
-
-    // One admin role user per organization (org-scoped).
-    if ($memberRole === 'admin' && $orgId) {
-        $cntStmt = $db->prepare("SELECT COUNT(*) AS c FROM users WHERE org_id = ? AND LOWER(TRIM(role)) = 'admin' AND is_active = 1");
-        $cntStmt->execute([$orgId]);
-        if ((int)($cntStmt->fetch()['c'] ?? 0) >= 1) {
-            respond(['error' => 'This organization already has one admin. Use Control Panel → Organization row → Admin to change credentials.'], 409);
-        }
     }
 
     if ($reportsToId) {
@@ -333,6 +349,13 @@ if ($method === 'POST') {
         $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, referral_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$id, $email, $hash, $fullName, $phone, $memberRole, $orgId, $refCode]);
     }
+    syncpediaStoreUserLoginPassword($db, $id, (string) $password);
+
+    $pageAccess = userNormalizePageAccessInput($input['page_access'] ?? null, $memberRole);
+    try {
+        userSavePageAccess($db, $id, $pageAccess);
+    } catch (Throwable $e) {
+    }
 
     if ($memberRole === 'marketing') {
         try {
@@ -354,6 +377,8 @@ if ($method === 'POST') {
     if ($memberRole === 'sales_representative') {
         assignLeadFormsToSalesMember($db, $userId, $id, $orgId);
     }
+
+    syncpediaAuditLog($db, $tokenData, 'created', 'team_member', $id, 'Created team member: ' . $fullName . ' (' . $memberRole . ')');
 
     $emailSent = false;
     $emailFrom = null;
@@ -386,37 +411,99 @@ if ($method === 'POST') {
 
 // PUT - Update team member
 if ($method === 'PUT') {
-    requireRole($tokenData, ['admin', 'super_admin']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
     $id = $_GET['id'] ?? '';
     if (!$id) {
         respond(['error' => 'ID required'], 400);
     }
+    $callerRole = normalizeRoleValue((string) ($tokenData['role'] ?? ''));
+    $isManagerCaller = $callerRole === 'manager';
+
+    if ($isManagerCaller) {
+        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
+        if (!in_array($id, $visibleIds, true) || $id === (string) $userId) {
+            respond(['error' => 'You can only update members on your team'], 403);
+        }
+        $input = getInput();
+        // Managers may only change page-access toggles on their L1 reports.
+        if (!array_key_exists('page_access', $input)) {
+            respond(['error' => 'Managers can only update page access toggles for team members'], 403);
+        }
+        $target = $db->prepare('SELECT id, role FROM users WHERE id = ? LIMIT 1');
+        $target->execute([$id]);
+        $targetRow = $target->fetch(PDO::FETCH_ASSOC);
+        if (!$targetRow) {
+            respond(['error' => 'User not found'], 404);
+        }
+        $targetRole = normalizeRoleValue((string) ($targetRow['role'] ?? ''));
+        if (!in_array($targetRole, syncpediaL1AssignableRoles(), true)) {
+            respond(['error' => 'Managers can only update page access for Sales Rep / HR / Marketing'], 403);
+        }
+        $pageAccess = userNormalizePageAccessInput($input['page_access'], $targetRole);
+        userSavePageAccess($db, $id, $pageAccess);
+        syncpediaAuditLog($db, $tokenData, 'updated', 'team_member', $id, 'Updated page access toggles');
+        respond(['message' => 'Page access updated', 'page_access' => $pageAccess]);
+    }
+
     syncpediaAssertTargetUserEditable($db, $tokenData, $id);
 
     $input = getInput();
     $fields = [];
     $params = [];
 
-    foreach (['full_name', 'phone', 'is_active'] as $f) {
+    foreach (['full_name', 'phone', 'email', 'is_active'] as $f) {
         if (array_key_exists($f, $input)) {
+            if ($f === 'email') {
+                $email = strtolower(trim((string) $input['email']));
+                if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    respond(['error' => 'Valid email is required'], 400);
+                }
+                $dup = $db->prepare('SELECT id FROM users WHERE LOWER(TRIM(email)) = ? AND id != ? LIMIT 1');
+                $dup->execute([$email, $id]);
+                if ($dup->fetch()) {
+                    respond(['error' => 'Email already exists'], 409);
+                }
+                $fields[] = 'email = ?';
+                $params[] = $email;
+                continue;
+            }
             $fields[] = "$f = ?";
             $params[] = $input[$f];
         }
     }
     if (array_key_exists('role', $input)) {
-        $newRole = normalizeRoleValue((string)$input['role']);
-        $usrStmt = $db->prepare("SELECT org_id, role FROM users WHERE id = ? LIMIT 1");
+        $newRole = normalizeRoleValue((string) $input['role']);
+        $usrStmt = $db->prepare('SELECT org_id, role FROM users WHERE id = ? LIMIT 1');
         $usrStmt->execute([$id]);
         $uRow = $usrStmt->fetch();
-        $targetOrgId = $uRow['org_id'] ?? null;
-        $prevRole = normalizeRoleValue((string)($uRow['role'] ?? ''));
-        if ($newRole === 'admin' && $targetOrgId && $prevRole !== 'admin') {
-            $cstmt = $db->prepare("SELECT COUNT(*) AS c FROM users WHERE org_id = ? AND LOWER(TRIM(role)) = 'admin' AND is_active = 1 AND id != ?");
-            $cstmt->execute([$targetOrgId, $id]);
-            if ((int)($cstmt->fetch()['c'] ?? 0) >= 1) {
-                respond(['error' => 'This organization already has one admin. Use Control Panel → Organization → Admin to update credentials.'], 409);
-            }
+        $prevRole = normalizeRoleValue((string) ($uRow['role'] ?? ''));
+        $callerRole = normalizeRoleValue((string) ($tokenData['role'] ?? ''));
+
+        if ($prevRole === 'super_admin' && $callerRole !== 'super_admin') {
+            respond(['error' => 'Cannot modify Super Admin accounts'], 403);
         }
+
+        // Platform / org admin roles are never assignable from Team (same rules as POST create).
+        if ($newRole === 'super_admin') {
+            respond(['error' => 'Super Admin role cannot be assigned from Team.'], 403);
+        }
+        if (in_array($newRole, ['admin', 'org'], true) && $prevRole !== $newRole) {
+            respond([
+                'error' => 'Organization admins are managed from Organizations → Admin credentials, not Team role changes.',
+            ], 403);
+        }
+
+        $allowedRoles = [];
+        if (in_array($callerRole, ['super_admin', 'admin'], true)) {
+            $allowedRoles = array_merge(['manager'], syncpediaL1AssignableRoles(), ['trainer', 'finance', 'student']);
+        } elseif ($callerRole === 'manager') {
+            $allowedRoles = syncpediaL1AssignableRoles();
+        }
+
+        if (!in_array($newRole, $allowedRoles, true)) {
+            respond(['error' => 'You cannot assign this role'], 403);
+        }
+
         $fields[] = 'role = ?';
         $params[] = $newRole;
     }
@@ -469,24 +556,48 @@ if ($method === 'PUT') {
     if (!empty($input['password'])) {
         $fields[] = 'password_hash = ?';
         $params[] = password_hash($input['password'], PASSWORD_DEFAULT);
+        syncpediaStoreUserLoginPassword($db, $id, null);
     }
 
-    if (empty($fields)) {
+    $pageAccessSaved = null;
+    if (array_key_exists('page_access', $input)) {
+        $roleForAccess = array_key_exists('role', $input)
+            ? normalizeRoleValue((string) $input['role'])
+            : null;
+        if ($roleForAccess === null) {
+            $rr = $db->prepare('SELECT role FROM users WHERE id = ? LIMIT 1');
+            $rr->execute([$id]);
+            $roleForAccess = normalizeRoleValue((string) ($rr->fetchColumn() ?: ''));
+        }
+        $pageAccessSaved = userNormalizePageAccessInput($input['page_access'], $roleForAccess);
+        userSavePageAccess($db, $id, $pageAccessSaved);
+    }
+
+    if (empty($fields) && $pageAccessSaved === null) {
         respond(['error' => 'Nothing to update'], 400);
     }
 
-    $params[] = $id;
-    $stmt = $db->prepare("UPDATE users SET " . implode(', ', $fields) . " WHERE id = ?");
-    try {
-        $stmt->execute($params);
-    } catch (Exception $e) {
-        if (strpos($e->getMessage(), 'reports_to_id') !== false) {
-            respond(['error' => 'Database missing reports_to_id column; run migrations or re-import schema.'], 500);
+    if (!empty($fields)) {
+        $params[] = $id;
+        $stmt = $db->prepare("UPDATE users SET " . implode(', ', $fields) . " WHERE id = ?");
+        try {
+            $stmt->execute($params);
+        } catch (Exception $e) {
+            if (strpos($e->getMessage(), 'reports_to_id') !== false) {
+                respond(['error' => 'Database missing reports_to_id column; run migrations or re-import schema.'], 500);
+            }
+            throw $e;
         }
-        throw $e;
     }
 
-    respond(['message' => 'Team member updated']);
+    $changedFields = array_key_exists('role', $input) ? 'role → ' . normalizeRoleValue((string) $input['role']) : implode(', ', array_keys($input));
+    syncpediaAuditLog($db, $tokenData, 'updated', 'team_member', $id, 'Updated team member (' . $changedFields . ')');
+
+    $resp = ['message' => 'Team member updated'];
+    if ($pageAccessSaved !== null) {
+        $resp['page_access'] = $pageAccessSaved;
+    }
+    respond($resp);
 }
 
 // DELETE - Remove team member (archive to trash, then hard delete)
@@ -500,7 +611,7 @@ if ($method === 'DELETE') {
         respond(['error' => 'You cannot remove your own account'], 400);
     }
 
-    $chk = $db->prepare("SELECT id, role, org_id FROM users WHERE id = ? LIMIT 1");
+    $chk = $db->prepare("SELECT id, role, org_id, full_name FROM users WHERE id = ? LIMIT 1");
     $chk->execute([$id]);
     $target = $chk->fetch();
     if (!$target) {
@@ -537,6 +648,7 @@ if ($method === 'DELETE') {
 
     $stmt = $db->prepare("DELETE FROM users WHERE id = ?");
     $stmt->execute([$id]);
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'team_member', $id, 'Removed team member: ' . ($target['full_name'] ?? $id));
     respond(['message' => 'Team member removed and moved to trash']);
 }
 

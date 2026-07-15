@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Building2, Phone, Plus, Shield } from "lucide-react";
+import { ArrowLeft, Building2, Pencil, Phone, Plus, Shield, Trash2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { communicationsApi } from "@/services/communications";
 import { api } from "@/lib/api";
@@ -9,9 +9,20 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import type { OrgWhatsappOverview, VirtualNumber } from "@/types/communications";
@@ -22,12 +33,45 @@ const STATUS_VARIANT: Record<string, "default" | "secondary" | "outline" | "dest
   not_connected: "secondary",
 };
 
+type VirtualNumberForm = {
+  phone_number: string;
+  label: string;
+  org_id: string;
+  provider: string;
+  whatsapp_enabled: boolean;
+  calls_enabled: boolean;
+};
+
+const EMPTY_VN_FORM: VirtualNumberForm = {
+  phone_number: "",
+  label: "",
+  org_id: "",
+  provider: "exotel",
+  whatsapp_enabled: true,
+  calls_enabled: true,
+};
+
+function virtualNumberToForm(n: VirtualNumber): VirtualNumberForm {
+  return {
+    phone_number: n.phone_number || "",
+    label: n.label || "",
+    org_id: n.org_id || "",
+    provider: n.provider || "exotel",
+    whatsapp_enabled: Boolean(n.whatsapp_enabled),
+    calls_enabled: Boolean(n.calls_enabled),
+  };
+}
+
 export default function CommunicationsAdminPage() {
   const { toast } = useToast();
   const qc = useQueryClient();
 
-  const [vnForm, setVnForm] = useState({ phone_number: "", label: "", org_id: "", provider: "exotel" });
+  const [vnForm, setVnForm] = useState<VirtualNumberForm>({ ...EMPTY_VN_FORM });
   const [vnOpen, setVnOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingNumber, setEditingNumber] = useState<VirtualNumber | null>(null);
+  const [editForm, setEditForm] = useState<VirtualNumberForm>({ ...EMPTY_VN_FORM });
+  const [deleteTarget, setDeleteTarget] = useState<VirtualNumber | null>(null);
   const [assignVnId, setAssignVnId] = useState("");
   const [assignUserId, setAssignUserId] = useState("");
 
@@ -42,14 +86,50 @@ export default function CommunicationsAdminPage() {
   const team = Array.isArray(teamRes) ? teamRes : teamRes?.data ?? [];
 
   const addNumberMut = useMutation({
-    mutationFn: () => communicationsApi.addVirtualNumber(vnForm),
+    mutationFn: () =>
+      communicationsApi.addVirtualNumber({
+        ...vnForm,
+        whatsapp_enabled: vnForm.whatsapp_enabled ? 1 : 0,
+        calls_enabled: vnForm.calls_enabled ? 1 : 0,
+      }),
     onSuccess: () => {
       toast({ title: "Virtual number assigned to organization" });
       setVnOpen(false);
-      setVnForm({ phone_number: "", label: "", org_id: "", provider: "exotel" });
+      setVnForm({ ...EMPTY_VN_FORM });
       qc.invalidateQueries({ queryKey: ["comm"] });
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Failed", description: e.message }),
+  });
+
+  const updateNumberMut = useMutation({
+    mutationFn: () => {
+      if (!editingNumber) throw new Error("No number selected");
+      return communicationsApi.updateVirtualNumber(editingNumber.id, {
+        org_id: editForm.org_id,
+        phone_number: editForm.phone_number,
+        label: editForm.label,
+        provider: editForm.provider,
+        whatsapp_enabled: editForm.whatsapp_enabled ? 1 : 0,
+        calls_enabled: editForm.calls_enabled ? 1 : 0,
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "Virtual number updated" });
+      setEditOpen(false);
+      setEditingNumber(null);
+      qc.invalidateQueries({ queryKey: ["comm"] });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Update failed", description: e.message }),
+  });
+
+  const deleteNumberMut = useMutation({
+    mutationFn: (id: string) => communicationsApi.deleteVirtualNumber(id),
+    onSuccess: () => {
+      toast({ title: "Virtual number deleted" });
+      setDeleteTarget(null);
+      qc.invalidateQueries({ queryKey: ["comm"] });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Delete failed", description: e.message }),
   });
 
   const assignMut = useMutation({
@@ -62,6 +142,12 @@ export default function CommunicationsAdminPage() {
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Assign failed", description: e.message }),
   });
+
+  const openEdit = (n: VirtualNumber) => {
+    setEditingNumber(n);
+    setEditForm(virtualNumberToForm(n));
+    setEditOpen(true);
+  };
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-8">
@@ -164,6 +250,22 @@ export default function CommunicationsAdminPage() {
                     <Label>Label</Label>
                     <Input value={vnForm.label} onChange={(e) => setVnForm((p) => ({ ...p, label: e.target.value }))} placeholder="Sales line 1" />
                   </div>
+                  <div className="flex flex-wrap gap-4">
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={vnForm.calls_enabled}
+                        onCheckedChange={(c) => setVnForm((p) => ({ ...p, calls_enabled: c === true }))}
+                      />
+                      Calls enabled
+                    </label>
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={vnForm.whatsapp_enabled}
+                        onCheckedChange={(c) => setVnForm((p) => ({ ...p, whatsapp_enabled: c === true }))}
+                      />
+                      WhatsApp enabled
+                    </label>
+                  </div>
                 </div>
                 <DialogFooter>
                   <Button onClick={() => addNumberMut.mutate()} disabled={addNumberMut.isPending || !vnForm.org_id || !vnForm.phone_number}>Assign</Button>
@@ -182,11 +284,12 @@ export default function CommunicationsAdminPage() {
                     <TableHead>Label</TableHead>
                     <TableHead>Calls</TableHead>
                     <TableHead>WhatsApp</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {numbers.length === 0 ? (
-                    <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">No virtual numbers yet</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={6} className="text-center text-muted-foreground">No virtual numbers yet</TableCell></TableRow>
                   ) : (
                     numbers.map((n: VirtualNumber) => (
                       <TableRow key={n.id}>
@@ -195,6 +298,23 @@ export default function CommunicationsAdminPage() {
                         <TableCell>{n.label}</TableCell>
                         <TableCell>{n.calls_enabled ? "✓" : "—"}</TableCell>
                         <TableCell>{n.whatsapp_enabled ? "✓" : "—"}</TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEdit(n)} title="Edit">
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-destructive hover:text-destructive"
+                              onClick={() => setDeleteTarget(n)}
+                              title="Delete"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
                       </TableRow>
                     ))
                   )}
@@ -202,6 +322,79 @@ export default function CommunicationsAdminPage() {
               </Table>
             </CardContent>
           </Card>
+
+          <Dialog open={editOpen} onOpenChange={(open) => { setEditOpen(open); if (!open) setEditingNumber(null); }}>
+            <DialogContent>
+              <DialogHeader><DialogTitle>Edit virtual number</DialogTitle></DialogHeader>
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Organization</Label>
+                  <Select value={editForm.org_id} onValueChange={(v) => setEditForm((p) => ({ ...p, org_id: v }))}>
+                    <SelectTrigger><SelectValue placeholder="Select org" /></SelectTrigger>
+                    <SelectContent>
+                      {orgs.map((o: { id: string; name: string }) => (
+                        <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Phone number</Label>
+                  <Input value={editForm.phone_number} onChange={(e) => setEditForm((p) => ({ ...p, phone_number: e.target.value }))} placeholder="+91..." />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Label</Label>
+                  <Input value={editForm.label} onChange={(e) => setEditForm((p) => ({ ...p, label: e.target.value }))} placeholder="Sales line 1" />
+                </div>
+                <div className="flex flex-wrap gap-4">
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={editForm.calls_enabled}
+                      onCheckedChange={(c) => setEditForm((p) => ({ ...p, calls_enabled: c === true }))}
+                    />
+                    Calls enabled
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={editForm.whatsapp_enabled}
+                      onCheckedChange={(c) => setEditForm((p) => ({ ...p, whatsapp_enabled: c === true }))}
+                    />
+                    WhatsApp enabled
+                  </label>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+                <Button
+                  onClick={() => updateNumberMut.mutate()}
+                  disabled={updateNumberMut.isPending || !editForm.org_id || !editForm.phone_number}
+                >
+                  Save changes
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete virtual number?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Remove <strong>{deleteTarget?.label || deleteTarget?.phone_number}</strong> from{" "}
+                  <strong>{deleteTarget?.org_name}</strong>? Team assignments for this number will no longer work.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  onClick={() => deleteTarget && deleteNumberMut.mutate(deleteTarget.id)}
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
           <Card>
             <CardHeader><CardTitle className="text-base">Assign number to employee</CardTitle></CardHeader>

@@ -17,13 +17,28 @@ import { Textarea } from '@/components/ui/textarea';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Search, Filter, Download, Upload, MoreHorizontal, Pencil, Trash2, Loader2, Phone, Mail, UserPlus, Users, TrendingUp, Target, CheckCircle2, Clock, Eye, History, CalendarDays, Building2, GraduationCap, StickyNote, ArrowUpRight, XCircle, Shuffle, ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+  Plus, Search, Filter, Download, Upload, MoreHorizontal, Pencil, Trash2, Loader2, Phone, Mail,
+  UserPlus, Users, Target, CheckCircle2, Clock, Eye, History, CalendarDays, Building2, GraduationCap,
+  StickyNote, ArrowUpRight, XCircle, Shuffle, ChevronLeft, ChevronRight, Megaphone, Globe2,
+  MessageCircle, MapPin, School, CircleHelp, Youtube, FileText, Upload as UploadIcon,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { BulkActionsBar } from '@/components/BulkActions';
 import { BulkAssignDialog } from '@/components/BulkAssignDialog';
 import { LeadActivityTimeline } from '@/components/LeadActivityTimeline';
 import { LeadEnrollDialog } from '@/components/leads/LeadEnrollDialog';
+import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails';
+import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
 import * as perms from '@/lib/permissions';
 import { isMarketingFamilyRole } from '@/lib/roleUtils';
+import { mapCsvRowsToLeads, parseCsvText } from '@/lib/leadImportCsv';
+import {
+  IMPORT_SET_PREFIX,
+  buildSourceSummaries,
+  filterLeadsBySourceBucket,
+  type LeadSourceBucket,
+} from '@/lib/leadSources';
 import { useIsMobile } from '@/hooks/use-mobile';
 
 const LEAD_STATUSES = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
@@ -78,13 +93,27 @@ const normalizeMember = (m: any) => ({
 });
 const getRoleCategoryLabel = (role?: string | null) => {
   const normalized = String(role || '').trim().toLowerCase();
-  if (normalized === 'sales_marketing') return 'Sales Marketing';
   if (isMarketingFamilyRole(normalized)) return 'Marketing';
   if (normalized === 'sales_representative') return 'Sales Representative';
   if (normalized === 'manager') return 'Manager';
   return normalized ? normalized.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Other';
 };
-const IMPORT_SET_PREFIX = 'import_set:';
+
+const SOURCE_BUCKET_ICONS: Record<LeadSourceBucket, LucideIcon> = {
+  google_ads: Megaphone,
+  meta_ads: Megaphone,
+  youtube: Youtube,
+  website: Globe2,
+  form_leads: FileText,
+  import: UploadIcon,
+  whatsapp: MessageCircle,
+  referral: Users,
+  walkin: MapPin,
+  college_seminar: School,
+  other: CircleHelp,
+};
+
+const SOURCE_STATUS_CHIP_ORDER = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
 
 export default function Leads() {
   const { toast } = useToast();
@@ -93,6 +122,7 @@ export default function Leads() {
   const location = useLocation();
   const isMobile = useIsMobile();
   const isFormLeadsPage = location.pathname === '/leads/form-leads';
+  const useSourceCards = location.pathname === '/leads';
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
@@ -118,6 +148,12 @@ export default function Leads() {
   const [assignSaving, setAssignSaving] = useState(false);
   const [enrollLead, setEnrollLead] = useState<any | null>(null);
   const [leadForms, setLeadForms] = useState<{ slug: string; name: string }[]>([]);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importOrgId, setImportOrgId] = useState('');
+  const [importOrgs, setImportOrgs] = useState<{ id: string; name: string }[]>([]);
+  const [importBusy, setImportBusy] = useState(false);
+  const [sourceDialogKey, setSourceDialogKey] = useState<LeadSourceBucket | null>(null);
+  const [sourceDialogStatus, setSourceDialogStatus] = useState<string>('all');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const hasCreate = perms.canCreate(role);
@@ -136,7 +172,7 @@ export default function Leads() {
   /** Sales rep / exec: hub lists all org-visible rows from API; My Leads shows only referral-link form submissions. */
   const isSalesRepMyLeadsPage =
     location.pathname === '/my-leads' &&
-    (SALES_MEMBER_ROLES.has(normalizedLeadRole) || normalizedLeadRole === 'sales_marketing');
+    SALES_MEMBER_ROLES.has(normalizedLeadRole);
   const rosterMarketingLike = isMarketingFamilyRole(normalizedLeadRole);
   /** Includes managers plus roles that assign leads using same-org reps */
   const needsAssignmentRoster =
@@ -239,7 +275,11 @@ export default function Leads() {
     try {
       const [teamRes, marketingRes] = await Promise.allSettled([
         api.team.list(),
-        api.marketing.members(),
+        // Managers: only hierarchy roster — marketing.members includes org peers outside reports_to
+        // and assigning to them hides the lead from the manager list.
+        normalizedLeadRole === 'manager'
+          ? Promise.resolve({ data: [] })
+          : api.marketing.members(),
       ]);
 
       const teamRows =
@@ -286,36 +326,97 @@ export default function Leads() {
     toast({ title: 'Leads exported successfully' });
   };
 
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      const lines = (evt.target?.result as string).split('\n').slice(1).filter(Boolean);
-      const importSetTag = `${IMPORT_SET_PREFIX}${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`;
-      let count = 0;
-      for (const line of lines) {
-        const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
-        try {
-          await api.leads.create({
-            name: cols[1] || cols[0] || '',
-            email: cols[2] || null,
-            phone: cols[3] || null,
-            college: cols[4] || null,
-            course_interest: cols[5] || null,
-            source: cols[6] || 'other',
-            tags: [importSetTag, 'imported_csv'],
-          });
-          count++;
-        } catch {}
+  const isSuperAdmin = normalizedLeadRole === 'super_admin';
+  const importTargetOrgName = useMemo(() => {
+    if (isSuperAdmin) {
+      return importOrgs.find((o) => o.id === importOrgId)?.name || '';
+    }
+    return organization?.name || '';
+  }, [isSuperAdmin, importOrgs, importOrgId, organization?.name]);
+
+  useEffect(() => {
+    if (!isSuperAdmin || !hasImport) return;
+    void (async () => {
+      try {
+        const res = (await api.organizations.list()) as { data?: Array<{ id?: string; name?: string }> };
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        const opts = rows
+          .map((o) => ({ id: String(o.id || '').trim(), name: String(o.name || 'Unnamed').trim() }))
+          .filter((o) => o.id);
+        setImportOrgs(opts);
+        const preferred = String(organization?.id || '').trim();
+        if (preferred && opts.some((o) => o.id === preferred)) {
+          setImportOrgId(preferred);
+        } else if (opts[0] && !importOrgId) {
+          setImportOrgId(opts[0].id);
+        }
+      } catch {
+        setImportOrgs([]);
       }
+    })();
+  }, [isSuperAdmin, hasImport, organization?.id]);
+
+  const runCsvImport = async (file: File, orgIdForImport?: string) => {
+    setImportBusy(true);
+    try {
+      const text = await file.text();
+      const importSetTag = `${IMPORT_SET_PREFIX}${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`;
+      const { leads: mapped, skipped, errors } = mapCsvRowsToLeads(parseCsvText(text), { importSetTag });
+      if (mapped.length === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'No leads imported',
+          description: errors[0] || 'CSV needs a header and at least one row with name, phone, or email.',
+        });
+        return;
+      }
+      const payload = mapped.map((row) => ({
+        ...row,
+        ...(role === 'manager' && user?.id ? { assigned_to: user.id } : {}),
+      }));
+      const res: any = await api.leads.bulkCreate(
+        payload,
+        orgIdForImport ? { org_id: orgIdForImport } : undefined,
+      );
+      const created = Number(res?.created ?? mapped.length);
+      const orgLabel = res?.org_name || importTargetOrgName || organization?.name || '';
       fetchLeads();
       toast({
-        title: `${count} leads imported successfully`,
-        description: `Import set: ${importSetTag.replace(IMPORT_SET_PREFIX, '')}`,
+        title: `${created} leads imported`,
+        description: [
+          orgLabel ? `Organization: ${orgLabel}` : null,
+          `Import set: ${importSetTag.replace(IMPORT_SET_PREFIX, '')}`,
+          skipped ? `${skipped} row(s) skipped` : null,
+          Array.isArray(res?.errors) && res.errors.length ? `${res.errors.length} row error(s)` : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
       });
-    };
-    reader.readAsText(file);
+      setImportOpen(false);
+    } catch (err: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Import failed',
+        description: err?.message || 'Could not import CSV',
+      });
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
     e.target.value = '';
+    if (!file) return;
+    void runCsvImport(file, isSuperAdmin ? importOrgId : undefined);
+  };
+
+  const openImport = () => {
+    if (isSuperAdmin) {
+      setImportOpen(true);
+      return;
+    }
+    fileInputRef.current?.click();
   };
   const filtered = useMemo(() => {
     return leads.filter((lead) => {
@@ -400,6 +501,20 @@ export default function Leads() {
           payload.referred_by = ref;
         }
       }
+      // Managers only see downline-assigned / self-created leads — default assign to self
+      if (normalizedLeadRole === 'manager') {
+        const at = payload.assigned_to;
+        if (at === '' || at == null || at === 'unassigned') {
+          payload.assigned_to = user?.id;
+        }
+      }
+      // Form Leads page only lists form/referral rows — stamp referral so manual adds appear
+      if (isFormLeadsPage) {
+        const ref = String(profile?.referral_code ?? '').trim();
+        if (ref && !String(payload.referred_by ?? '').trim()) {
+          payload.referred_by = ref;
+        }
+      }
       await api.leads.create(payload);
       fetchLeads();
       toast({ title: 'Lead created successfully' });
@@ -426,12 +541,24 @@ export default function Leads() {
     }
   };
 
-  const handleBulkDelete = async () => {
-    if (!confirm(`Delete ${selectedIds.size} leads permanently?`)) return;
-    for (const id of selectedIds) { try { await api.leads.delete(id); } catch {} }
-    fetchLeads();
-    toast({ title: `${selectedIds.size} leads deleted` });
-    setSelectedIds(new Set());
+  const handleBulkDelete = async (idsOverride?: string[]) => {
+    const ids = idsOverride ?? Array.from(selectedIds);
+    const count = ids.length;
+    if (count === 0) return;
+    if (!idsOverride && !confirm(`Delete ${count} leads permanently?`)) return;
+    try {
+      const res = await api.leads.bulkDelete(ids);
+      const deleted = typeof res?.deleted === 'number' ? res.deleted : count;
+      const skipped = typeof res?.skipped === 'number' ? res.skipped : 0;
+      await fetchLeads();
+      setSelectedIds(new Set());
+      toast({
+        title: `${deleted} leads deleted`,
+        description: skipped > 0 ? `${skipped} skipped (not found or no permission)` : undefined,
+      });
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Bulk delete failed', description: err?.message || 'Request failed' });
+    }
   };
 
   const handleMultiAssign = async () => {
@@ -473,10 +600,11 @@ export default function Leads() {
     finally { setAssignSaving(false); }
   };
 
-  const handleBulkAssign = async (repId: string) => {
+  const handleBulkAssign = async (repId: string, leadIds?: string[]) => {
+    const ids = leadIds ?? Array.from(selectedIds);
+    if (ids.length === 0) return;
     const assignedLeadNames: string[] = [];
-    const leadIds = Array.from(selectedIds);
-    for (const id of selectedIds) {
+    for (const id of ids) {
       try {
         await api.leads.update(id, { assigned_to: repId });
         const lead = leads.find(l => l.id === id);
@@ -484,16 +612,20 @@ export default function Leads() {
       } catch {}
     }
     try {
-      await api.leadAssignments.bulkAssign(leadIds, repId);
+      await api.leadAssignments.bulkAssign(ids, repId);
     } catch {}
+    const assigneePatch = Object.fromEntries(ids.map((id) => [id, true]));
+    setLeads((prev) =>
+      prev.map((l) => (assigneePatch[l.id] ? { ...l, assigned_to: repId } : l)),
+    );
     fetchLeads();
     fetchAssignments();
     const repName = teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
-    toast({ title: `${selectedIds.size} leads assigned to ${repName}` });
+    toast({ title: `${ids.length} leads assigned to ${repName}` });
     await sendNotificationWithEmail({
       userId: repId,
-      title: `${selectedIds.size} Leads Assigned`,
-      message: `You have been assigned ${selectedIds.size} new leads: ${assignedLeadNames.slice(0, 3).join(', ')}${assignedLeadNames.length > 3 ? '...' : ''}.`,
+      title: `${ids.length} Leads Assigned`,
+      message: `You have been assigned ${ids.length} new leads: ${assignedLeadNames.slice(0, 3).join(', ')}${assignedLeadNames.length > 3 ? '...' : ''}.`,
       type: 'lead_assigned',
       link: '/leads',
       leadName: assignedLeadNames.slice(0, 3).join(', '),
@@ -625,6 +757,18 @@ export default function Leads() {
     ];
   }, [leadForms, availableSources, extendedSourceLabels]);
 
+  const sourceSummaries = useMemo(() => buildSourceSummaries(leads), [leads]);
+
+  const sourceDialogLeads = useMemo(() => {
+    if (!sourceDialogKey) return [];
+    return filterLeadsBySourceBucket(leads, sourceDialogKey);
+  }, [leads, sourceDialogKey]);
+
+  const openSourceDialog = (key: LeadSourceBucket, status: string = 'all') => {
+    setSourceDialogKey(key);
+    setSourceDialogStatus(status);
+  };
+
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
   return (
@@ -645,12 +789,26 @@ export default function Leads() {
             <p className="text-[11px] text-muted-foreground mt-0.5">{scopeLabel}</p>
           )}
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
           {hasImport && (
-            <><input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleImport} />
-              <Button variant="outline" size="sm" className="gap-1.5 h-8" onClick={() => fileInputRef.current?.click()}>
-                <Upload className="h-3.5 w-3.5" /><span className="hidden sm:inline">Import CSV</span>
-              </Button></>
+            <>
+              <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleImport} />
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5 h-8"
+                onClick={openImport}
+                disabled={importBusy}
+              >
+                <Upload className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Import CSV</span>
+              </Button>
+              {!isSuperAdmin && organization?.name ? (
+                <span className="text-[11px] text-muted-foreground hidden md:inline">
+                  → {organization.name}
+                </span>
+              ) : null}
+            </>
           )}
           {hasExport && (
             <Button variant="outline" size="sm" className="gap-1.5 h-8" onClick={handleExport}>
@@ -677,9 +835,14 @@ export default function Leads() {
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1.5 h-8"><Plus className="h-3.5 w-3.5" /><span className="hidden sm:inline">Add Lead</span></Button>
               </DialogTrigger>
-              <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+              <DialogContent className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
                 <DialogHeader><DialogTitle>Add New Lead</DialogTitle></DialogHeader>
-                <LeadForm onSubmit={handleCreate} teamMembers={isManager ? teamMembers : []} />
+                <LeadForm
+                  onSubmit={handleCreate}
+                  teamMembers={isManager ? teamMembers : []}
+                  currentUserId={user?.id}
+                  showAssignToSelf={normalizedLeadRole === 'manager'}
+                />
               </DialogContent>
             </Dialog>
           )}
@@ -697,7 +860,8 @@ export default function Leads() {
           { label: 'Lost', value: lostLeads, icon: XCircle, color: 'text-red-600', bg: 'bg-red-500/10', sub: 'Dropped' },
           { label: 'Unassigned', value: unassignedCount, icon: UserPlus, color: 'text-amber-600', bg: 'bg-amber-500/10', sub: 'Need action' },
         ].map(c => (
-          <Card key={c.label} className="border-border/50 shadow-none hover:shadow-md transition-shadow cursor-pointer" onClick={() => {
+          <Card key={c.label} className={`border-border/50 shadow-none ${useSourceCards ? '' : 'hover:shadow-md transition-shadow cursor-pointer'}`} onClick={() => {
+            if (useSourceCards) return;
             if (c.label === 'Unassigned') {
               setUnassignedOnly(true);
               setStatusFilter('all');
@@ -722,6 +886,99 @@ export default function Leads() {
         ))}
       </div>
 
+      {useSourceCards ? (
+        <>
+          <div className="mb-2">
+            <h2 className="text-sm font-semibold tracking-tight">Leads by source</h2>
+            <p className="text-xs text-muted-foreground">Open a source to view leads, filter by status, and bulk assign.</p>
+          </div>
+          {sourceSummaries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 rounded-lg border border-dashed border-border/60">
+              <Users className="h-12 w-12 text-muted-foreground/20 mb-4" />
+              <p className="text-sm font-medium text-muted-foreground">No leads yet</p>
+              <p className="text-xs text-muted-foreground mt-1">Import a CSV or add a lead to get started</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+              {sourceSummaries.map((summary) => {
+                const Icon = SOURCE_BUCKET_ICONS[summary.key] || CircleHelp;
+                const statusChips = SOURCE_STATUS_CHIP_ORDER.filter((s) => (summary.byStatus[s] || 0) > 0);
+                const visibleChips = statusChips.slice(0, 4);
+                const hiddenChipCount = statusChips.length - visibleChips.length;
+                return (
+                  <Card
+                    key={summary.key}
+                    className="border-border/50 shadow-none hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group"
+                    onClick={() => openSourceDialog(summary.key, 'all')}
+                  >
+                    <CardContent className="pt-4 pb-3 px-4">
+                      <div className="flex items-start justify-between gap-2 mb-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0 group-hover:bg-primary/15 transition-colors">
+                            <Icon className="h-4 w-4 text-primary" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-semibold text-sm truncate">{summary.label}</p>
+                            <p className="text-xs text-muted-foreground">{summary.total} lead{summary.total === 1 ? '' : 's'}</p>
+                          </div>
+                        </div>
+                        {summary.unassigned > 0 && (
+                          <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-200 bg-amber-500/10 shrink-0">
+                            {summary.unassigned} unassigned
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {visibleChips.map((status) => (
+                          <button
+                            key={status}
+                            type="button"
+                            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] capitalize transition-colors hover:ring-1 hover:ring-primary/40 min-h-8 ${statusColors[status] || 'bg-muted'}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openSourceDialog(summary.key, status);
+                            }}
+                          >
+                            <span>{formatLeadStatus(status)}</span>
+                            <span className="font-semibold tabular-nums">{summary.byStatus[status]}</span>
+                          </button>
+                        ))}
+                        {hiddenChipCount > 0 && (
+                          <span className="inline-flex items-center rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
+                            +{hiddenChipCount} more
+                          </span>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+
+          <SourceLeadsDialog
+            open={!!sourceDialogKey}
+            onOpenChange={(open) => {
+              if (!open) setSourceDialogKey(null);
+            }}
+            sourceKey={sourceDialogKey}
+            initialStatus={sourceDialogStatus}
+            leads={sourceDialogLeads}
+            teamMembers={teamMembers}
+            groupedTeamMembers={groupedTeamMembers}
+            isManager={isManager}
+            canBulkAssign={isManager || hasBulkDelete}
+            canBulkDelete={hasBulkDelete}
+            statusColors={statusColors}
+            getLeadAssignedNames={getLeadAssignedNames}
+            onOpenDetail={openDetail}
+            onOpenAssign={openAssignDialog}
+            onBulkAssign={handleBulkAssign}
+            onBulkDelete={hasBulkDelete ? handleBulkDelete : undefined}
+          />
+        </>
+      ) : (
+      <>
       {/* Filters Row */}
       <div className="flex flex-col sm:flex-row gap-2 mb-4">
         <div className="relative flex-1 max-w-xs sm:max-w-sm">
@@ -803,7 +1060,11 @@ export default function Leads() {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          {hasBulkDelete && <Button size="sm" variant="destructive" className="h-7 gap-1"><Trash2 className="h-3 w-3" />Delete</Button>}
+          {hasBulkDelete && (
+            <Button size="sm" variant="destructive" className="h-7 gap-1" onClick={handleBulkDelete}>
+              <Trash2 className="h-3 w-3" />Delete
+            </Button>
+          )}
           <button onClick={() => setSelectedIds(new Set())} className="text-xs text-muted-foreground hover:text-foreground ml-auto">Deselect</button>
         </div>
       )}
@@ -1018,6 +1279,8 @@ export default function Leads() {
           </div>
         </div>
       )}
+      </>
+      )}
 
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
@@ -1096,12 +1359,13 @@ export default function Leads() {
                 </div>
 
                 {/* Notes */}
-                {detailLead.notes && (
+                {detailLead.notes && !String(detailLead.notes).includes('Answers:') && (
                   <div className="border-t border-border pt-4">
                     <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5"><StickyNote className="h-3.5 w-3.5" />Notes</h4>
                     <p className="text-sm text-muted-foreground leading-relaxed bg-muted/50 p-3 rounded-lg">{detailLead.notes}</p>
                   </div>
                 )}
+                <FormSubmissionDetails notes={detailLead.notes} resumePath={detailLead.resume_path} />
 
                 {/* Activity History */}
                 <LeadActivityTimeline
@@ -1130,9 +1394,18 @@ export default function Leads() {
 
       {/* Edit Lead Dialog */}
       <Dialog open={editDialogOpen} onOpenChange={(open) => { setEditDialogOpen(open); if (!open) setEditingLead(null); }}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
           <DialogHeader><DialogTitle>Edit Lead</DialogTitle></DialogHeader>
-          {editingLead && <LeadForm initialData={editingLead} onSubmit={handleEdit} isEdit teamMembers={isManager ? teamMembers : []} />}
+          {editingLead && (
+            <LeadForm
+              initialData={editingLead}
+              onSubmit={handleEdit}
+              isEdit
+              teamMembers={isManager ? teamMembers : []}
+              currentUserId={user?.id}
+              showAssignToSelf={normalizedLeadRole === 'manager'}
+            />
+          )}
         </DialogContent>
       </Dialog>
 
@@ -1206,12 +1479,86 @@ export default function Leads() {
           void fetchLeads();
         }}
       />
+
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Import leads (CSV)</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-1">
+            <div className="space-y-1.5">
+              <Label>Organization *</Label>
+              <Select value={importOrgId || undefined} onValueChange={setImportOrgId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select organization" />
+                </SelectTrigger>
+                <SelectContent>
+                  {importOrgs.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                Imported leads will be created under this organization only.
+              </p>
+            </div>
+            {importTargetOrgName ? (
+              <p className="text-sm rounded-lg bg-muted/50 px-3 py-2">
+                Importing into: <span className="font-medium">{importTargetOrgName}</span>
+              </p>
+            ) : null}
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importBusy}>Cancel</Button>
+            <Button
+              disabled={!importOrgId || importBusy}
+              className="gap-1.5"
+              onClick={() => {
+                if (!importOrgId) {
+                  toast({ variant: 'destructive', title: 'Select an organization' });
+                  return;
+                }
+                fileInputRef.current?.click();
+              }}
+            >
+              {importBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              {importBusy ? 'Importing…' : 'Choose CSV'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function LeadForm({ onSubmit, initialData, isEdit, teamMembers = [] }: { onSubmit: (data: any) => void; initialData?: any; isEdit?: boolean; teamMembers?: any[] }) {
-  const [form, setForm] = useState(initialData || { name: '', email: '', phone: '', college: '', year_of_study: '', course_interest: '', source: 'other', notes: '', assigned_to: '' });
+function LeadForm({
+  onSubmit,
+  initialData,
+  isEdit,
+  teamMembers = [],
+  currentUserId,
+  showAssignToSelf = false,
+}: {
+  onSubmit: (data: any) => void;
+  initialData?: any;
+  isEdit?: boolean;
+  teamMembers?: any[];
+  currentUserId?: string;
+  showAssignToSelf?: boolean;
+}) {
+  const [form, setForm] = useState(
+    initialData || {
+      name: '',
+      email: '',
+      phone: '',
+      college: '',
+      year_of_study: '',
+      course_interest: '',
+      source: 'other',
+      notes: '',
+      assigned_to: showAssignToSelf && currentUserId ? currentUserId : '',
+    },
+  );
   return (
     <form onSubmit={e => { e.preventDefault(); onSubmit(form); }} className="space-y-4">
       <div className="space-y-2"><Label>Name *</Label><Input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Enter lead name" /></div>
@@ -1233,12 +1580,26 @@ function LeadForm({ onSubmit, initialData, isEdit, teamMembers = [] }: { onSubmi
           </Select>
         </div>
       </div>
-      {teamMembers.length > 0 && (
+      {(teamMembers.length > 0 || showAssignToSelf) && (
         <div className="space-y-2">
           <Label>Assign to Team Member</Label>
-            <Select value={form.assigned_to || ''} onValueChange={v => setForm({ ...form, assigned_to: v })}>
-            <SelectTrigger><SelectValue placeholder="Select rep..." /></SelectTrigger>
-              <SelectContent>{teamMembers.map(m => <SelectItem key={m.id} value={m.id}>{m.full_name} ({getRoleCategoryLabel(m.role)})</SelectItem>)}</SelectContent>
+            <Select
+              value={form.assigned_to || (showAssignToSelf && currentUserId ? currentUserId : '')}
+              onValueChange={v => setForm({ ...form, assigned_to: v })}
+            >
+            <SelectTrigger><SelectValue placeholder="Select assignee..." /></SelectTrigger>
+              <SelectContent>
+                {showAssignToSelf && currentUserId ? (
+                  <SelectItem value={currentUserId}>Myself (Manager)</SelectItem>
+                ) : null}
+                {teamMembers
+                  .filter((m) => m.id !== currentUserId)
+                  .map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.full_name} ({getRoleCategoryLabel(m.role)})
+                    </SelectItem>
+                  ))}
+              </SelectContent>
           </Select>
         </div>
       )}

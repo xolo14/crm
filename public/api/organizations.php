@@ -10,6 +10,24 @@ $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 
 // Only super_admin can manage organizations
 if ($method === 'GET') {
+    // Own org profile (any authenticated role with an org) — used by Settings → Company Profile / Data Privacy.
+    if (($_GET['action'] ?? '') === 'my_org') {
+        $orgId = $tokenData['org_id'] ?? null;
+        if (!$orgId) {
+            respond(['data' => null]);
+        }
+        ensureOrganizationsProfileColumn($db);
+        $stmt = $db->prepare('SELECT * FROM organizations WHERE id = ?');
+        $stmt->execute([$orgId]);
+        $org = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$org) {
+            respond(['data' => null]);
+        }
+        $org['profile'] = organizationsDecodeProfile($org['profile_json'] ?? null);
+        unset($org['profile_json']);
+        respond(['data' => $org]);
+    }
+
     // List all orgs (super_admin) or own org
     if ($role === 'super_admin') {
         $action = $_GET['action'] ?? '';
@@ -130,6 +148,7 @@ if ($method === 'POST') {
                 }
                 $db->prepare("UPDATE users SET full_name = ?, password_hash = ?, role = 'admin', is_active = 1 WHERE id = ?")
                     ->execute([$adminName, $hash, $existing['id']]);
+                syncpediaStoreUserLoginPassword($db, (string) $existing['id'], $adminPassword);
                 try {
                     $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$existing['id'], $orgId]);
                 } catch (Exception $e) {
@@ -170,6 +189,7 @@ if ($method === 'POST') {
                 }
                 $db->prepare("UPDATE users SET email = ?, full_name = ?, password_hash = ?, role = 'admin', is_active = 1 WHERE id = ? AND org_id = ?")
                     ->execute([$adminEmail, $adminName, $hash, $primaryAdminId, $orgId]);
+                syncpediaStoreUserLoginPassword($db, (string) $primaryAdminId, $adminPassword);
                 try {
                     $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$primaryAdminId, $orgId]);
                 } catch (Exception $e) {
@@ -181,6 +201,7 @@ if ($method === 'POST') {
             $refCode = strtoupper(substr(str_replace('-', '', $adminId), 0, 8));
             $db->prepare("INSERT INTO users (id, email, password_hash, full_name, role, org_id, referral_code) VALUES (?, ?, ?, ?, 'admin', ?, ?)")
                 ->execute([$adminId, $adminEmail, $hash, $adminName, $orgId, $refCode]);
+            syncpediaStoreUserLoginPassword($db, $adminId, $adminPassword);
             try {
                 $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$adminId, $orgId]);
             } catch (Exception $e) {
@@ -243,7 +264,10 @@ if ($method === 'POST') {
         $createAdmin = !array_key_exists('create_admin', $input) || filter_var($input['create_admin'], FILTER_VALIDATE_BOOLEAN);
         $adminEmail = trim($input['admin_email'] ?? '');
         $adminName = trim($input['admin_name'] ?? '');
-        $adminPassword = $input['admin_password'] ?? 'Welcome@123';
+        $adminPassword = trim((string) ($input['admin_password'] ?? ''));
+        if ($adminPassword === '' || $adminPassword === 'Welcome@123') {
+            $adminPassword = syncpediaGenerateTempPassword();
+        }
         $orgWelcomeEmail = null;
 
         if ($createAdmin && (!$adminEmail || !$adminName)) {
@@ -260,6 +284,7 @@ if ($method === 'POST') {
             
             $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, role, org_id, referral_code) VALUES (?, ?, ?, ?, 'admin', ?, ?)");
             $stmt->execute([$adminId, $adminEmail, $hash, $adminName, $orgId, $refCode]);
+            syncpediaStoreUserLoginPassword($db, $adminId, (string) $adminPassword);
             
             try {
                 $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$adminId, $orgId]);
@@ -352,6 +377,51 @@ if ($method === 'POST') {
         }
         respond(['error' => 'Create organization failed: ' . $e->getMessage()], 500);
     }
+}
+
+if ($method === 'PUT' && ($_GET['action'] ?? '') === 'profile') {
+    // Org admins update their own org's company profile / data-retention settings.
+    requireRole($tokenData, ['admin', 'org', 'super_admin']);
+    $orgId = $role === 'super_admin'
+        ? trim((string) ($_GET['org_id'] ?? $tokenData['org_id'] ?? ''))
+        : trim((string) ($tokenData['org_id'] ?? ''));
+    if ($orgId === '') {
+        respond(['error' => 'No organization found for this account'], 400);
+    }
+
+    ensureOrganizationsProfileColumn($db);
+    $stmt = $db->prepare('SELECT profile_json FROM organizations WHERE id = ? LIMIT 1');
+    $stmt->execute([$orgId]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        respond(['error' => 'Organization not found'], 404);
+    }
+
+    $input = getInput();
+    if (!is_array($input)) {
+        $input = [];
+    }
+
+    if (array_key_exists('name', $input) && trim((string) $input['name']) !== '') {
+        $db->prepare('UPDATE organizations SET name = ? WHERE id = ?')->execute([trim((string) $input['name']), $orgId]);
+    }
+
+    $current = organizationsDecodeProfile($row['profile_json'] ?? null);
+    $allowedKeys = [
+        'tagline', 'website', 'support_email', 'support_phone',
+        'street', 'city', 'state', 'country', 'postal_code',
+        'linkedin', 'twitter', 'instagram', 'retention',
+    ];
+    foreach ($allowedKeys as $k) {
+        if (array_key_exists($k, $input)) {
+            $current[$k] = $input[$k];
+        }
+    }
+    $json = json_encode($current, JSON_UNESCAPED_UNICODE);
+    $db->prepare('UPDATE organizations SET profile_json = ? WHERE id = ?')->execute([$json, $orgId]);
+
+    syncpediaAuditLog($db, $tokenData, 'updated', 'organization_profile', $orgId, 'Updated company profile / data settings');
+    respond(['message' => 'Settings saved', 'data' => $current]);
 }
 
 if ($method === 'PUT') {

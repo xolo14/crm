@@ -1,8 +1,8 @@
 <?php
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/lib/MetaWhatsApp.php';
-require_once __DIR__ . '/communications_org.php';
 require_once __DIR__ . '/communications_templates.php';
+require_once __DIR__ . '/communications_org.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -23,6 +23,23 @@ function commIsSuperAdmin(array $tokenData): bool {
 function commIsAdmin(array $tokenData): bool {
     $r = commNormRole($tokenData);
     return in_array($r, ['super_admin', 'admin', 'org', 'manager'], true);
+}
+
+/** Roles allowed to send WhatsApp and load hub operational data. */
+function commMessagingRoles(): array {
+    return ['super_admin', 'admin', 'org', 'manager', 'marketing', 'sales_representative'];
+}
+
+function commCanAssignWhatsappChats(array $tokenData): bool {
+    return in_array(commNormRole($tokenData), ['super_admin', 'admin', 'org', 'manager'], true);
+}
+
+function commIsAssignableInboxMemberRole(string $role): bool {
+    $r = strtolower(trim($role));
+    if ($r === 'sales_representative' || $r === 'sales_rep' || $r === 'marketing') {
+        return true;
+    }
+    return strpos($r, 'marketing') === 0;
 }
 
 function commResolveOrgId(PDO $db, array $tokenData, array $input = []): ?string {
@@ -254,7 +271,7 @@ if ($action === 'org_config' || $action === 'platform_config') {
             ->execute([
                 $id,
                 $targetOrgId,
-                commNormalizeWhatsappProvider($input['provider'] ?? 'meta'),
+                commNormalizeWhatsappProvider((string) ($input['provider'] ?? 'meta')),
                 $input['api_key'] ?? null,
                 $input['app_secret'] ?? null,
                 $input['phone_number_id'] ?? null,
@@ -284,7 +301,7 @@ if ($action === 'orgs_overview' && $method === 'GET') {
     respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
 }
 
-// ─── Test WhatsApp connection (Meta or Interakt) ───
+// ─── Test WhatsApp connection (Meta Cloud API) ───
 if (($action === 'test_whatsapp_connection' || $action === 'test_meta_connection') && $method === 'POST') {
     requireRole($tokenData, ['super_admin', 'admin', 'org']);
     $orgId = commResolveOrgId($db, $tokenData, $input);
@@ -292,14 +309,56 @@ if (($action === 'test_whatsapp_connection' || $action === 'test_meta_connection
         respond(['error' => 'Organization required'], 400);
     }
     commAssertOrgAccess($tokenData, $orgId);
-    $test = commTestWhatsappConnectionForOrg($db, $orgId);
+    try {
+        $overrides = [];
+        foreach (['api_key', 'app_secret', 'provider', 'phone_number_id', 'waba_id', 'graph_api_version'] as $field) {
+            if (!empty($input[$field]) && trim((string) $input[$field]) !== '') {
+                $overrides[$field] = trim((string) $input[$field]);
+            }
+        }
+        $test = commTestWhatsappConnectionForOrg($db, $orgId, $overrides);
+    } catch (Throwable $e) {
+        respond(['error' => 'Connection check failed: ' . $e->getMessage()], 500);
+    }
     if (!$test['ok']) {
         respond(['error' => $test['error'] ?? 'Connection failed', 'details' => $test], 502);
     }
-    $provider = commOrgWhatsappProvider($db, $orgId);
-    $db->prepare("UPDATE org_whatsapp_config SET connection_status = 'connected' WHERE org_id = ?")->execute([$orgId]);
-    $label = $provider === 'interakt' ? 'Interakt' : 'Meta WhatsApp Cloud API';
-    respond(['message' => "Connected to {$label}", 'data' => $test, 'org_id' => $orgId, 'provider' => $provider]);
+    $provider = 'meta';
+    $db->prepare("UPDATE org_whatsapp_config SET connection_status = 'connected', provider = 'meta' WHERE org_id = ?")->execute([$orgId]);
+    respond(['message' => 'Connected to Meta WhatsApp Cloud API', 'data' => $test, 'org_id' => $orgId, 'provider' => $provider]);
+}
+
+// ─── Meta Embedded Signup (org connects via Facebook / WhatsApp Business login) ───
+if ($action === 'embedded_signup_launch' && $method === 'GET') {
+    requireRole($tokenData, ['super_admin', 'admin', 'org']);
+    commEnsurePartnerTables($db);
+    $launch = commResolveEmbeddedSignupLaunchConfig($db);
+    respond(['data' => $launch, 'ready' => !empty($launch['ready'])]);
+}
+
+if ($action === 'complete_embedded_signup' && $method === 'POST') {
+    requireRole($tokenData, ['super_admin', 'admin', 'org']);
+    $orgId = commResolveOrgId($db, $tokenData, $input);
+    if (!$orgId) {
+        respond(['error' => 'Organization required'], 400);
+    }
+    commAssertOrgAccess($tokenData, $orgId);
+    $code = trim((string) ($input['code'] ?? ''));
+    $phoneNumberId = trim((string) ($input['phone_number_id'] ?? ''));
+    $wabaId = trim((string) ($input['waba_id'] ?? ''));
+    if ($code === '' || $phoneNumberId === '' || $wabaId === '') {
+        respond(['error' => 'code, phone_number_id, and waba_id are required from Meta Embedded Signup'], 400);
+    }
+    $appSecret = commResolveMetaAppSecret($db);
+    $result = commCompleteEmbeddedSignup($db, $orgId, $userId, $code, $phoneNumberId, $wabaId, $appSecret);
+    if (!$result['ok']) {
+        respond(['error' => $result['error'] ?? 'Embedded signup failed'], 502);
+    }
+    respond([
+        'message' => 'WhatsApp connected via Meta',
+        'org_id' => $orgId,
+        'data' => $result['data'] ?? [],
+    ]);
 }
 
 // ─── Meta: sync approved templates from org WABA ───
@@ -315,36 +374,6 @@ if ($action === 'sync_meta_templates' && $method === 'POST') {
         respond(['error' => $sync['error'] ?? 'Sync failed'], 502);
     }
     respond(['message' => 'Meta templates synced for organization', 'imported' => $sync['imported'], 'updated' => $sync['updated'], 'total' => $sync['total'], 'org_id' => $orgId]);
-}
-
-// ─── Interakt: mark template approved (must match Interakt dashboard code name) ───
-if ($action === 'approve_interakt_template' && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
-    $tplId = trim((string) ($input['template_id'] ?? ''));
-    if ($tplId === '') {
-        respond(['error' => 'template_id required'], 400);
-    }
-    $stmt = $db->prepare('SELECT * FROM whatsapp_message_templates WHERE id = ?');
-    $stmt->execute([$tplId]);
-    $tpl = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$tpl) {
-        respond(['error' => 'Template not found'], 404);
-    }
-    $orgId = (string) ($tpl['org_id'] ?? '');
-    if ($orgId === '') {
-        respond(['error' => 'Template must belong to an organization'], 400);
-    }
-    commAssertOrgAccess($tokenData, $orgId);
-    if (commOrgWhatsappProvider($db, $orgId) !== 'interakt') {
-        respond(['error' => 'Organization is not using Interakt'], 400);
-    }
-    $codeName = trim((string) ($input['provider_template_id'] ?? $tpl['provider_template_id'] ?? $tpl['name'] ?? ''));
-    if ($codeName === '') {
-        respond(['error' => 'Interakt template code name required'], 400);
-    }
-    $db->prepare('UPDATE whatsapp_message_templates SET status = ?, provider_template_id = ?, meta_status = ? WHERE id = ?')
-        ->execute(['approved', $codeName, 'APPROVED', $tplId]);
-    respond(['message' => 'Template marked approved for Interakt sending', 'provider_template_id' => $codeName]);
 }
 
 // ─── Meta: submit org template to Meta for official approval ───
@@ -372,7 +401,10 @@ if ($action === 'submit_template_meta' && $method === 'POST') {
     }
     $result = commSubmitOrgTemplateToMeta($db, $orgId, $tpl, $library);
     if (!$result['ok']) {
-        respond(['error' => $result['error'] ?? 'Meta submission failed'], 502);
+        // 400 = client/template payload issue from Meta; avoid misleading browser "502 Bad Gateway"
+        $http = (int) ($result['status'] ?? 0);
+        $code = ($http >= 400 && $http < 500) || $http === 0 ? 400 : 502;
+        respond(['error' => $result['error'] ?? 'Meta submission failed'], $code);
     }
     $metaName = $result['name'] ?? MetaWhatsApp::sanitizeTemplateName((string) $tpl['name']);
     $db->prepare('UPDATE whatsapp_message_templates SET provider_template_id = ?, meta_template_id = ?, meta_status = ?, status = ? WHERE id = ?')
@@ -428,7 +460,7 @@ if ($action === 'virtual_numbers') {
         requireRole($tokenData, ['super_admin']);
         $fields = [];
         $params = [];
-        foreach (['phone_number', 'label', 'provider', 'provider_sid', 'whatsapp_enabled', 'calls_enabled', 'is_active'] as $f) {
+        foreach (['org_id', 'phone_number', 'label', 'provider', 'provider_sid', 'whatsapp_enabled', 'calls_enabled', 'is_active'] as $f) {
             if (array_key_exists($f, $input)) {
                 $fields[] = "$f = ?";
                 $params[] = $input[$f];
@@ -524,20 +556,28 @@ if ($action === 'templates') {
         $body = trim((string) ($input['body'] ?? ''));
         $name = trim((string) ($input['name'] ?? ''));
         if ($name === '' || $body === '') respond(['error' => 'Name and body required'], 400);
+        $name = MetaWhatsApp::sanitizeTemplateName($name);
         $id = generateUUID();
         $status = 'draft';
         $providerTemplateId = trim((string) ($input['provider_template_id'] ?? ''));
         if ($providerTemplateId === '') {
             $providerTemplateId = $name;
+        } else {
+            $providerTemplateId = MetaWhatsApp::sanitizeTemplateName($providerTemplateId);
         }
-        if (commOrgWhatsappProvider($db, $orgId) === 'interakt' && !empty($input['mark_approved'])) {
-            $status = 'approved';
+        $category = strtolower(trim((string) ($input['category'] ?? 'utility')));
+        if ($category === 'authentication') {
+            // Custom CRM bodies are submitted as UTILITY; Meta AUTHENTICATION requires OTP button schema.
+            $category = 'utility';
+        }
+        if (!in_array($category, ['marketing', 'utility'], true)) {
+            $category = 'utility';
         }
         $vars = $input['variables'] ?? null;
         $db->prepare('INSERT INTO whatsapp_message_templates (id, org_id, name, category, language, header_type, header_text, body, footer, variables, provider_template_id, status, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
             ->execute([
                 $id, $orgId, $name,
-                $input['category'] ?? 'marketing',
+                $category,
                 $input['language'] ?? 'en',
                 $input['header_type'] ?? 'none',
                 $input['header_text'] ?? null,
@@ -548,14 +588,12 @@ if ($action === 'templates') {
                 $status,
                 $userId,
             ]);
-        $hint = commOrgWhatsappProvider($db, $orgId) === 'interakt'
-            ? 'Template saved — use the exact Interakt template code name'
-            : 'Template saved — submit to Meta for official approval';
-        respond(['id' => $id, 'status' => $status, 'message' => $hint], 201);
+        respond(['id' => $id, 'status' => $status, 'name' => $name, 'message' => 'Template saved — submit to Meta for official approval'], 201);
     }
     if ($method === 'PUT') {
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
         $stmt = $db->prepare('SELECT * FROM whatsapp_message_templates WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -584,6 +622,7 @@ if ($action === 'templates') {
 
 // ─── Send WhatsApp message (approved templates only) ───
 if ($action === 'send_whatsapp' && $method === 'POST') {
+    requireRole($tokenData, commMessagingRoles());
     $phone = preg_replace('/\s+/', '', trim((string) ($input['recipient_phone'] ?? '')));
     $templateId = trim((string) ($input['template_id'] ?? ''));
     if ($phone === '' || $templateId === '') respond(['error' => 'recipient_phone and template_id required'], 400);
@@ -607,40 +646,262 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
     $msgId = generateUUID();
     $send = commSendViaOrgProvider($db, $orgId, $phone, $template, $vars, $msgId);
 
+    require_once __DIR__ . '/lib/WhatsAppInbox.php';
+    WhatsAppInbox::ensureTables($db);
+    $normalized = WhatsAppInbox::normalizePhone($phone);
+    $orgCfg = commLoadOrgConfig($db, $orgId);
+    $conv = WhatsAppInbox::findOrCreateConversation(
+        $db,
+        $orgId,
+        $normalized,
+        $input['recipient_name'] ?? null,
+        $orgCfg['waba_id'] ?? null,
+        $orgCfg['phone_number_id'] ?? null,
+    );
+    $role = commNormRole($tokenData);
+    if ($conv && WhatsAppInbox::isFieldInboxRole($role)) {
+        $can = WhatsAppInbox::userCanAccessConversation($db, $conv, $userId, $role);
+        if (!$can) {
+            $owned = !empty($conv['started_by']) || !empty($conv['assigned_to']);
+            $hasHistory = !empty($conv['last_message_at']);
+            if ($owned || $hasHistory) {
+                respond([
+                    'error' => $owned
+                        ? 'This chat belongs to another teammate. Ask your manager to assign it to you.'
+                        : 'Ask your manager to assign this inbound chat before messaging.',
+                ], 403);
+            }
+        }
+    }
+
     $status = $send['ok'] ? 'sent' : 'failed';
-    $db->prepare('INSERT INTO comm_whatsapp_messages (id, org_id, user_id, virtual_number_id, template_id, recipient_phone, recipient_name, variables, message_body, status, provider_message_id, error_message, lead_id, sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    $db->prepare('INSERT INTO comm_whatsapp_messages (id, org_id, user_id, virtual_number_id, template_id, recipient_phone, recipient_name, variables, message_body, status, provider_message_id, error_message, lead_id, direction, conversation_id, sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         ->execute([
             $msgId, $orgId, $userId, $vnId,
-            $templateId, $phone,
+            $templateId, $normalized !== '' ? $normalized : $phone,
             $input['recipient_name'] ?? null,
             json_encode($vars),
             $body, $status,
             $send['provider_message_id'] ?? null,
             $send['error'] ?? null,
-            $input['lead_id'] ?? null,
+            $input['lead_id'] ?? ($conv['lead_id'] ?? null),
+            'outbound',
+            $conv['id'] ?? null,
             $send['ok'] ? date('Y-m-d H:i:s') : null,
         ]);
+
+    if ($conv && !empty($conv['id'])) {
+        WhatsAppInbox::touchOutboundOwnership($db, (string) $conv['id'], $userId);
+        if ($send['ok']) {
+            $db->prepare('UPDATE wa_conversations SET last_message_at = ?, last_message_preview = ?, updated_at = NOW() WHERE id = ?')
+                ->execute([date('Y-m-d H:i:s'), WhatsAppInbox::previewText($body, 200), $conv['id']]);
+        }
+    }
 
     if (!$send['ok']) {
         respond(['error' => $send['error'] ?? 'Send failed', 'id' => $msgId], 502);
     }
-    respond(['id' => $msgId, 'message' => 'WhatsApp message queued', 'status' => $status], 201);
+    respond(['id' => $msgId, 'message' => 'WhatsApp message queued', 'status' => $status, 'conversation_id' => $conv['id'] ?? null], 201);
 }
 
-// ─── Message history ───
+// ─── Send free-text WhatsApp reply (Meta session message, 24h window) ───
+if ($action === 'send_whatsapp_reply' && $method === 'POST') {
+    requireRole($tokenData, commMessagingRoles());
+    require_once __DIR__ . '/lib/WhatsAppInbox.php';
+    WhatsAppInbox::ensureTables($db);
+
+    $phone = preg_replace('/\s+/', '', trim((string) ($input['recipient_phone'] ?? '')));
+    $text = trim((string) ($input['message'] ?? $input['text'] ?? ''));
+    if ($phone === '' || $text === '') {
+        respond(['error' => 'recipient_phone and message are required'], 400);
+    }
+
+    $orgId = (string) (commResolveOrgId($db, $tokenData, $input) ?? '');
+    if ($orgId === '') {
+        respond(['error' => 'Organization required'], 400);
+    }
+    commAssertOrgAccess($tokenData, $orgId);
+
+    $msgId = generateUUID();
+    $normalized = WhatsAppInbox::normalizePhone($phone);
+    $conv = WhatsAppInbox::findOrCreateConversation($db, $orgId, $normalized, $input['recipient_name'] ?? null, null, null);
+    $role = commNormRole($tokenData);
+    if ($conv && WhatsAppInbox::isFieldInboxRole($role)) {
+        $can = WhatsAppInbox::userCanAccessConversation($db, $conv, $userId, $role);
+        if (!$can) {
+            $owned = !empty($conv['started_by']) || !empty($conv['assigned_to']);
+            $hasHistory = !empty($conv['last_message_at']);
+            if ($owned || $hasHistory) {
+                respond([
+                    'error' => $owned
+                        ? 'This chat belongs to another teammate. Ask your manager to assign it to you.'
+                        : 'Ask your manager to assign this inbound chat before responding.',
+                ], 403);
+            }
+        }
+    }
+
+    // Access OK first — then send to Meta so a permission failure never leaves a dangling outbound.
+    $send = commSendTextViaOrgProvider($db, $orgId, $phone, $text);
+    $status = $send['ok'] ? 'sent' : 'failed';
+    $now = date('Y-m-d H:i:s');
+    $leadId = $conv['lead_id'] ?? ($input['lead_id'] ?? null);
+    $convId = $conv['id'] ?? null;
+
+    try {
+        try {
+            $db->prepare(
+                'INSERT INTO comm_whatsapp_messages
+                 (id, org_id, user_id, recipient_phone, recipient_name, message_body, message_type, status,
+                  provider_message_id, error_message, lead_id, direction, conversation_id, sent_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
+            )->execute([
+                $msgId,
+                $orgId,
+                $userId,
+                $normalized,
+                $input['recipient_name'] ?? null,
+                $text,
+                'text',
+                $status,
+                $send['provider_message_id'] ?? null,
+                $send['error'] ?? null,
+                $leadId,
+                'outbound',
+                $convId,
+                $send['ok'] ? $now : null,
+            ]);
+        } catch (Throwable $insertErr) {
+            // Older schemas may lack message_type / direction — fall back to a minimal insert.
+            $db->prepare(
+                'INSERT INTO comm_whatsapp_messages
+                 (id, org_id, user_id, recipient_phone, recipient_name, message_body, status,
+                  provider_message_id, error_message, lead_id, sent_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+            )->execute([
+                $msgId,
+                $orgId,
+                $userId,
+                $normalized,
+                $input['recipient_name'] ?? null,
+                $text,
+                $status,
+                $send['provider_message_id'] ?? null,
+                $send['error'] ?? null,
+                $leadId,
+                $send['ok'] ? $now : null,
+            ]);
+            try {
+                $db->prepare('UPDATE comm_whatsapp_messages SET direction = ?, conversation_id = ?, message_type = ? WHERE id = ?')
+                    ->execute(['outbound', $convId, 'text', $msgId]);
+            } catch (Throwable $ignored) {
+            }
+        }
+
+        if ($convId) {
+            WhatsAppInbox::touchOutboundOwnership($db, (string) $convId, $userId);
+            if ($send['ok']) {
+                $db->prepare('UPDATE wa_conversations SET last_message_at = ?, last_message_preview = ?, updated_at = NOW() WHERE id = ?')
+                    ->execute([$now, WhatsAppInbox::previewText($text, 200), $convId]);
+            }
+        }
+    } catch (Throwable $e) {
+        // Meta may have already accepted the message — surface a clear error instead of a fatal 500.
+        respond([
+            'error' => $send['ok']
+                ? 'Message may have been sent on WhatsApp but failed to save in CRM inbox'
+                : ($send['error'] ?? 'Send failed'),
+            'detail' => $e->getMessage(),
+            'id' => $msgId,
+            'provider_message_id' => $send['provider_message_id'] ?? null,
+            'status' => $status,
+            'conversation_id' => $convId,
+        ], $send['ok'] ? 500 : 502);
+    }
+
+    if (!$send['ok']) {
+        respond(['error' => $send['error'] ?? 'Send failed', 'id' => $msgId, 'conversation_id' => $convId], 502);
+    }
+    respond(['id' => $msgId, 'provider_message_id' => $send['provider_message_id'] ?? null, 'status' => $status, 'conversation_id' => $convId], 201);
+}
+
+// ─── Message history (role-scoped via conversation ownership when possible) ───
 if ($action === 'messages' && $method === 'GET') {
+    requireRole($tokenData, commMessagingRoles());
+    require_once __DIR__ . '/lib/WhatsAppInbox.php';
+    WhatsAppInbox::ensureTables($db);
+
     $orgId = commResolveOrgId($db, $tokenData, $_GET);
     $limit = min(100, max(10, (int) ($_GET['limit'] ?? 50)));
+    $conversationId = trim((string) ($_GET['conversation_id'] ?? ''));
+    $role = commNormRole($tokenData);
+
+    if ($conversationId !== '') {
+        $cStmt = $db->prepare('SELECT * FROM wa_conversations WHERE id = ? LIMIT 1');
+        $cStmt->execute([$conversationId]);
+        $conv = $cStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$conv) {
+            respond(['error' => 'Conversation not found'], 404);
+        }
+        if ($orgId && (string) ($conv['org_id'] ?? '') !== (string) $orgId && !commIsSuperAdmin($tokenData)) {
+            respond(['error' => 'Forbidden'], 403);
+        }
+        if (!WhatsAppInbox::userCanAccessConversation($db, $conv, $userId, $role)) {
+            respond(['error' => 'You do not have access to this chat'], 403);
+        }
+        $stmt = $db->prepare(
+            "SELECT m.*, u.full_name AS sender_name
+             FROM comm_whatsapp_messages m
+             LEFT JOIN users u ON u.id = m.user_id
+             WHERE m.conversation_id = ?
+             ORDER BY COALESCE(m.meta_timestamp, m.sent_at, m.created_at) ASC
+             LIMIT ?",
+        );
+        $stmt->bindValue(1, $conversationId);
+        $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        // Mark read for this user when opening thread
+        try {
+            $db->prepare('UPDATE wa_conversations SET unread_count = 0 WHERE id = ?')->execute([$conversationId]);
+        } catch (Throwable $e) {
+        }
+        respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC), 'conversation' => $conv]);
+    }
+
     if (commIsSuperAdmin($tokenData) && empty($_GET['org_id'])) {
         $stmt = $db->prepare("SELECT m.*, u.full_name AS sender_name FROM comm_whatsapp_messages m LEFT JOIN users u ON u.id = m.user_id ORDER BY m.created_at DESC LIMIT ?");
         $stmt->bindValue(1, $limit, PDO::PARAM_INT);
         $stmt->execute();
         respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
     }
-    if (commIsAdmin($tokenData) && $orgId) {
+    if (WhatsAppInbox::isOrgWideInboxRole($role) && $orgId) {
         $stmt = $db->prepare("SELECT m.*, u.full_name AS sender_name FROM comm_whatsapp_messages m LEFT JOIN users u ON u.id = m.user_id WHERE m.org_id = ? ORDER BY m.created_at DESC LIMIT ?");
         $stmt->bindValue(1, $orgId);
         $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+    }
+    // Field roles: messages from conversations they own/are assigned, plus their own outbound
+    if ($orgId) {
+        $stmt = $db->prepare(
+            "SELECT m.*, u.full_name AS sender_name
+             FROM comm_whatsapp_messages m
+             LEFT JOIN users u ON u.id = m.user_id
+             LEFT JOIN wa_conversations c ON c.id = m.conversation_id
+             WHERE m.org_id = ?
+               AND (
+                 m.user_id = ?
+                 OR c.started_by = ?
+                 OR c.assigned_to = ?
+               )
+             ORDER BY m.created_at DESC
+             LIMIT ?",
+        );
+        $stmt->bindValue(1, $orgId);
+        $stmt->bindValue(2, $userId);
+        $stmt->bindValue(3, $userId);
+        $stmt->bindValue(4, $userId);
+        $stmt->bindValue(5, $limit, PDO::PARAM_INT);
         $stmt->execute();
         respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
     }
@@ -649,6 +910,85 @@ if ($action === 'messages' && $method === 'GET') {
     $stmt->bindValue(2, $limit, PDO::PARAM_INT);
     $stmt->execute();
     respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+}
+
+// ─── WhatsApp inbox: list conversations (role-scoped) ───
+if ($action === 'conversations' && $method === 'GET') {
+    requireRole($tokenData, commMessagingRoles());
+    require_once __DIR__ . '/lib/WhatsAppInbox.php';
+    WhatsAppInbox::ensureTables($db);
+    $orgId = commResolveOrgId($db, $tokenData, $_GET);
+    if (!$orgId) {
+        respond(['error' => 'Organization required'], 400);
+    }
+    $limit = min(100, max(10, (int) ($_GET['limit'] ?? 50)));
+    $role = commNormRole($tokenData);
+    $rows = WhatsAppInbox::listConversationsForUser($db, $orgId, $userId, $role, $limit);
+    respond([
+        'data' => $rows,
+        'can_assign' => commCanAssignWhatsappChats($tokenData),
+        'scope' => WhatsAppInbox::isOrgWideInboxRole($role) ? 'org' : 'mine',
+    ]);
+}
+
+// ─── Assignable teammates for chat assignment ───
+if ($action === 'assignable_members' && $method === 'GET') {
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    require_once __DIR__ . '/lib/WhatsAppInbox.php';
+    $orgId = commResolveOrgId($db, $tokenData, $_GET);
+    if (!$orgId) {
+        respond(['error' => 'Organization required'], 400);
+    }
+    respond(['data' => WhatsAppInbox::listAssignableMembers($db, $orgId)]);
+}
+
+// ─── Assign / unassign WhatsApp conversation ───
+if ($action === 'assign_conversation' && $method === 'POST') {
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    require_once __DIR__ . '/lib/WhatsAppInbox.php';
+    WhatsAppInbox::ensureTables($db);
+
+    $conversationId = trim((string) ($input['conversation_id'] ?? ''));
+    $assignee = array_key_exists('assigned_to', $input)
+        ? trim((string) ($input['assigned_to'] ?? ''))
+        : trim((string) ($input['user_id'] ?? ''));
+    if ($conversationId === '') {
+        respond(['error' => 'conversation_id required'], 400);
+    }
+
+    $cStmt = $db->prepare('SELECT * FROM wa_conversations WHERE id = ? LIMIT 1');
+    $cStmt->execute([$conversationId]);
+    $conv = $cStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$conv) {
+        respond(['error' => 'Conversation not found'], 404);
+    }
+    $orgId = (string) ($conv['org_id'] ?? '');
+    commAssertOrgAccess($tokenData, $orgId);
+
+    $assigneeId = null;
+    if ($assignee !== '' && strtolower($assignee) !== 'none' && strtolower($assignee) !== 'unassigned') {
+        $uStmt = $db->prepare('SELECT id, role, org_id, is_active FROM users WHERE id = ? LIMIT 1');
+        $uStmt->execute([$assignee]);
+        $member = $uStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$member || !(int) ($member['is_active'] ?? 0)) {
+            respond(['error' => 'Assignee not found or inactive'], 400);
+        }
+        if ((string) ($member['org_id'] ?? '') !== $orgId) {
+            respond(['error' => 'Assignee must belong to the same organization'], 400);
+        }
+        if (!commIsAssignableInboxMemberRole((string) ($member['role'] ?? ''))) {
+            respond(['error' => 'Chats can only be assigned to sales reps or digital marketing members'], 400);
+        }
+        $assigneeId = (string) $member['id'];
+    }
+
+    WhatsAppInbox::assignConversation($db, $conversationId, $assigneeId, $userId);
+    $cStmt->execute([$conversationId]);
+    $updated = $cStmt->fetch(PDO::FETCH_ASSOC);
+    respond([
+        'message' => $assigneeId ? 'Chat assigned' : 'Chat unassigned',
+        'data' => $updated,
+    ]);
 }
 
 // ─── Dialer contacts (recent leads with phone) ───
@@ -662,7 +1002,7 @@ if ($action === 'dialer_contacts' && $method === 'GET') {
         $params[] = $orgId;
     }
     $role = commNormRole($tokenData);
-    if (in_array($role, ['sales_representative', 'sales_marketing', 'marketing', 'hr'], true)) {
+    if (in_array($role, ['sales_representative', 'marketing', 'hr'], true)) {
         $sql .= ' AND (assigned_to = ? OR created_by = ?)';
         $params[] = $userId;
         $params[] = $userId;
@@ -681,6 +1021,7 @@ if ($action === 'dialer_contacts' && $method === 'GET') {
 // ─── Meta Official Partner config (super admin) ───
 if ($action === 'meta_partner_config') {
     if ($method === 'GET') {
+        requireRole($tokenData, ['super_admin']);
         $row = commLoadPartnerConfig($db);
         $includeSecrets = commIsSuperAdmin($tokenData);
         respond(['data' => commFormatPartnerConfigForResponse($row, $includeSecrets)]);
@@ -705,6 +1046,10 @@ if ($action === 'meta_partner_config') {
             if (array_key_exists('system_user_token', $input) && trim((string) $input['system_user_token']) !== '') {
                 $sets[] = 'system_user_token = ?';
                 $params[] = trim((string) $input['system_user_token']);
+            }
+            if (array_key_exists('meta_app_secret', $input) && trim((string) $input['meta_app_secret']) !== '') {
+                $sets[] = 'meta_app_secret = ?';
+                $params[] = trim((string) $input['meta_app_secret']);
             }
             if (!$sets) {
                 respond(['error' => 'Nothing to update'], 400);
@@ -954,6 +1299,7 @@ if ($action === 'publish_partner_template' && $method === 'POST') {
 
 // ─── Hub summary (one call for dashboard) ───
 if ($action === 'hub_summary' && $method === 'GET') {
+    requireRole($tokenData, commMessagingRoles());
     $orgId = commResolveOrgId($db, $tokenData, $_GET);
     $orgWa = $orgId ? commLoadOrgConfig($db, $orgId) : [];
     $myNumbers = count(commFetchMyNumberAssignments($db, $userId, $tokenData));

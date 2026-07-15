@@ -19,7 +19,7 @@ export function isLoginPortalRole(role?: string | null): boolean {
 
 export function getPostLoginPath(role?: string | null): string {
   const n = normalizeAppRole(role);
-  if (n === "super_admin") return "/superadmin";
+  if (n === "super_admin") return "/";
   if (n === "marketing") return "/marketing/dashboard";
   if (n === "hr") return "/hr/dashboard";
   return "/";
@@ -34,7 +34,7 @@ export function syncHrLocalSession(user: Record<string, unknown> | null | undefi
   localStorage.setItem("hr_user", JSON.stringify(user));
 }
 
-/** Marketing members table can upgrade sales_marketing users to marketing dashboard. */
+/** Marketing members table can upgrade legacy aliases to marketing dashboard. */
 export async function resolveMarketingLoginUser(
   storedUser: Record<string, unknown> | null,
 ): Promise<Record<string, unknown> | null> {

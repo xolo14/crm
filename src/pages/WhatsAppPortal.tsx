@@ -16,17 +16,17 @@ import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   MessageSquare, Send, Plus, Eye, Loader2, FileText, Trash2,
-  Upload, CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, Link2, Copy, Phone
+  Upload, CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, Phone
 } from 'lucide-react';
 import { format } from 'date-fns';
-import { useNavigate } from 'react-router-dom';
-import { publicApplyUrl } from '@/lib/siteOrigin';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 export default function WhatsAppPortal() {
   const { user } = useAuth();
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [activeTab, setActiveTab] = useState('form_leads');
@@ -47,7 +47,6 @@ export default function WhatsAppPortal() {
   const [sends, setSends] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [copiedLink, setCopiedLink] = useState(false);
 
   const [showBulkSend, setShowBulkSend] = useState(false);
   const [bulkPhones, setBulkPhones] = useState('');
@@ -115,6 +114,14 @@ export default function WhatsAppPortal() {
     setShowEditor(true);
   };
 
+  useEffect(() => {
+    if (loading || searchParams.get('create') !== '1') return;
+    openEditor();
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [loading, searchParams, setSearchParams]);
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -155,16 +162,17 @@ export default function WhatsAppPortal() {
         campaignId,
         phones.map((phone) => ({ recipient_phone: phone, status: 'pending' })),
       );
-      // Trigger n8n webhook for WhatsApp
+      // Trigger n8n via authenticated PHP proxy (URL stays server-side in config.php)
       try {
-        const webhookUrl = import.meta.env.VITE_N8N_WHATSAPP_WEBHOOK;
-        if (webhookUrl) {
-          await fetch(webhookUrl, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ campaign_id: campaignId, subject: draft.subject, body: draft.body, recipients: phones }),
-          });
-        }
-      } catch (webhookErr) { console.warn('n8n WhatsApp webhook not configured:', webhookErr); }
+        await api.marketing.triggerN8nWebhook('whatsapp', {
+          campaign_id: campaignId,
+          subject: draft.subject,
+          body: draft.body,
+          recipients: phones,
+        });
+      } catch (webhookErr) {
+        console.warn('n8n WhatsApp webhook not configured:', webhookErr);
+      }
       toast({ title: `Campaign created with ${phones.length} recipients!` });
       setShowBulkSend(false); setBulkPhones(''); setSelectedDraftId(''); fetchAll();
     } catch (err: any) {
@@ -206,26 +214,6 @@ export default function WhatsAppPortal() {
           </Button>
         </div>
       </div>
-
-      {/* Form Link */}
-      <Card className="border-l-4 border-l-emerald-500">
-        <CardContent className="p-3 md:p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Link2 className="h-4 w-4 text-emerald-500" />
-            <span className="text-sm font-semibold">Your Form Link</span>
-            <Badge variant="outline" className="text-[10px]">{formLeads.length} leads</Badge>
-          </div>
-          <div className="flex items-center gap-2">
-            <Input readOnly value={publicApplyUrl(referralCode)} className="text-xs h-8 bg-muted/50 font-mono" />
-            <Button size="sm" variant="outline" className="gap-1 shrink-0" onClick={() => {
-              navigator.clipboard.writeText(publicApplyUrl(referralCode));
-              setCopiedLink(true);
-              toast({ title: 'Link copied!' });
-              setTimeout(() => setCopiedLink(false), 2000);
-            }}><Copy className="h-3 w-3" />{copiedLink ? 'Copied' : 'Copy'}</Button>
-          </div>
-        </CardContent>
-      </Card>
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -446,7 +434,7 @@ export default function WhatsAppPortal() {
 
       {/* Draft Editor */}
       <Dialog open={showEditor} onOpenChange={(open) => { setShowEditor(open); if (!open) { setEditingDraft(null); setDraftName(''); setDraftSubject(''); setDraftBody(''); } }}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader><DialogTitle>{editingDraft ? 'Edit Draft' : 'New WhatsApp Draft'}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div><Label className="text-xs font-medium">Draft Name *</Label><Input value={draftName} onChange={e => setDraftName(e.target.value)} placeholder="e.g. Welcome Message, Promo..." className="mt-1" /></div>

@@ -11,6 +11,7 @@ import { api } from "@/lib/api";
 import DialerPad from "@/components/communications/DialerPad";
 import WhatsAppSetupHome from "@/components/communications/WhatsAppSetupHome";
 import WhatsAppSetupWizard from "@/components/communications/WhatsAppSetupWizard";
+import WhatsAppChatInbox from "@/components/communications/WhatsAppChatInbox";
 import LogCallDialog from "@/components/sales/LogCallDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -117,7 +118,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   }, [selectedTemplate, waVars]);
 
   const orgWa = summary?.org_whatsapp;
-  const waProvider = orgWa?.provider === "meta" ? "Meta" : orgWa?.provider === "interakt" ? "Interakt" : "WhatsApp";
+  const waProvider = "Meta";
   const waConnected = orgWa?.is_active && orgWa?.connection_status === "connected";
   const orgConfig = orgConfigRes?.data ?? null;
 
@@ -129,6 +130,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
       setWaName("");
       setWaVars("");
       qc.invalidateQueries({ queryKey: ["comm", "messages"] });
+      qc.invalidateQueries({ queryKey: ["comm", "conversations"] });
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Send failed", description: e.message }),
   });
@@ -151,11 +153,11 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   const tabTriggerClass = "flex-1 gap-1.5 data-[state=active]:shadow-sm text-xs sm:text-sm";
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 pb-24 md:pb-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Communications Hub</h1>
-          <p className="text-sm text-muted-foreground">
+    <div className={cn("mx-auto max-w-5xl space-y-4", isMobile ? "pb-[calc(5.5rem+env(safe-area-inset-bottom,0px))]" : "pb-6")}>
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Communications Hub</h1>
+          <p className="text-sm text-muted-foreground line-clamp-2">
             Your org&apos;s {waProvider} WhatsApp & assigned virtual numbers — {user?.full_name || "your team"}
           </p>
         </div>
@@ -182,8 +184,8 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
         </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {/* Summary — compact on WhatsApp mobile so inbox stays primary */}
+      <div className={cn("grid grid-cols-2 md:grid-cols-4 gap-3", tab === "whatsapp" && isMobile && "hidden")}>
         <Card className="p-3">
           <div className="text-xs text-muted-foreground">Org WhatsApp</div>
           <div className="font-semibold text-sm mt-1 truncate">
@@ -209,6 +211,16 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
           ) : null}
         </Card>
       </div>
+      {tab === "whatsapp" && isMobile ? (
+        <div className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs">
+          <span className="text-muted-foreground truncate">
+            {waConnected ? orgWa?.business_phone || "WhatsApp connected" : "WhatsApp not connected"}
+          </span>
+          <Badge variant={waConnected ? "default" : "secondary"} className="shrink-0 text-[10px]">
+            {waConnected ? "Live" : "Setup"}
+          </Badge>
+        </div>
+      ) : null}
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as HubTab)}>
         <TabsList className={cn("grid w-full grid-cols-3 h-auto p-1", isMobile && "hidden")}>
@@ -231,7 +243,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
                   type="button"
                   onClick={() => setTab(id)}
                   className={cn(
-                    "flex flex-col items-center gap-0.5 rounded-lg py-2 text-[10px] font-medium transition-colors",
+                    "flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-lg py-2 text-[10px] font-medium transition-colors",
                     tab === id ? "bg-primary text-primary-foreground" : "text-muted-foreground",
                   )}
                 >
@@ -315,7 +327,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
         </TabsContent>
 
         {/* ── WHATSAPP ── */}
-        <TabsContent value="whatsapp" className="mt-4 space-y-4">
+        <TabsContent value="whatsapp" className="mt-4 space-y-4 min-w-0 w-full">
           {isOrgAdmin && !waConnected ? (
             <WhatsAppSetupHome
               userName={user?.full_name}
@@ -326,97 +338,114 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
             />
           ) : null}
 
-          <div className={cn("grid gap-4 lg:grid-cols-2", isOrgAdmin && !waConnected && "opacity-60 pointer-events-none")}>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Send WhatsApp</CardTitle>
-                <CardDescription>Uses your organization&apos;s {waProvider} account — approved templates only</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {!waConnected ? (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-sm">
-                    WhatsApp is not connected for your organization.
-                    {isOrgAdmin ? (
-                      <>
-                        {" "}
-                        <button
-                          type="button"
-                          className="font-medium underline"
-                          onClick={() => setSetupWizardOpen(true)}
-                        >
-                          Start setup wizard
-                        </button>
-                      </>
-                    ) : (
-                      " Ask your admin to connect WhatsApp (Interakt or Meta)."
-                    )}
-                  </div>
-                ) : null}
-                <div className="space-y-1.5">
-                  <Label>Recipient phone</Label>
-                  <Input value={waPhone} onChange={(e) => setWaPhone(e.target.value)} placeholder="+91..." />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Name (optional)</Label>
-                  <Input value={waName} onChange={(e) => setWaName(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Approved template</Label>
-                  <Select value={waTemplateId} onValueChange={setWaTemplateId}>
-                    <SelectTrigger><SelectValue placeholder={templates.length ? "Select template" : "No approved templates"} /></SelectTrigger>
-                    <SelectContent>
-                      {templates.map((t: WhatsappTemplate) => (
-                        <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <Label>Variables (comma-separated)</Label>
-                  <Input value={waVars} onChange={(e) => setWaVars(e.target.value)} placeholder="Name, Course, Date..." />
-                </div>
-                {previewBody ? (
-                  <div className="rounded-lg border bg-muted/30 p-3 text-sm whitespace-pre-wrap">{previewBody}</div>
-                ) : null}
-                <Button
-                  className="w-full gap-2"
-                  disabled={!waConnected || !waPhone || !waTemplateId || sendMutation.isPending}
-                  onClick={() =>
-                    sendMutation.mutate({
-                      recipient_phone: waPhone,
-                      recipient_name: waName || undefined,
-                      template_id: waTemplateId,
-                      variables: waVars ? waVars.split(",").map((v) => v.trim()) : [],
-                      virtual_number_id: activeNumber?.virtual_number_id,
-                      lead_id: selectedContact?.id,
-                    })
-                  }
-                >
-                  <Send className="h-4 w-4" />
-                  {sendMutation.isPending ? "Sending..." : "Send WhatsApp"}
-                </Button>
-              </CardContent>
-            </Card>
+          <WhatsAppChatInbox connected={waConnected} />
 
-            <Card>
-              <CardHeader><CardTitle className="text-lg">Recent messages</CardTitle></CardHeader>
-              <CardContent className="space-y-2 max-h-[480px] overflow-y-auto">
-                {messages.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No messages yet</p>
-                ) : (
-                  messages.map((m) => (
-                    <div key={m.id} className="rounded-lg border p-3 text-sm">
-                      <div className="flex justify-between gap-2">
-                        <span className="font-medium">{m.recipient_name || m.recipient_phone}</span>
-                        <Badge variant={m.status === "sent" ? "default" : "secondary"} className="text-[10px]">{m.status}</Badge>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{m.message_body}</p>
+          <details className={cn("rounded-xl border group", isOrgAdmin && !waConnected && "opacity-60")}>
+            <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium flex items-center justify-between gap-2 [&::-webkit-details-marker]:hidden">
+              <span>Template send &amp; recent outbound</span>
+              <span className="text-xs text-muted-foreground group-open:hidden">Show</span>
+              <span className="text-xs text-muted-foreground hidden group-open:inline">Hide</span>
+            </summary>
+            <div className={cn("grid gap-4 p-4 pt-0 lg:grid-cols-2", isOrgAdmin && !waConnected && "pointer-events-none")}>
+              <Card className="border-0 shadow-none">
+                <CardHeader className="px-0 pt-0">
+                  <CardTitle className="text-base">Send WhatsApp</CardTitle>
+                  <CardDescription>Approved templates only — uses org {waProvider}</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3 px-0 pb-0">
+                  {!waConnected ? (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50/50 dark:bg-amber-950/20 p-3 text-sm">
+                      WhatsApp is not connected for your organization.
+                      {isOrgAdmin ? (
+                        <>
+                          {" "}
+                          <button
+                            type="button"
+                            className="font-medium underline"
+                            onClick={() => setSetupWizardOpen(true)}
+                          >
+                            Start setup wizard
+                          </button>
+                        </>
+                      ) : (
+                        " Ask your admin to connect WhatsApp via Meta Cloud API."
+                      )}
                     </div>
-                  ))
-                )}
-              </CardContent>
-            </Card>
-          </div>
+                  ) : null}
+                  <div className="space-y-1.5">
+                    <Label>Recipient phone</Label>
+                    <Input value={waPhone} onChange={(e) => setWaPhone(e.target.value)} placeholder="+91..." />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Name (optional)</Label>
+                    <Input value={waName} onChange={(e) => setWaName(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Approved template</Label>
+                    <Select value={waTemplateId} onValueChange={setWaTemplateId}>
+                      <SelectTrigger><SelectValue placeholder={templates.length ? "Select template" : "No approved templates"} /></SelectTrigger>
+                      <SelectContent>
+                        {templates.map((t: WhatsappTemplate) => (
+                          <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Variables (comma-separated)</Label>
+                    <Input value={waVars} onChange={(e) => setWaVars(e.target.value)} placeholder="Name, Course, Date..." />
+                  </div>
+                  {previewBody ? (
+                    <div className="rounded-lg border bg-muted/30 p-3 text-sm whitespace-pre-wrap">{previewBody}</div>
+                  ) : null}
+                  <Button
+                    className="w-full gap-2"
+                    disabled={!waConnected || !waPhone || !waTemplateId || sendMutation.isPending}
+                    onClick={() =>
+                      sendMutation.mutate({
+                        recipient_phone: waPhone,
+                        recipient_name: waName || undefined,
+                        template_id: waTemplateId,
+                        variables: waVars ? waVars.split(",").map((v) => v.trim()) : [],
+                        virtual_number_id: activeNumber?.virtual_number_id,
+                        lead_id: selectedContact?.id,
+                      })
+                    }
+                  >
+                    <Send className="h-4 w-4" />
+                    {sendMutation.isPending ? "Sending..." : "Send WhatsApp"}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card className="border-0 shadow-none">
+                <CardHeader className="px-0 pt-0"><CardTitle className="text-base">Recent messages</CardTitle></CardHeader>
+                <CardContent className="space-y-2 max-h-[320px] overflow-y-auto px-0 pb-0">
+                  {messages.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No messages yet</p>
+                  ) : (
+                    messages.map((m) => (
+                      <div key={m.id} className="rounded-lg border p-3 text-sm">
+                        <div className="flex justify-between gap-2">
+                          <span className="font-medium">{m.recipient_name || m.recipient_phone}</span>
+                          <Badge
+                            variant={m.status === "sent" ? "default" : m.status === "failed" ? "destructive" : "secondary"}
+                            className="text-[10px]"
+                          >
+                            {m.status}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{m.message_body}</p>
+                        {m.status === "failed" && m.error_message ? (
+                          <p className="text-xs text-destructive mt-1.5">{m.error_message}</p>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </details>
         </TabsContent>
 
         {/* ── NUMBERS ── */}

@@ -181,7 +181,7 @@ export function LeadEnrollDialog({ open, onOpenChange, lead, onEnrolled }: LeadE
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[92vh] min-h-0 max-w-lg flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+      <DialogContent className="flex max-h-[min(92dvh,100%)] min-h-0 max-w-lg flex-col gap-0 overflow-hidden p-0 md:max-w-2xl">
         <DialogHeader className="relative shrink-0 space-y-0 border-b bg-gradient-to-b from-background to-muted/20 px-6 pb-5 pt-6 text-left">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">Sales · Pipeline</p>
           <div className="flex flex-col gap-1 pr-8 sm:flex-row sm:items-start sm:justify-between sm:gap-4">

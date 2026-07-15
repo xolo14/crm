@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Eye, EyeOff, CheckCircle2 } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PasswordInput } from "@/components/ui/password-input";
 import {
   Dialog,
   DialogContent,
@@ -36,30 +37,19 @@ function PasswordField({
   onChange: (v: string) => void;
   placeholder?: string;
 }) {
-  const [show, setShow] = useState(false);
   return (
     <div className="space-y-2">
       <Label htmlFor={id}>{label}</Label>
-      <div className="relative">
-        <Input
-          id={id}
-          type={show ? "text" : "password"}
-          required
-          minLength={6}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={placeholder}
-          className="pr-10 h-11 rounded-lg"
-        />
-        <button
-          type="button"
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-          onClick={() => setShow((s) => !s)}
-          aria-label={show ? "Hide password" : "Show password"}
-        >
-          {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-        </button>
-      </div>
+      <PasswordInput
+        id={id}
+        required
+        minLength={6}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="h-11 rounded-lg"
+        autoComplete="new-password"
+      />
     </div>
   );
 }

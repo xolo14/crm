@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import ResumeUploadBox from "@/components/hr/ResumeUploadBox";
 import { useUpdateLead } from "@/hooks/useHRLeads";
 import { useToast } from "@/hooks/use-toast";
-import { resumePublicHref } from "@/lib/resumeHref";
+import { openProtectedUpload } from "@/lib/resumeHref";
 import type { HRLead } from "@/types/hrLeads";
 
 const ALLOWED_RESUME_TYPES = [
@@ -98,7 +98,7 @@ export default function EditLeadDialog({
     onOpenChange(false);
   });
 
-  const existingHref = lead?.resume_path ? resumePublicHref(lead.resume_path) : undefined;
+  const hasResume = Boolean(lead?.resume_path);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -172,12 +172,18 @@ export default function EditLeadDialog({
             <Label htmlFor="edit-notes">Notes</Label>
             <Textarea id="edit-notes" {...form.register("notes")} rows={3} className="min-h-[80px] resize-y" />
           </div>
-          {existingHref ? (
+          {hasResume ? (
             <p className="text-xs text-muted-foreground sm:col-span-2">
               Current resume:{" "}
-              <a href={existingHref} target="_blank" rel="noopener noreferrer" className="text-teal-600 underline">
+              <button
+                type="button"
+                className="text-teal-600 underline bg-transparent border-0 p-0 cursor-pointer"
+                onClick={() => {
+                  void openProtectedUpload(lead?.resume_path).catch(() => {});
+                }}
+              >
                 View
-              </a>
+              </button>
             </p>
           ) : null}
           <Controller

@@ -318,7 +318,7 @@ export default function PayslipHistory({
           setAfterOpenAction(null);
         }
       }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>View Payslip</DialogTitle>
           </DialogHeader>

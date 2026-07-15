@@ -4,12 +4,15 @@ import type {
   CommWhatsappMessage,
   DialerContact,
   HubSummary,
+  EmbeddedSignupLaunchConfig,
   MetaPartnerConfig,
   NumberAssignment,
   OrgWhatsappConfig,
   OrgWhatsappOverview,
   PlatformTemplateLibraryItem,
   VirtualNumber,
+  WaAssignableMember,
+  WaConversation,
   WhatsappTemplate,
 } from '@/types/communications';
 
@@ -29,7 +32,31 @@ async function commRequest<T>(endpoint: string, options: RequestInit = {}): Prom
 
   const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || 'Request failed');
+  if (!res.ok) {
+    let message = 'Request failed';
+    const err = data?.error;
+    if (typeof err === 'string' && err.trim()) {
+      message = err;
+      try {
+        const parsed = JSON.parse(err) as { detail?: string; message?: string };
+        message = parsed.detail || parsed.message || err;
+      } catch {
+        /* use raw string */
+      }
+    }
+    const detail = typeof data?.detail === 'string' ? data.detail.trim() : '';
+    const hint = typeof data?.message === 'string' ? data.message.trim() : '';
+    if (detail && !message.includes(detail)) {
+      message = `${message}: ${detail}`;
+    } else if (hint && message === 'PHP fatal error') {
+      message = hint;
+    }
+    const detailErr = data?.details?.error;
+    if (typeof detailErr === 'string' && detailErr.trim()) {
+      message = detailErr;
+    }
+    throw new Error(message);
+  }
   return data as T;
 }
 
@@ -82,11 +109,26 @@ export const communicationsApi = {
   updateTemplate: (id: string, body: Record<string, unknown>) =>
     commRequest(`/communications.php?action=templates&id=${id}`, { method: 'PUT', body: JSON.stringify(body) }),
 
-  testWhatsappConnection: (orgId?: string) =>
-    commRequest<{ message: string; provider?: string; data: { display_phone_number?: string; verified_name?: string } }>(
+  testWhatsappConnection: (opts?: {
+    orgId?: string;
+    api_key?: string;
+    provider?: string;
+    app_secret?: string;
+    phone_number_id?: string;
+    waba_id?: string;
+  }) => {
+    const body: Record<string, string> = {};
+    if (opts?.orgId) body.org_id = opts.orgId;
+    if (opts?.api_key) body.api_key = opts.api_key;
+    if (opts?.provider) body.provider = opts.provider;
+    if (opts?.app_secret) body.app_secret = opts.app_secret;
+    if (opts?.phone_number_id) body.phone_number_id = opts.phone_number_id;
+    if (opts?.waba_id) body.waba_id = opts.waba_id;
+    return commRequest<{ message: string; provider?: string; data: { display_phone_number?: string; verified_name?: string; warning?: string } }>(
       '/communications.php?action=test_whatsapp_connection',
-      { method: 'POST', body: JSON.stringify(orgId ? { org_id: orgId } : {}) },
-    ),
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+  },
 
   /** @deprecated Use testWhatsappConnection */
   testMetaConnection: (orgId?: string) =>
@@ -95,10 +137,31 @@ export const communicationsApi = {
       { method: 'POST', body: JSON.stringify(orgId ? { org_id: orgId } : {}) },
     ),
 
-  approveInteraktTemplate: (templateId: string, providerTemplateId?: string) =>
-    commRequest('/communications.php?action=approve_interakt_template', {
+  embeddedSignupLaunch: () =>
+    commRequest<{ data: EmbeddedSignupLaunchConfig; ready: boolean }>(
+      '/communications.php?action=embedded_signup_launch',
+    ),
+
+  completeEmbeddedSignup: (body: {
+    code: string;
+    phone_number_id: string;
+    waba_id: string;
+    org_id?: string;
+  }) =>
+    commRequest<{
+      message: string;
+      org_id: string;
+      data: {
+        display_phone_number?: string;
+        verified_name?: string;
+        phone_number_id?: string;
+        waba_id?: string;
+        webhook_verify_token?: string;
+        webhook_url_suggested?: string;
+      };
+    }>('/communications.php?action=complete_embedded_signup', {
       method: 'POST',
-      body: JSON.stringify({ template_id: templateId, provider_template_id: providerTemplateId }),
+      body: JSON.stringify(body),
     }),
 
   syncMetaTemplates: (orgId?: string) =>
@@ -122,8 +185,38 @@ export const communicationsApi = {
     lead_id?: string;
   }) => commRequest('/communications.php?action=send_whatsapp', { method: 'POST', body: JSON.stringify(body) }),
 
-  messages: (limit = 30) =>
-    commRequest<{ data: CommWhatsappMessage[] }>(`/communications.php?action=messages&limit=${limit}`),
+  sendWhatsappReply: (body: {
+    recipient_phone: string;
+    message: string;
+    recipient_name?: string;
+    lead_id?: string;
+  }) =>
+    commRequest<{ id: string; status: string; conversation_id?: string }>(
+      '/communications.php?action=send_whatsapp_reply',
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  messages: (limit = 30, conversationId?: string) => {
+    const q = new URLSearchParams({ action: 'messages', limit: String(limit) });
+    if (conversationId) q.set('conversation_id', conversationId);
+    return commRequest<{ data: CommWhatsappMessage[]; conversation?: WaConversation }>(
+      `/communications.php?${q}`,
+    );
+  },
+
+  conversations: (limit = 50) =>
+    commRequest<{ data: WaConversation[]; can_assign: boolean; scope: 'org' | 'mine' }>(
+      `/communications.php?action=conversations&limit=${limit}`,
+    ),
+
+  assignableMembers: () =>
+    commRequest<{ data: WaAssignableMember[] }>('/communications.php?action=assignable_members'),
+
+  assignConversation: (conversationId: string, assignedTo: string | null) =>
+    commRequest<{ message: string; data: WaConversation }>('/communications.php?action=assign_conversation', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_id: conversationId, assigned_to: assignedTo }),
+    }),
 
   dialerContacts: (search = '') =>
     commRequest<{ data: DialerContact[] }>(

@@ -1,5 +1,7 @@
-import { ChangeEvent, useState } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
 import { Globe, Instagram, Linkedin, Upload, Twitter } from "lucide-react";
+import { api } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
 import { SaveButton } from "@/components/settings/ui/SaveButton";
 import { SettingsInput } from "@/components/settings/ui/SettingsInput";
 import { SettingsRow } from "@/components/settings/ui/SettingsRow";
@@ -7,9 +9,11 @@ import { SettingsSection } from "@/components/settings/ui/SettingsSection";
 import { SettingsSelect } from "@/components/settings/ui/SettingsSelect";
 
 export function CompanyProfile() {
-  const [logoPreview, setLogoPreview] = useState<string>("");
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [companyName, setCompanyName] = useState("SYNCPedia Technologies Pvt Ltd");
+  const [logoPreview, setLogoPreview] = useState<string>("");
+  const [companyName, setCompanyName] = useState("");
   const [tagline, setTagline] = useState("");
   const [website, setWebsite] = useState("");
   const [supportEmail, setSupportEmail] = useState("");
@@ -23,9 +27,65 @@ export function CompanyProfile() {
   const [twitter, setTwitter] = useState("");
   const [instagram, setInstagram] = useState("");
 
-  const onSave = () => {
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await api.organizations.myOrg();
+        if (!active) return;
+        const org = (res as any)?.data;
+        if (!org) return;
+        const profile = org.profile || {};
+        setCompanyName(org.name || "");
+        setLogoPreview(org.logo_url || "");
+        setTagline(profile.tagline || "");
+        setWebsite(profile.website || "");
+        setSupportEmail(profile.support_email || "");
+        setSupportPhone(profile.support_phone || "");
+        setStreet(profile.street || "");
+        setCity(profile.city || "");
+        setStateName(profile.state || "");
+        setCountry(profile.country || "india");
+        setPostalCode(profile.postal_code || "");
+        setLinkedIn(profile.linkedin || "");
+        setTwitter(profile.twitter || "");
+        setInstagram(profile.instagram || "");
+      } catch (e) {
+        // Non-fatal — form just stays blank if this fails (e.g. no org on account yet).
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const onSave = async () => {
     setSaving(true);
-    window.setTimeout(() => setSaving(false), 900);
+    try {
+      await api.organizations.updateProfile({
+        name: companyName,
+        tagline,
+        website,
+        support_email: supportEmail,
+        support_phone: supportPhone,
+        street,
+        city,
+        state: stateName,
+        country,
+        postal_code: postalCode,
+        linkedin: linkedIn,
+        twitter,
+        instagram,
+      });
+      toast({ title: "Company profile saved" });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Could not save company profile";
+      toast({ title: "Save failed", description: msg, variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleLogoUpload = (event: ChangeEvent<HTMLInputElement>) => {
@@ -39,7 +99,12 @@ export function CompanyProfile() {
     const reader = new FileReader();
     reader.onload = (e) => setLogoPreview(e.target?.result as string);
     reader.readAsDataURL(file);
+    toast({ title: "Logo preview updated", description: "Logo upload storage is coming soon — this preview isn't saved yet." });
   };
+
+  if (loading) {
+    return <div className="p-6 text-sm text-gray-500">Loading company profile…</div>;
+  }
 
   return (
     <div className="bg-gray-50">
@@ -58,7 +123,7 @@ export function CompanyProfile() {
               Upload Logo
               <input type="file" accept=".png,.jpg,.jpeg,.svg" onChange={handleLogoUpload} className="hidden" />
             </label>
-            <p className="mt-2 text-xs text-gray-400">PNG, JPG, SVG - max 2MB</p>
+            <p className="mt-2 text-xs text-gray-400">PNG, JPG, SVG - max 2MB. Upload storage coming soon.</p>
           </div>
         </div>
         <SettingsRow label="Company Name">

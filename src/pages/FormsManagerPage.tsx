@@ -19,12 +19,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, Send, Briefcase, UserRound } from "lucide-react";
+import { Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, Send, Briefcase, UserRound, MoreHorizontal, Pencil, Power } from "lucide-react";
 import { normalizeFormColor, parseFormMetaJson } from "@/components/forms/publicFormTypes";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { FormDetailDialog } from "@/components/forms/FormDetailDialog";
+import { FormPublishCampaignDialog } from "@/components/forms/FormPublishCampaignDialog";
+import { canManageFormCampaigns, parseFormCampaign, type FormCampaignConfig } from "@/components/forms/formCampaignTypes";
+import { isL3AdminRole, isMarketingFamilyRole, normalizeAppRole } from "@/lib/roleUtils";
 import { formsManagerCacheKey } from "@/lib/formsManagerCache";
 
 type LeadDestination = "form_leads" | "hr_leads";
@@ -492,15 +495,26 @@ export default function FormsManagerPage() {
   const [destinationDialogOpen, setDestinationDialogOpen] = useState(false);
   const [detailForm, setDetailForm] = useState<LeadForm | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [publishCampaignOpen, setPublishCampaignOpen] = useState(false);
   const [organizations, setOrganizations] = useState<{ id: string; name: string; slug?: string }[]>([]);
   const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
 
-  const canAssignForms = role === "super_admin" || role === "admin";
   const isSuperAdmin = role === "super_admin";
-  const canEditForms = canAssignForms || role === "sales_marketing";
-  const tableColCount = 6 + (isSuperAdmin ? 1 : 0) + (canAssignForms ? 2 : 0) + (canEditForms ? 1 : 0);
+  const normalizedRole = normalizeAppRole(role);
+  // Managers can assign personalized form links to their downline (API enforces team scope).
+  const canAssignForms =
+    role === "super_admin" ||
+    role === "admin" ||
+    isL3AdminRole(normalizedRole) ||
+    normalizedRole === "manager";
+  const canEditForms =
+    canAssignForms ||
+    isL3AdminRole(normalizedRole) ||
+    isMarketingFamilyRole(normalizedRole) ||
+    normalizedRole === "manager";
+  const tableColCount = 5 + (isSuperAdmin ? 1 : 0) + (canAssignForms ? 2 : 0) + (canEditForms ? 1 : 0);
   const canAccess = canEditForms;
-  const isSalesMarketing = role === "sales_marketing";
+  const isMarketing = normalizeAppRole(role) === "marketing";
   const myReferralCode = String(profile?.referral_code ?? "").trim();
 
   const baseApplyUrl = useMemo(() => `${window.location.origin}/apply`, []);
@@ -508,12 +522,12 @@ export default function FormsManagerPage() {
   const buildApplyLink = useCallback(
     (slug: string) => {
       const base = `${baseApplyUrl}?form=${encodeURIComponent(slug)}`;
-      if (isSalesMarketing && myReferralCode) {
+      if (isMarketing && myReferralCode) {
         return `${base}&ref=${encodeURIComponent(myReferralCode)}`;
       }
       return base;
     },
-    [baseApplyUrl, isSalesMarketing, myReferralCode],
+    [baseApplyUrl, isMarketing, myReferralCode],
   );
 
   const syncpediaOrgId = useMemo(() => {
@@ -536,9 +550,18 @@ export default function FormsManagerPage() {
     (form: LeadForm) => {
       if (!canEditForms) return false;
       if (canAssignForms) return true;
+      if (isL3AdminRole(normalizedRole)) {
+        return String(form.org_id || "") === String(organization?.id || "");
+      }
       return String(form.created_by || "") === String(user?.id || "");
     },
-    [canEditForms, canAssignForms, user?.id],
+    [canEditForms, canAssignForms, normalizedRole, organization?.id, user?.id],
+  );
+
+  const canManageCampaignsForForm = useCallback(
+    (form: LeadForm | null) =>
+      canManageFormCampaigns(role, user?.id, form?.created_by, form?.org_id, organization?.id),
+    [role, user?.id, organization?.id],
   );
 
   useEffect(() => {
@@ -705,45 +728,49 @@ export default function FormsManagerPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [builderOpen, builder, saveStatus]);
 
-  async function saveForm(publish = false, closeAfter = publish) {
+  async function saveForm(publish = false, closeAfter = publish, campaign?: FormCampaignConfig): Promise<string | null> {
     if (!builder.title.trim()) {
       setFormNameError("Form name is required");
-      return;
+      return null;
     }
     setFormNameError("");
     setSaveStatus("saving");
     setSaving(true);
+    let formId: string | null = editing?.id ?? null;
     try {
       const slug = builder.slug || makeSlug(builder.title);
+      const existingCampaign = editing ? parseFormCampaign(editing.meta_json) : parseFormCampaign(null);
+      const meta_json: Record<string, unknown> = {
+        company_name: builder.companyName.trim(),
+        logo_url: builder.companyLogoUrl.trim() || "",
+        header_image_url: builder.headerImageUrl.trim() || "",
+        form_bg: builder.formBg,
+        field_bg: builder.fieldBg,
+        text_color: builder.textColor,
+        accent_color: builder.accentColor,
+        field_border_color: builder.fieldBorderColor,
+        field_border_width: builder.fieldBorderWidth,
+        section_border_color: builder.sectionBorderColor,
+        section_border_width: builder.sectionBorderWidth,
+        description_color: builder.descriptionColor,
+        company_name_font_size: builder.companyNameFontSize,
+        builder_questions: builder.questions,
+        collect_email: builder.collectEmail,
+        allow_multiple_responses: builder.allowMultipleResponses,
+        edit_after_submit: builder.editAfterSubmit,
+        show_progress_bar: builder.showProgressBar,
+        shuffle_questions: builder.shuffleQuestions,
+        confirmation_message: builder.confirmationMessage,
+        is_quiz: builder.isQuiz,
+        lead_destination: builder.leadDestination,
+        campaign: campaign ? { ...existingCampaign, ...campaign } : existingCampaign,
+      };
       const payload = {
         name: builder.title.trim(),
         slug: slug.trim(),
         description: builder.description.trim() || null,
         fields_json: toLegacyFields(builder.questions),
-        meta_json: {
-          company_name: builder.companyName.trim(),
-          logo_url: builder.companyLogoUrl.trim() || "",
-          header_image_url: builder.headerImageUrl.trim() || "",
-          form_bg: builder.formBg,
-          field_bg: builder.fieldBg,
-          text_color: builder.textColor,
-          accent_color: builder.accentColor,
-          field_border_color: builder.fieldBorderColor,
-          field_border_width: builder.fieldBorderWidth,
-          section_border_color: builder.sectionBorderColor,
-          section_border_width: builder.sectionBorderWidth,
-          description_color: builder.descriptionColor,
-          company_name_font_size: builder.companyNameFontSize,
-          builder_questions: builder.questions,
-          collect_email: builder.collectEmail,
-          allow_multiple_responses: builder.allowMultipleResponses,
-          edit_after_submit: builder.editAfterSubmit,
-          show_progress_bar: builder.showProgressBar,
-          shuffle_questions: builder.shuffleQuestions,
-          confirmation_message: builder.confirmationMessage,
-          is_quiz: builder.isQuiz,
-          lead_destination: builder.leadDestination,
-        },
+        meta_json,
         is_active: publish ? true : builder.isActive,
       };
       if (isSuperAdmin) {
@@ -751,9 +778,11 @@ export default function FormsManagerPage() {
       }
       if (editing) {
         await api.forms.update(editing.id, payload);
-        toast({ title: "Form updated" });
+        formId = editing.id;
+        toast({ title: publish ? "Form published" : "Form updated" });
       } else {
         const created = await api.forms.create(payload);
+        formId = created?.id ?? null;
         if (created?.id) {
           setForms((prev) => [
             {
@@ -765,21 +794,69 @@ export default function FormsManagerPage() {
               meta_json: payload.meta_json,
               is_active: payload.is_active ? 1 : 0,
               source: "custom",
+              created_by: user?.id,
             },
             ...prev,
           ]);
         }
-        toast({ title: "Form created" });
+        toast({ title: publish ? "Form published" : "Form created" });
       }
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 1200);
       if (closeAfter) setBuilderOpen(false);
       await bootstrap();
+      return formId;
     } catch (error: any) {
       toast({ variant: "destructive", title: "Save failed", description: error?.message || "Try again." });
+      return null;
     } finally {
       setSaving(false);
     }
+  }
+
+  async function publishWithCampaign(campaign: FormCampaignConfig) {
+    const merged: FormCampaignConfig = {
+      ...campaign,
+      auto_send_email: campaign.auto_send_email ?? false,
+      auto_send_whatsapp: campaign.auto_send_whatsapp ?? false,
+    };
+    const formId = await saveForm(true, true, merged);
+    if (!formId) return;
+    if (merged.assign_email || merged.assign_whatsapp) {
+      try {
+        const res = await api.forms.saveCampaignSettings({
+          form_id: formId,
+          campaign: merged,
+          send_to_existing: true,
+        });
+        const results = res?.send_result?.results;
+        const emailSent = results?.email?.sent;
+        const waSent = results?.whatsapp?.sent;
+        const parts: string[] = [];
+        if (emailSent != null) parts.push(`${emailSent} emails`);
+        if (waSent != null) parts.push(`${waSent} WhatsApp`);
+        toast({
+          title: "Published with campaigns",
+          description: parts.length ? `Sent to ${parts.join(" and ")}` : "Campaign settings applied",
+        });
+      } catch (error: any) {
+        toast({
+          variant: "destructive",
+          title: "Published but campaign send failed",
+          description: error?.message || "Try sending manually from form details.",
+        });
+      }
+    }
+  }
+
+  function handlePublishClick() {
+    const publishOrgId =
+      editing?.org_id ?? resolveSuperAdminFormOrgId(builder.orgId) ?? organization?.id ?? null;
+    if (canManageFormCampaigns(role, user?.id, editing?.created_by, publishOrgId, organization?.id)) {
+      setPublishCampaignOpen(true);
+      return;
+    }
+    void saveForm(true);
   }
 
   async function toggleFormStatus(form: LeadForm) {
@@ -913,7 +990,7 @@ export default function FormsManagerPage() {
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">{saveStatus === "saving" ? "Saving..." : saveStatus === "saved" ? "Saved ✓" : "Saved ✓"}</span>
               <Button variant="outline" size="sm">Share</Button>
-              <Button size="sm" onClick={() => void saveForm(true)}><Send className="h-4 w-4 mr-1" />Publish</Button>
+              <Button size="sm" onClick={handlePublishClick}><Send className="h-4 w-4 mr-1" />Publish</Button>
             </div>
           </div>
         </div>
@@ -1388,12 +1465,21 @@ export default function FormsManagerPage() {
         assignments={detailForm ? assignmentsByForm[detailForm.id] || [] : []}
         publicLink={detailForm ? buildApplyLink(detailForm.slug) : ""}
         canEdit={detailForm ? canEditFormRow(detailForm) : false}
+        canManageCampaigns={detailForm ? canManageCampaignsForForm(detailForm) : false}
         onEdit={() => {
           if (!detailForm) return;
           setDetailOpen(false);
           openEdit(detailForm);
         }}
         onCopyLink={copy}
+      />
+
+      <FormPublishCampaignDialog
+        open={publishCampaignOpen}
+        onOpenChange={setPublishCampaignOpen}
+        formId={editing?.id ?? null}
+        initial={editing ? parseFormCampaign(editing.meta_json) : undefined}
+        onConfirm={publishWithCampaign}
       />
 
       <div className="flex items-center justify-between gap-3">
@@ -1418,7 +1504,7 @@ export default function FormsManagerPage() {
         ) : null}
       </div>
 
-      {isSalesMarketing && !myReferralCode ? (
+      {isMarketing && !myReferralCode ? (
         <p className="text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-md px-3 py-2">
           Your account has no referral code yet. Ask an admin to set one so copied form links attribute leads to you in My Leads.
         </p>
@@ -1428,20 +1514,20 @@ export default function FormsManagerPage() {
         <CardHeader className="pb-3">
           <CardTitle className="text-base">Forms</CardTitle>
         </CardHeader>
-        <CardContent>
-          <Table>
+        <CardContent className="px-0 sm:px-6">
+          <div className="w-full overflow-x-auto">
+          <Table className="w-full min-w-0 table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                {isSuperAdmin ? <TableHead>Organization</TableHead> : null}
-                <TableHead>Destination</TableHead>
-                <TableHead>Slug</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Submissions</TableHead>
-                <TableHead>Public Link</TableHead>
-                {canAssignForms ? <TableHead>Assign to Team</TableHead> : null}
-                {canAssignForms ? <TableHead>Assigned Links</TableHead> : null}
-                {canEditForms ? <TableHead className="w-36">Actions</TableHead> : null}
+                <TableHead className={canAssignForms ? "w-[22%]" : "w-[28%]"}>Name</TableHead>
+                {isSuperAdmin ? <TableHead className="w-[12%]">Organization</TableHead> : null}
+                <TableHead className="w-[10%]">Destination</TableHead>
+                <TableHead className="w-[8%]">Status</TableHead>
+                <TableHead className="w-[8%] text-right">Subs</TableHead>
+                <TableHead className="w-[8%]">Link</TableHead>
+                {canAssignForms ? <TableHead className="w-[10%]">Assign</TableHead> : null}
+                {canAssignForms ? <TableHead className="w-[16%]">Assigned</TableHead> : null}
+                {canEditForms ? <TableHead className="w-[6%] text-right"> </TableHead> : null}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1468,49 +1554,52 @@ export default function FormsManagerPage() {
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={() => openFormDetail(form)}
                     >
-                      <TableCell>
-                        <div className="font-medium">{form.name}</div>
-                        <div className="mt-1">
-                          <Badge variant="outline" className="text-[10px]">
-                            Custom
-                          </Badge>
+                      <TableCell className="align-top">
+                        <div className="min-w-0">
+                          <div className="font-medium truncate" title={form.name}>{form.name}</div>
+                          <div className="mt-0.5 flex items-center gap-1.5 min-w-0">
+                            <Badge variant="outline" className="text-[10px] shrink-0">Custom</Badge>
+                            <code className="text-[10px] text-muted-foreground truncate" title={form.slug}>{form.slug}</code>
+                          </div>
+                          {form.description ? (
+                            <div className="text-xs text-muted-foreground mt-0.5 line-clamp-1" title={form.description}>{form.description}</div>
+                          ) : null}
                         </div>
-                        {form.description ? <div className="text-xs text-muted-foreground mt-0.5">{form.description}</div> : null}
                       </TableCell>
                       {isSuperAdmin ? (
-                        <TableCell>
-                          <span className="text-sm">{form.org_name || "—"}</span>
+                        <TableCell className="align-top">
+                          <span className="text-sm truncate block" title={form.org_name || undefined}>{form.org_name || "—"}</span>
                         </TableCell>
                       ) : null}
-                      <TableCell>
+                      <TableCell className="align-top">
                         <Badge variant={leadDest === "hr_leads" ? "secondary" : "default"} className="text-[10px] whitespace-nowrap">
                           {leadDest === "hr_leads" ? "HR Leads" : "Form Leads"}
                         </Badge>
                       </TableCell>
-                      <TableCell>
-                        <code className="text-xs">{form.slug}</code>
-                      </TableCell>
-                      <TableCell>
+                      <TableCell className="align-top">
                         <Badge variant={isOn ? "default" : "secondary"}>{isOn ? "Active" : "Inactive"}</Badge>
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">
+                      <TableCell className="text-right tabular-nums align-top">
                         {Number(form.submission_count ?? 0)}
                       </TableCell>
-                      <TableCell onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
-                          <Button variant="outline" size="sm" className="h-8 gap-1.5" onClick={() => copy(directLink, "Form link")}>
-                            <Copy className="h-3.5 w-3.5" />
-                            Copy Link
-                          </Button>
-                        </div>
+                      <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8"
+                          title="Copy public link"
+                          onClick={() => copy(directLink, "Form link")}
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </Button>
                       </TableCell>
                       {canAssignForms ? (
-                      <TableCell onClick={(e) => e.stopPropagation()}>
+                      <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="h-8 gap-1.5">
+                            <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2">
                               <Users className="h-3.5 w-3.5" />
-                              Assign
+                              <span className="hidden sm:inline">Assign</span>
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent
@@ -1608,54 +1697,64 @@ export default function FormsManagerPage() {
                       </TableCell>
                       ) : null}
                       {canAssignForms ? (
-                      <TableCell onClick={(e) => e.stopPropagation()}>
+                      <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
                         {assigned.length === 0 ? (
-                          <span className="text-xs text-muted-foreground">No team member assigned</span>
+                          <span className="text-xs text-muted-foreground">None</span>
                         ) : (
-                          <div className="space-y-1">
-                            {assigned.slice(0, 3).map((a) => {
+                          <div className="space-y-1 min-w-0">
+                            {assigned.slice(0, 2).map((a) => {
                               const memberRef = a.referral_code || "";
                               const memberLink = `${baseApplyUrl}?form=${encodeURIComponent(form.slug)}${memberRef ? `&ref=${encodeURIComponent(memberRef)}` : ""}`;
                               return (
-                                <div key={a.id} className="flex items-center gap-2">
-                                  <span className="text-xs truncate max-w-[170px]">{a.full_name || a.email || "Member"}</span>
-                                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copy(memberLink, "Assigned link")}>
+                                <div key={a.id} className="flex items-center gap-1 min-w-0">
+                                  <span className="text-xs truncate" title={a.full_name || a.email || "Member"}>{a.full_name || a.email || "Member"}</span>
+                                  <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" title="Copy assigned link" onClick={() => copy(memberLink, "Assigned link")}>
                                     <LinkIcon className="h-3.5 w-3.5" />
                                   </Button>
                                 </div>
                               );
                             })}
-                            {assigned.length > 3 ? <div className="text-[11px] text-muted-foreground">+{assigned.length - 3} more</div> : null}
+                            {assigned.length > 2 ? <div className="text-[11px] text-muted-foreground">+{assigned.length - 2} more</div> : null}
                           </div>
                         )}
                       </TableCell>
                       ) : null}
                       {canEditForms ? (
-                      <TableCell onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
-                          {canEditFormRow(form) ? (
-                          <>
-                          <Button variant="outline" size="sm" className="h-8" onClick={() => openEdit(form)}>
-                            Edit
-                          </Button>
-                          <Button variant="outline" size="sm" className="h-8" onClick={() => void toggleFormStatus(form)}>
-                            {isOn ? "Set Inactive" : "Set Active"}
-                          </Button>
-                          </>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">Copy link only</span>
-                          )}
-                          {canAssignForms ? (
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            className="h-8"
-                            onClick={() => void deleteForm(form)}
-                          >
-                            Delete
-                          </Button>
-                          ) : null}
-                        </div>
+                      <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
+                        {canEditFormRow(form) ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8" title="Actions">
+                                <MoreHorizontal className="h-4 w-4" />
+                                <span className="sr-only">Open actions</span>
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              <DropdownMenuItem onClick={() => openEdit(form)}>
+                                <Pencil className="h-3.5 w-3.5 mr-2" />
+                                Edit
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => void toggleFormStatus(form)}>
+                                <Power className="h-3.5 w-3.5 mr-2" />
+                                {isOn ? "Set Inactive" : "Set Active"}
+                              </DropdownMenuItem>
+                              {canAssignForms ? (
+                                <>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    onClick={() => void deleteForm(form)}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5 mr-2" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </>
+                              ) : null}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </TableCell>
                       ) : null}
                     </TableRow>
@@ -1664,6 +1763,7 @@ export default function FormsManagerPage() {
               )}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
 

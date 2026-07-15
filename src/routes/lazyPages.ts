@@ -11,6 +11,8 @@ export const Team = lazy(() => import("@/pages/Team"));
 export const SettingsPage = lazy(() => import("@/pages/settings/SettingsPage"));
 export const Tasks = lazy(() => import("@/pages/Tasks"));
 export const Apply = lazy(() => import("@/pages/Apply"));
+export const PrivacyPolicyPage = lazy(() => import("@/pages/legal/PrivacyPolicyPage"));
+export const TermsOfServicePage = lazy(() => import("@/pages/legal/TermsOfServicePage"));
 export const MyReferrals = lazy(() => import("@/pages/MyReferrals"));
 export const ReferralAnalytics = lazy(() => import("@/pages/ReferralAnalytics"));
 export const FormLeads = lazy(() => import("@/pages/FormLeads"));

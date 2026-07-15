@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { Phone, Mail, Video, StickyNote, History, Plus, Loader2, MessageSquare, CalendarDays, UserPlus, ArrowUpRight, XCircle } from 'lucide-react';
 import { api } from '@/lib/api';
+import { formatServerDateTime, parseServerDateTime } from '@/lib/dateTime';
 
 const ACTIVITY_TYPES = [
   { value: 'call', label: 'Call', icon: Phone, color: 'bg-green-500' },
@@ -48,7 +49,11 @@ export function LeadActivityTimeline({ leadId, getProfileName }: Props) {
       setActivities(
         all
           .filter((a: any) => (a.lead_id ?? null) === leadId)
-          .sort((a: any, b: any) => new Date(b.occurred_at || b.created_at).getTime() - new Date(a.occurred_at || a.created_at).getTime())
+          .sort((a: any, b: any) => {
+            const tb = parseServerDateTime(b.occurred_at || b.created_at)?.getTime() ?? 0;
+            const ta = parseServerDateTime(a.occurred_at || a.created_at)?.getTime() ?? 0;
+            return tb - ta;
+          })
       );
     } catch (err) {
       console.error('Failed to load activities:', err);
@@ -81,12 +86,6 @@ export function LeadActivityTimeline({ leadId, getProfileName }: Props) {
     } finally {
       setAdding(false);
     }
-  };
-
-  const formatDate = (d: string) => {
-    const date = new Date(d);
-    return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) +
-      ' · ' + date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
   };
 
   return (
@@ -160,7 +159,7 @@ export function LeadActivityTimeline({ leadId, getProfileName }: Props) {
                     )}
                   </div>
                   <p className="text-sm mt-1 leading-relaxed">{act.description}</p>
-                  <p className="text-[10px] text-muted-foreground mt-1">{formatDate(act.occurred_at || act.created_at)}</p>
+                  <p className="text-[10px] text-muted-foreground mt-1">{formatServerDateTime(act.occurred_at || act.created_at)}</p>
                 </div>
               </div>
             );

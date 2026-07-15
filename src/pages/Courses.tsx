@@ -12,6 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api } from '@/lib/api';
+import * as perms from '@/lib/permissions';
 import { Plus, BookOpen, Download, Upload, MoreHorizontal, Pencil, Trash2, Eye, EyeOff, Loader2 } from 'lucide-react';
 
 type Course = {
@@ -28,6 +29,7 @@ export default function Courses() {
   const { toast } = useToast();
   const { role } = useAuth();
   const isMobile = useIsMobile();
+  const hasExport = perms.canExport(role);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingCourse, setEditingCourse] = useState<Course | null>(null);
@@ -115,7 +117,9 @@ export default function Courses() {
           <p className="text-sm text-muted-foreground mt-1">{courses.length} courses available</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExport}><Download className="h-4 w-4" />{!isMobile && ' Export'}</Button>
+          {hasExport && (
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExport}><Download className="h-4 w-4" />{!isMobile && ' Export'}</Button>
+          )}
           {canCreate && (
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
               <DialogTrigger asChild><Button size="sm" className="gap-1.5"><Plus className="h-4 w-4" />{!isMobile && ' Add Course'}</Button></DialogTrigger>

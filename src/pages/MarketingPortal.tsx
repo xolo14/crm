@@ -6,7 +6,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Link2, Copy } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -20,14 +19,14 @@ import {
   Upload, CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
-import { useNavigate } from 'react-router-dom';
-import { publicApplyUrl } from '@/lib/siteOrigin';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 export default function MarketingPortal() {
   const { user } = useAuth();
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [activeTab, setActiveTab] = useState('form_leads');
@@ -50,7 +49,6 @@ export default function MarketingPortal() {
   const [sends, setSends] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [copiedLink, setCopiedLink] = useState<'default' | 'normal' | null>(null);
 
   // Bulk send dialog
   const [showBulkSend, setShowBulkSend] = useState(false);
@@ -145,6 +143,14 @@ export default function MarketingPortal() {
     setShowEditor(true);
   };
 
+  useEffect(() => {
+    if (loading || searchParams.get('create') !== '1') return;
+    openEditor();
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [loading, searchParams, setSearchParams]);
+
   // Bulk send
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -191,21 +197,14 @@ export default function MarketingPortal() {
         emails.map((email) => ({ recipient_email: email, status: 'pending' })),
       );
 
-      // Trigger n8n webhook
+      // Trigger n8n via authenticated PHP proxy (URL stays server-side in config.php)
       try {
-        const webhookUrl = import.meta.env.VITE_N8N_EMAIL_WEBHOOK;
-        if (webhookUrl) {
-          await fetch(webhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              campaign_id: campaignId,
-              subject: draft.subject,
-              html_body: draft.html_body,
-              recipients: emails,
-            }),
-          });
-        }
+        await api.marketing.triggerN8nWebhook('email', {
+          campaign_id: campaignId,
+          subject: draft.subject,
+          html_body: draft.html_body,
+          recipients: emails,
+        });
       } catch (webhookErr) {
         console.warn('n8n webhook not configured or failed:', webhookErr);
       }
@@ -258,50 +257,6 @@ export default function MarketingPortal() {
           </Button>
         </div>
       </div>
-
-      {/* Form Link - always visible */}
-      <Card className="border-l-4 border-l-primary">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Link2 className="h-4 w-4 text-primary" />
-              <span className="text-sm font-semibold">Your Form Link</span>
-              <Badge variant="outline" className="text-[10px]">{formLeads.length} leads</Badge>
-            </div>
-            <div className="flex items-center gap-2">
-              <Input
-                readOnly
-                value={publicApplyUrl(referralCode)}
-                className="text-xs h-8 bg-muted/50 font-mono"
-              />
-              <Button size="sm" variant="outline" className="gap-1 shrink-0" onClick={() => {
-                navigator.clipboard.writeText(publicApplyUrl(referralCode));
-                setCopiedLink('default');
-                toast({ title: 'Link copied!' });
-                setTimeout(() => setCopiedLink(null), 2000);
-              }}>
-                <Copy className="h-3 w-3" />{copiedLink === 'default' ? 'Copied' : 'Copy'}
-              </Button>
-            </div>
-            <div className="mt-2">
-              <p className="text-xs text-muted-foreground mb-2">Normal Form</p>
-              <div className="flex items-center gap-2">
-                <Input
-                  readOnly
-                  value={publicApplyUrl(referralCode, 'normal')}
-                  className="text-xs h-8 bg-muted/50 font-mono"
-                />
-                <Button size="sm" variant="outline" className="gap-1 shrink-0" onClick={() => {
-                  navigator.clipboard.writeText(publicApplyUrl(referralCode, 'normal'));
-                  setCopiedLink('normal');
-                  toast({ title: 'Link copied!' });
-                  setTimeout(() => setCopiedLink(null), 2000);
-                }}>
-                  <Copy className="h-3 w-3" />{copiedLink === 'normal' ? 'Copied' : 'Copy'}
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
 
       {/* Quick Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -524,7 +479,7 @@ export default function MarketingPortal() {
 
       {/* Draft Editor Dialog */}
       <Dialog open={showEditor} onOpenChange={(open) => { setShowEditor(open); if (!open) { setEditingDraft(null); setDraftName(''); setDraftSubject(''); setDraftBody(''); } }}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader><DialogTitle>{editingDraft ? 'Edit Draft' : 'New Email Draft'}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div>

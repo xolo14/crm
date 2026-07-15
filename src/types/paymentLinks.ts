@@ -38,7 +38,7 @@ export interface RazorpayPaymentLink {
   reminder_enable: boolean;
 }
 
-/** Form payload used by CreateLinkModal. */
+/** Form payload used by CreatePaymentLinkModal. */
 export interface CreatePaymentLinkForm {
   batchId: string;
   leadId: string;

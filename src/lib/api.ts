@@ -6,6 +6,19 @@ import { getApiBase } from '@/lib/apiBase';
 
 const API_BASE = getApiBase();
 
+export interface AuditLogEntry {
+  id: string;
+  org_id: string | null;
+  user_id: string | null;
+  user_name: string | null;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  details: string | null;
+  ip_address: string | null;
+  created_at: string;
+}
+
 function getToken(): string | null {
   return localStorage.getItem('auth_token');
 }
@@ -150,7 +163,12 @@ async function request(endpoint: string, options: RequestInit = {}) {
     const message = typeof data.message === 'string' ? data.message.trim() : '';
     const hint = typeof data.hint === 'string' ? data.hint.trim() : '';
     const det = typeof data.detail === 'string' ? data.detail.trim() : '';
-    let msg = [errMsg, message, det, hint].filter(Boolean).join(' — ');
+    const emailErr = typeof data.email_error === 'string' ? data.email_error.trim() : '';
+    let msg = [errMsg, message, det, hint, emailErr].filter(Boolean).join(' — ');
+    // Avoid duplicating the same SMTP detail twice when error already includes email_error
+    if (errMsg && emailErr && errMsg.includes(emailErr)) {
+      msg = [errMsg, message, det, hint].filter(Boolean).join(' — ');
+    }
     if (import.meta.env.DEV) {
       const file = typeof data.file === 'string' ? data.file.trim() : '';
       const line = data.line;
@@ -329,10 +347,24 @@ export const api = {
       return request(`/leads.php${qs ? '?' + qs : ''}`);
     },
     create: (data: any) => request('/leads.php', { method: 'POST', body: JSON.stringify(data) }),
-    bulkCreate: (leads: any[]) =>
-      request('/leads.php?action=bulk', { method: 'POST', body: JSON.stringify({ leads }) }),
+    bulkCreate: (leads: any[], opts?: { org_id?: string }) =>
+      request('/leads.php?action=bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          leads,
+          ...(opts?.org_id ? { org_id: opts.org_id } : {}),
+        }),
+      }),
     update: (id: string, data: any) => request(`/leads.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/leads.php?id=${id}`, { method: 'DELETE' }),
+    bulkDelete: (ids: string[]) =>
+      request<{ message: string; deleted: number; skipped: number; handler?: string }>(
+        '/leads.php?action=bulk_delete',
+        {
+          method: 'POST',
+          body: JSON.stringify({ action: 'bulk_delete', ids }),
+        },
+      ),
   },
 
   // Contacts
@@ -484,6 +516,22 @@ export const api = {
     update: (id: string, data: any) => request(`/organizations.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateFeatures: (id: string, features: Record<string, boolean>) => request(`/organizations.php?id=${id}&action=features`, { method: 'PUT', body: JSON.stringify({ features }) }),
     delete: (id: string) => request(`/organizations.php?id=${id}`, { method: 'DELETE' }),
+    myOrg: () => request('/organizations.php?action=my_org'),
+    updateProfile: (data: Record<string, unknown>) =>
+      request('/organizations.php?action=profile', { method: 'PUT', body: JSON.stringify(data) }),
+  },
+
+  // Audit Logs (Settings page)
+  auditLogs: {
+    list: (params: { user_id?: string; action_type?: string; date?: string; search?: string; limit?: number } = {}) => {
+      const qs = new URLSearchParams();
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== '' && value !== null) qs.set(key, String(value));
+      });
+      const suffix = qs.toString();
+      return request<{ data: AuditLogEntry[]; total: number }>(`/audit_logs.php${suffix ? `?${suffix}` : ''}`);
+    },
+    users: () => request<{ data: { user_id: string; user_name: string }[] }>('/audit_logs.php?action=users'),
   },
 
   // Offer Letters
@@ -546,6 +594,11 @@ export const api = {
     },
     createWhatsappSends: (campaignId: string, recipients: Array<string | { recipient_phone?: string; phone?: string; status?: string }>) =>
       request('/marketing.php?action=whatsapp_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
+    triggerN8nWebhook: (channel: 'email' | 'whatsapp', payload: Record<string, unknown>) =>
+      request('/marketing.php?action=n8n_webhook', {
+        method: 'POST',
+        body: JSON.stringify({ channel, payload }),
+      }),
     uploadLeadResume: async (file: File) => {
       const fd = new FormData();
       fd.append('resume', file);
@@ -631,12 +684,34 @@ export const api = {
       if (params?.status) q.set('status', params.status);
       return request(`/forms.php?${q.toString()}`);
     },
+    campaignTemplates: (formId: string) =>
+      request<{ data: { email: unknown[]; whatsapp: unknown[] } }>(
+        `/forms.php?action=campaign_templates&form_id=${encodeURIComponent(formId)}`,
+      ),
+    sendCampaign: (body: {
+      form_id: string;
+      channel: 'email' | 'whatsapp';
+      template_source: 'marketing' | 'communications';
+      template_id: string;
+    }) =>
+      request('/forms.php?action=send_campaign', { method: 'POST', body: JSON.stringify(body) }),
+    saveCampaignSettings: (body: {
+      form_id: string;
+      campaign: Record<string, unknown>;
+      send_to_existing?: boolean;
+    }) =>
+      request('/forms.php?action=campaign_settings', { method: 'POST', body: JSON.stringify(body) }),
   },
 
   trash: {
     list: () => request('/trash.php'),
     restore: (trashRowId: string) =>
       request('/trash.php', { method: 'POST', body: JSON.stringify({ action: 'restore', id: trashRowId }) }),
+    clearAll: () =>
+      request<{ message: string; deleted: number }>('/trash_clear.php', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
   },
 
   payslip: {

@@ -12,7 +12,7 @@ import AddLeadDialog from "@/components/hr/AddLeadDialog";
 import EditLeadDialog from "@/components/hr/EditLeadDialog";
 import { useDeleteLead, useMyLeads } from "@/hooks/useHRLeads";
 import type { HRLead } from "@/types/hrLeads";
-import { resumePublicHref } from "@/lib/resumeHref";
+import { openProtectedUpload } from "@/lib/resumeHref";
 
 const statusClass: Record<string, string> = {
   new: "bg-blue-500/10 text-blue-700 border-blue-200",
@@ -119,10 +119,16 @@ export default function MyLeads() {
                     <Pencil className="mr-1 h-3 w-3" />Edit
                   </Button>
                   {lead.resume_path ? (
-                    <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs text-teal-600" asChild>
-                      <a href={resumePublicHref(lead.resume_path)} target="_blank" rel="noopener noreferrer">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 gap-1 px-2 text-xs text-teal-600"
+                      type="button"
+                      onClick={() => {
+                        void openProtectedUpload(lead.resume_path).catch(() => {});
+                      }}
+                    >
                         <FileText className="h-3 w-3" />Resume
-                      </a>
                     </Button>
                   ) : (
                     <span className="text-[10px] text-muted-foreground px-1">Resume —</span>
@@ -167,11 +173,17 @@ export default function MyLeads() {
                   <TableCell>{lead.follow_up_date || "—"}</TableCell>
                   <TableCell>
                     {lead.resume_path ? (
-                      <Button variant="ghost" size="sm" className="h-7 gap-1 text-teal-600 px-2" asChild>
-                        <a href={resumePublicHref(lead.resume_path)} target="_blank" rel="noopener noreferrer">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 gap-1 text-teal-600 px-2"
+                        type="button"
+                        onClick={() => {
+                          void openProtectedUpload(lead.resume_path).catch(() => {});
+                        }}
+                      >
                           <FileText className="h-3.5 w-3.5" />
                           View
-                        </a>
                       </Button>
                     ) : (
                       <span className="text-xs text-muted-foreground">—</span>

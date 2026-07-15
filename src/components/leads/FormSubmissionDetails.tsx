@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { resumePublicHref } from "@/lib/resumeHref";
+import { openProtectedUpload } from "@/lib/resumeHref";
 import {
   formatFormFieldLabel,
   isStructuredFormNotes,
@@ -41,7 +41,7 @@ export function FormSubmissionDetails({ notes, resumePath }: Props) {
   return (
     <div className="border-t border-border pt-4">
       <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-        Form Responses
+        {parsed.formSlug ? "Form Responses" : "Additional Details"}
       </h4>
       {parsed.formSlug ? (
         <p className="text-xs text-muted-foreground mb-3 capitalize">
@@ -62,10 +62,15 @@ export function FormSubmissionDetails({ notes, resumePath }: Props) {
             </div>
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground">{formatFormFieldLabel(key)}</p>
-              <Button variant="link" className="h-auto p-0 text-teal-600 text-sm" asChild>
-                <a href={resumePublicHref(path)} target="_blank" rel="noopener noreferrer">
+              <Button
+                variant="link"
+                className="h-auto p-0 text-teal-600 text-sm"
+                type="button"
+                onClick={() => {
+                  void openProtectedUpload(path).catch(() => {});
+                }}
+              >
                   View file
-                </a>
               </Button>
             </div>
           </div>

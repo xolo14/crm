@@ -77,7 +77,8 @@ export function isOrgFeatureEnabled(
   org: { slug?: string | null; features?: Record<string, boolean> | null } | null,
   featureKey: string,
 ): boolean {
-  if (role === "super_admin" && !org) return true;
+  // Super admin keeps full module access after switchOrg (org context is for data scoping only).
+  if (role === "super_admin") return true;
 
   if (isSyncpediaOrganization(org)) {
     if (featureKey === FEATURE_OFFER_LETTERS || featureKey === FEATURE_FRESHER_SALARY) {
@@ -141,7 +142,7 @@ export function implementedFeaturesBySection(): { title: string; features: typeo
   return Array.from(sections.entries()).map(([title, features]) => ({ title, features }));
 }
 
-/** Default toggles when creating a new org from an industry preset. */
+/** Default toggles when creating a new organization. */
 export function defaultFeaturesForNewOrg(): Record<string, boolean> {
   const out: Record<string, boolean> = {};
   for (const key of IMPLEMENTED_FEATURE_KEYS) {

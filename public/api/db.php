@@ -43,11 +43,20 @@ function syncpediaCreatePdo(): PDO
     $charset = defined('DB_CHARSET') && trim((string) DB_CHARSET) !== '' ? trim((string) DB_CHARSET) : 'utf8mb4';
     $dsn = "mysql:host={$host};port={$port};dbname={$dbname};charset={$charset}";
 
-    return new PDO($dsn, $user, $pass, [
+    $pdo = new PDO($dsn, $user, $pass, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci',
     ]);
+    // Hostinger MySQL is usually UTC. App users are India — store/read wall-clock IST
+    // so CURRENT_TIMESTAMP and TIMESTAMP columns match real activity time.
+    try {
+        $pdo->exec("SET time_zone = '+05:30'");
+    } catch (Throwable $e) {
+        // Older hosts without zone tables may reject named zones; offset form usually works.
+    }
+
+    return $pdo;
 }
 
 function syncpediaDbIsMysql(PDO $db): bool

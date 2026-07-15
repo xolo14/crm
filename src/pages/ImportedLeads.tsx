@@ -11,6 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { useToast } from '@/hooks/use-toast';
+import * as perms from '@/lib/permissions';
 import { Search, Loader2, Phone, Mail, Users, Target, CheckCircle2, Clock, Eye, Building2, GraduationCap, StickyNote, ArrowUpRight, XCircle, ChevronLeft, ChevronRight, Download, Upload, FileDown } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -46,8 +47,9 @@ const SOURCE_LABELS: Record<string, string> = {
 const PAGE_SIZE = 25;
 
 export default function ImportedLeads() {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
   const { toast } = useToast();
+  const hasExport = perms.canExport(role);
   const isMobile = useIsMobile();
 
   const [loading, setLoading] = useState(true);
@@ -195,9 +197,11 @@ export default function ImportedLeads() {
             <Upload className="h-3.5 w-3.5" />Import CSV
           </Button>
           <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleImportCSV} />
-          <Button size="sm" variant="outline" className="gap-1.5" onClick={handleExport} disabled={filtered.length === 0}>
-            <Download className="h-3.5 w-3.5" />Export
-          </Button>
+          {hasExport && (
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={handleExport} disabled={filtered.length === 0}>
+              <Download className="h-3.5 w-3.5" />Export
+            </Button>
+          )}
         </div>
       </div>
 

@@ -394,14 +394,6 @@ if ($method === 'POST' && $action === 'add_log') {
         }
     }
 
-    if ($leadId !== null) {
-        $lk = $db->prepare('SELECT id FROM leads WHERE id = ? LIMIT 1');
-        $lk->execute([$leadId]);
-        if (!$lk->fetch()) {
-            respond(['error' => 'Invalid lead_id'], 400);
-        }
-    }
-
     $leadStatusIn = isset($input['lead_status']) ? trim((string) $input['lead_status']) : '';
     if ($leadStatusIn !== '' && $leadId === null) {
         respond(['error' => 'lead_status requires lead_id'], 400);
@@ -415,17 +407,16 @@ if ($method === 'POST' && $action === 'add_log') {
     if ($clientPhone === '') {
         $clientPhone = null;
     }
+
     if ($leadId !== null) {
-        $lf = $db->prepare('SELECT name, phone FROM leads WHERE id = ? LIMIT 1');
-        $lf->execute([$leadId]);
-        $lr = $lf->fetch(PDO::FETCH_ASSOC);
-        if ($lr) {
-            if (isset($lr['name']) && trim((string) $lr['name']) !== '') {
-                $clientName = trim((string) $lr['name']);
-            }
-            if (isset($lr['phone']) && trim((string) $lr['phone']) !== '') {
-                $clientPhone = trim((string) $lr['phone']);
-            }
+        $leadRow = syncpediaAssertLeadInScope($db, $tokenData, $leadId);
+        $lfName = trim((string) ($leadRow['name'] ?? ''));
+        $lfPhone = trim((string) ($leadRow['phone'] ?? ''));
+        if ($lfName !== '') {
+            $clientName = $lfName;
+        }
+        if ($lfPhone !== '') {
+            $clientPhone = $lfPhone;
         }
     }
 

@@ -350,7 +350,7 @@ export default function CreatePaymentLinkModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f2318]/50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[480px] max-h-[92vh] flex flex-col border border-gray-100">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[480px] max-h-[min(92dvh,100%)] flex flex-col border border-gray-100">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0 bg-[#0f2318] rounded-t-2xl">
           <div>
             <h2 className="text-lg font-semibold text-white">

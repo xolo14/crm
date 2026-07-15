@@ -22,7 +22,7 @@ import ResumeUploadBox from '@/components/hr/ResumeUploadBox';
 import { LeadActivityTimeline } from '@/components/LeadActivityTimeline';
 import { LeadEnrollDialog } from '@/components/leads/LeadEnrollDialog';
 import * as perms from '@/lib/permissions';
-import { resumePublicHref } from '@/lib/resumeHref';
+import { openProtectedUpload } from '@/lib/resumeHref';
 import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails';
 import { LeadContactBlock } from '@/components/leads/LeadContactBlock';
 
@@ -731,9 +731,16 @@ export default function FormLeads() {
                       <p className="text-[10px] text-amber-600 font-medium">⚠ Unassigned</p>
                     )}
                     {lead.resume_path ? (
-                      <a href={resumePublicHref(lead.resume_path)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[10px] text-teal-600 font-medium mt-1" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 text-[10px] text-teal-600 font-medium mt-1 bg-transparent border-0 p-0 cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void openProtectedUpload(lead.resume_path).catch(() => {});
+                        }}
+                      >
                         <FileText className="h-3 w-3" /> Resume
-                      </a>
+                      </button>
                     ) : (
                       <span className="text-[10px] text-muted-foreground mt-1 block">Resume —</span>
                     )}
@@ -840,10 +847,16 @@ export default function FormLeads() {
                   </TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     {lead.resume_path ? (
-                      <Button variant="ghost" size="sm" className="gap-1 h-7 text-xs text-teal-600 px-2" asChild>
-                        <a href={resumePublicHref(lead.resume_path)} target="_blank" rel="noopener noreferrer">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1 h-7 text-xs text-teal-600 px-2"
+                        type="button"
+                        onClick={() => {
+                          void openProtectedUpload(lead.resume_path).catch(() => {});
+                        }}
+                      >
                           <FileText className="h-3 w-3.5" /> View
-                        </a>
                       </Button>
                     ) : (
                       <span className="text-xs text-muted-foreground">—</span>
@@ -984,10 +997,15 @@ export default function FormLeads() {
                         <div className="h-8 w-8 rounded-lg bg-teal-500/10 flex items-center justify-center"><FileText className="h-4 w-4 text-teal-600" /></div>
                         <div className="min-w-0">
                           <p className="text-xs text-muted-foreground">Resume</p>
-                          <Button variant="link" className="h-auto p-0 text-teal-600 text-sm" asChild>
-                            <a href={resumePublicHref(detailLead.resume_path)} target="_blank" rel="noopener noreferrer">
+                          <Button
+                            variant="link"
+                            className="h-auto p-0 text-teal-600 text-sm"
+                            type="button"
+                            onClick={() => {
+                              void openProtectedUpload(detailLead.resume_path).catch(() => {});
+                            }}
+                          >
                               View file
-                            </a>
                           </Button>
                         </div>
                       </div>

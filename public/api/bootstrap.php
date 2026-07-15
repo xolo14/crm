@@ -50,6 +50,11 @@ if (!is_file($configPath)) {
 require_once $configPath;
 require_once __DIR__ . '/db.php';
 
+// CRM is India-first; keep PHP date()/strtotime in sync with MySQL session (+05:30).
+if (function_exists('date_default_timezone_set')) {
+    @date_default_timezone_set('Asia/Kolkata');
+}
+
 foreach (['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS', 'JWT_SECRET'] as $constant) {
     if (!defined($constant)) {
         syncpedia_json_die([
@@ -93,11 +98,22 @@ if (!defined('TOKEN_EXPIRY')) {
 if (!defined('CRM_PUBLIC_URL')) {
     define('CRM_PUBLIC_URL', '');
 }
+if (!defined('PUBLIC_LEAD_API_KEY')) {
+    define('PUBLIC_LEAD_API_KEY', '');
+}
 
 function syncpediaCorsOrigin(): string
 {
     if (defined('FRONTEND_URL') && FRONTEND_URL !== '' && FRONTEND_URL !== '*') {
         return (string) FRONTEND_URL;
+    }
+    // Production: do not reflect arbitrary Origins (prevents cross-site token abuse in browsers).
+    if (!defined('APP_DEBUG') || APP_DEBUG !== true) {
+        if (!empty($_SERVER['HTTP_HOST']) && is_string($_SERVER['HTTP_HOST'])) {
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            return $scheme . '://' . $_SERVER['HTTP_HOST'];
+        }
+        return 'null';
     }
     if (!empty($_SERVER['HTTP_ORIGIN']) && is_string($_SERVER['HTTP_ORIGIN'])) {
         return $_SERVER['HTTP_ORIGIN'];

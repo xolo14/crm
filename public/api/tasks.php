@@ -18,16 +18,24 @@ if ($method === 'POST') {
     $input = getInput();
     $id = generateUUID();
     $orgId = resolveWriteOrgId($db, $tokenData);
+    $title = trim((string) ($input['title'] ?? ''));
+    if ($title === '') {
+        respond(['error' => 'Title is required'], 400);
+    }
+    $assignedTo = trim((string) ($input['assigned_to'] ?? ''));
+    if ($assignedTo === '') {
+        $assignedTo = (string) $userId;
+    }
 
     try {
         $stmt = $db->prepare('INSERT INTO tasks (id, title, description, due_date, priority, assigned_to, lead_id, contact_id, deal_id, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
         $stmt->execute([
             $id,
-            $input['title'],
+            $title,
             $input['description'] ?? null,
             $input['due_date'] ?? null,
             $input['priority'] ?? 'medium',
-            $input['assigned_to'] ?? $userId,
+            $assignedTo,
             $input['lead_id'] ?? null,
             $input['contact_id'] ?? null,
             $input['deal_id'] ?? null,
@@ -39,11 +47,11 @@ if ($method === 'POST') {
             $stmt = $db->prepare('INSERT INTO tasks (id, title, description, due_date, priority, assigned_to, lead_id, contact_id, deal_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
             $stmt->execute([
                 $id,
-                $input['title'],
+                $title,
                 $input['description'] ?? null,
                 $input['due_date'] ?? null,
                 $input['priority'] ?? 'medium',
-                $input['assigned_to'] ?? $userId,
+                $assignedTo,
                 $input['lead_id'] ?? null,
                 $input['contact_id'] ?? null,
                 $input['deal_id'] ?? null,
@@ -53,6 +61,10 @@ if ($method === 'POST') {
             throw $e;
         }
     }
+
+    syncpediaNotifyTaskAssignee($db, $assignedTo, (string) $userId, $title, $orgId);
+    syncpediaAuditLog($db, $tokenData, 'created', 'task', $id, 'Created task: ' . $title . ' → ' . $assignedTo);
+
     respond(['id' => $id, 'message' => 'Task created'], 201);
 }
 
@@ -62,7 +74,8 @@ if ($method === 'PUT') {
     if (!$id) {
         respond(['error' => 'ID required'], 400);
     }
-    if (!taskFetchIfAccessible($db, $tokenData, $id)) {
+    $existing = taskFetchIfAccessible($db, $tokenData, $id);
+    if (!$existing) {
         respond(['error' => 'Task not found'], 404);
     }
 
@@ -81,6 +94,17 @@ if ($method === 'PUT') {
     $params[] = $id;
     $stmt = $db->prepare('UPDATE tasks SET ' . implode(', ', $fields) . ' WHERE id = ?');
     $stmt->execute($params);
+
+    if (array_key_exists('assigned_to', $input)) {
+        $newAssignee = trim((string) ($input['assigned_to'] ?? ''));
+        $oldAssignee = trim((string) ($existing['assigned_to'] ?? ''));
+        if ($newAssignee !== '' && $newAssignee !== $oldAssignee) {
+            $taskTitle = trim((string) ($input['title'] ?? $existing['title'] ?? 'Untitled'));
+            $orgId = $existing['org_id'] ?? resolveWriteOrgId($db, $tokenData);
+            syncpediaNotifyTaskAssignee($db, $newAssignee, (string) $userId, $taskTitle, $orgId ? (string) $orgId : null);
+        }
+    }
+
     respond(['message' => 'Task updated']);
 }
 

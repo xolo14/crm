@@ -34,6 +34,12 @@ function commEnsurePartnerTables(PDO $db): void
         break;
     }
     commSeedPlatformTemplates($db);
+    try {
+        if (!syncpediaColumnExists($db, 'meta_partner_config', 'meta_app_secret')) {
+            $db->exec('ALTER TABLE meta_partner_config ADD COLUMN meta_app_secret VARCHAR(500) DEFAULT NULL');
+        }
+    } catch (Throwable $e) {
+    }
     $done = true;
 }
 
@@ -253,12 +259,14 @@ function commFormatPartnerConfigForResponse(array $row, bool $includeSecrets): a
             'embedded_signup_url' => commBuildEmbeddedSignupUrl([]),
         ];
     }
-    if (!$includeSecrets) {
-        unset($row['system_user_token']);
-        $row['system_user_token_set'] = !empty($row['system_user_token']);
-    } else {
-        $row['system_user_token_masked'] = commMaskKey($row['system_user_token'] ?? '');
-        $row['system_user_token_set'] = !empty($row['system_user_token']);
+    $tokenSet = !empty($row['system_user_token']);
+    $secretSet = !empty($row['meta_app_secret']);
+    unset($row['system_user_token'], $row['meta_app_secret']);
+    $row['system_user_token_set'] = $tokenSet;
+    $row['meta_app_secret_set'] = $secretSet;
+    if ($includeSecrets) {
+        $row['system_user_token_masked'] = $tokenSet ? '••••set••••' : '';
+        $row['meta_app_secret_masked'] = $secretSet ? '••••set••••' : '';
     }
     $row['embedded_signup_url'] = commBuildEmbeddedSignupUrl($row);
     return $row;
@@ -277,6 +285,116 @@ function commBuildEmbeddedSignupUrl(array $cfg): string
         $params['config_id'] = $configId;
     }
     return 'https://business.facebook.com/messaging/whatsapp/onboard/?' . http_build_query($params);
+}
+
+function commResolveMetaAppId(PDO $db): string
+{
+    $partner = commLoadPartnerConfig($db);
+    $appId = trim((string) ($partner['meta_app_id'] ?? ''));
+    if ($appId === '' && defined('META_WHATSAPP_APP_ID') && (string) META_WHATSAPP_APP_ID !== '') {
+        $appId = trim((string) META_WHATSAPP_APP_ID);
+    }
+    return $appId;
+}
+
+function commResolveMetaAppSecret(PDO $db): string
+{
+    commEnsurePartnerTables($db);
+    $partner = commLoadPartnerConfig($db);
+    $secret = trim((string) ($partner['meta_app_secret'] ?? ''));
+    if ($secret !== '') {
+        return $secret;
+    }
+    if (defined('META_WHATSAPP_APP_SECRET') && (string) META_WHATSAPP_APP_SECRET !== '') {
+        return trim((string) META_WHATSAPP_APP_SECRET);
+    }
+    if (defined('WHATSAPP_APP_SECRET') && (string) WHATSAPP_APP_SECRET !== '') {
+        return trim((string) WHATSAPP_APP_SECRET);
+    }
+    return '';
+}
+
+/** @return array<string,mixed> */
+function commResolveEmbeddedSignupLaunchConfig(PDO $db): array
+{
+    $partner = commLoadPartnerConfig($db);
+    $appId = commResolveMetaAppId($db);
+    $configId = trim((string) ($partner['embedded_signup_config_id'] ?? ''));
+    $hasSecret = commResolveMetaAppSecret($db) !== '';
+    $missing = [];
+    if ($appId === '') {
+        $missing[] = 'meta_app_id';
+    }
+    if ($configId === '') {
+        $missing[] = 'embedded_signup_config_id';
+    }
+    if (!$hasSecret) {
+        $missing[] = 'meta_app_secret';
+    }
+    return [
+        'meta_app_id' => $appId,
+        'embedded_signup_config_id' => $configId,
+        'embedded_signup_url' => commBuildEmbeddedSignupUrl([
+            'meta_app_id' => $appId,
+            'embedded_signup_config_id' => $configId,
+        ]),
+        'solution_name' => (string) ($partner['solution_name'] ?? 'Syncpedia CRM'),
+        'partner_active' => !empty($partner['is_active']),
+        'ready' => $appId !== '' && $configId !== '' && $hasSecret,
+        'missing' => $missing,
+        'graph_api_version' => 'v21.0',
+        'embedded_signup_version' => 'v4',
+    ];
+}
+
+/**
+ * Exchange Embedded Signup authorization code for a business access token.
+ *
+ * @return array{ok:bool,access_token?:string,error?:string}
+ */
+function commExchangeEmbeddedSignupCode(string $appId, string $appSecret, string $code, string $graphVersion = 'v21.0'): array
+{
+    $appId = trim($appId);
+    $appSecret = trim($appSecret);
+    $code = trim($code);
+    if ($appId === '' || $appSecret === '' || $code === '') {
+        return ['ok' => false, 'error' => 'App ID, app secret, and authorization code are required'];
+    }
+    $url = 'https://graph.facebook.com/' . $graphVersion . '/oauth/access_token?' . http_build_query([
+        'client_id' => $appId,
+        'client_secret' => $appSecret,
+        'code' => $code,
+    ]);
+    $ch = curl_init($url);
+    if ($ch === false) {
+        return ['ok' => false, 'error' => 'Could not start token exchange'];
+    }
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 45,
+    ]);
+    $raw = curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
+    if ($raw === false) {
+        return ['ok' => false, 'error' => $curlErr !== '' ? $curlErr : 'Token exchange failed'];
+    }
+    $data = json_decode((string) $raw, true);
+    if (!is_array($data)) {
+        return ['ok' => false, 'error' => 'Invalid response from Meta token endpoint'];
+    }
+    if ($status >= 400 || !empty($data['error'])) {
+        $msg = is_array($data['error'] ?? null)
+            ? (string) ($data['error']['message'] ?? 'Meta token exchange failed')
+            : (string) ($data['error'] ?? 'Meta token exchange failed');
+        return ['ok' => false, 'error' => $msg];
+    }
+    $token = trim((string) ($data['access_token'] ?? ''));
+    if ($token === '') {
+        return ['ok' => false, 'error' => 'Meta did not return an access token'];
+    }
+    return ['ok' => true, 'access_token' => $token];
 }
 
 /** @return array<string,mixed>|null */
@@ -356,20 +474,23 @@ function commSubmitOrgTemplateToMeta(PDO $db, string $orgId, array $tpl, ?array 
 {
     $meta = commMetaClientForOrg($db, $orgId);
     $metaName = trim((string) ($tpl['provider_template_id'] ?? ''));
-    if ($metaName === '') {
+    if ($metaName === '' || preg_match('/[^a-z0-9_]/', strtolower($metaName))) {
         $base = MetaWhatsApp::sanitizeTemplateName((string) $tpl['name']);
         $metaName = $library && !empty($library['slug'])
             ? MetaWhatsApp::sanitizeTemplateName((string) $library['slug'] . '_' . substr(str_replace('-', '', $orgId), 0, 8))
             : $base;
+    } else {
+        $metaName = MetaWhatsApp::sanitizeTemplateName($metaName);
     }
+    $category = (string) ($tpl['category'] ?? ($library['category'] ?? 'utility'));
     $result = $meta->createMessageTemplate(
         $metaName,
-        (string) ($tpl['category'] ?? ($library['category'] ?? 'utility')),
+        $category,
         (string) ($tpl['language'] ?? 'en'),
         (string) $tpl['body'],
-        $tpl['footer'] ?? null,
+        isset($tpl['footer']) ? (string) $tpl['footer'] : null,
         (string) ($tpl['header_type'] ?? 'none'),
-        $tpl['header_text'] ?? null
+        isset($tpl['header_text']) ? (string) $tpl['header_text'] : null
     );
     if ($result['ok'] && $library && !empty($library['meta_partner_preapproved'])) {
         $result['partner_preapproved'] = true;

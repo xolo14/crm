@@ -41,7 +41,7 @@ export default function HRLayout({ children }: { children: ReactNode }) {
     (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []).filter((n: any) => !Number(n.is_read)).length;
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-dvh max-h-dvh bg-background">
       <aside className="hidden w-60 border-r bg-sidebar text-sidebar-foreground md:flex md:flex-col">
         <div className="border-b border-sidebar-border px-4 py-4 text-lg font-bold">HR Portal</div>
         <nav className="flex-1 space-y-1 px-2 py-2">

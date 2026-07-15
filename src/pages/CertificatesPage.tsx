@@ -1300,7 +1300,7 @@ function TemplateBuilderModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto p-0">
+      <DialogContent className="max-w-6xl max-h-[min(90dvh,100%)] overflow-y-auto p-0">
         <DialogHeader className="px-6 pt-5 pb-3 border-b">
           <div>
             <DialogTitle className="text-base">Template Builder</DialogTitle>
@@ -2381,7 +2381,7 @@ The Certifications Team`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-6xl max-h-[min(90dvh,100%)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="text-base">Issue Certificates</DialogTitle>
         </DialogHeader>
@@ -2795,7 +2795,7 @@ function IssuedCertificatesTable({
       </Card>
 
       <Dialog open={!!previewCertId} onOpenChange={(o) => !o && setPreviewCertId(null)}>
-        <DialogContent className="max-w-4xl max-h-[90vh]">
+        <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)]">
           <DialogHeader>
             <DialogTitle>Certificate Preview</DialogTitle>
           </DialogHeader>

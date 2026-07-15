@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { LogIn } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
@@ -39,7 +40,7 @@ export default function LoginPortal() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-dvh items-center justify-center">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
     );
@@ -132,13 +133,13 @@ export default function LoginPortal() {
                   </div>
                   <div className="space-y-2">
                     <Label className="text-sm">Password</Label>
-                    <Input
-                      type="password"
+                    <PasswordInput
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
                       className="h-12 rounded-xl"
+                      autoComplete="current-password"
                     />
                   </div>
                   <Button type="submit" className="w-full h-12 rounded-xl text-sm font-semibold" disabled={submitting}>
@@ -159,6 +160,16 @@ export default function LoginPortal() {
       </div>
 
       <ForgotPasswordFlow open={forgotOpen} onOpenChange={setForgotOpen} loginPath={AUTH_PORTAL.login} />
+
+      <p className="fixed bottom-0 left-0 right-0 py-3 text-center text-xs text-muted-foreground bg-background/80 backdrop-blur border-t">
+        <Link to="/privacy" className="hover:underline">
+          Privacy Policy
+        </Link>
+        {" · "}
+        <Link to="/terms" className="hover:underline">
+          Terms
+        </Link>
+      </p>
     </>
   );
 }

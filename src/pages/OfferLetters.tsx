@@ -441,8 +441,10 @@ const INITIAL_SEND_FORM = {
 };
 
 export default function OfferLetters() {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
   const { toast } = useToast();
+  // Template/sent delete is admin/org only (API requireRole); managers can create/send.
+  const canDeleteTemplates = ["super_admin", "admin", "org"].includes(String(role || "").toLowerCase());
   const isMobile = useIsMobile();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const letterheadInputRef = useRef<HTMLInputElement>(null);
@@ -719,6 +721,10 @@ export default function OfferLetters() {
   };
 
   const deleteTemplate = async (id: string) => {
+    if (!canDeleteTemplates) {
+      toast({ variant: 'destructive', title: 'Permission denied', description: 'Only admins can delete offer letter templates.' });
+      return;
+    }
     try {
       await api.offerLetters.deleteTemplate(id);
       toast({ title: 'Template deleted' });
@@ -1347,7 +1353,9 @@ export default function OfferLetters() {
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => duplicateTemplate(t)}><Copy className="h-3 w-3" />Clone</Button>
                       <Button size="sm" className="h-7 text-xs gap-1" onClick={() => openSendDialog(t)}><Send className="h-3 w-3" />Send</Button>
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => openBulkGenerate(t)}><Users className="h-3 w-3" />Bulk</Button>
-                      <Button variant="ghost" size="sm" className="h-7 text-xs gap-1 text-destructive hover:text-destructive" onClick={() => deleteTemplate(t.id)}><Trash2 className="h-3 w-3" /></Button>
+                      {canDeleteTemplates && (
+                        <Button variant="ghost" size="sm" className="h-7 text-xs gap-1 text-destructive hover:text-destructive" onClick={() => deleteTemplate(t.id)}><Trash2 className="h-3 w-3" /></Button>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -1412,7 +1420,7 @@ export default function OfferLetters() {
 
       {/* Preview Dialog */}
       <Dialog open={showPreview} onOpenChange={setShowPreview}>
-        <DialogContent className="max-w-4xl max-h-[90vh]">
+        <DialogContent className="max-w-4xl max-h-[min(90dvh,calc(100dvh-2rem))]">
           <DialogHeader><DialogTitle>Template Preview (A4)</DialogTitle></DialogHeader>
           <div className="overflow-auto max-h-[70vh] flex flex-col items-center gap-6 p-4 bg-muted/30 rounded-lg">
             {splitPages(previewHtml).map((pageHtml, idx) => (
@@ -1436,7 +1444,7 @@ export default function OfferLetters() {
 
       {/* Send Offer Letter Dialog - Multi-step */}
       <Dialog open={showSend} onOpenChange={setShowSend}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Send Offer Letter</DialogTitle>
           </DialogHeader>

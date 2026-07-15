@@ -150,6 +150,23 @@ function paymentLinkMarkEnrollmentApplied(string $plinkId): void
     $st->execute([$plinkId]);
 }
 
+/** Undo claim so reconciler can retry after a transient enrollment failure. */
+function paymentLinkReleaseEnrollmentClaim(string $plinkId): void
+{
+    if ($plinkId === '') {
+        return;
+    }
+    try {
+        $db = paymentLinksDb();
+        $db->prepare(
+            'UPDATE payment_links SET enrollment_applied_at = NULL, updated_at = CURRENT_TIMESTAMP
+             WHERE razorpay_payment_link_id = ?',
+        )->execute([$plinkId]);
+    } catch (Throwable $e) {
+        error_log('[payment_fulfillment] release claim failed for ' . $plinkId . ': ' . $e->getMessage());
+    }
+}
+
 /**
  * Enroll linked lead and create student after full payment.
  *
@@ -159,15 +176,19 @@ function paymentLinkMarkEnrollmentApplied(string $plinkId): void
  */
 function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
 {
+    $plinkId = trim((string) ($row['razorpay_payment_link_id'] ?? ''));
+    if ($plinkId === '') {
+        return ['ok' => false, 'error' => 'missing_payment_link_id'];
+    }
     if (!empty($row['enrollment_applied_at'])) {
         return ['ok' => true, 'skipped' => true, 'reason' => 'already_enrolled'];
     }
 
-    $notes = paymentLinkMergedNotes($row, $rzpLink);
     $db = paymentLinksDb();
+    $notes = paymentLinkMergedNotes($row, $rzpLink);
     $leadId = paymentLinkResolveLeadId($db, $row, $rzpLink, $notes) ?? '';
     if ($leadId === '') {
-        return ['ok' => true, 'skipped' => true, 'reason' => 'no_lead_match'];
+        return ['ok' => false, 'error' => 'no_lead_match'];
     }
     $tokenData = paymentLinkFulfillmentTokenData($row);
 
@@ -210,49 +231,62 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
         return ['ok' => false, 'error' => 'lead_missing_email', 'lead_id' => $leadId];
     }
 
-    $currentStatus = strtolower(trim((string) ($leadRow['status'] ?? '')));
-    if ($currentStatus !== 'enrolled') {
-        try {
-            $db->prepare(
-                'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            )->execute(['enrolled', $leadId]);
-        } catch (Throwable $e) {
-            error_log('[payment_fulfillment] lead status: ' . $e->getMessage());
-            return ['ok' => false, 'error' => 'lead_status_update_failed', 'lead_id' => $leadId];
-        }
+    // Claim only after preconditions pass (idempotent under concurrent webhooks).
+    $claim = $db->prepare(
+        'UPDATE payment_links SET enrollment_applied_at = NOW(), updated_at = CURRENT_TIMESTAMP
+         WHERE razorpay_payment_link_id = ? AND enrollment_applied_at IS NULL',
+    );
+    $claim->execute([$plinkId]);
+    if ($claim->rowCount() < 1) {
+        return ['ok' => true, 'skipped' => true, 'reason' => 'already_enrolled'];
     }
 
     try {
-        leadsTryAttachStudentForEnrollment($db, $tokenData, $leadId);
-    } catch (Throwable $e) {
-        error_log('[payment_fulfillment] student create: ' . $e->getMessage());
-    }
-
-    $batchId = trim((string) ($notes['batch_id'] ?? ''));
-    if ($batchId !== '') {
-        $v = paymentLinkValidateBatchForEnrollment($db, $batchId, $leadRow, $tokenData);
-        if ($v['error'] === null) {
-            try {
-                $u = $db->prepare(
-                    'UPDATE students SET course_id = ?, batch_id = ? WHERE lead_id = ?',
-                );
-                $u->execute([$v['course_id'], $batchId, $leadId]);
-            } catch (Throwable $e) {
-                error_log('[payment_fulfillment] batch attach: ' . $e->getMessage());
-            }
-        } else {
-            error_log('[payment_fulfillment] batch skip: ' . $v['error']);
+        $currentStatus = strtolower(trim((string) ($leadRow['status'] ?? '')));
+        if ($currentStatus !== 'enrolled') {
+            $db->prepare(
+                'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            )->execute(['enrolled', $leadId]);
         }
+
+        leadsTryAttachStudentForEnrollment($db, $tokenData, $leadId);
+        if (!enrollStudentRowAlreadyExists($db, $leadId)) {
+            throw new RuntimeException('student_create_failed');
+        }
+
+        $batchId = trim((string) ($notes['batch_id'] ?? ''));
+        if ($batchId !== '') {
+            $v = paymentLinkValidateBatchForEnrollment($db, $batchId, $leadRow, $tokenData);
+            if ($v['error'] === null) {
+                try {
+                    $u = $db->prepare(
+                        'UPDATE students SET course_id = ?, batch_id = ? WHERE lead_id = ?',
+                    );
+                    $u->execute([$v['course_id'], $batchId, $leadId]);
+                } catch (Throwable $e) {
+                    error_log('[payment_fulfillment] batch attach: ' . $e->getMessage());
+                }
+            } else {
+                error_log('[payment_fulfillment] batch skip: ' . $v['error']);
+            }
+        }
+
+        return [
+            'ok' => true,
+            'lead_id' => $leadId,
+            'batch_id' => $batchId !== '' ? $batchId : null,
+            'student_created' => true,
+        ];
+    } catch (Throwable $e) {
+        paymentLinkReleaseEnrollmentClaim($plinkId);
+        error_log('[payment_fulfillment] enroll failed for ' . $plinkId . ': ' . $e->getMessage());
+
+        return [
+            'ok' => false,
+            'error' => $e->getMessage() === 'student_create_failed' ? 'student_create_failed' : 'enrollment_failed',
+            'lead_id' => $leadId,
+        ];
     }
-
-    paymentLinkMarkEnrollmentApplied((string) ($row['razorpay_payment_link_id'] ?? ''));
-
-    return [
-        'ok' => true,
-        'lead_id' => $leadId,
-        'batch_id' => $batchId !== '' ? $batchId : null,
-        'student_created' => true,
-    ];
 }
 
 /**

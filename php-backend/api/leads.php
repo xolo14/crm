@@ -140,9 +140,29 @@ if ($method === 'GET') {
         respond(['debug' => $debugMeta]);
     }
 
-    $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT 500");
+    // Soft cap — Leads Management loads client-side; dashboard COUNT includes all rows.
+    // Previous hard LIMIT 500 made the UI show 500 of ~2k+ leads.
+    $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 10000;
+    if ($limit < 1) {
+        $limit = 10000;
+    }
+    if ($limit > 20000) {
+        $limit = 20000;
+    }
+
+    $countStmt = $db->prepare("SELECT COUNT(*) FROM leads WHERE $where");
+    $countStmt->execute($params);
+    $total = (int) $countStmt->fetchColumn();
+
+    $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $limit);
     $stmt->execute($params);
-    respond(['data' => $stmt->fetchAll(), 'count' => $stmt->rowCount()]);
+    $rows = $stmt->fetchAll();
+    respond([
+        'data' => $rows,
+        'count' => count($rows),
+        'total' => $total,
+        'truncated' => count($rows) < $total,
+    ]);
     } catch (Throwable $e) {
         error_log('leads.php GET: ' . $e->getMessage());
         $payload = ['error' => 'Failed to load leads'];
@@ -155,13 +175,119 @@ if ($method === 'GET') {
 
 if ($method === 'POST') {
     ensureLeadsResumeColumn($db);
+    ensureLeadsCreatedByColumn($db);
     $input = getInput();
+    if (!is_array($input)) {
+        $input = [];
+    }
 
-    if (($_GET['action'] ?? '') === 'bulk') {
+    // Resolve action from query OR JSON body (some hosts/proxies drop/alter query on POST)
+    $postAction = trim((string) ($_GET['action'] ?? ''));
+    if ($postAction === '') {
+        $postAction = trim((string) ($input['action'] ?? ''));
+    }
+
+    // Bulk delete — never fall through to create-lead validation
+    $idsPayload = $input['ids'] ?? null;
+    $looksLikeBulkDelete = is_array($idsPayload)
+        && $idsPayload !== []
+        && !isset($input['leads'])
+        && !array_key_exists('name', $input)
+        && !array_key_exists('phone', $input)
+        && !array_key_exists('email', $input);
+    if ($postAction === 'bulk_delete' || ($postAction === '' && $looksLikeBulkDelete)) {
+        requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+        if (!is_array($idsPayload) || $idsPayload === []) {
+            respond(['error' => 'ids array required'], 400);
+        }
+        $ids = array_values(array_unique(array_filter(array_map(static function ($id) {
+            return is_string($id) || is_numeric($id) ? trim((string) $id) : '';
+        }, $idsPayload), static fn ($id) => $id !== '')));
+        if ($ids === []) {
+            respond(['error' => 'ids array required'], 400);
+        }
+        if (count($ids) > 5000) {
+            respond(['error' => 'Cannot delete more than 5000 leads at once'], 400);
+        }
+
+        @set_time_limit(300);
+        $deleted = 0;
+        $skipped = 0;
+        $del = $db->prepare('DELETE FROM leads WHERE id = ?');
+        foreach (array_chunk($ids, 200) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $sel = $db->prepare("SELECT * FROM leads WHERE id IN ($placeholders)");
+            $sel->execute($chunk);
+            $found = [];
+            while ($lead = $sel->fetch(PDO::FETCH_ASSOC)) {
+                $found[(string) $lead['id']] = $lead;
+            }
+            foreach ($chunk as $id) {
+                $lead = $found[$id] ?? null;
+                if (!$lead) {
+                    $skipped++;
+                    continue;
+                }
+                if (!userCanUpdateLeadForCallLog($db, $tokenData, $userId, $role, $lead)) {
+                    $skipped++;
+                    continue;
+                }
+                try {
+                    trashArchiveRow($db, 'lead', 'leads', $id, $tokenData);
+                } catch (RuntimeException $e) {
+                    respond([
+                        'error' => 'Could not archive to trash — delete aborted',
+                        'deleted' => $deleted,
+                        'skipped' => $skipped,
+                        'detail' => $e->getMessage(),
+                    ], 500);
+                }
+                $del->execute([$id]);
+                $deleted++;
+            }
+        }
+        syncpediaAuditLog($db, $tokenData, 'deleted', 'lead', null, "Bulk deleted {$deleted} lead(s), skipped {$skipped}");
+        respond([
+            'message' => 'Bulk delete complete',
+            'deleted' => $deleted,
+            'skipped' => $skipped,
+            'handler' => 'bulk_delete',
+        ]);
+    }
+
+    if ($postAction === 'bulk') {
         $rows = $input['leads'] ?? $input;
         if (!is_array($rows) || $rows === []) {
             respond(['error' => 'Expected non-empty leads array'], 400);
         }
+        $callerRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+        $bulkOrgId = resolveCreatorOrgId($db, $tokenData);
+        // Super Admin must target an explicit org (body org_id or per-row org_id)
+        $explicitOrg = trim((string) ($input['org_id'] ?? ''));
+        if ($callerRole === 'super_admin') {
+            if ($explicitOrg === '') {
+                // Allow first-row org_id if top-level omitted
+                foreach ($rows as $probe) {
+                    if (is_array($probe)) {
+                        $explicitOrg = trim((string) ($probe['org_id'] ?? ''));
+                        if ($explicitOrg !== '') {
+                            break;
+                        }
+                    }
+                }
+            }
+            if ($explicitOrg === '') {
+                respond(['error' => 'Select an organization for this import (org_id is required for Super Admin)'], 400);
+            }
+            $chk = $db->prepare('SELECT id, name FROM organizations WHERE id = ? LIMIT 1');
+            $chk->execute([$explicitOrg]);
+            $orgRow = $chk->fetch(PDO::FETCH_ASSOC);
+            if (!$orgRow) {
+                respond(['error' => 'Organization not found'], 404);
+            }
+            $bulkOrgId = $explicitOrg;
+        }
+
         $created = 0;
         $errors = [];
         foreach ($rows as $i => $row) {
@@ -169,9 +295,17 @@ if ($method === 'POST') {
                 continue;
             }
             $name = trim((string) ($row['name'] ?? ''));
+            $phone = trim((string) ($row['phone'] ?? ''));
+            $email = trim((string) ($row['email'] ?? ''));
             if ($name === '') {
-                $errors[] = "Row $i: name is required";
-                continue;
+                if ($phone !== '') {
+                    $name = $phone;
+                } elseif ($email !== '') {
+                    $name = $email;
+                } else {
+                    $errors[] = "Row $i: name, phone, or email is required";
+                    continue;
+                }
             }
             $id = generateUUID();
             $referredBy = trim((string) ($row['referred_by'] ?? ''));
@@ -180,7 +314,17 @@ if ($method === 'POST') {
             if ($assignedTo !== null && trim((string) $assignedTo) === '') {
                 $assignedTo = null;
             }
-            $orgId = resolveCreatorOrgId($db, $tokenData);
+            // Managers only see downline-assigned leads — auto-assign imports to the importer
+            if ($callerRole === 'manager' && ($assignedTo === null || $assignedTo === '')) {
+                $assignedTo = $userId;
+            }
+            $orgId = $bulkOrgId;
+            if ($callerRole === 'super_admin') {
+                $rowOrg = trim((string) ($row['org_id'] ?? ''));
+                if ($rowOrg !== '') {
+                    $orgId = $rowOrg;
+                }
+            }
             if ($orgId === null && !empty($assignedTo)) {
                 try {
                     $oStmt = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
@@ -194,12 +338,12 @@ if ($method === 'POST') {
                 }
             }
             try {
-                $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([
                     $id,
                     $name,
-                    $row['email'] ?? null,
-                    $row['phone'] ?? null,
+                    $email !== '' ? $email : ($row['email'] ?? null),
+                    $phone !== '' ? $phone : ($row['phone'] ?? null),
                     $row['company'] ?? null,
                     $row['college'] ?? null,
                     $row['year_of_study'] ?? null,
@@ -211,18 +355,75 @@ if ($method === 'POST') {
                     isset($row['tags']) ? json_encode($row['tags']) : null,
                     $orgId,
                     $row['status'] ?? 'new',
+                    $userId,
                 ]);
                 $created++;
             } catch (Throwable $e) {
-                $errors[] = "Row $i: " . $e->getMessage();
+                // Older schema without created_by
+                try {
+                    $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->execute([
+                        $id,
+                        $name,
+                        $email !== '' ? $email : ($row['email'] ?? null),
+                        $phone !== '' ? $phone : ($row['phone'] ?? null),
+                        $row['company'] ?? null,
+                        $row['college'] ?? null,
+                        $row['year_of_study'] ?? null,
+                        $row['course_interest'] ?? null,
+                        $referredBy,
+                        $row['source'] ?? 'other',
+                        $row['notes'] ?? null,
+                        $assignedTo,
+                        isset($row['tags']) ? json_encode($row['tags']) : null,
+                        $orgId,
+                        $row['status'] ?? 'new',
+                    ]);
+                    $created++;
+                } catch (Throwable $e2) {
+                    $errors[] = "Row $i: " . $e2->getMessage();
+                }
             }
         }
-        respond(['message' => "Imported $created lead(s)", 'created' => $created, 'errors' => $errors], $created > 0 ? 201 : 400);
+        $orgName = null;
+        if ($callerRole === 'super_admin' && $bulkOrgId) {
+            try {
+                $n = $db->prepare('SELECT name FROM organizations WHERE id = ? LIMIT 1');
+                $n->execute([$bulkOrgId]);
+                $orgName = $n->fetchColumn() ?: null;
+            } catch (Throwable $ignored) {
+            }
+        }
+        respond([
+            'message' => "Imported $created lead(s)",
+            'created' => $created,
+            'errors' => $errors,
+            'org_id' => $bulkOrgId,
+            'org_name' => $orgName,
+        ], $created > 0 ? 201 : 400);
+    }
+
+    // Never treat a delete payload as "create lead" (avoids "Name, phone, or email is required")
+    if (isset($input['ids']) && is_array($input['ids'])) {
+        respond(['error' => 'Bulk delete payload received but not handled. Upload latest api/leads.php and use action=bulk_delete.'], 400);
+    }
+    if ($postAction !== '' && $postAction !== 'bulk') {
+        respond(['error' => 'Unknown action: ' . $postAction], 400);
     }
 
     $id = generateUUID();
     $name = trim($input['name'] ?? '');
-    if (!$name) respond(['error' => 'Name is required'], 400);
+    $phoneIn = trim((string) ($input['phone'] ?? ''));
+    $emailIn = trim((string) ($input['email'] ?? ''));
+    if ($name === '') {
+        if ($phoneIn !== '') {
+            $name = $phoneIn;
+        } elseif ($emailIn !== '') {
+            $name = $emailIn;
+        } else {
+            respond(['error' => 'Name, phone, or email is required'], 400);
+        }
+    }
 
     $resumePathIn = isset($input['resume_path']) ? trim((string) $input['resume_path']) : '';
     $resumePathIn = $resumePathIn !== '' && strpos($resumePathIn, '/uploads/resumes/') === 0 ? $resumePathIn : null;
@@ -244,6 +445,19 @@ if ($method === 'POST') {
     // Sales rep UI does not show "Assign to" — leads must be assigned to self or they disappear from GET (assigned_to / referred_by filter).
     if (in_array($role, ['sales_representative'], true) && ($assignedTo === null || $assignedTo === '')) {
         $assignedTo = $userId;
+    }
+    // Managers only see downline-assigned leads — auto-assign unassigned creates/imports to self
+    if ($role === 'manager' && ($assignedTo === null || $assignedTo === '')) {
+        $assignedTo = $userId;
+    }
+    // After auto-assign, load assignee org for tenant stamping
+    if (!empty($assignedTo) && !is_array($assigneeRow)) {
+        $ustmt = $db->prepare('SELECT id, org_id FROM users WHERE id = ? LIMIT 1');
+        $ustmt->execute([$assignedTo]);
+        $assigneeRow = $ustmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        if (!$assigneeRow) {
+            $assignedTo = null;
+        }
     }
 
     $referredBy = trim((string) ($input['referred_by'] ?? ''));
@@ -276,35 +490,17 @@ if ($method === 'POST') {
         }
     }
 
+    $createdBy = is_string($userId) && $userId !== '' ? $userId : null;
+    $hasCreatedBy = syncpediaColumnExists($db, 'leads', 'created_by');
+
     try {
-        $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, resume_path, assigned_to, tags, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([
-            $id,
-            $name,
-            $input['email'] ?? null,
-            $input['phone'] ?? null,
-            $input['company'] ?? null,
-            $input['college'] ?? null,
-            $input['year_of_study'] ?? null,
-            $input['course_interest'] ?? null,
-            $referredBy,
-            $input['source'] ?? 'other',
-            $input['notes'] ?? null,
-            $resumePathIn,
-            $assignedTo,
-            json_encode($input['tags'] ?? []),
-            $orgId,
-        ]);
-        respond(['id' => $id, 'message' => 'Lead created'], 201);
-    } catch (Exception $e) {
-        try {
-            // Backward-compatible fallback for older lead schemas (no resume_path).
-            $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        if ($hasCreatedBy) {
+            $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, resume_path, assigned_to, tags, org_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
             $stmt->execute([
                 $id,
                 $name,
-                $input['email'] ?? null,
-                $input['phone'] ?? null,
+                $emailIn !== '' ? $emailIn : ($input['email'] ?? null),
+                $phoneIn !== '' ? $phoneIn : ($input['phone'] ?? null),
                 $input['company'] ?? null,
                 $input['college'] ?? null,
                 $input['year_of_study'] ?? null,
@@ -312,10 +508,74 @@ if ($method === 'POST') {
                 $referredBy,
                 $input['source'] ?? 'other',
                 $input['notes'] ?? null,
+                $resumePathIn,
+                $assignedTo,
+                json_encode($input['tags'] ?? []),
+                $orgId,
+                $createdBy,
+            ]);
+        } else {
+            $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, resume_path, assigned_to, tags, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([
+                $id,
+                $name,
+                $emailIn !== '' ? $emailIn : ($input['email'] ?? null),
+                $phoneIn !== '' ? $phoneIn : ($input['phone'] ?? null),
+                $input['company'] ?? null,
+                $input['college'] ?? null,
+                $input['year_of_study'] ?? null,
+                $input['course_interest'] ?? null,
+                $referredBy,
+                $input['source'] ?? 'other',
+                $input['notes'] ?? null,
+                $resumePathIn,
                 $assignedTo,
                 json_encode($input['tags'] ?? []),
                 $orgId,
             ]);
+        }
+        respond(['id' => $id, 'message' => 'Lead created'], 201);
+    } catch (Exception $e) {
+        try {
+            // Backward-compatible fallback for older lead schemas (no resume_path).
+            if ($hasCreatedBy) {
+                $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([
+                    $id,
+                    $name,
+                    $input['email'] ?? null,
+                    $input['phone'] ?? null,
+                    $input['company'] ?? null,
+                    $input['college'] ?? null,
+                    $input['year_of_study'] ?? null,
+                    $input['course_interest'] ?? null,
+                    $referredBy,
+                    $input['source'] ?? 'other',
+                    $input['notes'] ?? null,
+                    $assignedTo,
+                    json_encode($input['tags'] ?? []),
+                    $orgId,
+                    $createdBy,
+                ]);
+            } else {
+                $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([
+                    $id,
+                    $name,
+                    $input['email'] ?? null,
+                    $input['phone'] ?? null,
+                    $input['company'] ?? null,
+                    $input['college'] ?? null,
+                    $input['year_of_study'] ?? null,
+                    $input['course_interest'] ?? null,
+                    $referredBy,
+                    $input['source'] ?? 'other',
+                    $input['notes'] ?? null,
+                    $assignedTo,
+                    json_encode($input['tags'] ?? []),
+                    $orgId,
+                ]);
+            }
             respond(['id' => $id, 'message' => 'Lead created'], 201);
         } catch (Exception $e2) {
             try {
@@ -376,6 +636,18 @@ if ($method === 'PUT') {
     $params = [];
     foreach (['name', 'email', 'phone', 'company', 'college', 'year_of_study', 'course_interest', 'referred_by', 'source', 'status', 'score', 'notes', 'assigned_to', 'next_follow_up'] as $f) {
         if (array_key_exists($f, $input)) {
+            if ($f === 'assigned_to') {
+                $rawAssign = $input['assigned_to'];
+                if ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === '')) {
+                    $fields[] = 'assigned_to = NULL';
+                    continue;
+                }
+                $assignId = trim((string) $rawAssign);
+                syncpediaAssertUserInCallerOrg($db, $tokenData, $assignId);
+                $fields[] = 'assigned_to = ?';
+                $params[] = $assignId;
+                continue;
+            }
             $fields[] = "$f = ?";
             $params[] = $input[$f];
         }
@@ -653,6 +925,64 @@ if ($method === 'PUT') {
     respond(['message' => 'Lead updated']);
 }
 
+if ($method === 'DELETE' && ($_GET['action'] ?? '') === 'bulk') {
+    // Legacy alias — prefer POST ?action=bulk_delete (DELETE body often empty on shared hosting)
+    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    $input = getInput();
+    $ids = $input['ids'] ?? null;
+    if (!is_array($ids) || $ids === []) {
+        respond(['error' => 'ids array required — use POST /leads.php?action=bulk_delete with JSON {"ids":[...]}'], 400);
+    }
+    $ids = array_values(array_unique(array_filter(array_map(static function ($id) {
+        return is_string($id) || is_numeric($id) ? trim((string) $id) : '';
+    }, $ids), static fn ($id) => $id !== '')));
+    if ($ids === []) {
+        respond(['error' => 'ids array required'], 400);
+    }
+    if (count($ids) > 5000) {
+        respond(['error' => 'Cannot delete more than 5000 leads at once'], 400);
+    }
+
+    @set_time_limit(300);
+    $deleted = 0;
+    $skipped = 0;
+    $del = $db->prepare('DELETE FROM leads WHERE id = ?');
+    foreach (array_chunk($ids, 200) as $chunk) {
+        $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+        $sel = $db->prepare("SELECT * FROM leads WHERE id IN ($placeholders)");
+        $sel->execute($chunk);
+        $found = [];
+        while ($lead = $sel->fetch(PDO::FETCH_ASSOC)) {
+            $found[(string) $lead['id']] = $lead;
+        }
+        foreach ($chunk as $id) {
+            $lead = $found[$id] ?? null;
+            if (!$lead) {
+                $skipped++;
+                continue;
+            }
+            if (!userCanUpdateLeadForCallLog($db, $tokenData, $userId, $role, $lead)) {
+                $skipped++;
+                continue;
+            }
+            try {
+                trashArchiveRow($db, 'lead', 'leads', $id, $tokenData);
+            } catch (RuntimeException $e) {
+                respond([
+                    'error' => 'Could not archive to trash — delete aborted',
+                    'deleted' => $deleted,
+                    'skipped' => $skipped,
+                    'detail' => $e->getMessage(),
+                ], 500);
+            }
+            $del->execute([$id]);
+            $deleted++;
+        }
+    }
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'lead', null, "Bulk deleted {$deleted} lead(s), skipped {$skipped}");
+    respond(['message' => 'Bulk delete complete', 'deleted' => $deleted, 'skipped' => $skipped]);
+}
+
 if ($method === 'DELETE') {
     requireRole($tokenData, ['admin', 'super_admin', 'manager']);
     $id = $_GET['id'] ?? '';
@@ -668,9 +998,14 @@ if ($method === 'DELETE') {
         respond(['error' => 'Forbidden'], 403);
     }
 
-    trashArchiveRow($db, 'lead', 'leads', $id, $tokenData);
+    try {
+        trashArchiveRow($db, 'lead', 'leads', $id, $tokenData);
+    } catch (RuntimeException $e) {
+        respond(['error' => 'Could not archive to trash — delete aborted', 'detail' => $e->getMessage()], 500);
+    }
     $stmt = $db->prepare("DELETE FROM leads WHERE id = ?");
     $stmt->execute([$id]);
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'lead', $id, 'Deleted lead: ' . ($lead['name'] ?? $id));
     respond(['message' => 'Lead deleted']);
 }
 

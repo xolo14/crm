@@ -156,7 +156,7 @@ export default function LinkDetailModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[min(92dvh,100%)] overflow-y-auto">
         <div className="flex items-start justify-between gap-3 px-6 pt-6 pb-4 border-b border-gray-100">
           <div>
             <h2 className="text-lg font-bold text-gray-900">

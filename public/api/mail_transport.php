@@ -13,8 +13,10 @@ function syncpediaLoadComposerAutoload(): bool
         return $loaded;
     }
     $paths = [
-        __DIR__ . '/../vendor/autoload.php',
+        __DIR__ . '/../vendor/autoload.php', // public/vendor when API is under public/api
         dirname(__DIR__) . '/vendor/autoload.php',
+        __DIR__ . '/../../vendor/autoload.php',
+        __DIR__ . '/../../public/vendor/autoload.php', // php-backend/api → public/vendor
         __DIR__ . '/../../php-backend/vendor/autoload.php',
         __DIR__ . '/../../../php-backend/vendor/autoload.php',
     ];
@@ -100,6 +102,19 @@ function syncpediaSmtpAccountForFrom(string $fromEmail): string
 /**
  * @return array{user: string, pass: string}|null
  */
+/** Strip accidental quotes/whitespace from config.php mailbox passwords. */
+function syncpediaSmtpSanitizeSecret(string $pass): string
+{
+    $pass = trim($pass);
+    if (strlen($pass) >= 2) {
+        $q = $pass[0];
+        if (($q === '"' || $q === "'") && substr($pass, -1) === $q) {
+            $pass = substr($pass, 1, -1);
+        }
+    }
+    return $pass;
+}
+
 function syncpediaSmtpCredentialsForAccount(string $account): ?array
 {
     if ($account === 'hr') {
@@ -121,8 +136,8 @@ function syncpediaSmtpCredentialsForAccount(string $account): ?array
             $pass = defined('SMTP_SUPPORT_PASS') ? (string) SMTP_SUPPORT_PASS : '';
         }
     }
-    $user = trim((string) $user);
-    $pass = (string) $pass;
+    $user = strtolower(trim((string) $user));
+    $pass = syncpediaSmtpSanitizeSecret((string) $pass);
     if ($user === '' || $pass === '') {
         return null;
     }
@@ -146,8 +161,149 @@ function syncpediaSmtpIsReady(): bool
     return syncpediaSmtpCredentialsForAccount('hr') !== null;
 }
 
+/** Human-readable reason when transactional email cannot send via SMTP. */
+function syncpediaSmtpNotReadyReason(): string
+{
+    if (!syncpediaSmtpEnabled()) {
+        return 'SMTP_ENABLED is false in api/config.php';
+    }
+    if (syncpediaSmtpHost() === '') {
+        return 'SMTP_HOST is empty in api/config.php';
+    }
+    if (!syncpediaLoadComposerAutoload()) {
+        return 'PHPMailer not found — upload the vendor/ folder next to api/ (or run composer install in php-backend)';
+    }
+    if (syncpediaSmtpCredentialsForAccount('support') === null && syncpediaSmtpCredentialsForAccount('hr') === null) {
+        return 'Set SMTP_SUPPORT_USER and SMTP_SUPPORT_PASS in api/config.php (Hostinger email password for support@…). Empty password disables OTP and welcome emails';
+    }
+    return 'SMTP is not configured';
+}
+
 /**
- * Send HTML email via SMTP (Gmail / Google Workspace). No Hostinger mailbox required.
+ * @return list<array{host: string, port: int, enc: string}>
+ */
+function syncpediaSmtpTransportProfiles(): array
+{
+    $primary = [
+        'host' => syncpediaSmtpHost(),
+        'port' => syncpediaSmtpPort(),
+        'enc' => syncpediaSmtpEncryption(),
+    ];
+    $alts = [
+        ['host' => 'smtp.hostinger.com', 'port' => 587, 'enc' => 'tls'],
+        ['host' => 'smtp.hostinger.com', 'port' => 465, 'enc' => 'ssl'],
+        ['host' => 'smtp.titan.email', 'port' => 465, 'enc' => 'ssl'],
+        ['host' => 'smtp.titan.email', 'port' => 587, 'enc' => 'tls'],
+    ];
+    $out = [];
+    $seen = [];
+    foreach (array_merge([$primary], $alts) as $p) {
+        $key = strtolower($p['host']) . ':' . (int) $p['port'] . ':' . strtolower($p['enc']);
+        if (isset($seen[$key])) {
+            continue;
+        }
+        $seen[$key] = true;
+        $out[] = $p;
+    }
+    return $out;
+}
+
+function syncpediaSmtpAuthFailedMessage(string $user): string
+{
+    return 'SMTP could not authenticate as ' . $user
+        . '. Fix api/config.php: SMTP_SUPPORT_USER must be the full mailbox (e.g. support@syncpedia.in) and SMTP_SUPPORT_PASS must be that mailbox password from Hostinger → Emails → Email Accounts (not your hPanel login). Use single quotes around the password. If webmail is Titan, set SMTP_HOST to smtp.titan.email, SMTP_PORT 465, SMTP_ENCRYPTION ssl.';
+}
+
+/**
+ * @param array{user: string, pass: string} $creds
+ * @param list<array{path: string, name?: string}> $attachments
+ * @return array{ok: bool, error?: string}
+ */
+function syncpediaSmtpSendOnce(
+    string $to,
+    string $subject,
+    string $htmlBody,
+    string $fromAddr,
+    string $fromDisplayName,
+    array $creds,
+    string $host,
+    int $port,
+    string $enc,
+    string $cc = '',
+    string $bcc = '',
+    array $attachments = [],
+    string $altBody = '',
+): array {
+    $parseList = static function (string $raw): array {
+        $out = [];
+        foreach (preg_split('/[,;]/', $raw) as $part) {
+            $addr = trim($part);
+            if ($addr === '') {
+                continue;
+            }
+            if (filter_var($addr, FILTER_VALIDATE_EMAIL)) {
+                $out[] = $addr;
+            }
+        }
+        return $out;
+    };
+
+    $mail = new PHPMailer(true);
+    try {
+        $mail->isSMTP();
+        $mail->Host = $host;
+        $mail->SMTPAuth = true;
+        $mail->AuthType = 'LOGIN';
+        $mail->Username = $creds['user'];
+        $mail->Password = $creds['pass'];
+        $mail->Port = $port;
+        $enc = strtolower($enc);
+        if ($enc === 'ssl') {
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+        } elseif ($enc === 'tls') {
+            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+        } else {
+            $mail->SMTPSecure = '';
+            $mail->SMTPAutoTLS = false;
+        }
+        $mail->CharSet = PHPMailer::CHARSET_UTF8;
+        // Hostinger requires From to match the authenticated mailbox
+        $fromAddr = $creds['user'];
+        $disp = trim($fromDisplayName) !== '' ? trim($fromDisplayName) : 'Syncpedia';
+        $mail->setFrom($fromAddr, $disp);
+        $mail->addReplyTo($fromAddr, $disp);
+        $mail->addAddress($to);
+        foreach ($parseList($cc) as $ccAddr) {
+            $mail->addCC($ccAddr);
+        }
+        foreach ($parseList($bcc) as $bccAddr) {
+            $mail->addBCC($bccAddr);
+        }
+        foreach ($attachments as $file) {
+            $path = trim((string) ($file['path'] ?? ''));
+            if ($path === '' || !is_file($path) || !is_readable($path)) {
+                continue;
+            }
+            $name = trim((string) ($file['name'] ?? ''));
+            if ($name !== '') {
+                $mail->addAttachment($path, $name);
+            } else {
+                $mail->addAttachment($path);
+            }
+        }
+        $mail->isHTML(true);
+        $mail->Subject = $subject;
+        $mail->Body = $htmlBody;
+        $mail->AltBody = $altBody !== '' ? $altBody : trim(strip_tags($htmlBody));
+        $mail->send();
+        return ['ok' => true];
+    } catch (MailerException $e) {
+        return ['ok' => false, 'error' => $e->getMessage()];
+    }
+}
+
+/**
+ * Send HTML email via SMTP (Hostinger / Titan / Google).
  *
  * @return array{ok: bool, error?: string}
  */
@@ -179,37 +335,33 @@ function syncpediaSendHtmlEmailViaSmtp(
         return ['ok' => false, 'error' => 'SMTP credentials missing for ' . $account];
     }
 
-    $mail = new PHPMailer(true);
-    try {
-        $mail->isSMTP();
-        $mail->Host = syncpediaSmtpHost();
-        $mail->SMTPAuth = true;
-        $mail->Username = $creds['user'];
-        $mail->Password = $creds['pass'];
-        $mail->Port = syncpediaSmtpPort();
-        $enc = syncpediaSmtpEncryption();
-        if ($enc === 'ssl') {
-            $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-        } elseif ($enc === 'tls') {
-            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        } else {
-            $mail->SMTPSecure = '';
-            $mail->SMTPAutoTLS = false;
+    $lastError = '';
+    foreach (syncpediaSmtpTransportProfiles() as $profile) {
+        $res = syncpediaSmtpSendOnce(
+            $to,
+            $subject,
+            $htmlBody,
+            $fromAddr,
+            $fromDisplayName,
+            $creds,
+            $profile['host'],
+            (int) $profile['port'],
+            $profile['enc'],
+        );
+        if ($res['ok']) {
+            return $res;
         }
-        $mail->CharSet = PHPMailer::CHARSET_UTF8;
-        $disp = trim($fromDisplayName) !== '' ? trim($fromDisplayName) : 'Syncpedia';
-        $mail->setFrom($fromAddr, $disp);
-        $mail->addReplyTo($fromAddr, $disp);
-        $mail->addAddress($to);
-        $mail->isHTML(true);
-        $mail->Subject = $subject;
-        $mail->Body = $htmlBody;
-        $mail->AltBody = trim(strip_tags($htmlBody));
-        $mail->send();
-        return ['ok' => true];
-    } catch (MailerException $e) {
-        return ['ok' => false, 'error' => 'SMTP send failed: ' . $e->getMessage()];
+        $lastError = (string) ($res['error'] ?? 'SMTP send failed');
+        // Only try alternate hosts/ports when auth/connect looks wrong
+        if (!preg_match('/authenticat|login|credentials|password|535|534|530/i', $lastError)) {
+            break;
+        }
     }
+
+    if (preg_match('/authenticat|login|credentials|password|535|534|530/i', $lastError)) {
+        return ['ok' => false, 'error' => syncpediaSmtpAuthFailedMessage($creds['user'])];
+    }
+    return ['ok' => false, 'error' => 'SMTP send failed: ' . $lastError];
 }
 
 /**
@@ -248,67 +400,34 @@ function syncpediaSendHtmlEmailViaSmtpWithOptions(
         return ['ok' => false, 'error' => 'SMTP credentials missing for ' . $account];
     }
 
-    $parseList = static function (string $raw): array {
-        $out = [];
-        foreach (preg_split('/[,;]/', $raw) as $part) {
-            $addr = trim($part);
-            if ($addr === '') {
-                continue;
-            }
-            if (filter_var($addr, FILTER_VALIDATE_EMAIL)) {
-                $out[] = $addr;
-            }
+    $lastError = '';
+    foreach (syncpediaSmtpTransportProfiles() as $profile) {
+        $res = syncpediaSmtpSendOnce(
+            $to,
+            $subject,
+            $htmlBody,
+            $fromAddr,
+            $fromDisplayName,
+            $creds,
+            $profile['host'],
+            (int) $profile['port'],
+            $profile['enc'],
+            $cc,
+            $bcc,
+            $attachments,
+            $altBody,
+        );
+        if ($res['ok']) {
+            return $res;
         }
-        return $out;
-    };
-
-    $mail = new PHPMailer(true);
-    try {
-        $mail->isSMTP();
-        $mail->Host = syncpediaSmtpHost();
-        $mail->SMTPAuth = true;
-        $mail->Username = $creds['user'];
-        $mail->Password = $creds['pass'];
-        $mail->Port = syncpediaSmtpPort();
-        $enc = syncpediaSmtpEncryption();
-        if ($enc === 'ssl') {
-            $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
-        } elseif ($enc === 'tls') {
-            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        } else {
-            $mail->SMTPSecure = '';
-            $mail->SMTPAutoTLS = false;
+        $lastError = (string) ($res['error'] ?? 'SMTP send failed');
+        if (!preg_match('/authenticat|login|credentials|password|535|534|530/i', $lastError)) {
+            break;
         }
-        $mail->CharSet = PHPMailer::CHARSET_UTF8;
-        $disp = trim($fromDisplayName) !== '' ? trim($fromDisplayName) : 'Syncpedia';
-        $mail->setFrom($fromAddr, $disp);
-        $mail->addReplyTo($fromAddr, $disp);
-        $mail->addAddress($to);
-        foreach ($parseList($cc) as $ccAddr) {
-            $mail->addCC($ccAddr);
-        }
-        foreach ($parseList($bcc) as $bccAddr) {
-            $mail->addBCC($bccAddr);
-        }
-        foreach ($attachments as $file) {
-            $path = trim((string) ($file['path'] ?? ''));
-            if ($path === '' || !is_file($path) || !is_readable($path)) {
-                continue;
-            }
-            $name = trim((string) ($file['name'] ?? ''));
-            if ($name !== '') {
-                $mail->addAttachment($path, $name);
-            } else {
-                $mail->addAttachment($path);
-            }
-        }
-        $mail->isHTML(true);
-        $mail->Subject = $subject;
-        $mail->Body = $htmlBody;
-        $mail->AltBody = $altBody !== '' ? $altBody : trim(strip_tags($htmlBody));
-        $mail->send();
-        return ['ok' => true];
-    } catch (MailerException $e) {
-        return ['ok' => false, 'error' => 'SMTP send failed: ' . $e->getMessage()];
     }
+
+    if (preg_match('/authenticat|login|credentials|password|535|534|530/i', $lastError)) {
+        return ['ok' => false, 'error' => syncpediaSmtpAuthFailedMessage($creds['user'])];
+    }
+    return ['ok' => false, 'error' => 'SMTP send failed: ' . $lastError];
 }

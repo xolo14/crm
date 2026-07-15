@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Copy, KeyRound, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
+import { isL3AdminRole, isMarketingFamilyRole, normalizeAppRole } from "@/lib/roleUtils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -31,6 +34,13 @@ function parseMeta(raw: LeadForm["meta_json"]): Record<string, unknown> {
 
 export default function FormApiIntegrationsPage() {
   const { toast } = useToast();
+  const { role } = useAuth();
+  const normalizedRole = normalizeAppRole(role);
+  const canAccess =
+    normalizedRole === "super_admin" ||
+    normalizedRole === "admin" ||
+    isL3AdminRole(normalizedRole) ||
+    isMarketingFamilyRole(normalizedRole);
   const [forms, setForms] = useState<LeadForm[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyFormId, setBusyFormId] = useState<string>("");
@@ -52,8 +62,25 @@ export default function FormApiIntegrationsPage() {
   }
 
   useEffect(() => {
+    if (!canAccess) return;
     void loadForms();
-  }, []);
+  }, [canAccess]);
+
+  if (!canAccess) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Form API integrations</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          You do not have access to manage form API keys.{" "}
+          <Link to="/form-management" className="text-primary underline">
+            Back to Form Management
+          </Link>
+        </CardContent>
+      </Card>
+    );
+  }
 
   async function copy(text: string, label: string) {
     try {

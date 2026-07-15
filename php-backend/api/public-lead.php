@@ -12,10 +12,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
 
 require_once __DIR__ . '/helpers.php';
 
+syncpediaSecurityHeaders();
+
 $db = (new Database())->getConnection();
 retireGlobalBuiltinLeadForms($db);
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    syncpediaRateLimitConsume('public_lead_get', 120, 900);
     $slug = trim((string) ($_GET['form'] ?? ''));
     if ($slug === '') {
         respond(['data' => null]);
@@ -56,6 +59,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     respond(['error' => 'Method not allowed'], 405);
 }
+
+syncpediaRateLimitConsume('public_lead_post', 20, 3600);
 
 ensureLeadsResumeColumn($db);
 ensureLeadsSourceColumnVarchar($db);
@@ -172,13 +177,9 @@ if (is_array($formRow)) {
     $requiresKey = !empty($meta['external_api_enabled']);
     $storedHash = trim((string) ($meta['external_api_key_hash'] ?? ''));
     if ($requiresKey && $storedHash !== '') {
-        $providedApiKey = trim((string) (
-            $input['api_key']
-            ?? $_GET['api_key']
-            ?? ($_SERVER['HTTP_X_FORM_API_KEY'] ?? '')
-        ));
+        $providedApiKey = trim((string) ($_SERVER['HTTP_X_FORM_API_KEY'] ?? ''));
         if ($providedApiKey === '') {
-            respond(['error' => 'Form API key is required'], 401);
+            respond(['error' => 'Form API key required in X-Form-Api-Key header'], 401);
         }
         if (!formExternalApiKeyVerify($providedApiKey, $storedHash)) {
             respond(['error' => 'Invalid form API key'], 401);
@@ -317,6 +318,19 @@ if ($routesToHr) {
             $hrLeadOrgId,
         ]);
         $hrLeadId = (int) $db->lastInsertId();
+        if (is_array($formRow)) {
+            require_once __DIR__ . '/form_campaigns.php';
+            try {
+                formCampaignAutoSendForNewLead($db, $formRow, [
+                    'id' => $hrLeadId,
+                    'name' => $name,
+                    'email' => $email,
+                    'phone' => $hrPhone,
+                ]);
+            } catch (Throwable $e) {
+                error_log('[form campaign auto hr] ' . $e->getMessage());
+            }
+        }
         respond([
             'success' => true,
             'hr_lead_id' => $hrLeadId,
@@ -351,6 +365,20 @@ try {
         $orgId !== '' ? $orgId : null,
         $createdBy !== '' ? $createdBy : null,
     ]);
+
+    if (is_array($formRow)) {
+        require_once __DIR__ . '/form_campaigns.php';
+        try {
+            formCampaignAutoSendForNewLead($db, $formRow, [
+                'id' => $id,
+                'name' => $name,
+                'email' => $email,
+                'phone' => $phone,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[form campaign auto] ' . $e->getMessage());
+        }
+    }
 
     respond(['success' => true, 'lead_id' => $id, 'destination' => 'leads']);
 } catch (PDOException $e) {

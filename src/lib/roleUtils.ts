@@ -3,7 +3,7 @@
  *   L4 — super_admin
  *   L3 — admin / org admin
  *   L2 — manager
- *   L1 — sales_representative, hr, marketing, sales_marketing
+ *   L1 — sales_representative, hr, marketing
  */
 
 /** Normalize role key; legacy aliases map to current roles. */
@@ -27,7 +27,6 @@ export const ROLE_HIERARCHY_LEVELS: Record<string, number> = {
   sales_representative: 1,
   hr: 1,
   marketing: 1,
-  sales_marketing: 1,
   trainer: 1,
   finance: 1,
   student: 0,
@@ -42,14 +41,12 @@ export const TEAM_ROLE_GROUPS = [
   { key: "sales_representative", label: "Sales Rep", level: 1 },
   { key: "hr", label: "HR", level: 1 },
   { key: "marketing", label: "Marketing", level: 1 },
-  { key: "sales_marketing", label: "Sales Marketing", level: 1 },
 ] as const;
 
 export const L1_OPERATIONAL_ROLES = [
   "sales_representative",
   "hr",
   "marketing",
-  "sales_marketing",
 ] as const;
 
 export const L3_ADMIN_ROLES = ["admin", "org"] as const;
@@ -78,10 +75,9 @@ export function isSalesRepRole(role?: string | null): boolean {
 
 /** Marketing-family roles (L1) — shared lead/form visibility patterns. */
 export function isMarketingFamilyRole(role?: string | null): boolean {
-  const r = normalizeAppRole(role);
-  return r === "marketing" || r === "sales_marketing";
+  return normalizeAppRole(role) === "marketing";
 }
 
 export function isSalesMarketingRole(role?: string | null): boolean {
-  return normalizeAppRole(role) === "sales_marketing";
+  return false;
 }

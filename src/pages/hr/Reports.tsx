@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
+import * as perms from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -18,6 +20,8 @@ function downloadCsv(filename: string, rows: any[]) {
 }
 
 export default function HRReports() {
+  const { role } = useAuth();
+  const hasExport = perms.canExport(role);
   const [tab, setTab] = useState("lead");
   const [range, setRange] = useState("month");
   const { data } = useQuery({ queryKey: ["hr", "reports", range], queryFn: () => api.hr.reports(range) });
@@ -35,7 +39,9 @@ export default function HRReports() {
           <select className="rounded-md border px-2" value={range} onChange={(e) => setRange(e.target.value)}>
             <option value="week">Week</option><option value="month">Month</option><option value="year">Year</option>
           </select>
-          <Button variant="outline" onClick={() => downloadCsv(tab === "lead" ? "lead-report.csv" : "task-report.csv", tab === "lead" ? leadData : taskData)}>Export CSV</Button>
+          {hasExport && (
+            <Button variant="outline" onClick={() => downloadCsv(tab === "lead" ? "lead-report.csv" : "task-report.csv", tab === "lead" ? leadData : taskData)}>Export CSV</Button>
+          )}
         </div>
       </div>
       <Tabs value={tab} onValueChange={setTab}>

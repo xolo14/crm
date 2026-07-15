@@ -30,11 +30,26 @@ export interface PlatformTemplateLibraryItem {
   is_active?: number | boolean;
 }
 
+export interface EmbeddedSignupLaunchConfig {
+  meta_app_id: string;
+  embedded_signup_config_id: string;
+  embedded_signup_url: string;
+  solution_name: string;
+  partner_active: boolean;
+  ready: boolean;
+  missing: string[];
+  graph_api_version: string;
+  embedded_signup_version?: string;
+}
+
 export interface MetaPartnerConfig {
   id?: string;
   partner_status: PartnerStatus | string;
   business_verification: BusinessVerification | string;
   meta_app_id?: string;
+  meta_app_secret?: string;
+  meta_app_secret_masked?: string;
+  meta_app_secret_set?: boolean;
   meta_partner_business_id?: string;
   master_waba_id?: string;
   system_user_token?: string;
@@ -79,9 +94,6 @@ export interface OrgWhatsappConfig {
   connection_status?: string;
   is_active: number | boolean;
 }
-
-/** @deprecated Use OrgWhatsappConfig — each org has its own Meta API */
-export type PlatformWhatsappConfig = OrgWhatsappConfig;
 
 export interface OrgWhatsappOverview {
   id: string;
@@ -158,9 +170,40 @@ export interface CommWhatsappMessage {
   recipient_name?: string;
   message_body?: string;
   status: string;
+  error_message?: string | null;
   sender_name?: string;
   created_at?: string;
   sent_at?: string;
+  direction?: 'inbound' | 'outbound' | string;
+  conversation_id?: string | null;
+  sender_phone?: string | null;
+  message_type?: string;
+  meta_timestamp?: string | null;
+}
+
+export interface WaConversation {
+  id: string;
+  org_id: string;
+  lead_id?: string | null;
+  contact_phone: string;
+  contact_name?: string | null;
+  started_by?: string | null;
+  assigned_to?: string | null;
+  assigned_by?: string | null;
+  assigned_at?: string | null;
+  started_by_name?: string | null;
+  assigned_to_name?: string | null;
+  assigned_by_name?: string | null;
+  last_message_at?: string | null;
+  last_message_preview?: string | null;
+  unread_count?: number;
+}
+
+export interface WaAssignableMember {
+  id: string;
+  full_name: string;
+  email?: string;
+  role?: string;
 }
 
 export interface DialerContact {
@@ -179,6 +222,4 @@ export interface HubSummary {
   org_id?: string;
   meta_partner_active?: boolean;
   official_templates_available?: number;
-  /** @deprecated Use org_whatsapp */
-  platform_whatsapp?: Pick<OrgWhatsappConfig, 'provider' | 'business_phone' | 'is_active'> | null;
 }

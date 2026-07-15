@@ -83,7 +83,7 @@ export function GeneralSettings() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Date & Time" description="Choose your preferred date and time formats.">
+      <SettingsSection title="Date & Time" description="Display preferences (activity times use India Standard Time / IST across the CRM).">
         <SettingsRow label="Date Format">
           <SettingsSelect
             value={dateFormat}

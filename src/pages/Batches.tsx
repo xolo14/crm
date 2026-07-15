@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
+import * as perms from '@/lib/permissions';
 import { Plus, Download, MoreHorizontal, Pencil, Trash2, Loader2 } from 'lucide-react';
 import {
   batchScheduleStatus,
@@ -91,6 +92,7 @@ export default function Batches() {
   const canCreate = CAN_CREATE_ROLES.includes(currentRole);
   const canEditAll = CAN_EDIT_ALL_ROLES.includes(currentRole);
   const canDelete = CAN_DELETE_ROLES.includes(currentRole);
+  const hasExport = perms.canExport(role);
   const isReadOnlyViewer = (BATCH_READ_ONLY_ROLES as readonly string[]).includes(currentRole);
 
   useEffect(() => {
@@ -261,7 +263,7 @@ export default function Batches() {
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {!isReadOnlyViewer && (
+          {hasExport && (
             <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExport}>
               <Download className="h-4 w-4" />
               {!isMobile && ' Export'}

@@ -23,11 +23,24 @@ class Database {
     }
 }
 
+/** Security headers for JSON API responses (static assets use root .htaccess). */
+function syncpediaSecurityHeaders(): void
+{
+    if (headers_sent()) {
+        return;
+    }
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+    header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+}
+
 function cors() {
     // Buffer output so stray notices/BOM from includes cannot break JSON responses.
     if (ob_get_level() === 0) {
         ob_start();
     }
+    syncpediaSecurityHeaders();
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
     header('Access-Control-Allow-Origin: ' . syncpediaCorsOrigin());
@@ -131,6 +144,29 @@ function verifyToken() {
     }
     if ($data['exp'] < time()) {
         respond(['error' => 'Token expired'], 401);
+    }
+
+    // Reject deactivated accounts even if JWT is still within expiry.
+    $uid = trim((string) ($data['user_id'] ?? ''));
+    if ($uid !== '') {
+        try {
+            $db = (new Database())->getConnection();
+            $st = $db->prepare('SELECT is_active, role, org_id FROM users WHERE id = ? LIMIT 1');
+            $st->execute([$uid]);
+            $row = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$row || !(int) ($row['is_active'] ?? 0)) {
+                respond(['error' => 'Account is deactivated'], 401);
+            }
+            // Prefer live role/org from DB over stale JWT claims.
+            if (isset($row['role']) && trim((string) $row['role']) !== '') {
+                $data['role'] = (string) $row['role'];
+            }
+            if (array_key_exists('org_id', $row)) {
+                $data['org_id'] = $row['org_id'];
+            }
+        } catch (Throwable $e) {
+            // If users table unavailable, keep JWT payload (bootstrap/migration edge).
+        }
     }
 
     return $data;
@@ -416,7 +452,7 @@ function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): ar
             return hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
         }
         if (hierarchyRoleUsesDownlineScope($tokenData)) {
-            return hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias);
+            return hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias, $db);
         }
         return ['sql' => '', 'params' => []];
     }
@@ -430,7 +466,7 @@ function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): ar
         return ['sql' => $sql . $l1['sql'], 'params' => array_merge($params, $l1['params'])];
     }
     if (hierarchyRoleUsesDownlineScope($tokenData)) {
-        $dl = hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias);
+        $dl = hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias, $db);
         return ['sql' => $sql . $dl['sql'], 'params' => array_merge($params, $dl['params'])];
     }
     return ['sql' => $sql, 'params' => $params];
@@ -493,10 +529,18 @@ function tenantTaskListScopeSql(PDO $db, array $tokenData): array
         $scope = hierarchyTaskListScopeSql(hierarchyGetVisibleUserIds($db, $tokenData));
         return ['sql' => $orgSql . $scope['sql'], 'params' => array_merge($orgParams, $scope['params'])];
     }
+    // L1 sales/marketing/hr: always see own assigned + created tasks.
+    // If org resolution failed, still show their rows (don't blank the whole list with 1=0).
     if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
+        if ($orgId) {
+            return [
+                'sql' => $orgSql . ' AND (assigned_to = ? OR created_by = ?)',
+                'params' => array_merge($orgParams, [$userId, $userId]),
+            ];
+        }
         return [
-            'sql' => $orgSql . ' AND (assigned_to = ? OR created_by = ?)',
-            'params' => array_merge($orgParams, [$userId, $userId]),
+            'sql' => ' AND (assigned_to = ? OR created_by = ?)',
+            'params' => [$userId, $userId],
         ];
     }
     return ['sql' => $orgSql, 'params' => $orgParams];
@@ -523,7 +567,7 @@ function tenantDailyReportsScopeSql(PDO $db, array $tokenData): array
     $sql = ' AND (dr.org_id = ? OR (dr.org_id IS NULL AND dr.user_id IN (SELECT id FROM users WHERE org_id = ?)))';
     $params = [$orgId, $orgId];
 
-    if (in_array($effRole, ['sales_representative', 'sales_marketing'], true)) {
+    if (in_array($effRole, ['sales_representative'], true)) {
         $sql .= ' AND dr.user_id = ?';
         $params[] = $userId;
     } elseif (hierarchyRoleUsesDownlineScope($tokenData)) {
@@ -798,6 +842,46 @@ function syncpediaNormalizeRoleKey(string $role): string
     return $r;
 }
 
+/**
+ * Legacy column may exist from earlier builds. We never store or return plaintext passwords.
+ * Clear any residual value when passwords change.
+ */
+function syncpediaEnsureLoginPasswordColumn(PDO $db): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'users', 'login_password')) {
+            // Do not create the column anymore — plaintext storage is retired.
+            $done = true;
+            return;
+        }
+    } catch (Throwable $e) {
+    }
+    $done = true;
+}
+
+/** Clear residual plaintext login_password if the legacy column exists. Never stores plaintext. */
+function syncpediaStoreUserLoginPassword(PDO $db, string $userId, ?string $plainPassword): void
+{
+    $uid = trim($userId);
+    if ($uid === '') {
+        return;
+    }
+    syncpediaEnsureLoginPasswordColumn($db);
+    if (!syncpediaColumnExists($db, 'users', 'login_password')) {
+        return;
+    }
+    try {
+        // Always null — plaintext recovery removed for security.
+        $db->prepare('UPDATE users SET login_password = NULL WHERE id = ?')->execute([$uid]);
+    } catch (Throwable $e) {
+    }
+    unset($plainPassword);
+}
+
 /** Higher number = more authority: L4 super_admin, L3 admin/org, L2 manager, L1 field roles. */
 function syncpediaRoleLevel(string $role): int
 {
@@ -810,7 +894,6 @@ function syncpediaRoleLevel(string $role): int
         'sales_representative' => 1,
         'hr' => 1,
         'marketing' => 1,
-        'sales_marketing' => 1,
         'trainer' => 1,
         'finance' => 1,
         'student' => 0,
@@ -820,7 +903,7 @@ function syncpediaRoleLevel(string $role): int
 
 function syncpediaL1AssignableRoles(): array
 {
-    return ['sales_representative', 'hr', 'marketing', 'sales_marketing'];
+    return ['sales_representative', 'hr', 'marketing'];
 }
 
 /**
@@ -918,21 +1001,37 @@ function hierarchyGetVisibleUserIds(PDO $db, array $tokenData): array
 }
 
 /**
- * Downline lead filter: assigned_to or referral_code from visible user ids.
+ * Downline lead filter: assigned_to, created_by, or referral_code from visible user ids.
  *
  * @param string[] $visibleIds
  * @return array{sql: string, params: array}
  */
-function hierarchyLeadDownlineScopeSql(array $visibleIds, string $alias = ''): array
+function hierarchyLeadDownlineScopeSql(array $visibleIds, string $alias = '', ?PDO $db = null): array
 {
     if (empty($visibleIds)) {
         return ['sql' => ' AND 1=0', 'params' => []];
     }
     $col = $alias !== '' ? "{$alias}." : '';
     $in = implode(',', array_fill(0, count($visibleIds), '?'));
+    $parts = [
+        "{$col}assigned_to IN ({$in})",
+        "{$col}referred_by IN (SELECT referral_code FROM users WHERE id IN ({$in}))",
+    ];
+    $params = array_merge($visibleIds, $visibleIds);
+    // created_by keeps manager-created leads visible when assigned outside the tree
+    if ($db instanceof PDO) {
+        try {
+            ensureLeadsCreatedByColumn($db);
+        } catch (Throwable $e) {
+        }
+        if (syncpediaColumnExists($db, 'leads', 'created_by')) {
+            $parts[] = "{$col}created_by IN ({$in})";
+            $params = array_merge($params, $visibleIds);
+        }
+    }
     return [
-        'sql' => " AND ({$col}assigned_to IN ({$in}) OR {$col}referred_by IN (SELECT referral_code FROM users WHERE id IN ({$in})))",
-        'params' => array_merge($visibleIds, $visibleIds),
+        'sql' => ' AND (' . implode(' OR ', $parts) . ')',
+        'params' => $params,
     ];
 }
 
@@ -1068,7 +1167,7 @@ function trashRowVisibleToDownline(array $row, array $visibleIds): bool
 function hierarchyRoleUsesL1OwnLeadsScope(array $tokenData): bool
 {
     $r = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    return in_array($r, ['sales_representative', 'sales_marketing', 'marketing', 'hr'], true);
+    return in_array($r, ['sales_representative', 'marketing', 'hr'], true);
 }
 
 /**
@@ -1229,6 +1328,9 @@ function syncpediaSupportMailAddress(): string {
     $e = getenv('SYNCPIEDIA_MAIL_FROM');
     if ($e !== false && trim($e) !== '') {
         return trim($e);
+    }
+    if (defined('SMTP_SUPPORT_USER') && trim((string) SMTP_SUPPORT_USER) !== '') {
+        return strtolower(trim((string) SMTP_SUPPORT_USER));
     }
     return 'support@syncpedia.in';
 }
@@ -1530,7 +1632,6 @@ function syncpediaTeamWelcomeRoleLabel(string $roleKey): string {
         'manager' => 'Manager',
         'sales_representative' => 'Sales Rep',
         'marketing' => 'Marketing',
-        'sales_marketing' => 'Sales Marketing',
         'hr' => 'HR',
         'trainer' => 'Trainer',
         'finance' => 'Finance',
@@ -1619,17 +1720,43 @@ function syncpediaBuildPasswordResetOtpEmailHtml(string $fullName, string $otp):
 /**
  * @return array{email_sent: bool, email_error: string|null, from: string}
  */
+/**
+ * Password-reset OTP — SMTP only (no PHP mail() fallback; that often returns true without delivery).
+ *
+ * @return array{email_sent: bool, email_error: ?string, from: string}
+ */
 function syncpediaSendPasswordResetOtpEmail(string $toEmail, string $fullName, string $otp): array
 {
-    $res = syncpediaSendHtmlEmail($toEmail, 'Your Syncpedia CRM password reset code', syncpediaBuildPasswordResetOtpEmailHtml($fullName, $otp));
+    $from = syncpediaSupportMailAddress();
+    if (!syncpediaSmtpIsReady()) {
+        return [
+            'email_sent' => false,
+            'email_error' => syncpediaSmtpNotReadyReason(),
+            'from' => $from,
+        ];
+    }
+    $name = getenv('SYNCPIEDIA_MAIL_FROM_NAME');
+    $disp = ($name !== false && trim($name) !== '') ? trim($name) : 'Syncpedia';
+    $res = syncpediaSendHtmlEmailViaSmtp(
+        $toEmail,
+        'Your Syncpedia CRM password reset code',
+        syncpediaBuildPasswordResetOtpEmailHtml($fullName, $otp),
+        $from,
+        $disp,
+    );
     $ok = ($res['ok'] ?? false) === true;
     return [
         'email_sent' => $ok,
         'email_error' => $ok ? null : ($res['error'] ?? 'Email send failed'),
-        'from' => syncpediaSupportMailAddress(),
+        'from' => $from,
     ];
 }
 
+/**
+ * Team welcome credentials — SMTP only (same transport as password-reset OTP).
+ *
+ * @return array{email_sent: bool, email_error: ?string, from: string}
+ */
 function syncpediaSendMemberWelcomeEmail(
     string $fullName,
     string $loginEmail,
@@ -1637,6 +1764,14 @@ function syncpediaSendMemberWelcomeEmail(
     string $roleKey,
     ?string $phone = null,
 ): array {
+    $from = syncpediaSupportMailAddress();
+    if (!syncpediaSmtpIsReady()) {
+        return [
+            'email_sent' => false,
+            'email_error' => syncpediaSmtpNotReadyReason(),
+            'from' => $from,
+        ];
+    }
     $phoneStr = is_string($phone) ? trim($phone) : '';
     $html = syncpediaBuildTeamMemberWelcomeEmailHtml(
         $fullName,
@@ -1645,12 +1780,20 @@ function syncpediaSendMemberWelcomeEmail(
         $roleKey,
         $phoneStr !== '' ? $phoneStr : null,
     );
-    $res = syncpediaSendHtmlEmail($loginEmail, 'Your Syncpedia CRM login credentials', $html);
+    $name = getenv('SYNCPIEDIA_MAIL_FROM_NAME');
+    $disp = ($name !== false && trim($name) !== '') ? trim($name) : 'Syncpedia';
+    $res = syncpediaSendHtmlEmailViaSmtp(
+        $loginEmail,
+        'Your Syncpedia CRM login credentials',
+        $html,
+        $from,
+        $disp,
+    );
     $ok = ($res['ok'] ?? false) === true;
     return [
         'email_sent' => $ok,
         'email_error' => $ok ? null : ($res['error'] ?? 'Email send failed'),
-        'from' => syncpediaSupportMailAddress(),
+        'from' => $from,
     ];
 }
 
@@ -2114,13 +2257,17 @@ function userCanAccessStudentRow(PDO $db, array $tokenData, string $userId, stri
     return false;
 }
 
-/** Same idea as editing a lead from CRM: rep sees assigned/referred; org roles same-org. */
+/** Same idea as editing a lead from CRM: rep sees assigned/referred; admin/org same-org; manager = list scope. */
 function userCanUpdateLeadForCallLog(PDO $db, array $tokenData, string $userId, string $rawRole, array $leadRow): bool {
+    $rawRole = syncpediaNormalizeRoleKey($rawRole);
     if ($rawRole === 'super_admin') {
         return true;
     }
-    if ($rawRole === 'sales_representative' || $rawRole === 'sales_executive') {
+    if ($rawRole === 'sales_representative' || hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
         if (($leadRow['assigned_to'] ?? '') === $userId) {
+            return true;
+        }
+        if ((string) ($leadRow['created_by'] ?? '') === $userId) {
             return true;
         }
         try {
@@ -2132,11 +2279,22 @@ function userCanUpdateLeadForCallLog(PDO $db, array $tokenData, string $userId, 
             return false;
         }
     }
-    if (in_array($rawRole, ['admin', 'org', 'manager'], true)) {
+    if (in_array($rawRole, ['admin', 'org'], true)) {
         $orgId = userEffectiveOrgId($db, $tokenData, $userId);
         $leadOrg = trim((string) ($leadRow['org_id'] ?? ''));
 
         return $orgId !== null && $orgId !== '' && $leadOrg === $orgId;
+    }
+    if ($rawRole === 'manager') {
+        $leadId = trim((string) ($leadRow['id'] ?? ''));
+        if ($leadId === '') {
+            return false;
+        }
+        $scope = tenantLeadsScopeSql($db, $tokenData, 'l');
+        $st = $db->prepare("SELECT l.id FROM leads l WHERE l.id = ?{$scope['sql']} LIMIT 1");
+        $st->execute(array_merge([$leadId], $scope['params']));
+
+        return (bool) $st->fetch(PDO::FETCH_ASSOC);
     }
 
     return false;
@@ -2254,6 +2412,208 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
     return null;
 }
 
+/** Create the audit_log table if missing (best-effort, never fatal). */
+function ensureAuditLogTable(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        $db->exec(
+            'CREATE TABLE IF NOT EXISTS audit_log (
+                id CHAR(36) PRIMARY KEY,
+                org_id CHAR(36) NULL,
+                user_id CHAR(36) NULL,
+                user_name VARCHAR(255) NULL,
+                action VARCHAR(50) NOT NULL,
+                entity_type VARCHAR(50) NOT NULL,
+                entity_id VARCHAR(100) NULL,
+                details TEXT NULL,
+                ip_address VARCHAR(64) NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_audit_org_created (org_id, created_at),
+                INDEX idx_audit_user (user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4',
+        );
+    } catch (Throwable $ignored) {
+    }
+    $done = true;
+}
+
+/**
+ * Record a real audit trail entry. Never throws — logging must not break the primary action.
+ *
+ * @param array<string,mixed> $tokenData
+ */
+function syncpediaAuditLog(PDO $db, array $tokenData, string $action, string $entityType, ?string $entityId, string $details = ''): void {
+    try {
+        ensureAuditLogTable($db);
+        $ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? null;
+        if (is_string($ip) && strpos($ip, ',') !== false) {
+            $ip = trim(explode(',', $ip)[0]);
+        }
+        $userId = $tokenData['user_id'] ?? null;
+        $userName = null;
+        if ($userId) {
+            try {
+                $u = $db->prepare('SELECT full_name FROM users WHERE id = ? LIMIT 1');
+                $u->execute([$userId]);
+                $userName = $u->fetchColumn() ?: null;
+            } catch (Throwable $ignored) {
+            }
+        }
+        $orgId = $tokenData['org_id'] ?? null;
+        $ins = $db->prepare(
+            'INSERT INTO audit_log (id, org_id, user_id, user_name, action, entity_type, entity_id, details, ip_address)
+             VALUES (?,?,?,?,?,?,?,?,?)',
+        );
+        $ins->execute([
+            generateUUID(),
+            $orgId,
+            $userId,
+            $userName,
+            $action,
+            $entityType,
+            $entityId,
+            $details !== '' ? $details : null,
+            $ip,
+        ]);
+    } catch (Throwable $ignored) {
+        // Audit logging is best-effort; never let it break the calling request.
+    }
+}
+
+/** Ensure users.page_access_json exists (per-member page toggles). */
+function ensureUsersPageAccessColumn(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'users', 'page_access_json')) {
+            $db->exec('ALTER TABLE users ADD COLUMN page_access_json LONGTEXT DEFAULT NULL');
+        }
+    } catch (Throwable $ignored) {
+    }
+    $done = true;
+}
+
+/**
+ * @return array{payments: bool, offer_letters: bool}
+ */
+function userDecodePageAccess(?string $json): array {
+    $defaults = ['payments' => false, 'offer_letters' => false];
+    if (!is_string($json) || trim($json) === '') {
+        return $defaults;
+    }
+    $decoded = json_decode($json, true);
+    if (!is_array($decoded)) {
+        return $defaults;
+    }
+    return [
+        'payments' => !empty($decoded['payments']),
+        'offer_letters' => !empty($decoded['offer_letters']),
+    ];
+}
+
+/** @param array<string,mixed> $user */
+function userAttachPageAccess(array &$user): void {
+    $user['page_access'] = userDecodePageAccess(isset($user['page_access_json']) ? (string) $user['page_access_json'] : null);
+    unset($user['page_access_json']);
+}
+
+/**
+ * Normalize page_access from Team create/update. Defaults all OFF.
+ * Only relevant flags for the target role are stored as true; others forced off.
+ *
+ * @param mixed $input
+ * @return array{payments: bool, offer_letters: bool}
+ */
+function userNormalizePageAccessInput($input, string $memberRole): array {
+    $access = ['payments' => false, 'offer_letters' => false];
+    if (is_array($input)) {
+        $access['payments'] = !empty($input['payments']);
+        $access['offer_letters'] = !empty($input['offer_letters']);
+    }
+    $role = syncpediaNormalizeRoleKey($memberRole);
+    if ($role !== 'sales_representative') {
+        $access['payments'] = false;
+    }
+    if ($role !== 'hr') {
+        $access['offer_letters'] = false;
+    }
+    return $access;
+}
+
+function userSavePageAccess(PDO $db, string $userId, array $access): void {
+    ensureUsersPageAccessColumn($db);
+    $json = json_encode([
+        'payments' => !empty($access['payments']),
+        'offer_letters' => !empty($access['offer_letters']),
+    ], JSON_UNESCAPED_UNICODE);
+    $db->prepare('UPDATE users SET page_access_json = ? WHERE id = ?')->execute([$json, $userId]);
+}
+
+/** True when this user may open the Payments (payment links) page. */
+function userCanAccessPaymentsPage(array $tokenData, ?array $userRow = null): bool {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ($userRow['role'] ?? '')));
+    if (in_array($role, ['super_admin', 'admin', 'org', 'finance', 'manager'], true)) {
+        return true;
+    }
+    if ($role !== 'sales_representative') {
+        return false;
+    }
+    $access = null;
+    if (is_array($userRow)) {
+        $access = isset($userRow['page_access']) && is_array($userRow['page_access'])
+            ? $userRow['page_access']
+            : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
+    }
+    return !empty($access['payments']);
+}
+
+/** True when this user may open Offer Letters (admins/managers always; HR when toggled on). */
+function userCanAccessOfferLettersPage(array $tokenData, ?array $userRow = null, $org = null): bool {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ($userRow['role'] ?? '')));
+    if (in_array($role, ['super_admin', 'admin', 'manager'], true)) {
+        return true;
+    }
+    if ($role !== 'hr') {
+        return false;
+    }
+    $access = null;
+    if (is_array($userRow)) {
+        $access = isset($userRow['page_access']) && is_array($userRow['page_access'])
+            ? $userRow['page_access']
+            : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
+    }
+    return !empty($access['offer_letters']);
+}
+
+/** Ensure organizations.profile_json exists (company profile + data-retention settings storage). */
+function ensureOrganizationsProfileColumn(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'organizations', 'profile_json')) {
+            $db->exec('ALTER TABLE organizations ADD COLUMN profile_json LONGTEXT DEFAULT NULL');
+        }
+    } catch (Throwable $ignored) {
+    }
+    $done = true;
+}
+
+/** @return array<string,mixed> */
+function organizationsDecodeProfile(?string $json): array {
+    if (!is_string($json) || trim($json) === '') {
+        return [];
+    }
+    $decoded = json_decode($json, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
 /** Tables allowed for trash archive (whitelist). */
 function trashAllowedTables(): array {
     return [
@@ -2263,46 +2623,51 @@ function trashAllowedTables(): array {
 
 /**
  * Insert a full row snapshot into trash_items (used when row was loaded with permission checks).
+ *
+ * @throws RuntimeException when archive cannot be persisted (caller must abort hard delete)
  */
 function trashArchivePayload(PDO $db, string $entityType, array $row, array $tokenData): void {
     if (empty($row['id'])) {
-        return;
+        throw new RuntimeException('Trash archive failed: row has no id');
     }
+    $flags = JSON_UNESCAPED_UNICODE;
+    if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) {
+        $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
+    }
+    $json = json_encode($row, $flags);
+    if ($json === false) {
+        throw new RuntimeException('Trash archive failed: could not encode row payload');
+    }
+    $tid = generateUUID();
+    $orgId = $row['org_id'] ?? null;
+    $by = $tokenData['user_id'] ?? null;
     try {
-        $flags = JSON_UNESCAPED_UNICODE;
-        if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) {
-            $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
-        }
-        $json = json_encode($row, $flags);
-        if ($json === false) {
-            $json = '{}';
-        }
-        $tid = generateUUID();
-        $orgId = $row['org_id'] ?? null;
-        $by = $tokenData['user_id'] ?? null;
         $ins = $db->prepare('INSERT INTO trash_items (id, entity_type, entity_id, payload, org_id, deleted_by) VALUES (?,?,?,?,?,?)');
         $ins->execute([$tid, $entityType, (string) $row['id'], $json, $orgId, $by]);
-    } catch (Throwable $ignored) {
+    } catch (Throwable $e) {
+        throw new RuntimeException('Trash archive failed: ' . $e->getMessage(), 0, $e);
+    }
+    if ($ins->rowCount() < 1) {
+        throw new RuntimeException('Trash archive failed: insert returned no rows');
     }
 }
 
 /**
- * Snapshot a row into trash_items before hard DELETE. No-op if table unknown or trash_items missing.
+ * Snapshot a row into trash_items before hard DELETE.
+ *
+ * @throws RuntimeException when archive cannot be persisted (caller must abort hard delete)
  */
 function trashArchiveRow(PDO $db, string $entityType, string $table, string $id, array $tokenData): void {
     if (!in_array($table, trashAllowedTables(), true)) {
         return;
     }
-    try {
-        $sel = $db->prepare("SELECT * FROM `{$table}` WHERE id = ? LIMIT 1");
-        $sel->execute([$id]);
-        $row = $sel->fetch(PDO::FETCH_ASSOC);
-        if (!$row || empty($row['id'])) {
-            return;
-        }
-        trashArchivePayload($db, $entityType, $row, $tokenData);
-    } catch (Throwable $ignored) {
+    $sel = $db->prepare("SELECT * FROM `{$table}` WHERE id = ? LIMIT 1");
+    $sel->execute([$id]);
+    $row = $sel->fetch(PDO::FETCH_ASSOC);
+    if (!$row || empty($row['id'])) {
+        throw new RuntimeException('Trash archive failed: source row not found');
     }
+    trashArchivePayload($db, $entityType, $row, $tokenData);
 }
 
 /** ISO week in Asia/Kolkata: Monday 00:00:00 → Sunday 23:59:59 */
@@ -3005,6 +3370,21 @@ function ensureLeadsResumeColumn(PDO $db): void {
         $db->exec('ALTER TABLE leads ADD COLUMN resume_path VARCHAR(500) DEFAULT NULL AFTER notes');
     } catch (PDOException $e) {
         /* duplicate column / already exists */
+    }
+    $done = true;
+}
+
+/** Ensure leads.created_by exists so creators (e.g. managers) keep visibility on their rows. */
+function ensureLeadsCreatedByColumn(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'leads', 'created_by')) {
+            $db->exec('ALTER TABLE leads ADD COLUMN created_by CHAR(36) DEFAULT NULL');
+        }
+    } catch (Throwable $e) {
     }
     $done = true;
 }
@@ -3760,20 +4140,66 @@ function fresherEffectivePaymentPhaseKey(?array $trackerPayload, ?array $calenda
     return $trackerKey;
 }
 
-/** In-app notification for payment link events (webhook). */
-function paymentLinkNotifySalesperson(PDO $db, string $salespersonId, string $title, string $message, ?string $orgId = null): void {
+/**
+ * Best-effort in-app notification. Never throws (must not break the primary action).
+ */
+function syncpediaNotifyUser(
+    PDO $db,
+    string $userId,
+    string $title,
+    string $message,
+    string $type = 'info',
+    ?string $link = null,
+    ?string $orgId = null,
+): void {
+    $userId = trim($userId);
+    if ($userId === '') {
+        return;
+    }
     try {
         $nid = generateUUID();
         $stmt = $db->prepare('INSERT INTO notifications (id, user_id, title, message, type, link, org_id) VALUES (?, ?, ?, ?, ?, ?, ?)');
-        $stmt->execute([$nid, $salespersonId, $title, $message, 'payment_link', '/payments', $orgId]);
+        $stmt->execute([$nid, $userId, $title, $message, $type, $link, $orgId]);
     } catch (Throwable $e) {
         try {
             $nid = generateUUID();
             $stmt = $db->prepare('INSERT INTO notifications (id, user_id, title, message, type, link) VALUES (?, ?, ?, ?, ?, ?)');
-            $stmt->execute([$nid, $salespersonId, $title, $message, 'payment_link', '/payments']);
+            $stmt->execute([$nid, $userId, $title, $message, $type, $link]);
         } catch (Throwable $e2) {
         }
     }
+}
+
+/** Notify assignee when a task is created or reassigned to them. */
+function syncpediaNotifyTaskAssignee(
+    PDO $db,
+    string $assigneeId,
+    string $actorUserId,
+    string $taskTitle,
+    ?string $orgId = null,
+): void {
+    $assigneeId = trim($assigneeId);
+    if ($assigneeId === '' || $assigneeId === $actorUserId) {
+        return;
+    }
+    $actorName = 'A teammate';
+    try {
+        $st = $db->prepare('SELECT full_name FROM users WHERE id = ? LIMIT 1');
+        $st->execute([$actorUserId]);
+        $name = trim((string) ($st->fetchColumn() ?: ''));
+        if ($name !== '') {
+            $actorName = $name;
+        }
+    } catch (Throwable $e) {
+    }
+    $title = 'New task assigned';
+    $message = $actorName . ' assigned you a task: ' . (trim($taskTitle) !== '' ? trim($taskTitle) : 'Untitled');
+    syncpediaNotifyUser($db, $assigneeId, $title, $message, 'task_assigned', '/tasks', $orgId);
+}
+
+/** In-app notification for payment link events (webhook). */
+function paymentLinkNotifySalesperson(PDO $db, string $salespersonId, string $title, string $message, ?string $orgId = null): void {
+    syncpediaNotifyUser($db, $salespersonId, $title, $message, 'payment_link', '/payments', $orgId);
 }
 
 register_shutdown_function(static function () {

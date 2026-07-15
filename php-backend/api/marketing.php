@@ -13,13 +13,24 @@ function marketingNormRole(array $tokenData): string {
     return syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 }
 
-function marketingIsPrivileged(array $tokenData): bool {
+function marketingIsPrivileged(array $tokenData): bool
+{
     $r = marketingNormRole($tokenData);
-    return in_array($r, ['super_admin', 'admin', 'marketing', 'manager'], true);
+    return in_array($r, ['super_admin', 'admin', 'org', 'marketing', 'manager'], true);
+}
+
+function marketingGateRoles(): array
+{
+    return ['super_admin', 'admin', 'org', 'marketing', 'manager'];
+}
+
+function marketingAdminRoles(): array
+{
+    return ['super_admin', 'admin', 'org', 'manager'];
 }
 
 /** WHERE fragment + params: SuperAdmin master view → all rows; switched org / tenant → own org only */
-function marketingOrgScope(array $tokenData, string $alias): array {
+function marketingOrgScope(PDO $db, array $tokenData, string $alias): array {
     $role = marketingNormRole($tokenData);
     $prefix = $alias !== '' ? $alias . '.' : '';
     if ($role === 'super_admin') {
@@ -28,6 +39,10 @@ function marketingOrgScope(array $tokenData, string $alias): array {
             return ['1=1', []];
         }
         return ["{$prefix}org_id = ?", [$oid]];
+    }
+    $resolved = resolveCreatorOrgId($db, $tokenData);
+    if ($resolved !== null && $resolved !== '') {
+        return ["{$prefix}org_id = ?", [$resolved]];
     }
     $orgId = $tokenData['org_id'] ?? null;
     if ($orgId !== null && $orgId !== '') {
@@ -67,7 +82,7 @@ function marketingAssertRowInScope(PDO $db, string $table, string $id, array $to
     if ($role === 'super_admin') {
         return $row;
     }
-    $orgId = $tokenData['org_id'] ?? null;
+    $orgId = resolveCreatorOrgId($db, $tokenData);
     $rowOrg = $row['org_id'] ?? null;
     if ($orgId !== null && $orgId !== '') {
         if ($rowOrg !== $orgId) {
@@ -85,7 +100,7 @@ function marketingAssertRowInScope(PDO $db, string $table, string $id, array $to
 if ($action === 'members') {
     if ($method === 'GET') {
         if (marketingIsPrivileged($tokenData)) {
-            [$w, $params] = marketingOrgScope($tokenData, '');
+            [$w, $params] = marketingOrgScope($db, $tokenData, '');
             $stmt = $db->prepare("SELECT * FROM marketing_members WHERE ($w) ORDER BY created_at DESC");
             $stmt->execute($params);
             respond(['data' => $stmt->fetchAll()]);
@@ -99,7 +114,7 @@ if ($action === 'members') {
         respond(['data' => $stmt->fetchAll()]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
         $orgId = marketingResolveOrgId($tokenData, $input, $db);
@@ -113,7 +128,7 @@ if ($action === 'members') {
     if ($method === 'PUT') {
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         marketingAssertRowInScope($db, 'marketing_members', $id, $tokenData);
         $input = getInput();
         $fields = []; $params = [];
@@ -140,8 +155,8 @@ if ($action === 'members') {
 // ---- Email Drafts ----
 if ($action === 'email_drafts') {
     if ($method === 'GET') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
-        [$w, $params] = marketingOrgScope($tokenData, '');
+        requireRole($tokenData, marketingGateRoles());
+        [$w, $params] = marketingOrgScope($db, $tokenData, '');
         if ((!empty($_GET['mine']) && $_GET['mine'] !== '0') || marketingNormRole($tokenData) === 'marketing') {
             $w .= ' AND created_by = ?';
             $params[] = $userId;
@@ -151,7 +166,7 @@ if ($action === 'email_drafts') {
         respond(['data' => $stmt->fetchAll()]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
         $orgId = marketingResolveOrgId($tokenData, $input, $db);
@@ -160,7 +175,7 @@ if ($action === 'email_drafts') {
         respond(['id' => $id, 'message' => 'Draft created'], 201);
     }
     if ($method === 'PUT') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
         marketingAssertRowInScope($db, 'email_drafts', $id, $tokenData);
@@ -176,7 +191,7 @@ if ($action === 'email_drafts') {
         respond(['message' => 'Draft updated']);
     }
     if ($method === 'DELETE') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
         marketingAssertRowInScope($db, 'email_drafts', $id, $tokenData);
@@ -189,8 +204,8 @@ if ($action === 'email_drafts') {
 // ---- Email Campaigns ----
 if ($action === 'email_campaigns') {
     if ($method === 'GET') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
-        [$w, $params] = marketingOrgScope($tokenData, 'ec');
+        requireRole($tokenData, marketingGateRoles());
+        [$w, $params] = marketingOrgScope($db, $tokenData, 'ec');
         if ((!empty($_GET['mine']) && $_GET['mine'] !== '0') || marketingNormRole($tokenData) === 'marketing') {
             $w .= ' AND ec.created_by = ?';
             $params[] = $userId;
@@ -206,7 +221,7 @@ if ($action === 'email_campaigns') {
         respond(['data' => $stmt->fetchAll()]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
         $orgId = marketingResolveOrgId($tokenData, $input, $db);
@@ -224,7 +239,7 @@ if ($action === 'email_campaigns') {
         ]], 201);
     }
     if ($method === 'PUT') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
         marketingAssertRowInScope($db, 'email_campaigns', $id, $tokenData);
@@ -244,8 +259,8 @@ if ($action === 'email_campaigns') {
 // ---- WhatsApp Drafts ----
 if ($action === 'whatsapp_drafts') {
     if ($method === 'GET') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
-        [$w, $params] = marketingOrgScope($tokenData, '');
+        requireRole($tokenData, marketingGateRoles());
+        [$w, $params] = marketingOrgScope($db, $tokenData, '');
         if ((!empty($_GET['mine']) && $_GET['mine'] !== '0') || marketingNormRole($tokenData) === 'marketing') {
             $w .= ' AND created_by = ?';
             $params[] = $userId;
@@ -255,7 +270,7 @@ if ($action === 'whatsapp_drafts') {
         respond(['data' => $stmt->fetchAll()]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
         $orgId = marketingResolveOrgId($tokenData, $input, $db);
@@ -264,7 +279,7 @@ if ($action === 'whatsapp_drafts') {
         respond(['id' => $id, 'message' => 'Draft created'], 201);
     }
     if ($method === 'PUT') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
         marketingAssertRowInScope($db, 'whatsapp_drafts', $id, $tokenData);
@@ -280,7 +295,7 @@ if ($action === 'whatsapp_drafts') {
         respond(['message' => 'Draft updated']);
     }
     if ($method === 'DELETE') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
         marketingAssertRowInScope($db, 'whatsapp_drafts', $id, $tokenData);
@@ -293,8 +308,8 @@ if ($action === 'whatsapp_drafts') {
 // ---- WhatsApp Campaigns ----
 if ($action === 'whatsapp_campaigns') {
     if ($method === 'GET') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
-        [$w, $params] = marketingOrgScope($tokenData, 'wc');
+        requireRole($tokenData, marketingGateRoles());
+        [$w, $params] = marketingOrgScope($db, $tokenData, 'wc');
         if ((!empty($_GET['mine']) && $_GET['mine'] !== '0') || marketingNormRole($tokenData) === 'marketing') {
             $w .= ' AND wc.created_by = ?';
             $params[] = $userId;
@@ -310,7 +325,7 @@ if ($action === 'whatsapp_campaigns') {
         respond(['data' => $stmt->fetchAll()]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
         $orgId = marketingResolveOrgId($tokenData, $input, $db);
@@ -328,7 +343,7 @@ if ($action === 'whatsapp_campaigns') {
         ]], 201);
     }
     if ($method === 'PUT') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
         marketingAssertRowInScope($db, 'whatsapp_campaigns', $id, $tokenData);
@@ -348,7 +363,7 @@ if ($action === 'whatsapp_campaigns') {
 // ---- Email Sends ----
 if ($action === 'email_sends') {
     if ($method === 'GET') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $idsRaw = trim((string) ($_GET['campaign_ids'] ?? $_GET['campaign_id'] ?? ''));
         if ($idsRaw === '') {
             respond(['data' => []]);
@@ -357,7 +372,7 @@ if ($action === 'email_sends') {
         if ($idList === []) {
             respond(['data' => []]);
         }
-        [$w, $scopeParams] = marketingOrgScope($tokenData, 'ec');
+        [$w, $scopeParams] = marketingOrgScope($db, $tokenData, 'ec');
         $placeholders = implode(',', array_fill(0, count($idList), '?'));
         $stmt = $db->prepare("
             SELECT es.*
@@ -371,7 +386,7 @@ if ($action === 'email_sends') {
         respond(['data' => $stmt->fetchAll()]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $campaignId = trim((string) ($input['campaign_id'] ?? ''));
         $recipients = $input['recipients'] ?? [];
@@ -399,7 +414,7 @@ if ($action === 'email_sends') {
 // ---- WhatsApp Sends ----
 if ($action === 'whatsapp_sends') {
     if ($method === 'GET') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $idsRaw = trim((string) ($_GET['campaign_ids'] ?? $_GET['campaign_id'] ?? ''));
         if ($idsRaw === '') {
             respond(['data' => []]);
@@ -408,7 +423,7 @@ if ($action === 'whatsapp_sends') {
         if ($idList === []) {
             respond(['data' => []]);
         }
-        [$w, $scopeParams] = marketingOrgScope($tokenData, 'wc');
+        [$w, $scopeParams] = marketingOrgScope($db, $tokenData, 'wc');
         $placeholders = implode(',', array_fill(0, count($idList), '?'));
         $stmt = $db->prepare("
             SELECT ws.*
@@ -422,7 +437,7 @@ if ($action === 'whatsapp_sends') {
         respond(['data' => $stmt->fetchAll()]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['admin', 'super_admin', 'marketing', 'manager']);
+        requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $campaignId = trim((string) ($input['campaign_id'] ?? ''));
         $recipients = $input['recipients'] ?? [];
@@ -465,4 +480,39 @@ if ($action === 'upload_resume' && $method === 'POST') {
     respond(['success' => true, 'resume_path' => $path]);
 }
 
-respond(['error' => 'Invalid action. Use ?action=members|email_drafts|email_campaigns|email_sends|whatsapp_drafts|whatsapp_campaigns|whatsapp_sends|upload_resume'], 400);
+if ($action === 'n8n_webhook' && $method === 'POST') {
+    requireRole($tokenData, marketingGateRoles());
+    $input = getInput();
+    $channel = strtolower(trim((string) ($input['channel'] ?? '')));
+    $payload = $input['payload'] ?? null;
+    if (!is_array($payload)) {
+        respond(['error' => 'payload object is required'], 400);
+    }
+    $url = '';
+    if ($channel === 'whatsapp' && defined('N8N_WHATSAPP_WEBHOOK')) {
+        $url = trim((string) N8N_WHATSAPP_WEBHOOK);
+    } elseif ($channel === 'email' && defined('N8N_EMAIL_WEBHOOK')) {
+        $url = trim((string) N8N_EMAIL_WEBHOOK);
+    }
+    if ($url === '' || !preg_match('#^https?://#i', $url)) {
+        respond(['ok' => false, 'skipped' => true, 'message' => 'n8n webhook not configured on server'], 200);
+    }
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $body = curl_exec($ch);
+    $errno = curl_errno($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($errno) {
+        respond(['ok' => false, 'error' => 'Webhook request failed'], 502);
+    }
+    respond(['ok' => $status >= 200 && $status < 300, 'status' => $status, 'body' => is_string($body) ? substr($body, 0, 500) : '']);
+}
+
+respond(['error' => 'Invalid action. Use ?action=members|email_drafts|email_campaigns|email_sends|whatsapp_drafts|whatsapp_campaigns|whatsapp_sends|upload_resume|n8n_webhook'], 400);
