@@ -76,6 +76,13 @@ function leadsValidateBatchForLeadEnrollment(PDO $db, string $batchId, array $le
     if ($seatLimit < 1) {
         $seatLimit = 30;
     }
+    // Lock batch row to prevent concurrent enroll over seat_limit.
+    try {
+        $lock = $db->prepare('SELECT id FROM batches WHERE id = ? FOR UPDATE');
+        $lock->execute([$bid]);
+    } catch (Throwable $ignored) {
+        // Not in a transaction yet — count still helps; caller enroll txn will re-check.
+    }
     $cntSt = $db->prepare('SELECT COUNT(*) FROM students WHERE batch_id = ?');
     $cntSt->execute([$bid]);
     $enrolled = (int) $cntSt->fetchColumn();
@@ -289,7 +296,10 @@ if ($method === 'POST') {
         }
 
         $created = 0;
+        $skipped = 0;
         $errors = [];
+        $seenEmails = [];
+        $seenPhones = [];
         foreach ($rows as $i => $row) {
             if (!is_array($row)) {
                 continue;
@@ -307,14 +317,13 @@ if ($method === 'POST') {
                     continue;
                 }
             }
-            $id = generateUUID();
             $referredBy = trim((string) ($row['referred_by'] ?? ''));
             $referredBy = $referredBy !== '' ? $referredBy : null;
             $assignedTo = $row['assigned_to'] ?? null;
             if ($assignedTo !== null && trim((string) $assignedTo) === '') {
                 $assignedTo = null;
             }
-            // Managers only see downline-assigned leads — auto-assign imports to the importer
+            // Managers: auto-assign imports to the importer
             if ($callerRole === 'manager' && ($assignedTo === null || $assignedTo === '')) {
                 $assignedTo = $userId;
             }
@@ -322,6 +331,13 @@ if ($method === 'POST') {
             if ($callerRole === 'super_admin') {
                 $rowOrg = trim((string) ($row['org_id'] ?? ''));
                 if ($rowOrg !== '') {
+                    // Validate per-row org exists
+                    $chkRow = $db->prepare('SELECT id FROM organizations WHERE id = ? AND is_active = 1 LIMIT 1');
+                    $chkRow->execute([$rowOrg]);
+                    if (!$chkRow->fetch()) {
+                        $errors[] = "Row $i: org_id not found";
+                        continue;
+                    }
                     $orgId = $rowOrg;
                 }
             }
@@ -337,13 +353,48 @@ if ($method === 'POST') {
                 } catch (Throwable $ignored) {
                 }
             }
+
+            $emailKey = strtolower($email);
+            $phoneDigits = preg_replace('/\D+/', '', $phone) ?? '';
+            if (strlen($phoneDigits) > 10) {
+                $phoneDigits = substr($phoneDigits, -10);
+            }
+            if ($emailKey !== '' && isset($seenEmails[$emailKey])) {
+                $skipped++;
+                $errors[] = "Row $i: duplicate email in this import ({$email})";
+                continue;
+            }
+            if ($phoneDigits !== '' && strlen($phoneDigits) >= 8 && isset($seenPhones[$phoneDigits])) {
+                $skipped++;
+                $errors[] = "Row $i: duplicate phone in this import ({$phone})";
+                continue;
+            }
+            $dup = leadsFindDuplicateInOrg($db, is_string($orgId) ? $orgId : null, $email, $phone);
+            if ($dup) {
+                $skipped++;
+                $errors[] = "Row $i: already exists as lead {$dup['id']} ({$dup['name']})";
+                continue;
+            }
+            if ($emailKey !== '') {
+                $seenEmails[$emailKey] = true;
+            }
+            if ($phoneDigits !== '' && strlen($phoneDigits) >= 8) {
+                $seenPhones[$phoneDigits] = true;
+            }
+
+            $statusIn = leadsNormalizeStatus((string) ($row['status'] ?? 'new'));
+            if (!in_array($statusIn, leadsAllowedStatuses(), true)) {
+                $statusIn = 'new';
+            }
+
+            $id = generateUUID();
             try {
                 $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 $stmt->execute([
                     $id,
                     $name,
-                    $email !== '' ? $email : ($row['email'] ?? null),
-                    $phone !== '' ? $phone : ($row['phone'] ?? null),
+                    $email !== '' ? $email : null,
+                    $phone !== '' ? $phone : null,
                     $row['company'] ?? null,
                     $row['college'] ?? null,
                     $row['year_of_study'] ?? null,
@@ -354,7 +405,7 @@ if ($method === 'POST') {
                     $assignedTo,
                     isset($row['tags']) ? json_encode($row['tags']) : null,
                     $orgId,
-                    $row['status'] ?? 'new',
+                    $statusIn,
                     $userId,
                 ]);
                 $created++;
@@ -365,8 +416,8 @@ if ($method === 'POST') {
                     $stmt->execute([
                         $id,
                         $name,
-                        $email !== '' ? $email : ($row['email'] ?? null),
-                        $phone !== '' ? $phone : ($row['phone'] ?? null),
+                        $email !== '' ? $email : null,
+                        $phone !== '' ? $phone : null,
                         $row['company'] ?? null,
                         $row['college'] ?? null,
                         $row['year_of_study'] ?? null,
@@ -377,7 +428,7 @@ if ($method === 'POST') {
                         $assignedTo,
                         isset($row['tags']) ? json_encode($row['tags']) : null,
                         $orgId,
-                        $row['status'] ?? 'new',
+                        $statusIn,
                     ]);
                     $created++;
                 } catch (Throwable $e2) {
@@ -385,22 +436,24 @@ if ($method === 'POST') {
                 }
             }
         }
-        $orgName = null;
-        if ($callerRole === 'super_admin' && $bulkOrgId) {
+
+        $orgName = '';
+        if (is_string($bulkOrgId) && $bulkOrgId !== '') {
             try {
                 $n = $db->prepare('SELECT name FROM organizations WHERE id = ? LIMIT 1');
                 $n->execute([$bulkOrgId]);
-                $orgName = $n->fetchColumn() ?: null;
+                $orgName = (string) ($n->fetchColumn() ?: '');
             } catch (Throwable $ignored) {
             }
         }
         respond([
-            'message' => "Imported $created lead(s)",
+            'message' => 'Bulk create complete',
             'created' => $created,
-            'errors' => $errors,
+            'skipped' => $skipped,
+            'errors' => array_slice($errors, 0, 50),
             'org_id' => $bulkOrgId,
             'org_name' => $orgName,
-        ], $created > 0 ? 201 : 400);
+        ], 201);
     }
 
     // Never treat a delete payload as "create lead" (avoids "Name, phone, or email is required")
@@ -446,7 +499,7 @@ if ($method === 'POST') {
     if (in_array($role, ['sales_representative'], true) && ($assignedTo === null || $assignedTo === '')) {
         $assignedTo = $userId;
     }
-    // Managers only see downline-assigned leads — auto-assign unassigned creates/imports to self
+    // Managers: auto-assign unassigned creates to self
     if ($role === 'manager' && ($assignedTo === null || $assignedTo === '')) {
         $assignedTo = $userId;
     }
@@ -458,6 +511,22 @@ if ($method === 'POST') {
         if (!$assigneeRow) {
             $assignedTo = null;
         }
+    }
+
+    $createOrgId = resolveCreatorOrgId($db, $tokenData);
+    if ($createOrgId === null && is_array($assigneeRow)) {
+        $ao = trim((string) ($assigneeRow['org_id'] ?? ''));
+        if ($ao !== '') {
+            $createOrgId = $ao;
+        }
+    }
+    $dup = leadsFindDuplicateInOrg($db, is_string($createOrgId) ? $createOrgId : null, $emailIn, $phoneIn);
+    if ($dup) {
+        respond([
+            'error' => 'A lead with this email or phone already exists',
+            'existing_lead_id' => $dup['id'],
+            'existing_name' => $dup['name'],
+        ], 409);
     }
 
     $referredBy = trim((string) ($input['referred_by'] ?? ''));
@@ -614,9 +683,16 @@ if ($method === 'PUT') {
     }
     $prevStatus = (string) ($lead['status'] ?? '');
 
-    $allowedStatus = ['new', 'contacted', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'];
-    if (array_key_exists('status', $input) && !in_array($input['status'], $allowedStatus, true)) {
-        respond(['error' => 'Invalid status'], 400);
+    $allowedStatus = leadsAllowedStatuses();
+    if (array_key_exists('status', $input)) {
+        $input['status'] = leadsNormalizeStatus((string) $input['status']);
+        if (!in_array($input['status'], $allowedStatus, true)) {
+            respond(['error' => 'Invalid status'], 400);
+        }
+        $transitionErr = leadsAssertStatusTransition($prevStatus, (string) $input['status']);
+        if ($transitionErr !== null) {
+            respond(['error' => $transitionErr], 400);
+        }
     }
 
     if (isset($input['status']) && $input['status'] === 'enrolled') {
@@ -668,6 +744,7 @@ if ($method === 'PUT') {
     $stmt = $db->prepare($updateSql);
 
     if (isset($input['status']) && $input['status'] === 'enrolled') {
+        ensureStudentsLeadIdUnique($db);
         try {
             $db->beginTransaction();
             $stmt->execute($params);
@@ -860,12 +937,38 @@ if ($method === 'PUT') {
             }
             respond(['error' => 'Lead update failed: ' . $msg], 500);
         }
+        if (array_key_exists('assigned_to', $input)) {
+            $rawAssign = $input['assigned_to'];
+            if ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === '')) {
+                try { $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$id]); } catch (Throwable $ignored) {}
+            } else {
+                $assignId = trim((string) $rawAssign);
+                try {
+                    $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
+                    $exists->execute([$id, $assignId]);
+                    if (!$exists->fetch()) {
+                        $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
+                            ->execute([generateUUID(), $id, $assignId]);
+                    }
+                } catch (Throwable $ignored) {}
+            }
+        }
         respond(['message' => 'Lead updated']);
     }
 
     $clearStudentOnUnenroll = array_key_exists('status', $input)
-        && $prevStatus === 'enrolled'
-        && $input['status'] !== 'enrolled';
+        && $input['status'] !== 'enrolled'
+        && (
+            $prevStatus === 'enrolled'
+            || $prevStatus === 'converted'
+            || enrollStudentRowAlreadyExists($db, $id)
+        );
+
+    // Optimistic status lock: reject stale concurrent status overwrites.
+    $statusLockPrev = null;
+    if (array_key_exists('status', $input) && (string) $input['status'] !== $prevStatus) {
+        $statusLockPrev = $prevStatus;
+    }
 
     if ($clearStudentOnUnenroll) {
         try {
@@ -906,11 +1009,38 @@ if ($method === 'PUT') {
             }
             respond(['error' => 'Lead update failed: ' . $msg], 500);
         }
+        if (array_key_exists('assigned_to', $input)) {
+            $rawAssign = $input['assigned_to'];
+            if ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === '')) {
+                try { $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$id]); } catch (Throwable $ignored) {}
+            } else {
+                $assignId = trim((string) $rawAssign);
+                try {
+                    $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
+                    $exists->execute([$id, $assignId]);
+                    if (!$exists->fetch()) {
+                        $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
+                            ->execute([generateUUID(), $id, $assignId]);
+                    }
+                } catch (Throwable $ignored) {}
+            }
+        }
         respond(['message' => 'Lead updated']);
     }
 
     try {
-        $stmt->execute($params);
+        if ($statusLockPrev !== null) {
+            $paramsWithLock = $params;
+            $paramsWithLock[] = $statusLockPrev;
+            $lockSql = $updateSql . ' AND status = ?';
+            $lockStmt = $db->prepare($lockSql);
+            $lockStmt->execute($paramsWithLock);
+            if ($lockStmt->rowCount() < 1) {
+                respond(['error' => 'Lead was updated by someone else — refresh and try again'], 409);
+            }
+        } else {
+            $stmt->execute($params);
+        }
     } catch (Throwable $e) {
         $msg = $e->getMessage();
         if (!is_string($msg) || $msg === '') {
@@ -920,6 +1050,28 @@ if ($method === 'PUT') {
             $msg = substr($msg, 0, 500) . '…';
         }
         respond(['error' => 'Lead update failed: ' . $msg], 500);
+    }
+
+    // Keep lead_assignments in sync with primary assigned_to.
+    if (array_key_exists('assigned_to', $input)) {
+        $rawAssign = $input['assigned_to'];
+        if ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === '')) {
+            try {
+                $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$id]);
+            } catch (Throwable $ignored) {
+            }
+        } else {
+            $assignId = trim((string) $rawAssign);
+            try {
+                $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
+                $exists->execute([$id, $assignId]);
+                if (!$exists->fetch()) {
+                    $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
+                        ->execute([generateUUID(), $id, $assignId]);
+                }
+            } catch (Throwable $ignored) {
+            }
+        }
     }
 
     respond(['message' => 'Lead updated']);

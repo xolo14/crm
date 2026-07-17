@@ -32,7 +32,7 @@ import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails'
 import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
 import * as perms from '@/lib/permissions';
 import { isMarketingFamilyRole } from '@/lib/roleUtils';
-import { mapCsvRowsToLeads, parseCsvText } from '@/lib/leadImportCsv';
+import { downloadLeadImportTemplate, mapCsvRowsToLeads, parseCsvText } from '@/lib/leadImportCsv';
 import {
   IMPORT_SET_PREFIX,
   buildSourceSummaries,
@@ -41,32 +41,38 @@ import {
 } from '@/lib/leadSources';
 import { useIsMobile } from '@/hooks/use-mobile';
 
-const LEAD_STATUSES = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
+const LEAD_STATUSES = ['new', 'contacted', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
 
 const formatLeadStatus = (s?: string | null) => {
   if (!s) return '';
   if (s === 'enrolled' || s === 'converted') return 'Enroll';
+  if (s === 'considering') return 'Interested';
+  if (s === 'not_interested') return 'Lost';
   return s.replace(/_/g, ' ');
 };
 
-const statusBadgeKey = (s?: string | null) => (s === 'converted' ? 'enrolled' : s || '');
+const statusBadgeKey = (s?: string | null) => {
+  if (s === 'converted') return 'enrolled';
+  if (s === 'considering') return 'interested';
+  if (s === 'not_interested') return 'lost';
+  return s || '';
+};
 const LEAD_SOURCES = ['google_ads', 'instagram', 'facebook', 'youtube', 'website', 'normal_form', 'google_forms', 'whatsapp', 'referral', 'walkin', 'college_seminar', 'other'] as const;
 
 const statusColors: Record<string, string> = {
   new: 'bg-blue-500/10 text-blue-700 border-blue-200',
   contacted: 'bg-amber-500/10 text-amber-700 border-amber-200',
+  qualified: 'bg-cyan-500/10 text-cyan-700 border-cyan-200',
   interested: 'bg-emerald-500/10 text-emerald-700 border-emerald-200',
   demo_scheduled: 'bg-indigo-500/10 text-indigo-700 border-indigo-200',
   demo_attended: 'bg-violet-500/10 text-violet-700 border-violet-200',
-  considering: 'bg-orange-500/10 text-orange-700 border-orange-200',
   enrolled: 'bg-teal-500/10 text-teal-800 border-teal-200',
-  converted: 'bg-green-500/10 text-green-700 border-green-200',
   lost: 'bg-red-500/10 text-red-700 border-red-200',
 };
 
 const statusIcons: Record<string, any> = {
-  new: Clock, contacted: Phone, interested: Target, demo_scheduled: CalendarDays,
-  demo_attended: CheckCircle2, considering: Eye, enrolled: GraduationCap, converted: ArrowUpRight, lost: XCircle,
+  new: Clock, contacted: Phone, qualified: Target, interested: Target, demo_scheduled: CalendarDays,
+  demo_attended: CheckCircle2, enrolled: GraduationCap, lost: XCircle,
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -181,11 +187,9 @@ export default function Leads() {
     normalizedLeadRole === 'hr';
   const scopeLabel = normalizedLeadRole === 'super_admin'
     ? 'Scope: all leads'
-    : normalizedLeadRole === 'admin' || normalizedLeadRole === 'org'
+    : normalizedLeadRole === 'admin' || normalizedLeadRole === 'org' || normalizedLeadRole === 'manager'
       ? 'Scope: organization leads'
-      : normalizedLeadRole === 'manager'
-        ? 'Scope: own + team leads'
-        : isSalesRepMyLeadsPage
+      : isSalesRepMyLeadsPage
           ? 'Scope: your referral forms only'
           : rosterMarketingLike || normalizedLeadRole === 'hr'
             ? 'Scope: your assigned, referred & created leads'
@@ -312,7 +316,10 @@ export default function Leads() {
     } catch {}
   };
 
-  const canEditLead = (lead: any) => hasEditAll || lead.assigned_to === user?.id;
+  const canEditLead = (lead: any) =>
+    hasEditAll
+    || lead.assigned_to === user?.id
+    || (!!user?.id && Array.isArray(leadAssignments[lead.id]) && leadAssignments[lead.id].includes(user.id));
   const canDeleteLead = () => hasDelete;
 
   const handleExport = () => {
@@ -335,25 +342,32 @@ export default function Leads() {
   }, [isSuperAdmin, importOrgs, importOrgId, organization?.name]);
 
   useEffect(() => {
-    if (!isSuperAdmin || !hasImport) return;
-    void (async () => {
-      try {
-        const res = (await api.organizations.list()) as { data?: Array<{ id?: string; name?: string }> };
-        const rows = Array.isArray(res?.data) ? res.data : [];
-        const opts = rows
-          .map((o) => ({ id: String(o.id || '').trim(), name: String(o.name || 'Unnamed').trim() }))
-          .filter((o) => o.id);
-        setImportOrgs(opts);
-        const preferred = String(organization?.id || '').trim();
-        if (preferred && opts.some((o) => o.id === preferred)) {
-          setImportOrgId(preferred);
-        } else if (opts[0] && !importOrgId) {
-          setImportOrgId(opts[0].id);
+    if (!hasImport) return;
+    if (isSuperAdmin) {
+      void (async () => {
+        try {
+          const res = (await api.organizations.list()) as { data?: Array<{ id?: string; name?: string }> };
+          const rows = Array.isArray(res?.data) ? res.data : [];
+          const opts = rows
+            .map((o) => ({ id: String(o.id || '').trim(), name: String(o.name || 'Unnamed').trim() }))
+            .filter((o) => o.id);
+          setImportOrgs(opts);
+          const preferred = String(organization?.id || '').trim();
+          if (preferred && opts.some((o) => o.id === preferred)) {
+            setImportOrgId(preferred);
+          } else if (opts[0] && !importOrgId) {
+            setImportOrgId(opts[0].id);
+          }
+        } catch {
+          setImportOrgs([]);
         }
-      } catch {
-        setImportOrgs([]);
-      }
-    })();
+      })();
+      return;
+    }
+    const orgId = String(organization?.id || '').trim();
+    if (orgId) {
+      setImportOrgId(orgId);
+    }
   }, [isSuperAdmin, hasImport, organization?.id]);
 
   const runCsvImport = async (file: File, orgIdForImport?: string) => {
@@ -408,15 +422,12 @@ export default function Leads() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    void runCsvImport(file, isSuperAdmin ? importOrgId : undefined);
+    const orgId = isSuperAdmin ? importOrgId : String(organization?.id || importOrgId || '').trim();
+    void runCsvImport(file, orgId || undefined);
   };
 
   const openImport = () => {
-    if (isSuperAdmin) {
-      setImportOpen(true);
-      return;
-    }
-    fileInputRef.current?.click();
+    setImportOpen(true);
   };
   const filtered = useMemo(() => {
     return leads.filter((lead) => {
@@ -452,20 +463,28 @@ export default function Leads() {
 
   const totalLeads = leads.length;
   const newLeads = leads.filter(l => l.status === 'new').length;
-  const inPipeline = leads.filter(l => ['interested', 'demo_scheduled', 'demo_attended'].includes(l.status)).length;
+  const inPipeline = leads.filter(l => ['qualified', 'interested', 'demo_scheduled', 'demo_attended', 'considering'].includes(l.status)).length;
   const enrollLeads = leads.filter(l => l.status === 'enrolled' || l.status === 'converted').length;
-  const lostLeads = leads.filter(l => l.status === 'lost').length;
+  const lostLeads = leads.filter(l => l.status === 'lost' || l.status === 'not_interested').length;
   const unassignedCount = leads.filter(l => !l.assigned_to).length;
   const convRate = totalLeads > 0 ? Math.round((enrollLeads / totalLeads) * 100) : 0;
 
+  const normalizeLeadStatusForApi = (status: string) => {
+    if (status === 'converted') return 'enrolled';
+    if (status === 'considering') return 'interested';
+    if (status === 'not_interested') return 'lost';
+    return status;
+  };
+
   const updateStatus = async (id: string, status: string) => {
+    const normalized = normalizeLeadStatusForApi(status);
     try {
-      await api.leads.update(id, { status });
-      setLeads(prev => prev.map(l => l.id === id ? { ...l, status } : l));
-      if (status === 'enrolled') {
+      await api.leads.update(id, { status: normalized });
+      setLeads(prev => prev.map(l => l.id === id ? { ...l, status: normalized } : l));
+      if (normalized === 'enrolled') {
         toast({ title: 'Enroll', description: 'Lead status set to Enroll and a student record was created (if not already).' });
       } else {
-        toast({ title: `Status updated to ${formatLeadStatus(status)}` });
+        toast({ title: `Status updated to ${formatLeadStatus(normalized)}` });
       }
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };
@@ -501,7 +520,7 @@ export default function Leads() {
           payload.referred_by = ref;
         }
       }
-      // Managers only see downline-assigned / self-created leads — default assign to self
+      // Managers default new/imported leads to self when unassigned so they stay easy to find
       if (normalizedLeadRole === 'manager') {
         const at = payload.assigned_to;
         if (at === '' || at == null || at === 'unassigned') {
@@ -604,34 +623,40 @@ export default function Leads() {
     const ids = leadIds ?? Array.from(selectedIds);
     if (ids.length === 0) return;
     const assignedLeadNames: string[] = [];
-    for (const id of ids) {
-      try {
-        await api.leads.update(id, { assigned_to: repId });
-        const lead = leads.find(l => l.id === id);
-        if (lead) assignedLeadNames.push(lead.name);
-      } catch {}
-    }
+    let failed = 0;
     try {
       await api.leadAssignments.bulkAssign(ids, repId);
-    } catch {}
-    const assigneePatch = Object.fromEntries(ids.map((id) => [id, true]));
-    setLeads((prev) =>
-      prev.map((l) => (assigneePatch[l.id] ? { ...l, assigned_to: repId } : l)),
-    );
-    fetchLeads();
-    fetchAssignments();
-    const repName = teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
-    toast({ title: `${ids.length} leads assigned to ${repName}` });
-    await sendNotificationWithEmail({
-      userId: repId,
-      title: `${ids.length} Leads Assigned`,
-      message: `You have been assigned ${ids.length} new leads: ${assignedLeadNames.slice(0, 3).join(', ')}${assignedLeadNames.length > 3 ? '...' : ''}.`,
-      type: 'lead_assigned',
-      link: '/leads',
-      leadName: assignedLeadNames.slice(0, 3).join(', '),
-      assignedByName: profile?.full_name || 'Manager',
-    });
-    setSelectedIds(new Set());
+      for (const id of ids) {
+        const lead = leads.find(l => l.id === id);
+        if (lead) assignedLeadNames.push(lead.name);
+      }
+      const assigneePatch = Object.fromEntries(ids.map((id) => [id, true]));
+      setLeads((prev) =>
+        prev.map((l) => (assigneePatch[l.id] ? { ...l, assigned_to: repId } : l)),
+      );
+      fetchLeads();
+      fetchAssignments();
+      const repName = teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
+      toast({ title: `${ids.length} leads assigned to ${repName}` });
+      await sendNotificationWithEmail({
+        userId: repId,
+        title: `${ids.length} Leads Assigned`,
+        message: `You have been assigned ${ids.length} new leads: ${assignedLeadNames.slice(0, 3).join(', ')}${assignedLeadNames.length > 3 ? '...' : ''}.`,
+        type: 'lead_assigned',
+        link: '/leads',
+        leadName: assignedLeadNames.slice(0, 3).join(', '),
+        assignedByName: profile?.full_name || 'Manager',
+      });
+      setSelectedIds(new Set());
+    } catch (err: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Bulk assign failed',
+        description: err?.message || 'Could not assign leads',
+      });
+      failed = ids.length;
+    }
+    void failed;
   };
 
   const handleBulkAutoAssign = async (count: number, repIds: string[]) => {
@@ -646,10 +671,18 @@ export default function Leads() {
         repAssignments[repId].push(lead.id);
       });
       let totalAssigned = 0;
+      let failed = 0;
       for (const [repId, leadIds] of Object.entries(repAssignments)) {
         const names: string[] = [];
-        for (const lid of leadIds) {
-          try { await api.leads.update(lid, { assigned_to: repId }); totalAssigned++; const l = leads.find(x => x.id === lid); if (l) names.push(l.name); } catch {}
+        try {
+          await api.leadAssignments.bulkAssign(leadIds, repId);
+          totalAssigned += leadIds.length;
+          for (const lid of leadIds) {
+            const l = leads.find(x => x.id === lid);
+            if (l) names.push(l.name);
+          }
+        } catch {
+          failed += leadIds.length;
         }
         if (names.length > 0) {
           await sendNotificationWithEmail({
@@ -661,7 +694,15 @@ export default function Leads() {
         }
       }
       fetchLeads();
-      toast({ title: `${totalAssigned} leads distributed across ${repIds.length} reps` });
+      fetchAssignments();
+      if (failed > 0 && totalAssigned === 0) {
+        toast({ variant: 'destructive', title: 'Auto-assign failed', description: 'Could not distribute leads' });
+      } else {
+        toast({
+          title: `${totalAssigned} leads distributed across ${repIds.length} reps`,
+          description: failed ? `${failed} failed` : undefined,
+        });
+      }
     } finally { setBulkAssigning(false); }
   };
 
@@ -1115,7 +1156,6 @@ export default function Leads() {
                       </SelectTrigger>
                       <SelectContent>
                         {LEAD_STATUSES.map(s => <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>)}
-                        {lead.status === 'considering' && <SelectItem value="considering" className="capitalize">Considering</SelectItem>}
                       </SelectContent>
                     </Select>
                   ) : (
@@ -1205,7 +1245,6 @@ export default function Leads() {
                         </SelectTrigger>
                         <SelectContent>
                           {LEAD_STATUSES.map(s => <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>)}
-                          {lead.status === 'considering' && <SelectItem value="considering" className="capitalize">Considering</SelectItem>}
                         </SelectContent>
                       </Select>
                     ) : (
@@ -1486,36 +1525,58 @@ export default function Leads() {
             <DialogTitle>Import leads (CSV)</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-1">
-            <div className="space-y-1.5">
-              <Label>Organization *</Label>
-              <Select value={importOrgId || undefined} onValueChange={setImportOrgId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select organization" />
-                </SelectTrigger>
-                <SelectContent>
-                  {importOrgs.map((o) => (
-                    <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] text-muted-foreground">
-                Imported leads will be created under this organization only.
-              </p>
-            </div>
-            {importTargetOrgName ? (
+            {isSuperAdmin ? (
+              <div className="space-y-1.5">
+                <Label>Organization *</Label>
+                <Select value={importOrgId || undefined} onValueChange={setImportOrgId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select organization" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {importOrgs.map((o) => (
+                      <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-muted-foreground">
+                  Imported leads will be created under this organization only.
+                </p>
+              </div>
+            ) : importTargetOrgName ? (
               <p className="text-sm rounded-lg bg-muted/50 px-3 py-2">
                 Importing into: <span className="font-medium">{importTargetOrgName}</span>
               </p>
             ) : null}
+            <div className="rounded-lg border border-dashed px-3 py-3 space-y-2">
+              <p className="text-sm font-medium">Need a template?</p>
+              <p className="text-xs text-muted-foreground">
+                Download a sample CSV with the expected columns (name, email, phone, college, source, notes, …).
+                Fill it in Excel or Google Sheets, save as CSV, then import.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5 h-9"
+                onClick={() => {
+                  downloadLeadImportTemplate();
+                  toast({ title: 'Template downloaded', description: 'leads-import-template.csv' });
+                }}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Download CSV template
+              </Button>
+            </div>
           </div>
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setImportOpen(false)} disabled={importBusy}>Cancel</Button>
             <Button
-              disabled={!importOrgId || importBusy}
+              disabled={importBusy || (isSuperAdmin ? !importOrgId : !importOrgId && !organization?.id)}
               className="gap-1.5"
               onClick={() => {
-                if (!importOrgId) {
-                  toast({ variant: 'destructive', title: 'Select an organization' });
+                const orgReady = isSuperAdmin ? !!importOrgId : !!(importOrgId || organization?.id);
+                if (!orgReady) {
+                  toast({ variant: 'destructive', title: isSuperAdmin ? 'Select an organization' : 'Organization not loaded — refresh and try again' });
                   return;
                 }
                 fileInputRef.current?.click();

@@ -13,6 +13,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { buildHtmlDocumentPdfBase64 } from '@/utils/offerLetterPdf';
 import {
   Plus, FileText, Send, Trash2, Edit, Eye, Upload, Download, Code, Type, Loader2, Mail, Copy, Image, GripVertical, Users, X, ChevronLeft, ChevronRight, Maximize2, Minimize2, FilePlus
 } from 'lucide-react';
@@ -835,6 +836,14 @@ export default function OfferLetters() {
       };
       const emailHtml = wrapOfferEmailPlainBody(emailDraft.body.trim(), formForEmail);
 
+      let pdfBase64 = '';
+      try {
+        pdfBase64 = await buildHtmlDocumentPdfBase64(finalHtml);
+      } catch (pdfErr: any) {
+        console.error(pdfErr);
+        throw new Error(pdfErr?.message || 'Could not generate offer letter PDF in the browser');
+      }
+
       await api.offerLetters.send({
         template_id: sendTemplate!.id,
         recipient_name: sendForm.recipient_name,
@@ -847,11 +856,12 @@ export default function OfferLetters() {
         cc: emailDraft.cc.trim() || undefined,
         bcc: emailDraft.bcc.trim() || undefined,
         status: 'sent',
+        pdf_base64: pdfBase64,
       });
 
       toast({
         title: 'Offer letter sent',
-        description: `PDF generated and emailed to ${emailDraft.to.trim()} from hr@syncpedia.in`,
+        description: `PDF emailed to ${emailDraft.to.trim()} from hr@syncpedia.in`,
       });
       setShowSend(false);
       fetchData();
@@ -1033,6 +1043,13 @@ export default function OfferLetters() {
           .replace(/\{\{employment_type\}\}/g, candidate.employment_type)
           .replace(/\{\{probation_period\}\}/g, candidate.probation_period);
 
+        let pdfBase64 = '';
+        try {
+          pdfBase64 = await buildHtmlDocumentPdfBase64(finalHtml);
+        } catch (pdfErr: any) {
+          throw new Error(pdfErr?.message || `Could not generate PDF for ${candidate.candidate_name}`);
+        }
+
         await api.offerLetters.send({
           template_id: bulkTemplate.id,
           recipient_name: candidate.candidate_name,
@@ -1040,6 +1057,7 @@ export default function OfferLetters() {
           role_title: candidate.role_title || bulkTemplate.role_title,
           html_content: finalHtml,
           status: 'sent',
+          pdf_base64: pdfBase64,
         });
       }
       toast({ title: `${valid.length} offer letter(s) generated!`, description: 'Records saved. You can preview/print from Sent Letters tab.' });

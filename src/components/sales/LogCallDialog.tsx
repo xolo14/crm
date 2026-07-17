@@ -44,6 +44,21 @@ const schema = z
     lead_pipeline_status: z.string().optional(),
   })
   .superRefine((data, ctx) => {
+    if ((data.call_type === "missed" || data.call_type === "rejected") && data.call_status === "connected") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Missed/rejected calls cannot be marked connected",
+        path: ["call_status"],
+      });
+    }
+    const dur = (data.duration_min || 0) * 60 + (data.duration_sec || 0);
+    if (data.call_status !== "connected" && dur > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Duration only applies when status is connected",
+        path: ["duration_min"],
+      });
+    }
     const lid = data.lead_id?.trim();
     if (!lid) return;
     const st = data.lead_pipeline_status?.trim();
@@ -72,10 +87,13 @@ export default function LogCallDialog({
   open,
   onOpenChange,
   editLog,
+  initialLeadId,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   editLog?: CallLog | null;
+  /** Pre-select a lead when logging from dialer */
+  initialLeadId?: string | null;
 }) {
   const { toast } = useToast();
   const addMut = useAddCallLog();
@@ -145,6 +163,11 @@ export default function LogCallDialog({
         lead_pipeline_status: pipeStatus,
       });
     } else {
+      const preLead = String(initialLeadId || "").trim();
+      const L = preLead ? leads.find((l: { id: string }) => l.id === preLead) : null;
+      const st = L?.status ? String(L.status) : "";
+      const pipeStatus =
+        st === "converted" ? "enrolled" : st && PIPELINE_SET.has(st) ? st : preLead ? "new" : "";
       form.reset({
         call_type: "outgoing",
         call_status: "connected",
@@ -153,11 +176,11 @@ export default function LogCallDialog({
         duration_min: 0,
         duration_sec: 0,
         notes: "",
-        lead_id: "",
-        lead_pipeline_status: "",
+        lead_id: preLead,
+        lead_pipeline_status: pipeStatus,
       });
     }
-  }, [open, editLog, form, leads]);
+  }, [open, editLog, form, leads, initialLeadId]);
 
   useEffect(() => {
     if (!open) return;

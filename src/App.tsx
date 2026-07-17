@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import AppLayout from "@/components/AppLayout";
 import RouteSeo from "@/components/seo/RouteSeo";
 import { ReactNode, Suspense } from "react";
+import { ThemeProvider } from "next-themes";
 import LoginPortal from "@/pages/LoginPortal";
 import Auth from "@/pages/Auth";
 import { getPortalLoginRedirect, AUTH_PORTAL } from "@/lib/portalAuth";
@@ -266,6 +267,7 @@ function HRProtectedRoute({ children }: { children: ReactNode }) {
 }
 
 const App = () => (
+  <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
@@ -371,6 +373,7 @@ const App = () => (
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
+  </ThemeProvider>
 );
 
 export default App;

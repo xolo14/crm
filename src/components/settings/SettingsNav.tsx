@@ -4,6 +4,7 @@ import {
   KeyRound,
   Lock,
   Logs,
+  Mail,
   Shield,
   SlidersHorizontal,
   Trash2,
@@ -15,6 +16,7 @@ interface SettingsNavProps {
   onChange: (section: string) => void;
   /** If true, only General + Password Change are shown (manager / L1). */
   limited?: boolean;
+  showEmailSetup?: boolean;
 }
 
 const fullNavGroups = [
@@ -24,6 +26,7 @@ const fullNavGroups = [
       { id: "general", name: "General", icon: SlidersHorizontal },
       { id: "company-profile", name: "Company Profile", icon: Building2 },
       { id: "localization", name: "Localization", icon: Globe },
+      { id: "email-setup", name: "Email Setup", icon: Mail },
     ],
   },
   {
@@ -40,14 +43,17 @@ const limitedNavGroups = [
   {
     label: "Account",
     items: [
-      { id: "general", name: "General", icon: SlidersHorizontal },
+      { id: "general", name: "Personal Profile", icon: SlidersHorizontal },
       { id: "password", name: "Password Change", icon: KeyRound },
     ],
   },
 ];
 
-export function SettingsNav({ active, onChange, limited = false }: SettingsNavProps) {
-  const navGroups = limited ? limitedNavGroups : fullNavGroups;
+export function SettingsNav({ active, onChange, limited = false, showEmailSetup = false }: SettingsNavProps) {
+  const navGroups = (limited ? limitedNavGroups : fullNavGroups).map((group) => ({
+    ...group,
+    items: group.items.filter((item) => item.id !== "email-setup" || showEmailSetup),
+  }));
   const flatItems = navGroups.flatMap((g) => g.items);
 
   return (

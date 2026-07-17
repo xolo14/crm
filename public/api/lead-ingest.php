@@ -6,7 +6,10 @@
  * Header: X-Lead-Api-Key: <PUBLIC_LEAD_API_KEY>
  * Body JSON: name, email?, phone?, source?, college?, course_interest?, notes?, org_id?, assigned_to?, ref?
  */
-header('Access-Control-Allow-Origin: *');
+require_once __DIR__ . '/helpers.php';
+
+syncpediaSecurityHeaders();
+header('Access-Control-Allow-Origin: ' . syncpediaLeadIngestCorsOrigin());
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Lead-Api-Key');
 header('Content-Type: application/json; charset=UTF-8');
@@ -16,10 +19,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
     exit;
 }
 
-require_once __DIR__ . '/helpers.php';
-
-syncpediaSecurityHeaders();
-
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 if ($method === 'GET') {
@@ -28,7 +27,8 @@ if ($method === 'GET') {
         'endpoint' => 'lead-ingest',
         'usage' => 'POST JSON with X-Lead-Api-Key header only. No CRM form required.',
         'required' => ['name'],
-        'optional' => ['email', 'phone', 'source', 'college', 'year_of_study', 'course_interest', 'notes', 'company', 'org_id', 'assigned_to', 'ref'],
+        'optional' => ['email', 'phone', 'source', 'college', 'year_of_study', 'course_interest', 'notes', 'company', 'assigned_to', 'ref'],
+        'note' => 'org_id is ignored when LEAD_INGEST_ORG_ID is set in api/config.php',
     ]);
 }
 
@@ -62,6 +62,15 @@ $db = (new Database())->getConnection();
 ensureLeadsResumeColumn($db);
 ensureLeadsSourceColumnVarchar($db);
 
+$lockedOrgId = defined('LEAD_INGEST_ORG_ID') ? trim((string) LEAD_INGEST_ORG_ID) : '';
+if ($lockedOrgId !== '') {
+    $lockSt = $db->prepare('SELECT id FROM organizations WHERE id = ? AND is_active = 1 LIMIT 1');
+    $lockSt->execute([$lockedOrgId]);
+    if (!$lockSt->fetch(PDO::FETCH_ASSOC)) {
+        respond(['error' => 'LEAD_INGEST_ORG_ID is invalid in server config'], 503);
+    }
+}
+
 $name = trim((string) ($input['name'] ?? $input['full_name'] ?? ''));
 $email = trim((string) ($input['email'] ?? ''));
 $phone = trim((string) ($input['phone'] ?? ''));
@@ -85,10 +94,14 @@ if ($source === '') {
     $source = 'website';
 }
 
-$referredBy = $ref !== '' ? $ref : null;
-$orgId = null;
+if ($lockedOrgId !== '' && $orgIdIn !== '' && $orgIdIn !== $lockedOrgId) {
+    respond(['error' => 'org_id is fixed for this ingest endpoint'], 400);
+}
 
-if ($orgIdIn !== '') {
+$referredBy = $ref !== '' ? $ref : null;
+$orgId = $lockedOrgId !== '' ? $lockedOrgId : null;
+
+if ($lockedOrgId === '' && $orgIdIn !== '') {
     $ost = $db->prepare('SELECT id FROM organizations WHERE id = ? AND is_active = 1 LIMIT 1');
     $ost->execute([$orgIdIn]);
     $orow = $ost->fetch(PDO::FETCH_ASSOC);
@@ -103,6 +116,10 @@ if ($ref !== '') {
     $ust->execute([$ref]);
     $urow = $ust->fetch(PDO::FETCH_ASSOC);
     if ($urow && is_array($urow)) {
+        $refOrg = trim((string) ($urow['org_id'] ?? ''));
+        if ($lockedOrgId !== '' && $refOrg !== '' && $refOrg !== $lockedOrgId) {
+            respond(['error' => 'ref code does not belong to the configured ingest organization'], 400);
+        }
         if ($assignedTo === '') {
             $assignedTo = (string) ($urow['id'] ?? '');
         }
@@ -110,11 +127,8 @@ if ($ref !== '') {
         if ($rc !== '') {
             $referredBy = $rc;
         }
-        if ($orgId === null) {
-            $ro = trim((string) ($urow['org_id'] ?? ''));
-            if ($ro !== '') {
-                $orgId = $ro;
-            }
+        if ($orgId === null && $refOrg !== '') {
+            $orgId = $refOrg;
         }
     }
 }
@@ -126,11 +140,12 @@ if ($assignedTo !== '') {
     if (!$arow) {
         respond(['error' => 'assigned_to user not found'], 400);
     }
-    if ($orgId === null) {
-        $ao = trim((string) ($arow['org_id'] ?? ''));
-        if ($ao !== '') {
-            $orgId = $ao;
-        }
+    $assigneeOrg = trim((string) ($arow['org_id'] ?? ''));
+    if ($orgId !== null && $assigneeOrg !== '' && $assigneeOrg !== $orgId) {
+        respond(['error' => 'assigned_to must belong to the target organization'], 400);
+    }
+    if ($orgId === null && $assigneeOrg !== '') {
+        $orgId = $assigneeOrg;
     }
 } else {
     $assignedTo = null;
@@ -153,6 +168,25 @@ if ($orgId === null) {
             $orgId = (string) $srow['id'];
         }
     }
+}
+
+if ($assignedTo !== null && $orgId !== null) {
+    $ast2 = $db->prepare('SELECT id FROM users WHERE id = ? AND org_id = ? AND is_active = 1 LIMIT 1');
+    $ast2->execute([$assignedTo, $orgId]);
+    if (!$ast2->fetch(PDO::FETCH_ASSOC)) {
+        respond(['error' => 'assigned_to must belong to the target organization'], 400);
+    }
+}
+
+$dup = leadsFindDuplicateInOrg($db, is_string($orgId) ? $orgId : null, $email, $phone);
+if ($dup) {
+    respond([
+        'success' => true,
+        'duplicate' => true,
+        'lead_id' => $dup['id'],
+        'org_id' => $orgId,
+        'message' => 'Lead already exists — returning existing record',
+    ], 200);
 }
 
 $id = generateUUID();

@@ -135,3 +135,19 @@ export async function sendReminder(
     body: JSON.stringify({ medium }),
   });
 }
+
+export async function sendPaidFormLink(
+  linkId: string,
+  formId: string,
+): Promise<{
+  sent: boolean;
+  to: string;
+  from: string;
+  form_id: string;
+  form_name: string;
+}> {
+  return apiFetch(paymentLinksUrl("send_form_link"), {
+    method: "POST",
+    body: JSON.stringify({ link_id: linkId, form_id: formId }),
+  });
+}

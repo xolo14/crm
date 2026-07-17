@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { ArrowLeft, BookOpen, Plus, RefreshCw, Upload } from "lucide-react";
+import { ArrowLeft, BookOpen, Pencil, Plus, RefreshCw, Trash2, Upload } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { communicationsApi } from "@/services/communications";
 import WhatsAppSetupHome from "@/components/communications/WhatsAppSetupHome";
@@ -33,6 +33,9 @@ export default function OrgWhatsAppSetupPage() {
 
   const [tplForm, setTplForm] = useState({ name: "", body: "", category: "utility", language: "en" });
   const [tplOpen, setTplOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editing, setEditing] = useState<WhatsappTemplate | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", body: "", category: "utility", language: "en" });
   const [wizardOpen, setWizardOpen] = useState(false);
 
   const { data: configRes } = useQuery({
@@ -59,11 +62,13 @@ export default function OrgWhatsAppSetupPage() {
     sessionStorage.setItem(key, "1");
   }, [waConnected, isOrgAdmin, organization?.id]);
 
+  const invalidateTemplates = () => qc.invalidateQueries({ queryKey: ["comm", "org-templates"] });
+
   const syncMut = useMutation({
     mutationFn: communicationsApi.syncMetaTemplates,
     onSuccess: (d) => {
       toast({ title: "Synced from Meta", description: `${d.imported} new, ${d.updated} updated` });
-      qc.invalidateQueries({ queryKey: ["comm", "org-templates"] });
+      invalidateTemplates();
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Sync failed", description: e.message }),
   });
@@ -77,19 +82,66 @@ export default function OrgWhatsAppSetupPage() {
       });
       setTplOpen(false);
       setTplForm({ name: "", body: "", category: "utility", language: "en" });
-      qc.invalidateQueries({ queryKey: ["comm", "org-templates"] });
+      invalidateTemplates();
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Failed", description: e.message }),
+  });
+
+  const updateTplMut = useMutation({
+    mutationFn: () => {
+      if (!editing) throw new Error("No template selected");
+      return communicationsApi.updateTemplate(editing.id, {
+        name: editForm.name,
+        body: editForm.body,
+        category: editForm.category,
+        language: editForm.language,
+        provider_template_id: editForm.name,
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "Template updated", description: "You can submit to Meta again when ready." });
+      setEditOpen(false);
+      setEditing(null);
+      invalidateTemplates();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Update failed", description: e.message }),
+  });
+
+  const deleteTplMut = useMutation({
+    mutationFn: (id: string) => communicationsApi.deleteTemplate(id),
+    onSuccess: () => {
+      toast({
+        title: "Removed from CRM",
+        description: "This only deletes the CRM row. Remove it in Meta Business Manager if it was already submitted.",
+      });
+      invalidateTemplates();
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: "Delete failed", description: e.message }),
   });
 
   const submitMetaMut = useMutation({
     mutationFn: communicationsApi.submitTemplateToMeta,
     onSuccess: () => {
       toast({ title: "Submitted to Meta", description: "Meta will review (usually 24–48 hours)." });
-      qc.invalidateQueries({ queryKey: ["comm", "org-templates"] });
+      invalidateTemplates();
     },
     onError: (e: Error) => toast({ variant: "destructive", title: "Submit failed", description: e.message }),
   });
+
+  const openEdit = (t: WhatsappTemplate) => {
+    setEditing(t);
+    setEditForm({
+      name: t.name || "",
+      body: t.body || "",
+      category: t.category || "utility",
+      language: t.language || "en",
+    });
+    setEditOpen(true);
+  };
+
+  const canEdit = (t: WhatsappTemplate) => t.status === "draft" || t.status === "rejected";
+  const canSubmit = (t: WhatsappTemplate) =>
+    t.status === "draft" || t.status === "rejected" || (t.status === "pending_approval" && !t.meta_template_id);
 
   if (!isOrgAdmin) {
     return (
@@ -166,7 +218,9 @@ export default function OrgWhatsAppSetupPage() {
         <CardHeader className="flex flex-row items-center justify-between gap-4">
           <div>
             <CardTitle>Official Meta templates</CardTitle>
-            <CardDescription>Create templates and submit to Meta for approval</CardDescription>
+            <CardDescription>
+              Create, edit drafts, submit for Meta approval, or remove from CRM. Sync pulls approved templates from your WABA.
+            </CardDescription>
           </div>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" className="gap-1" onClick={() => syncMut.mutate(undefined)} disabled={syncMut.isPending}>
@@ -187,7 +241,7 @@ export default function OrgWhatsAppSetupPage() {
                       placeholder="e.g. welcome_lead_101"
                     />
                     <p className="text-[11px] text-muted-foreground">
-                      Use lowercase letters, numbers, and underscores only (Meta requirement).
+                      Use lowercase letters, numbers, and underscores only (Meta requirement). Spaces become underscores.
                     </p>
                   </div>
                   <div className="space-y-1.5">
@@ -212,7 +266,7 @@ export default function OrgWhatsAppSetupPage() {
                 <TableHead>Name</TableHead>
                 <TableHead>CRM status</TableHead>
                 <TableHead>Meta status</TableHead>
-                <TableHead>Actions</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -225,11 +279,41 @@ export default function OrgWhatsAppSetupPage() {
                     <TableCell><Badge variant={STATUS_COLORS[t.status] as "default"}>{t.status}</Badge></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{t.meta_status || "—"}</TableCell>
                     <TableCell>
-                      {(t.status === "draft" || (t.status === "pending_approval" && !t.meta_template_id)) ? (
-                        <Button size="sm" variant="outline" className="gap-1 h-8" onClick={() => submitMetaMut.mutate(t.id)} disabled={submitMetaMut.isPending}>
-                          <Upload className="h-3 w-3" /> Submit to Meta
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {canSubmit(t) ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1 h-8"
+                            onClick={() => submitMetaMut.mutate(t.id)}
+                            disabled={submitMetaMut.isPending}
+                          >
+                            <Upload className="h-3 w-3" /> Submit to Meta
+                          </Button>
+                        ) : null}
+                        {canEdit(t) ? (
+                          <Button size="sm" variant="outline" className="gap-1 h-8" onClick={() => openEdit(t)}>
+                            <Pencil className="h-3 w-3" /> Edit
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="gap-1 h-8 text-destructive hover:text-destructive"
+                          disabled={deleteTplMut.isPending}
+                          onClick={() => {
+                            const synced = t.status === "approved" || Boolean(t.meta_template_id);
+                            const ok = confirm(
+                              synced
+                                ? `Remove "${t.name}" from CRM only?\n\nThis does not delete it from Meta Business Manager.`
+                                : `Delete draft "${t.name}" from CRM?`,
+                            );
+                            if (ok) deleteTplMut.mutate(t.id);
+                          }}
+                        >
+                          <Trash2 className="h-3 w-3" /> Delete
                         </Button>
-                      ) : null}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -238,6 +322,46 @@ export default function OrgWhatsAppSetupPage() {
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog
+        open={editOpen}
+        onOpenChange={(o) => {
+          setEditOpen(o);
+          if (!o) setEditing(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit template</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label>Template name</Label>
+              <Input
+                value={editForm.name}
+                onChange={(e) => setEditForm((p) => ({ ...p, name: e.target.value }))}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Prefer <code>welcome_message</code> over &quot;Welcome Message&quot; — Meta rejects many spaced names.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Body</Label>
+              <Textarea
+                rows={6}
+                value={editForm.body}
+                onChange={(e) => setEditForm((p) => ({ ...p, body: e.target.value }))}
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button onClick={() => updateTplMut.mutate()} disabled={updateTplMut.isPending || !editForm.name.trim() || !editForm.body.trim()}>
+              Save changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

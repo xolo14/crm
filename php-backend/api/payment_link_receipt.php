@@ -258,6 +258,18 @@ function paymentLinkDeliverReceipt(
         $paymentEntity = razorpayFetchPaymentEntity($paymentId);
     }
 
+    // Idempotent by Razorpay payment_id when present.
+    $processed = [];
+    if (!empty($row['processed_payment_ids'])) {
+        $decoded = json_decode((string) $row['processed_payment_ids'], true);
+        if (is_array($decoded)) {
+            $processed = $decoded;
+        }
+    }
+    if ($paymentId !== '' && in_array($paymentId, $processed, true)) {
+        return ['ok' => true, 'skipped' => true, 'reason' => 'payment_id_already_processed'];
+    }
+
     $invoiceNumber = paymentLinkReceiptMakeInvoiceNumber($row, $paymentId !== '' ? $paymentId : (string) microtime(true));
     $amountThisRupees = $amountThisPaymentPaise / 100;
     $cumulativeRupees = $amountPaidPaise / 100;
@@ -317,6 +329,8 @@ function paymentLinkDeliverReceipt(
         }
     }
 
+    $receiptOrgId = trim((string) ($row['org_id'] ?? ''));
+    syncpediaSetMailContext($receiptOrgId !== '' ? $receiptOrgId : null, 'payment_receipts');
     $send = syncpediaSendPaymentReceiptEmail(
         $customerEmail,
         $subject,
@@ -336,6 +350,7 @@ function paymentLinkDeliverReceipt(
             $invoiceNumber,
             $storedPath,
             $amountPaidPaise,
+            $paymentId,
         );
         $notes = json_decode((string) ($row['notes'] ?? '{}'), true);
         $salesName = is_array($notes) ? (string) ($notes['salesperson_name'] ?? '') : '';

@@ -137,7 +137,10 @@ class WhatsAppInbox
              WHERE id = ?',
         );
         $st->execute([$assigneeUserId, $assignedBy, $conversationId]);
-        return $st->rowCount() > 0 || true;
+        // Confirm the row exists (rowCount can be 0 when values unchanged).
+        $chk = $db->prepare('SELECT id FROM wa_conversations WHERE id = ? LIMIT 1');
+        $chk->execute([$conversationId]);
+        return (bool) $chk->fetch(PDO::FETCH_ASSOC);
     }
 
     /** Roles that see every chat in the org (managers / admins). */

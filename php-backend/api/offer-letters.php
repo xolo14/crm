@@ -76,7 +76,8 @@ function offerLettersFetchTemplateInScope(PDO $db, $tokenData, string $id): ?arr
 /** Composer autoload next to api/, or sibling php-backend when deployed from public/api. */
 function offerLetterAutoloadPath(): ?string {
     $candidates = [
-        __DIR__ . '/../vendor/autoload.php',
+        __DIR__ . '/../vendor/autoload.php',                    // public/vendor (Hostinger public_html/vendor)
+        __DIR__ . '/../../vendor/autoload.php',                 // site-root/vendor
         __DIR__ . '/../../php-backend/vendor/autoload.php',
         __DIR__ . '/../../../php-backend/vendor/autoload.php',
     ];
@@ -88,14 +89,31 @@ function offerLetterAutoloadPath(): ?string {
     return null;
 }
 
-function offerLetterRenderHtmlToPdf(string $html, string $destAbsPath): bool {
+/**
+ * @return array{ok:bool,error?:string}
+ */
+function offerLetterRenderHtmlToPdf(string $html, string $destAbsPath): array {
+    $dir = dirname($destAbsPath);
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        return ['ok' => false, 'error' => 'Cannot create storage/offer_letters — check folder permissions'];
+    }
+    if (!is_writable($dir)) {
+        return ['ok' => false, 'error' => 'storage/offer_letters is not writable'];
+    }
+
     $autoload = offerLetterAutoloadPath();
     if ($autoload === null) {
-        return false;
+        return [
+            'ok' => false,
+            'error' => 'Dompdf not installed. On Hostinger SSH run: cd php-backend && sh install-vendor.sh — or send pdf_base64 from the browser.',
+        ];
     }
     require_once $autoload;
     if (!class_exists(\Dompdf\Dompdf::class)) {
-        return false;
+        return [
+            'ok' => false,
+            'error' => 'Dompdf package missing in vendor/. Run composer install in php-backend and upload vendor/, or send pdf_base64 from the browser.',
+        ];
     }
     try {
         $options = new \Dompdf\Options();
@@ -116,13 +134,48 @@ function offerLetterRenderHtmlToPdf(string $html, string $destAbsPath): bool {
         $dompdf->render();
         $out = $dompdf->output();
         if ($out === false || $out === '') {
-            return false;
+            return ['ok' => false, 'error' => 'Dompdf produced an empty PDF'];
         }
-        return @file_put_contents($destAbsPath, $out) !== false;
+        if (@file_put_contents($destAbsPath, $out) === false) {
+            return ['ok' => false, 'error' => 'Could not write PDF file to storage'];
+        }
+        return ['ok' => true];
     } catch (Throwable $e) {
         error_log('offerLetterRenderHtmlToPdf: ' . $e->getMessage());
-        return false;
+        return ['ok' => false, 'error' => 'PDF render failed: ' . $e->getMessage()];
     }
+}
+
+/**
+ * Persist a client-generated PDF (base64, with or without data-URL prefix).
+ *
+ * @return array{ok:bool,error?:string}
+ */
+function offerLetterPersistPdfBase64(string $raw, string $destAbsPath): array {
+    $raw = trim($raw);
+    if (str_starts_with($raw, 'data:')) {
+        $comma = strpos($raw, ',');
+        if ($comma === false) {
+            return ['ok' => false, 'error' => 'Invalid pdf_base64 data URL'];
+        }
+        $raw = substr($raw, $comma + 1);
+    }
+    $bin = base64_decode($raw, true);
+    if ($bin === false || strlen($bin) < 100) {
+        return ['ok' => false, 'error' => 'Invalid pdf_base64'];
+    }
+    // Basic PDF magic
+    if (strncmp($bin, '%PDF', 4) !== 0) {
+        return ['ok' => false, 'error' => 'pdf_base64 is not a PDF'];
+    }
+    $dir = dirname($destAbsPath);
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        return ['ok' => false, 'error' => 'Cannot create storage/offer_letters'];
+    }
+    if (@file_put_contents($destAbsPath, $bin) === false) {
+        return ['ok' => false, 'error' => 'Could not write PDF file to storage'];
+    }
+    return ['ok' => true];
 }
 
 $actionGet = $_GET['action'] ?? '';
@@ -200,6 +253,11 @@ if ($method === 'POST') {
     if ($action === 'create_template') {
         $id = generateUUID();
         $orgId = getOrgId($tokenData);
+        if (($orgId === null || trim((string) $orgId) === '')
+            && syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
+            $syncOrgStmt = $db->query("SELECT id FROM organizations WHERE LOWER(TRIM(slug)) = 'syncpedia' LIMIT 1");
+            $orgId = $syncOrgStmt ? ($syncOrgStmt->fetchColumn() ?: null) : null;
+        }
         $status = $input['status'] ?? 'active';
         $name = trim($input['template_name'] ?? '') ?: 'Untitled Template';
         $roleTitle = trim($input['role_title'] ?? '');
@@ -221,6 +279,11 @@ if ($method === 'POST') {
     if ($action === 'send') {
         $id = generateUUID();
         $orgId = getOrgId($tokenData);
+        if (($orgId === null || trim((string) $orgId) === '')
+            && syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
+            $syncOrgStmt = $db->query("SELECT id FROM organizations WHERE LOWER(TRIM(slug)) = 'syncpedia' LIMIT 1");
+            $orgId = $syncOrgStmt ? ($syncOrgStmt->fetchColumn() ?: null) : null;
+        }
         $templateId = trim((string) ($input['template_id'] ?? ''));
         if ($templateId !== '') {
             $tpl = offerLettersFetchTemplateInScope($db, $tokenData, $templateId);
@@ -235,8 +298,20 @@ if ($method === 'POST') {
         }
 
         $pdfPath = offerLetterPdfFilePath($id);
-        if (!offerLetterRenderHtmlToPdf($html, $pdfPath)) {
-            respond(['error' => 'Could not generate offer letter PDF'], 500);
+        $pdfBase64 = trim((string) ($input['pdf_base64'] ?? $input['pdfBase64'] ?? ''));
+        if ($pdfBase64 !== '') {
+            $persist = offerLetterPersistPdfBase64($pdfBase64, $pdfPath);
+            if (empty($persist['ok'])) {
+                respond(['error' => $persist['error'] ?? 'Could not save offer letter PDF'], 500);
+            }
+        } else {
+            $rendered = offerLetterRenderHtmlToPdf($html, $pdfPath);
+            if (empty($rendered['ok'])) {
+                respond([
+                    'error' => $rendered['error'] ?? 'Could not generate offer letter PDF',
+                    'hint' => 'Upload php-backend/vendor (run install-vendor.sh) or retry — the app can send a browser-generated PDF.',
+                ], 500);
+            }
         }
         $pdfUrl = offerLetterPublicPdfUrl($id);
 
@@ -261,6 +336,7 @@ if ($method === 'POST') {
         $cc = trim((string)($input['cc'] ?? ''));
         $bcc = trim((string)($input['bcc'] ?? ''));
 
+        syncpediaSetMailContext($orgId !== '' ? $orgId : null, 'offer_letters');
         $mail = syncpediaSendHrHtmlEmail(
             $recipientEmail,
             $emailSubject,
@@ -273,6 +349,24 @@ if ($method === 'POST') {
         if (empty($mail['ok'])) {
             @unlink($pdfPath);
             respond(['error' => $mail['error'] ?? 'Could not send offer letter email'], 500);
+        }
+
+        // SMTP (especially Google) can take long enough for shared-hosting MySQL to
+        // close the connection opened at request bootstrap. Reconnect only after
+        // the mail operation so the sent-letter insert uses a live connection.
+        try {
+            $db = syncpediaCreatePdo();
+        } catch (Throwable $e) {
+            error_log('offer_letters reconnect after email: ' . $e->getMessage());
+            respond([
+                'id' => $id,
+                'message' => 'Offer letter emailed, but the sent record could not be saved',
+                'email_sent' => true,
+                'record_saved' => false,
+                'warning' => 'Database connection failed after email delivery. Do not resend; refresh Sent Letters later.',
+                'from' => (string)($mail['from'] ?? syncpediaHrMailAddress()),
+                'to' => $recipientEmail,
+            ], 201);
         }
 
         try {
@@ -289,19 +383,48 @@ if ($method === 'POST') {
                 $userId,
                 $orgId,
             ]);
-        } catch (Exception $e) {
-            $stmt = $db->prepare("INSERT INTO offer_letters_sent (id, template_id, recipient_name, recipient_email, role_title, html_content, pdf_url, status, sent_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([
-                $id,
-                $input['template_id'] ?? null,
-                $input['recipient_name'],
-                $input['recipient_email'],
-                $input['role_title'] ?? '',
-                $html,
-                $pdfUrl,
-                $input['status'] ?? 'sent',
-                $userId,
-            ]);
+        } catch (Throwable $e) {
+            $isMissingOrgColumn = stripos($e->getMessage(), 'unknown column') !== false
+                && stripos($e->getMessage(), 'org_id') !== false;
+            if ($isMissingOrgColumn) {
+                try {
+                    $db = syncpediaCreatePdo();
+                    $stmt = $db->prepare("INSERT INTO offer_letters_sent (id, template_id, recipient_name, recipient_email, role_title, html_content, pdf_url, status, sent_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt->execute([
+                        $id,
+                        $input['template_id'] ?? null,
+                        $input['recipient_name'],
+                        $input['recipient_email'],
+                        $input['role_title'] ?? '',
+                        $html,
+                        $pdfUrl,
+                        $input['status'] ?? 'sent',
+                        $userId,
+                    ]);
+                } catch (Throwable $fallbackError) {
+                    error_log('offer_letters sent record fallback: ' . $fallbackError->getMessage());
+                    respond([
+                        'id' => $id,
+                        'message' => 'Offer letter emailed, but the sent record could not be saved',
+                        'email_sent' => true,
+                        'record_saved' => false,
+                        'warning' => 'The email was accepted by SMTP. Do not resend it.',
+                        'from' => (string)($mail['from'] ?? syncpediaHrMailAddress()),
+                        'to' => $recipientEmail,
+                    ], 201);
+                }
+            } else {
+                error_log('offer_letters sent record insert: ' . $e->getMessage());
+                respond([
+                    'id' => $id,
+                    'message' => 'Offer letter emailed, but the sent record could not be saved',
+                    'email_sent' => true,
+                    'record_saved' => false,
+                    'warning' => 'The email was accepted by SMTP. Do not resend it.',
+                    'from' => (string)($mail['from'] ?? syncpediaHrMailAddress()),
+                    'to' => $recipientEmail,
+                ], 201);
+            }
         }
         try {
             $db->prepare('UPDATE offer_letters_sent SET pdf_path = ? WHERE id = ?')->execute([$pdfPath, $id]);
@@ -329,7 +452,8 @@ if ($method === 'POST') {
             $id = generateUUID();
             $html = (string)($letter['html_content'] ?? '');
             $pdfUrl = null;
-            if (offerLetterRenderHtmlToPdf($html, offerLetterPdfFilePath($id))) {
+            $rendered = offerLetterRenderHtmlToPdf($html, offerLetterPdfFilePath($id));
+            if (!empty($rendered['ok'])) {
                 $pdfUrl = offerLetterPublicPdfUrl($id);
             }
             try {

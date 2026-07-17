@@ -1,10 +1,9 @@
 /**
  * Payslip domain types and helpers.
  *
- * Salary follows a fixed CTC split:
- *   Basic 40% · HRA 20% · Special 30% · Other 10% (all of monthly CTC).
- * Deductions: PF (12% of basic, employee + employer mirrored), PT (₹200 flat),
- * TDS and other deductions are manually editable. Net = gross − total deductions.
+ * Payslips store the final salary component amounts entered by payroll.
+ * `calculateSalaryComponents` remains an optional CTC-based suggestion utility;
+ * generated payslips are not required to use that split.
  */
 
 // ── Employee ────────────────────────────────────────────────────────────────
@@ -71,7 +70,7 @@ export interface Payslip {
   status: PayslipStatus;
 }
 
-// ── CTC Split Utility ──────────────────────────────────────────────────────
+// ── Optional CTC Suggestion Utility ─────────────────────────────────────────
 export function calculateSalaryComponents(
   annualCTC: number,
   paidDays: number,

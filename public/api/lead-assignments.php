@@ -13,10 +13,10 @@ if ($method === 'GET') {
         $status = trim((string)($_GET['status'] ?? ''));
         $search = trim((string)($_GET['search'] ?? ''));
 
-        $where = "l.assigned_to = ?";
-        $params = [$userId];
+        $where = "(l.assigned_to = ? OR EXISTS (SELECT 1 FROM lead_assignments la_own WHERE la_own.lead_id = l.id AND la_own.user_id = ?))";
+        $params = [$userId, $userId];
 
-        // Assigned leads endpoint is user-scoped (assigned_to = current user).
+        // Assigned leads endpoint is user-scoped (primary assignee OR multi-assign row).
         // Do not apply org filter here; legacy records can have null/mismatched org_id
         // while still being legitimately assigned and visible to the assignee.
 
@@ -164,11 +164,21 @@ if ($method === 'POST') {
         syncpediaAssertUserInCallerOrg($db, $tokenData, $assignTo);
 
         $assignStmt = $db->prepare("INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?, ?, ?)");
+        $existsStmt = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
         $updateStmt = $db->prepare("UPDATE leads SET assigned_to = ? WHERE id = ?");
 
         foreach ($leadIds as $leadId) {
             syncpediaAssertLeadInScope($db, $tokenData, (string) $leadId);
-            $assignStmt->execute([generateUUID(), $leadId, $assignTo]);
+            $existsStmt->execute([(string) $leadId, $assignTo]);
+            if (!$existsStmt->fetch()) {
+                try {
+                    $assignStmt->execute([generateUUID(), $leadId, $assignTo]);
+                } catch (Throwable $e) {
+                    if (!isMysqlDuplicateKey($e)) {
+                        throw $e;
+                    }
+                }
+            }
             $updateStmt->execute([$assignTo, $leadId]);
         }
 
@@ -197,7 +207,7 @@ if ($method === 'DELETE') {
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
 
-    $chk = $db->prepare('SELECT la.id, la.lead_id FROM lead_assignments la WHERE la.id = ? LIMIT 1');
+    $chk = $db->prepare('SELECT la.id, la.lead_id, la.user_id FROM lead_assignments la WHERE la.id = ? LIMIT 1');
     $chk->execute([$id]);
     $row = $chk->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
@@ -206,8 +216,30 @@ if ($method === 'DELETE') {
     syncpediaAssertLeadInScope($db, $tokenData, (string) ($row['lead_id'] ?? ''));
 
     trashArchiveRow($db, 'lead_assignment', 'lead_assignments', $id, $tokenData);
+    $leadIdForSync = (string) ($row['lead_id'] ?? '');
+    $removedUserId = trim((string) ($row['user_id'] ?? ''));
+
     $stmt = $db->prepare("DELETE FROM lead_assignments WHERE id = ?");
     $stmt->execute([$id]);
+
+    // Keep leads.assigned_to aligned with remaining assignments.
+    if ($leadIdForSync !== '') {
+        $leadSt = $db->prepare('SELECT assigned_to FROM leads WHERE id = ? LIMIT 1');
+        $leadSt->execute([$leadIdForSync]);
+        $leadRow = $leadSt->fetch(PDO::FETCH_ASSOC);
+        $primary = is_array($leadRow) ? trim((string) ($leadRow['assigned_to'] ?? '')) : '';
+
+        $next = $db->prepare('SELECT user_id FROM lead_assignments WHERE lead_id = ? ORDER BY created_at ASC LIMIT 1');
+        $next->execute([$leadIdForSync]);
+        $nextUser = $next->fetchColumn();
+        if ($nextUser) {
+            if ($primary === '' || ($removedUserId !== '' && $primary === $removedUserId)) {
+                $db->prepare('UPDATE leads SET assigned_to = ? WHERE id = ?')->execute([(string) $nextUser, $leadIdForSync]);
+            }
+        } elseif ($primary === '' || $primary === $removedUserId) {
+            $db->prepare('UPDATE leads SET assigned_to = NULL WHERE id = ?')->execute([$leadIdForSync]);
+        }
+    }
     respond(['message' => 'Assignment removed']);
 }
 

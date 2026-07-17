@@ -21,19 +21,13 @@ if ($action === 'phase_update' && $method === 'POST') {
         respond(['success' => false, 'message' => 'Invalid memberEmail'], 400);
     }
 
-    if (!syncpediaSmtpIsReady() && !function_exists('mail')) {
-        respond([
-            'success' => false,
-            'message' => 'Email not configured. Set SMTP_* in api/config.php',
-        ], 500);
-    }
-
     $subject = phaseEmailSubject($payload);
     $html = phaseEmailHtml($payload);
     $from = defined('SMTP_HR_USER') && SMTP_HR_USER !== ''
         ? SMTP_HR_USER
         : (defined('SMTP_SUPPORT_USER') ? SMTP_SUPPORT_USER : 'hr@syncpedia.in');
 
+    syncpediaSetMailCategory('hr_updates');
     $result = syncpediaDeliverHtmlEmail(
         $email,
         $subject,

@@ -1,4 +1,6 @@
 // API Configuration - uses relative /api path for production deployment
+// Auth tokens live in localStorage (XSS-accessible). CSP in public/.htaccess reduces injection risk;
+// HttpOnly cookie auth would be the stronger long-term fix.
 import type { FresherMember } from '@/modules/fresherSalary/types';
 import { AUTH_PORTAL, loginPathFromSessionPortal } from '@/lib/portalAuth';
 
@@ -63,8 +65,9 @@ function setStoredOrg(org: any) {
 
 async function request(endpoint: string, options: RequestInit = {}) {
   const token = getToken();
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
     ...(options.headers as Record<string, string> || {}),
   };
 
@@ -278,6 +281,21 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ current_password, new_password }),
       }),
+    updateProfile: (data: {
+      full_name: string;
+      email: string;
+      phone: string;
+      avatar?: File | null;
+      remove_avatar?: boolean;
+    }) => {
+      const body = new FormData();
+      body.set('full_name', data.full_name);
+      body.set('email', data.email);
+      body.set('phone', data.phone);
+      body.set('remove_avatar', data.remove_avatar ? '1' : '0');
+      if (data.avatar) body.set('avatar', data.avatar);
+      return request('/auth.php?action=update_profile', { method: 'POST', body });
+    },
     logout: () => {
       clearToken();
     },
@@ -462,6 +480,13 @@ export const api = {
     users: () => request('/settings.php'),
     updateUser: (id: string, data: any) => request(`/settings.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     stages: () => request('/deals.php?stages=1'),
+    emailSetup: () => request('/email-settings.php'),
+    saveEmailSetup: (data: {
+      accounts: Array<{ slot: number; label: string; email: string; from_name: string; app_password?: string }>;
+      routes: Record<string, number>;
+    }) => request('/email-settings.php?action=setup', { method: 'PUT', body: JSON.stringify(data) }),
+    testEmailAccount: (slot: number) =>
+      request('/email-settings.php?action=test', { method: 'POST', body: JSON.stringify({ slot }) }),
   },
 
   // Daily Reports
@@ -509,7 +534,7 @@ export const api = {
     stats: () => request(`/organizations.php?action=stats&_t=${Date.now()}`),
     features: (orgId: string) => request(`/organizations.php?action=features&org_id=${orgId}`),
     create: (data: any) => request('/organizations.php', { method: 'POST', body: JSON.stringify(data) }),
-    provisionAdmin: (data: { org_id: string; admin_name: string; admin_email: string; admin_password: string }) =>
+    provisionAdmin: (data: { org_id: string; admin_name: string; admin_email: string; admin_phone: string; admin_password: string }) =>
       request('/organizations.php?action=provision_admin', { method: 'POST', body: JSON.stringify(data) }),
     syncPlatformSales: () =>
       request('/organizations.php?action=sync_platform_sales', { method: 'POST', body: JSON.stringify({}) }),

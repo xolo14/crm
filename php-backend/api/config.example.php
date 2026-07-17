@@ -35,6 +35,12 @@ define('SMTP_SUPPORT_USER', 'support@syncpedia.in');
 define('SMTP_SUPPORT_PASS', ''); // e.g. define('SMTP_SUPPORT_PASS', 'your-mailbox-password');
 define('SMTP_HR_USER', 'hr@syncpedia.in');
 define('SMTP_HR_PASS', '');
+// Dedicated 32-byte key for encrypting organization Gmail App Passwords.
+// Generate once: php -r "echo base64_encode(random_bytes(32));"
+// Keep this value stable; changing it makes saved organization SMTP passwords unreadable.
+define('SMTP_CREDENTIAL_KEY_V1', '');
+// Do NOT enable on production — PHP mail() often returns true without delivering mail.
+define('SMTP_ALLOW_MAIL_FALLBACK', false);
 
 // ── Razorpay (optional — payment links) ─────────────────────────────────────
 define('RAZORPAY_KEY_ID', '');
@@ -45,6 +51,10 @@ define('CRM_PUBLIC_URL', ''); // leave empty to auto-detect from your domain
 // ── Website lead ingest (no CRM form required) ───────────────────────────────
 // Used by syncpedia.in / other sites: POST /api/lead-ingest.php with header X-Lead-Api-Key
 define('PUBLIC_LEAD_API_KEY', ''); // e.g. openssl rand -hex 24
+// Lock all ingest leads to one org (recommended in production — prevents cross-tenant injection):
+define('LEAD_INGEST_ORG_ID', ''); // organizations.id UUID
+// Optional comma-separated browser origins allowed to call lead-ingest from JS (server-side POST ignores CORS):
+define('LEAD_INGEST_EXTRA_ORIGINS', ''); // e.g. 'https://syncpedia.in,https://www.syncpedia.in'
 
 // ── WhatsApp (optional — per-org config in Communications → WhatsApp Setup) ─
 // Meta Cloud API (direct):

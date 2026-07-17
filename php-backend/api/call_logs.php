@@ -358,11 +358,21 @@ if ($method === 'POST' && $action === 'add_log') {
     if (!in_array($callStatus, $statuses, true)) {
         respond(['error' => 'Invalid call_status'], 400);
     }
+    // Missed/rejected calls cannot be "connected" with talk time.
+    if (in_array($callType, ['missed', 'rejected'], true) && $callStatus === 'connected') {
+        respond(['error' => 'Missed/rejected calls cannot have status connected'], 400);
+    }
     $callDate = trim((string) ($input['call_date'] ?? ''));
     if ($callDate === '') {
         respond(['error' => 'call_date required'], 400);
     }
     $duration = max(0, (int) ($input['duration_seconds'] ?? 0));
+    if (in_array($callType, ['missed', 'rejected'], true) && $duration > 0) {
+        $duration = 0;
+    }
+    if ($callStatus !== 'connected' && $duration > 0) {
+        respond(['error' => 'Duration only applies when call status is connected'], 400);
+    }
     $callTime = isset($input['call_time']) && $input['call_time'] !== '' ? $input['call_time'] : null;
     $leadId = isset($input['lead_id']) && $input['lead_id'] !== '' ? (string) $input['lead_id'] : null;
 
@@ -447,6 +457,20 @@ if ($method === 'POST' && $action === 'add_log') {
         $callDate,
         $callTime,
     ];
+
+    $dupSt = $db->prepare(
+        "SELECT id FROM call_logs
+         WHERE sales_rep_id = ? AND org_id = ? AND call_date = ? AND call_type = ?
+           AND COALESCE(lead_id, '') = COALESCE(?, '')
+           AND COALESCE(client_phone, '') = COALESCE(?, '')
+           AND created_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
+         LIMIT 1",
+    );
+    $dupSt->execute([$repId, $orgId, $callDate, $callType, $leadId, $clientPhone]);
+    if ($dupSt->fetch(PDO::FETCH_ASSOC)) {
+        respond(['error' => 'Duplicate call log — already logged in the last 2 minutes'], 409);
+    }
+
     try {
         $stmt = $db->prepare('INSERT INTO call_logs (sales_rep_id, org_id, lead_id, call_type, call_status, duration_seconds, client_phone, client_name, notes, attachment_path, call_date, call_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
         $stmt->execute($rowVals);
@@ -648,8 +672,39 @@ if (($method === 'PUT' && $action === 'update_log') || ($method === 'POST' && $a
     $fields = [];
     $params = [];
     $allowed = ['call_type', 'call_status', 'duration_seconds', 'notes', 'call_date', 'call_time', 'lead_id'];
+    $types = ['incoming', 'outgoing', 'missed', 'rejected'];
+    $statuses = ['connected', 'never_attended', 'not_pickup_by_client'];
+    $nextType = $row['call_type'] ?? '';
+    $nextStatus = $row['call_status'] ?? '';
+    $nextDuration = (int) ($row['duration_seconds'] ?? 0);
     foreach ($allowed as $f) {
         if (!array_key_exists($f, $input)) {
+            continue;
+        }
+        if ($f === 'call_type') {
+            $ct = (string) $input['call_type'];
+            if (!in_array($ct, $types, true)) {
+                respond(['error' => 'Invalid call_type'], 400);
+            }
+            $nextType = $ct;
+            $fields[] = 'call_type = ?';
+            $params[] = $ct;
+            continue;
+        }
+        if ($f === 'call_status') {
+            $cs = (string) $input['call_status'];
+            if (!in_array($cs, $statuses, true)) {
+                respond(['error' => 'Invalid call_status'], 400);
+            }
+            $nextStatus = $cs;
+            $fields[] = 'call_status = ?';
+            $params[] = $cs;
+            continue;
+        }
+        if ($f === 'duration_seconds') {
+            $nextDuration = max(0, (int) $input['duration_seconds']);
+            $fields[] = 'duration_seconds = ?';
+            $params[] = $nextDuration;
             continue;
         }
         if ($f === 'lead_id') {
@@ -659,18 +714,11 @@ if (($method === 'PUT' && $action === 'update_log') || ($method === 'POST' && $a
                 $fields[] = 'client_name = NULL';
                 $fields[] = 'client_phone = NULL';
             } else {
-                $lk = $db->prepare('SELECT id FROM leads WHERE id = ? LIMIT 1');
-                $lk->execute([(string) $lid]);
-                if (!$lk->fetch()) {
-                    respond(['error' => 'Invalid lead_id'], 400);
-                }
+                $leadRow = syncpediaAssertLeadInScope($db, $tokenData, (string) $lid);
                 $fields[] = 'lead_id = ?';
                 $params[] = (string) $lid;
-                $lf = $db->prepare('SELECT name, phone FROM leads WHERE id = ? LIMIT 1');
-                $lf->execute([(string) $lid]);
-                $lr = $lf->fetch(PDO::FETCH_ASSOC);
-                $cn = ($lr && isset($lr['name']) && trim((string) $lr['name']) !== '') ? trim((string) $lr['name']) : null;
-                $cp = ($lr && isset($lr['phone']) && trim((string) $lr['phone']) !== '') ? trim((string) $lr['phone']) : null;
+                $cn = isset($leadRow['name']) && trim((string) $leadRow['name']) !== '' ? trim((string) $leadRow['name']) : null;
+                $cp = isset($leadRow['phone']) && trim((string) $leadRow['phone']) !== '' ? trim((string) $leadRow['phone']) : null;
                 $fields[] = 'client_name = ?';
                 $params[] = $cn;
                 $fields[] = 'client_phone = ?';
@@ -686,6 +734,18 @@ if (($method === 'PUT' && $action === 'update_log') || ($method === 'POST' && $a
         $params[] = $input[$f];
     }
 
+    if (in_array($nextType, ['missed', 'rejected'], true) && $nextStatus === 'connected') {
+        respond(['error' => 'Missed/rejected calls cannot have status connected'], 400);
+    }
+    if ($nextStatus !== 'connected' && $nextDuration > 0) {
+        respond(['error' => 'Duration only applies when call status is connected'], 400);
+    }
+    if (in_array($nextType, ['missed', 'rejected'], true) && $nextDuration > 0) {
+        $fields[] = 'duration_seconds = ?';
+        $params[] = 0;
+        $nextDuration = 0;
+    }
+
     $resLeadId = $row['lead_id'] ?? null;
     if (array_key_exists('lead_id', $input)) {
         $lidRaw = $input['lead_id'];
@@ -695,34 +755,28 @@ if (($method === 'PUT' && $action === 'update_log') || ($method === 'POST' && $a
             $resLeadId = (string) $lidRaw;
         }
     }
-    if ($resLeadId !== null && $resLeadId !== '' && !array_key_exists('lead_id', $input)) {
-        $lf = $db->prepare('SELECT name, phone FROM leads WHERE id = ? LIMIT 1');
-        $lf->execute([$resLeadId]);
-        $lr = $lf->fetch(PDO::FETCH_ASSOC);
-        if ($lr) {
-            $cn = isset($lr['name']) && trim((string) $lr['name']) !== '' ? trim((string) $lr['name']) : null;
-            $cp = isset($lr['phone']) && trim((string) $lr['phone']) !== '' ? trim((string) $lr['phone']) : null;
-            $fields[] = 'client_name = ?';
-            $params[] = $cn;
-            $fields[] = 'client_phone = ?';
-            $params[] = $cp;
-        }
+    $scopedLeadRow = null;
+    if ($resLeadId !== null && $resLeadId !== '') {
+        $scopedLeadRow = syncpediaAssertLeadInScope($db, $tokenData, (string) $resLeadId);
+    }
+    if ($scopedLeadRow && !array_key_exists('lead_id', $input)) {
+        $cn = isset($scopedLeadRow['name']) && trim((string) $scopedLeadRow['name']) !== '' ? trim((string) $scopedLeadRow['name']) : null;
+        $cp = isset($scopedLeadRow['phone']) && trim((string) $scopedLeadRow['phone']) !== '' ? trim((string) $scopedLeadRow['phone']) : null;
+        $fields[] = 'client_name = ?';
+        $params[] = $cn;
+        $fields[] = 'client_phone = ?';
+        $params[] = $cp;
     }
 
     $leadStatusIn = array_key_exists('lead_status', $input) ? trim((string) $input['lead_status']) : '';
 
-    if ($leadStatusIn !== '' && $resLeadId !== null && $resLeadId !== '' && empty($fields)) {
-        $lf = $db->prepare('SELECT name, phone FROM leads WHERE id = ? LIMIT 1');
-        $lf->execute([$resLeadId]);
-        $lr = $lf->fetch(PDO::FETCH_ASSOC);
-        if ($lr) {
-            $cn = isset($lr['name']) && trim((string) $lr['name']) !== '' ? trim((string) $lr['name']) : null;
-            $cp = isset($lr['phone']) && trim((string) $lr['phone']) !== '' ? trim((string) $lr['phone']) : null;
-            $fields[] = 'client_name = ?';
-            $params[] = $cn;
-            $fields[] = 'client_phone = ?';
-            $params[] = $cp;
-        }
+    if ($leadStatusIn !== '' && $scopedLeadRow && empty($fields)) {
+        $cn = isset($scopedLeadRow['name']) && trim((string) $scopedLeadRow['name']) !== '' ? trim((string) $scopedLeadRow['name']) : null;
+        $cp = isset($scopedLeadRow['phone']) && trim((string) $scopedLeadRow['phone']) !== '' ? trim((string) $scopedLeadRow['phone']) : null;
+        $fields[] = 'client_name = ?';
+        $params[] = $cn;
+        $fields[] = 'client_phone = ?';
+        $params[] = $cp;
     }
 
     if ($multipart) {

@@ -67,6 +67,18 @@ function paymentLinkEnsureSchema(PDO $db): void
     } catch (Throwable $e) {
         // Column already exists.
     }
+
+    try {
+        if (!syncpediaColumnExists($db, 'payment_links', 'processed_payment_ids')) {
+            if (syncpediaDbIsMysql($db)) {
+                $db->exec("ALTER TABLE payment_links ADD COLUMN processed_payment_ids JSON DEFAULT NULL");
+            } else {
+                $db->exec('ALTER TABLE payment_links ADD COLUMN processed_payment_ids JSONB DEFAULT NULL');
+            }
+        }
+    } catch (Throwable $e) {
+        // Column already exists.
+    }
 }
 
 /** Resolve tenant org for payment link storage (JWT + users table fallback). */
@@ -81,6 +93,16 @@ function paymentLinksResolveOrgId(array $tokenData): ?string
     $fromToken = trim((string) ($tokenData['org_id'] ?? ''));
     if ($fromToken !== '') {
         return $fromToken;
+    }
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
+        try {
+            $db = paymentLinksDb();
+            $st = $db->query("SELECT id FROM organizations WHERE LOWER(TRIM(slug)) = 'syncpedia' LIMIT 1");
+            $syncpediaOrgId = trim((string) ($st ? ($st->fetchColumn() ?: '') : ''));
+            return $syncpediaOrgId !== '' ? $syncpediaOrgId : null;
+        } catch (Throwable $e) {
+            return null;
+        }
     }
     $userId = trim((string) ($tokenData['user_id'] ?? ''));
     if ($userId === '') {
@@ -294,12 +316,19 @@ function paymentLinkUpsertFromRazorpay(
     $cust = is_array($rzpLink['customer'] ?? null) ? $rzpLink['customer'] : [];
 
     $amount = (int) ($rzpLink['amount'] ?? 0);
-    $amountPaid = (int) ($rzpLink['amount_paid'] ?? 0);
+    $incomingPaid = (int) ($rzpLink['amount_paid'] ?? 0);
+    $existingPaid = $existing ? (int) ($existing['amount_paid'] ?? 0) : 0;
+    // Never regress amount_paid from stale/out-of-order webhooks.
+    $amountPaid = max($incomingPaid, $existingPaid);
     $status = paymentLinkMapRazorpayStatus(
         (string) ($rzpLink['status'] ?? 'created'),
         $amountPaid,
         $amount,
     );
+    $rzpStatus = strtolower(trim((string) ($rzpLink['status'] ?? '')));
+    if ($rzpStatus === 'paid' && $amount > 0 && $amountPaid < $amount) {
+        $status = $amountPaid > 0 ? 'partially_paid' : 'created';
+    }
 
     $expireBy = null;
     if (!empty($rzpLink['expire_by'])) {
@@ -313,7 +342,7 @@ function paymentLinkUpsertFromRazorpay(
             'UPDATE payment_links SET
                 customer_name = ?, customer_email = ?, customer_phone = ?,
                 amount = ?, description = ?, reference_id = ?, status = ?,
-                amount_paid = ?, razorpay_short_url = ?, expire_by = ?, notes = ?,
+                amount_paid = GREATEST(COALESCE(amount_paid, 0), ?), razorpay_short_url = ?, expire_by = ?, notes = ?,
                 updated_at = CURRENT_TIMESTAMP
              WHERE razorpay_payment_link_id = ?',
         );
@@ -396,15 +425,20 @@ function paymentLinksBuildAccessScope(PDO $db, array $tokenData): array
         ];
     }
     if ($role === 'manager') {
-        $ids = hierarchyGetVisibleUserIds($db, $tokenData);
-        if (empty($ids) && $userId !== '') {
-            $ids = [$userId];
+        // Align with org-wide leads visibility for managers.
+        if ($resolvedOrgId === null) {
+            return [
+                'mode' => 'self',
+                'org_id' => null,
+                'salesperson_ids' => $userId !== '' ? [$userId] : [],
+                'org_member_ids' => [],
+            ];
         }
         return [
-            'mode' => 'downline',
+            'mode' => 'org',
             'org_id' => $resolvedOrgId,
-            'salesperson_ids' => $ids,
-            'org_member_ids' => [],
+            'salesperson_ids' => [],
+            'org_member_ids' => paymentLinksOrgMemberIds($db, $resolvedOrgId),
         ];
     }
     if ($role === 'sales_representative') {
@@ -909,16 +943,53 @@ function paymentLinkMarkInvoiceSent(
     string $invoiceNumber,
     string $pdfPath,
     int $amountPaidPaise,
+    string $paymentId = '',
 ): void {
     $db = paymentLinksDb();
-    $st = $db->prepare(
-        'UPDATE payment_links SET
-            invoice_number = ?,
-            invoice_sent_at = NOW(),
-            invoice_sent_for_amount_paid = ?,
-            invoice_pdf_path = ?,
-            updated_at = CURRENT_TIMESTAMP
-         WHERE razorpay_payment_link_id = ?',
-    );
-    $st->execute([$invoiceNumber, $amountPaidPaise, $pdfPath, $plinkId]);
+    paymentLinkEnsureSchema($db);
+
+    $processedJson = null;
+    if ($paymentId !== '') {
+        $existing = paymentLinkFindByRazorpayId($plinkId);
+        $processed = [];
+        if ($existing && !empty($existing['processed_payment_ids'])) {
+            $decoded = json_decode((string) $existing['processed_payment_ids'], true);
+            if (is_array($decoded)) {
+                $processed = $decoded;
+            }
+        }
+        if (!in_array($paymentId, $processed, true)) {
+            $processed[] = $paymentId;
+        }
+        // Cap growth
+        if (count($processed) > 100) {
+            $processed = array_slice($processed, -100);
+        }
+        $processedJson = json_encode(array_values($processed));
+    }
+
+    if ($processedJson !== null) {
+        $st = $db->prepare(
+            'UPDATE payment_links SET
+                invoice_number = ?,
+                invoice_sent_at = NOW(),
+                invoice_sent_for_amount_paid = GREATEST(COALESCE(invoice_sent_for_amount_paid, 0), ?),
+                invoice_pdf_path = ?,
+                processed_payment_ids = ?,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE razorpay_payment_link_id = ?',
+        );
+        $st->execute([$invoiceNumber, $amountPaidPaise, $pdfPath, $processedJson, $plinkId]);
+    } else {
+        $st = $db->prepare(
+            'UPDATE payment_links SET
+                invoice_number = ?,
+                invoice_sent_at = NOW(),
+                invoice_sent_for_amount_paid = GREATEST(COALESCE(invoice_sent_for_amount_paid, 0), ?),
+                invoice_pdf_path = ?,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE razorpay_payment_link_id = ?',
+        );
+        $st->execute([$invoiceNumber, $amountPaidPaise, $pdfPath, $plinkId]);
+    }
 }

@@ -40,7 +40,7 @@ interface Props {
   onFilterChange: (filters: TableFilters) => void;
   onViewDetail: (link: RazorpayPaymentLink) => void;
   onCancel: (id: string) => void;
-  onRemind: (id: string, medium: "sms" | "email") => void;
+  onEmail: (link: RazorpayPaymentLink) => void;
   onRefresh: () => void;
   onCopyShortUrl: (url: string) => void;
   onCreate?: () => void;
@@ -113,7 +113,7 @@ export default function PaymentLinksTable({
   onFilterChange,
   onViewDetail,
   onCancel,
-  onRemind,
+  onEmail,
   onRefresh,
   onCopyShortUrl,
   onCreate,
@@ -435,12 +435,13 @@ export default function PaymentLinksTable({
                           >
                             <Eye size={14} />
                           </button>
-                          {isPending && l.customer?.email ? (
+                          {(isPending || l.status === "partially_paid" || l.status === "paid") &&
+                          l.customer?.email ? (
                             <button
                               type="button"
-                              onClick={() => onRemind(l.id, "email")}
+                              onClick={() => onEmail(l)}
                               className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100"
-                              title="Razorpay reminder"
+                              title="Send customer email"
                             >
                               <Mail size={14} />
                             </button>

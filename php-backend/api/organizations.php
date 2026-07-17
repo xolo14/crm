@@ -8,6 +8,15 @@ $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 
+function organizationsNormalizeAdminPhone($raw): ?string {
+    $value = trim((string) $raw);
+    $digits = preg_replace('/\D+/', '', $value) ?? '';
+    if (strlen($digits) < 7 || strlen($digits) > 15) {
+        return null;
+    }
+    return str_starts_with($value, '+') ? '+' . $digits : $digits;
+}
+
 // Only super_admin can manage organizations
 if ($method === 'GET') {
     // Own org profile (any authenticated role with an org) — used by Settings → Company Profile / Data Privacy.
@@ -126,9 +135,10 @@ if ($method === 'POST') {
             $orgId = trim($input['org_id'] ?? '');
             $adminEmail = trim($input['admin_email'] ?? '');
             $adminName = trim($input['admin_name'] ?? '');
+            $adminPhone = organizationsNormalizeAdminPhone($input['admin_phone'] ?? '');
             $adminPassword = (string)($input['admin_password'] ?? '');
-            if (!$orgId || !$adminEmail || !$adminName) {
-                respond(['error' => 'org_id, admin_email, and admin_name are required'], 400);
+            if (!$orgId || !$adminEmail || !$adminName || $adminPhone === null) {
+                respond(['error' => 'org_id, admin_email, admin_name, and a valid admin_phone are required'], 400);
             }
             if (strlen($adminPassword) < 6) {
                 respond(['error' => 'Password must be at least 6 characters'], 400);
@@ -146,8 +156,8 @@ if ($method === 'POST') {
                 if (($existing['org_id'] ?? '') !== $orgId) {
                     respond(['error' => 'This email is already registered to another organization'], 409);
                 }
-                $db->prepare("UPDATE users SET full_name = ?, password_hash = ?, role = 'admin', is_active = 1 WHERE id = ?")
-                    ->execute([$adminName, $hash, $existing['id']]);
+                $db->prepare("UPDATE users SET full_name = ?, phone = ?, password_hash = ?, role = 'admin', is_active = 1 WHERE id = ?")
+                    ->execute([$adminName, $adminPhone, $hash, $existing['id']]);
                 syncpediaStoreUserLoginPassword($db, (string) $existing['id'], $adminPassword);
                 try {
                     $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$existing['id'], $orgId]);
@@ -187,8 +197,8 @@ if ($method === 'POST') {
                 if ($emailTaken->fetch()) {
                     respond(['error' => 'This email is already used by another account'], 409);
                 }
-                $db->prepare("UPDATE users SET email = ?, full_name = ?, password_hash = ?, role = 'admin', is_active = 1 WHERE id = ? AND org_id = ?")
-                    ->execute([$adminEmail, $adminName, $hash, $primaryAdminId, $orgId]);
+                $db->prepare("UPDATE users SET email = ?, full_name = ?, phone = ?, password_hash = ?, role = 'admin', is_active = 1 WHERE id = ? AND org_id = ?")
+                    ->execute([$adminEmail, $adminName, $adminPhone, $hash, $primaryAdminId, $orgId]);
                 syncpediaStoreUserLoginPassword($db, (string) $primaryAdminId, $adminPassword);
                 try {
                     $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$primaryAdminId, $orgId]);
@@ -199,14 +209,15 @@ if ($method === 'POST') {
 
             $adminId = generateUUID();
             $refCode = strtoupper(substr(str_replace('-', '', $adminId), 0, 8));
-            $db->prepare("INSERT INTO users (id, email, password_hash, full_name, role, org_id, referral_code) VALUES (?, ?, ?, ?, 'admin', ?, ?)")
-                ->execute([$adminId, $adminEmail, $hash, $adminName, $orgId, $refCode]);
+            $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, referral_code) VALUES (?, ?, ?, ?, ?, 'admin', ?, ?)")
+                ->execute([$adminId, $adminEmail, $hash, $adminName, $adminPhone, $orgId, $refCode]);
             syncpediaStoreUserLoginPassword($db, $adminId, $adminPassword);
             try {
                 $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$adminId, $orgId]);
             } catch (Exception $e) {
             }
-            $welcomeResult = syncpediaSendMemberWelcomeEmail($adminName, $adminEmail, $adminPassword, 'admin', null);
+            syncpediaSetMailContext($orgId, 'member_welcome');
+            $welcomeResult = syncpediaSendMemberWelcomeEmail($adminName, $adminEmail, $adminPassword, 'admin', $adminPhone);
             $payload = ['message' => 'Organization admin created', 'user_id' => $adminId, 'email_sent' => $welcomeResult['email_sent'], 'email_from' => $welcomeResult['from']];
             if ($welcomeResult['email_error'] !== null) {
                 $payload['email_error'] = $welcomeResult['email_error'];
@@ -264,26 +275,27 @@ if ($method === 'POST') {
         $createAdmin = !array_key_exists('create_admin', $input) || filter_var($input['create_admin'], FILTER_VALIDATE_BOOLEAN);
         $adminEmail = trim($input['admin_email'] ?? '');
         $adminName = trim($input['admin_name'] ?? '');
+        $adminPhone = organizationsNormalizeAdminPhone($input['admin_phone'] ?? '');
         $adminPassword = trim((string) ($input['admin_password'] ?? ''));
         if ($adminPassword === '' || $adminPassword === 'Welcome@123') {
             $adminPassword = syncpediaGenerateTempPassword();
         }
         $orgWelcomeEmail = null;
 
-        if ($createAdmin && (!$adminEmail || !$adminName)) {
+        if ($createAdmin && (!$adminEmail || !$adminName || $adminPhone === null)) {
             if ($db->inTransaction()) {
                 $db->rollBack();
             }
-            respond(['error' => 'When creating an org admin account, admin name and email are required'], 400);
+            respond(['error' => 'When creating an org admin account, admin name, email, and a valid phone are required'], 400);
         }
         
-        if ($createAdmin && $adminEmail && $adminName) {
+        if ($createAdmin && $adminEmail && $adminName && $adminPhone !== null) {
             $adminId = generateUUID();
             $hash = password_hash($adminPassword, PASSWORD_DEFAULT);
             $refCode = strtoupper(substr(str_replace('-', '', $adminId), 0, 8));
             
-            $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, role, org_id, referral_code) VALUES (?, ?, ?, ?, 'admin', ?, ?)");
-            $stmt->execute([$adminId, $adminEmail, $hash, $adminName, $orgId, $refCode]);
+            $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, referral_code) VALUES (?, ?, ?, ?, ?, 'admin', ?, ?)");
+            $stmt->execute([$adminId, $adminEmail, $hash, $adminName, $adminPhone, $orgId, $refCode]);
             syncpediaStoreUserLoginPassword($db, $adminId, (string) $adminPassword);
             
             try {
@@ -292,7 +304,8 @@ if ($method === 'POST') {
                 // Older schema may not have owner_id; ignore.
             }
 
-            $welcomeResult = syncpediaSendMemberWelcomeEmail($adminName, $adminEmail, (string) $adminPassword, 'admin', null);
+            syncpediaSetMailContext($orgId, 'member_welcome');
+            $welcomeResult = syncpediaSendMemberWelcomeEmail($adminName, $adminEmail, (string) $adminPassword, 'admin', $adminPhone);
             $orgWelcomeEmail = $welcomeResult;
         }
         

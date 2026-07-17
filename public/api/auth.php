@@ -182,7 +182,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
             respond(['error' => 'Email is required'], 400);
         }
         ensurePasswordResetsTable($db);
-        $stmt = $db->prepare("SELECT id, full_name, role FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) AND is_active = 1");
+        $stmt = $db->prepare("SELECT id, full_name, role, org_id FROM users WHERE LOWER(TRIM(email)) = LOWER(TRIM(?)) AND is_active = 1");
         $stmt->execute([$email]);
         $u = $stmt->fetch();
         $genericMsg = 'If an account exists for this email, a one-time code has been sent from support@syncpedia.in.';
@@ -196,6 +196,12 @@ if ($method === 'POST' && isset($_GET['action'])) {
         // Store expiry in UTC so PHP/MySQL timezone skew does not expire codes immediately
         $exp = gmdate('Y-m-d H:i:s', time() + 600);
         $db->prepare("INSERT INTO password_resets (id, user_id, token, expires_at) VALUES (?, ?, ?, ?)")->execute([$rid, $u['id'], $otpHash, $exp]);
+        $mailOrgId = trim((string) ($u['org_id'] ?? ''));
+        if ($mailOrgId === '' && syncpediaNormalizeRoleKey((string) ($u['role'] ?? '')) === 'super_admin') {
+            $syncOrg = $db->query("SELECT id FROM organizations WHERE LOWER(TRIM(slug)) = 'syncpedia' LIMIT 1");
+            $mailOrgId = trim((string) ($syncOrg ? ($syncOrg->fetchColumn() ?: '') : ''));
+        }
+        syncpediaSetMailContext($mailOrgId !== '' ? $mailOrgId : null, 'password_reset');
         $mail = syncpediaSendPasswordResetOtpEmail($email, (string) ($u['full_name'] ?? ''), $otp);
         if (!($mail['email_sent'] ?? false)) {
             $db->prepare("DELETE FROM password_resets WHERE id = ?")->execute([$rid]);
@@ -402,6 +408,88 @@ if ($method === 'POST' && isset($_GET['action'])) {
         $db->prepare('UPDATE users SET password_hash = ? WHERE id = ?')->execute([$newHash, $tokenData['user_id']]);
         syncpediaStoreUserLoginPassword($db, (string) $tokenData['user_id'], null);
         respond(['message' => 'Password updated successfully']);
+    }
+
+    if ($action === 'update_profile') {
+        $tokenData = verifyToken();
+        syncpediaRateLimitConsume('update_profile_' . ($tokenData['user_id'] ?? ''), 20, 900);
+        $userId = trim((string) ($tokenData['user_id'] ?? ''));
+        $fullName = trim((string) ($_POST['full_name'] ?? ''));
+        $email = strtolower(trim((string) ($_POST['email'] ?? '')));
+        $phone = trim((string) ($_POST['phone'] ?? ''));
+        $removeAvatar = (string) ($_POST['remove_avatar'] ?? '0') === '1';
+
+        $nameLength = function_exists('mb_strlen') ? mb_strlen($fullName) : strlen($fullName);
+        if ($nameLength < 2 || $nameLength > 100) {
+            respond(['error' => 'Full name must contain 2 to 100 characters'], 400);
+        }
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 255) {
+            respond(['error' => 'Enter a valid email address'], 400);
+        }
+        $compactPhone = preg_replace('/[\s()-]+/', '', $phone) ?? '';
+        if ($phone !== '' && !preg_match('/^\+?[0-9]{7,15}$/', $compactPhone)) {
+            respond(['error' => 'Enter a valid phone number containing 7 to 15 digits'], 400);
+        }
+
+        $currentStmt = $db->prepare('SELECT avatar_url FROM users WHERE id = ? LIMIT 1');
+        $currentStmt->execute([$userId]);
+        $current = $currentStmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($current)) respond(['error' => 'User not found'], 404);
+
+        $duplicateStmt = $db->prepare('SELECT id FROM users WHERE LOWER(TRIM(email)) = ? AND id <> ? LIMIT 1');
+        $duplicateStmt->execute([$email, $userId]);
+        if ($duplicateStmt->fetchColumn()) {
+            respond(['error' => 'This email address is already used by another account'], 409);
+        }
+
+        $oldAvatar = trim((string) ($current['avatar_url'] ?? ''));
+        $avatarUrl = $removeAvatar ? null : ($oldAvatar !== '' ? $oldAvatar : null);
+        $newAvatarPath = null;
+        $avatar = $_FILES['avatar'] ?? null;
+        if (is_array($avatar) && (int) ($avatar['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
+            $uploadError = (int) ($avatar['error'] ?? UPLOAD_ERR_NO_FILE);
+            if ($uploadError !== UPLOAD_ERR_OK) respond(['error' => 'Profile photo upload failed'], 400);
+            $size = (int) ($avatar['size'] ?? 0);
+            if ($size < 1 || $size > 2 * 1024 * 1024) {
+                respond(['error' => 'Profile photo must be no larger than 2 MB'], 400);
+            }
+            $tmpName = (string) ($avatar['tmp_name'] ?? '');
+            $finfo = new finfo(FILEINFO_MIME_TYPE);
+            $mime = $finfo->file($tmpName);
+            $extensions = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
+            if (!is_string($mime) || !isset($extensions[$mime])) {
+                respond(['error' => 'Profile photo must be a JPG, PNG, or WebP image'], 400);
+            }
+            $avatarDir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'avatars';
+            if (!is_dir($avatarDir) && !mkdir($avatarDir, 0755, true) && !is_dir($avatarDir)) {
+                respond(['error' => 'Could not create profile photo storage'], 500);
+            }
+            $fileName = generateUUID() . '.' . $extensions[$mime];
+            $newAvatarPath = $avatarDir . DIRECTORY_SEPARATOR . $fileName;
+            if (!move_uploaded_file($tmpName, $newAvatarPath)) {
+                respond(['error' => 'Could not store profile photo'], 500);
+            }
+            $avatarUrl = '/uploads/avatars/' . $fileName;
+        }
+
+        try {
+            $update = $db->prepare('UPDATE users SET full_name = ?, email = ?, phone = ?, avatar_url = ? WHERE id = ?');
+            $update->execute([$fullName, $email, $phone !== '' ? $phone : null, $avatarUrl, $userId]);
+        } catch (Throwable $e) {
+            if ($newAvatarPath !== null && is_file($newAvatarPath)) @unlink($newAvatarPath);
+            if (stripos($e->getMessage(), 'duplicate') !== false || (string) $e->getCode() === '23000') {
+                respond(['error' => 'This email address is already used by another account'], 409);
+            }
+            throw $e;
+        }
+
+        if ($oldAvatar !== '' && $oldAvatar !== $avatarUrl && strpos($oldAvatar, '/uploads/avatars/') === 0) {
+            $oldAvatarPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'avatars'
+                . DIRECTORY_SEPARATOR . basename($oldAvatar);
+            if (is_file($oldAvatarPath)) @unlink($oldAvatarPath);
+        }
+        syncpediaAuditLog($db, $tokenData, 'updated_profile', 'user', $userId, 'Updated personal profile');
+        respond(['message' => 'Profile updated successfully']);
     }
 
     if ($action === 'me') {

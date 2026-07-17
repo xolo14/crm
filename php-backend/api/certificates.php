@@ -244,7 +244,7 @@ if ($method === 'POST' && $action === 'send_email') {
 
     $org = orgFilter($tokenData, 'cia', $db);
     $lookupParams = array_merge([$certificateId], $org['params']);
-    $artifactStmt = $db->prepare("SELECT cia.pdf_path, cia.student_name, cia.sync_id FROM certificate_issue_artifacts cia WHERE cia.sync_id = ? AND {$org['where']} ORDER BY cia.created_at DESC LIMIT 1");
+    $artifactStmt = $db->prepare("SELECT cia.pdf_path, cia.student_name, cia.sync_id, cia.org_id FROM certificate_issue_artifacts cia WHERE cia.sync_id = ? AND {$org['where']} ORDER BY cia.created_at DESC LIMIT 1");
     $artifactStmt->execute($lookupParams);
     $artifact = $artifactStmt->fetch(PDO::FETCH_ASSOC);
     if (!$artifact) {
@@ -264,6 +264,8 @@ if ($method === 'POST' && $action === 'send_email') {
 
     $cc = trim((string) ($input['cc'] ?? ''));
     $bcc = trim((string) ($input['bcc'] ?? ''));
+    $artifactOrgId = trim((string) ($artifact['org_id'] ?? ''));
+    syncpediaSetMailContext($artifactOrgId !== '' ? $artifactOrgId : null, 'certificates');
     $send = syncpediaSendCertificateEmail(
         $to,
         $subject,

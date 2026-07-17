@@ -108,6 +108,11 @@ export const communicationsApi = {
     commRequest('/communications.php?action=templates', { method: 'POST', body: JSON.stringify(body) }),
   updateTemplate: (id: string, body: Record<string, unknown>) =>
     commRequest(`/communications.php?action=templates&id=${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteTemplate: (id: string) =>
+    commRequest('/communications.php?action=delete_template', {
+      method: 'POST',
+      body: JSON.stringify({ id, action: 'delete_template' }),
+    }),
 
   testWhatsappConnection: (opts?: {
     orgId?: string;

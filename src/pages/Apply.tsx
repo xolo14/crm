@@ -236,6 +236,11 @@ export default function Apply() {
       const customEmail = contact.email;
       const customPhone = contact.phone;
 
+      const apiHeaders: HeadersInit = {};
+      if (apiKey) {
+        apiHeaders['X-Form-Api-Key'] = apiKey;
+      }
+
       if (isCustomForm && effectiveQuestions.length > 0) {
         const fd = new FormData();
         fd.append('name', customName);
@@ -251,11 +256,10 @@ export default function Apply() {
         fd.append('source', formSlug ? `form_${formSlug}` : 'website');
         if (formSlug) fd.append('form', formSlug);
         if (ref) fd.append('ref', ref);
-        if (apiKey) fd.append('api_key', apiKey);
         for (const [key, file] of Object.entries(formFiles)) {
           if (file) fd.append(`file_${key}`, file);
         }
-        const response = await fetch(`${apiBase}/public-lead.php`, { method: 'POST', body: fd });
+        const response = await fetch(`${apiBase}/public-lead.php`, { method: 'POST', headers: apiHeaders, body: fd });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Submission failed');
         reportLeadFormConversion();
@@ -265,7 +269,7 @@ export default function Apply() {
 
       const response = await fetch(`${apiBase}/public-lead.php`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...apiHeaders },
         body: JSON.stringify({
           name: isCustomForm && effectiveDynamicFields.length > 0 ? customName : form.name.trim(),
           email: isCustomForm && effectiveDynamicFields.length > 0 ? customEmail : form.email.trim(),
@@ -277,7 +281,6 @@ export default function Apply() {
           source: formSlug ? `form_${formSlug}` : 'website',
           form: formSlug || undefined,
           ref: ref || undefined,
-          api_key: apiKey || undefined,
         }),
       });
       const data = await response.json();

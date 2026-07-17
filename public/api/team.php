@@ -241,6 +241,8 @@ if ($method === 'POST') {
         }
 
         $memberRole = normalizeRoleValue((string) ($target['role'] ?? ''));
+        $targetOrgId = trim((string) ($target['org_id'] ?? ''));
+        syncpediaSetMailContext($targetOrgId !== '' ? $targetOrgId : null, 'member_welcome');
         $welcomeResult = syncpediaSendMemberWelcomeEmail(
             (string) ($target['full_name'] ?? ''),
             (string) ($target['email'] ?? ''),
@@ -384,6 +386,7 @@ if ($method === 'POST') {
     $emailFrom = null;
     $emailError = null;
     if (teamWantsWelcomeEmail($input)) {
+        syncpediaSetMailContext($orgId !== '' ? $orgId : null, 'member_welcome');
         $welcomeResult = syncpediaSendMemberWelcomeEmail(
             $fullName,
             $email,

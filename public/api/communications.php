@@ -58,7 +58,9 @@ function commEnsureTables(PDO $db): void {
         $sql = file_get_contents($migration);
         foreach (array_filter(array_map('trim', explode(';', $sql))) as $stmt) {
             if ($stmt === '' || stripos($stmt, 'CREATE TABLE') === false) continue;
-            try { $db->exec($stmt); } catch (Throwable $e) {}
+            try { $db->exec($stmt); } catch (Throwable $e) {
+                error_log('[communications] migration skipped: ' . $e->getMessage());
+            }
         }
     }
     commEnsureMetaColumns($db);
@@ -84,7 +86,9 @@ function commEnsureMetaColumns(PDO $db): void {
             if (!syncpediaColumnExists($db, $table, $column)) {
                 $db->exec("ALTER TABLE {$table} ADD COLUMN {$column} {$type}");
             }
-        } catch (Throwable $e) {}
+        } catch (Throwable $e) {
+            error_log('[communications] column alter skipped: ' . $e->getMessage());
+        }
     }
     $ok = true;
 }
@@ -613,11 +617,67 @@ if ($action === 'templates') {
         if (!empty($input['submit_for_approval'])) {
             respond(['error' => 'Use submit_template_meta to apply for Meta official approval'], 400);
         }
+        // Editing a failed draft: keep CRM as draft until re-submitted.
+        $statusIn = isset($input['status']) ? strtolower(trim((string) $input['status'])) : '';
+        if ($statusIn === '' && array_intersect_key($input, array_flip(['name', 'body', 'header_text', 'footer', 'category', 'language', 'provider_template_id']))) {
+            $cur = strtolower((string) ($row['status'] ?? ''));
+            if (in_array($cur, ['draft', 'rejected'], true)) {
+                $fields[] = 'status = ?';
+                $params[] = 'draft';
+                $fields[] = 'meta_status = ?';
+                $params[] = null;
+            }
+        }
         if (!$fields) respond(['error' => 'Nothing to update'], 400);
         $params[] = $id;
         $db->prepare('UPDATE whatsapp_message_templates SET ' . implode(', ', $fields) . ' WHERE id = ?')->execute($params);
         respond(['message' => 'Template updated']);
     }
+    if ($method === 'DELETE') {
+        // Prefer POST ?action=delete_template on shared hosting (DELETE often blocked / not routed).
+        $id = trim((string) ($_GET['id'] ?? ($input['id'] ?? '')));
+        if ($id === '') {
+            respond(['error' => 'ID required'], 400);
+        }
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+        $stmt = $db->prepare('SELECT * FROM whatsapp_message_templates WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            respond(['error' => 'Not found'], 404);
+        }
+        if (!commIsSuperAdmin($tokenData) && ($row['org_id'] ?? '') !== commResolveOrgId($db, $tokenData, $_GET)) {
+            respond(['error' => 'Forbidden'], 403);
+        }
+        $db->prepare('DELETE FROM whatsapp_message_templates WHERE id = ?')->execute([$id]);
+        respond([
+            'message' => 'Template removed from CRM',
+            'note' => 'If this template exists in Meta, delete or archive it there separately.',
+        ]);
+    }
+}
+
+// ─── Delete template (POST — reliable on Hostinger when HTTP DELETE is blocked) ───
+if (($action === 'delete_template' || $action === 'templates_delete') && $method === 'POST') {
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    $id = trim((string) ($input['id'] ?? ($_GET['id'] ?? '')));
+    if ($id === '') {
+        respond(['error' => 'id required'], 400);
+    }
+    $stmt = $db->prepare('SELECT * FROM whatsapp_message_templates WHERE id = ?');
+    $stmt->execute([$id]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        respond(['error' => 'Not found'], 404);
+    }
+    if (!commIsSuperAdmin($tokenData) && ($row['org_id'] ?? '') !== commResolveOrgId($db, $tokenData, $input)) {
+        respond(['error' => 'Forbidden'], 403);
+    }
+    $db->prepare('DELETE FROM whatsapp_message_templates WHERE id = ?')->execute([$id]);
+    respond([
+        'message' => 'Template removed from CRM',
+        'note' => 'If this template exists in Meta, delete or archive it there separately.',
+    ]);
 }
 
 // ─── Send WhatsApp message (approved templates only) ───
@@ -643,9 +703,6 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
     commAssertOrgAccess($tokenData, $orgId);
     $vnId = $input['virtual_number_id'] ?? null;
 
-    $msgId = generateUUID();
-    $send = commSendViaOrgProvider($db, $orgId, $phone, $template, $vars, $msgId);
-
     require_once __DIR__ . '/lib/WhatsAppInbox.php';
     WhatsAppInbox::ensureTables($db);
     $normalized = WhatsAppInbox::normalizePhone($phone);
@@ -659,6 +716,7 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
         $orgCfg['phone_number_id'] ?? null,
     );
     $role = commNormRole($tokenData);
+    // Access check BEFORE Meta send — never orphan a delivered template on a 403.
     if ($conv && WhatsAppInbox::isFieldInboxRole($role)) {
         $can = WhatsAppInbox::userCanAccessConversation($db, $conv, $userId, $role);
         if (!$can) {
@@ -674,34 +732,81 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
         }
     }
 
+    $msgId = generateUUID();
+    $send = commSendViaOrgProvider($db, $orgId, $phone, $template, $vars, $msgId);
     $status = $send['ok'] ? 'sent' : 'failed';
-    $db->prepare('INSERT INTO comm_whatsapp_messages (id, org_id, user_id, virtual_number_id, template_id, recipient_phone, recipient_name, variables, message_body, status, provider_message_id, error_message, lead_id, direction, conversation_id, sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        ->execute([
-            $msgId, $orgId, $userId, $vnId,
-            $templateId, $normalized !== '' ? $normalized : $phone,
-            $input['recipient_name'] ?? null,
-            json_encode($vars),
-            $body, $status,
-            $send['provider_message_id'] ?? null,
-            $send['error'] ?? null,
-            $input['lead_id'] ?? ($conv['lead_id'] ?? null),
-            'outbound',
-            $conv['id'] ?? null,
-            $send['ok'] ? date('Y-m-d H:i:s') : null,
-        ]);
+    $wamid = trim((string) ($send['provider_message_id'] ?? ''));
+    $leadId = $input['lead_id'] ?? ($conv['lead_id'] ?? null);
+    $convId = $conv['id'] ?? null;
+    $now = date('Y-m-d H:i:s');
 
-    if ($conv && !empty($conv['id'])) {
-        WhatsAppInbox::touchOutboundOwnership($db, (string) $conv['id'], $userId);
+    try {
+        if ($wamid !== '') {
+            $existing = $db->prepare('SELECT id FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
+            $existing->execute([$wamid]);
+            $existingId = $existing->fetchColumn();
+            if ($existingId) {
+                $msgId = (string) $existingId;
+                $db->prepare(
+                    'UPDATE comm_whatsapp_messages SET status = ?, error_message = ?, conversation_id = COALESCE(conversation_id, ?), sent_at = COALESCE(sent_at, ?) WHERE id = ?',
+                )->execute([$status, $send['error'] ?? null, $convId, $send['ok'] ? $now : null, $msgId]);
+            } else {
+                $db->prepare('INSERT INTO comm_whatsapp_messages (id, org_id, user_id, virtual_number_id, template_id, recipient_phone, recipient_name, variables, message_body, status, provider_message_id, error_message, lead_id, direction, conversation_id, sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                    ->execute([
+                        $msgId, $orgId, $userId, $vnId,
+                        $templateId, $normalized !== '' ? $normalized : $phone,
+                        $input['recipient_name'] ?? null,
+                        json_encode($vars),
+                        $body, $status,
+                        $wamid !== '' ? $wamid : null,
+                        $send['error'] ?? null,
+                        $leadId,
+                        'outbound',
+                        $convId,
+                        $send['ok'] ? $now : null,
+                    ]);
+            }
+        } else {
+            $db->prepare('INSERT INTO comm_whatsapp_messages (id, org_id, user_id, virtual_number_id, template_id, recipient_phone, recipient_name, variables, message_body, status, provider_message_id, error_message, lead_id, direction, conversation_id, sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([
+                    $msgId, $orgId, $userId, $vnId,
+                    $templateId, $normalized !== '' ? $normalized : $phone,
+                    $input['recipient_name'] ?? null,
+                    json_encode($vars),
+                    $body, $status,
+                    null,
+                    $send['error'] ?? null,
+                    $leadId,
+                    'outbound',
+                    $convId,
+                    $send['ok'] ? $now : null,
+                ]);
+        }
+    } catch (Throwable $e) {
+        respond([
+            'error' => $send['ok']
+                ? 'Message may have been sent on WhatsApp but failed to save in CRM inbox'
+                : ($send['error'] ?? 'Send failed'),
+            'detail' => $e->getMessage(),
+            'id' => $msgId,
+            'provider_message_id' => $wamid !== '' ? $wamid : null,
+            'status' => $status,
+            'conversation_id' => $convId,
+        ], $send['ok'] ? 500 : 502);
+    }
+
+    if ($convId) {
+        WhatsAppInbox::touchOutboundOwnership($db, (string) $convId, $userId);
         if ($send['ok']) {
             $db->prepare('UPDATE wa_conversations SET last_message_at = ?, last_message_preview = ?, updated_at = NOW() WHERE id = ?')
-                ->execute([date('Y-m-d H:i:s'), WhatsAppInbox::previewText($body, 200), $conv['id']]);
+                ->execute([$now, WhatsAppInbox::previewText($body, 200), $convId]);
         }
     }
 
     if (!$send['ok']) {
         respond(['error' => $send['error'] ?? 'Send failed', 'id' => $msgId], 502);
     }
-    respond(['id' => $msgId, 'message' => 'WhatsApp message queued', 'status' => $status, 'conversation_id' => $conv['id'] ?? null], 201);
+    respond(['id' => $msgId, 'provider_message_id' => $wamid !== '' ? $wamid : null, 'message' => 'WhatsApp message queued', 'status' => $status, 'conversation_id' => $convId], 201);
 }
 
 // ─── Send free-text WhatsApp reply (Meta session message, 24h window) ───
@@ -747,8 +852,32 @@ if ($action === 'send_whatsapp_reply' && $method === 'POST') {
     $now = date('Y-m-d H:i:s');
     $leadId = $conv['lead_id'] ?? ($input['lead_id'] ?? null);
     $convId = $conv['id'] ?? null;
+    $wamid = trim((string) ($send['provider_message_id'] ?? ''));
 
     try {
+        if ($wamid !== '') {
+            $existing = $db->prepare('SELECT id FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
+            $existing->execute([$wamid]);
+            $existingId = $existing->fetchColumn();
+            if ($existingId) {
+                $msgId = (string) $existingId;
+                $db->prepare(
+                    'UPDATE comm_whatsapp_messages SET status = ?, error_message = ?, conversation_id = COALESCE(conversation_id, ?), sent_at = COALESCE(sent_at, ?) WHERE id = ?',
+                )->execute([$status, $send['error'] ?? null, $convId, $send['ok'] ? $now : null, $msgId]);
+                if ($convId) {
+                    WhatsAppInbox::touchOutboundOwnership($db, (string) $convId, $userId);
+                    if ($send['ok']) {
+                        $db->prepare('UPDATE wa_conversations SET last_message_at = ?, last_message_preview = ?, updated_at = NOW() WHERE id = ?')
+                            ->execute([$now, WhatsAppInbox::previewText($text, 200), $convId]);
+                    }
+                }
+                if (!$send['ok']) {
+                    respond(['error' => $send['error'] ?? 'Send failed', 'id' => $msgId, 'conversation_id' => $convId], 502);
+                }
+                respond(['id' => $msgId, 'provider_message_id' => $wamid, 'status' => $status, 'conversation_id' => $convId], 201);
+            }
+        }
+
         try {
             $db->prepare(
                 'INSERT INTO comm_whatsapp_messages
@@ -764,7 +893,7 @@ if ($action === 'send_whatsapp_reply' && $method === 'POST') {
                 $text,
                 'text',
                 $status,
-                $send['provider_message_id'] ?? null,
+                $wamid !== '' ? $wamid : null,
                 $send['error'] ?? null,
                 $leadId,
                 'outbound',

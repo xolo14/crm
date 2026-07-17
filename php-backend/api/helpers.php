@@ -169,6 +169,19 @@ function verifyToken() {
         }
     }
 
+    if (function_exists('syncpediaSetMailContext')) {
+        $mailOrgId = trim((string) ($data['org_id'] ?? ''));
+        if ($mailOrgId === '' && syncpediaNormalizeRoleKey((string) ($data['role'] ?? '')) === 'super_admin') {
+            try {
+                $mailDb = (new Database())->getConnection();
+                $mailOrgStmt = $mailDb->query("SELECT id FROM organizations WHERE LOWER(TRIM(slug)) = 'syncpedia' LIMIT 1");
+                $mailOrgId = trim((string) ($mailOrgStmt ? ($mailOrgStmt->fetchColumn() ?: '') : ''));
+            } catch (Throwable $e) {
+                $mailOrgId = '';
+            }
+        }
+        syncpediaSetMailContext($mailOrgId !== '' ? $mailOrgId : null, 'default');
+    }
     return $data;
 }
 
@@ -447,11 +460,12 @@ function tenantOrgScopeSql(PDO $db, array $tokenData, string $alias = ''): array
  */
 function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): array
 {
+    $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     if (tenantIsMasterView($tokenData)) {
         if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
             return hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
         }
-        if (hierarchyRoleUsesDownlineScope($tokenData)) {
+        if (hierarchyRoleUsesDownlineScope($tokenData) && $effRole !== 'manager') {
             return hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias, $db);
         }
         return ['sql' => '', 'params' => []];
@@ -465,7 +479,8 @@ function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): ar
         $l1 = hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
         return ['sql' => $sql . $l1['sql'], 'params' => array_merge($params, $l1['params'])];
     }
-    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+    // Managers see all leads in their org (same as admin/org), not downline-only.
+    if (hierarchyRoleUsesDownlineScope($tokenData) && $effRole !== 'manager') {
         $dl = hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias, $db);
         return ['sql' => $sql . $dl['sql'], 'params' => array_merge($params, $dl['params'])];
     }
@@ -491,9 +506,12 @@ function tenantStudentListScopeSql(PDO $db, array $tokenData): array
         $params = array_merge($params, $tenant['params']);
     }
     if (hierarchyRoleUsesDownlineScope($tokenData)) {
-        $scope = hierarchyStudentListScopeSql(hierarchyGetVisibleUserIds($db, $tokenData));
-        $sql .= $scope['sql'];
-        $params = array_merge($params, $scope['params']);
+        // Managers see all org students (aligned with org-wide leads visibility).
+        if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) !== 'manager') {
+            $scope = hierarchyStudentListScopeSql(hierarchyGetVisibleUserIds($db, $tokenData));
+            $sql .= $scope['sql'];
+            $params = array_merge($params, $scope['params']);
+        }
     } elseif (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
         $uid = (string) ($tokenData['user_id'] ?? '');
         $scope = hierarchyStudentListScopeSql($uid !== '' ? [$uid] : []);
@@ -1072,7 +1090,7 @@ function hierarchyTaskListScopeSql(array $visibleIds, string $alias = ''): array
     ];
 }
 
-/** L2 managers scope list endpoints to reporting downline; L3 admin/org see full tenant (see leads.php). */
+/** L2 managers: downline scope on tasks/students; leads list uses full org tenant (see tenantLeadsScopeSql). */
 function hierarchyRoleUsesDownlineScope(array $tokenData): bool
 {
     return syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'manager';
@@ -1573,11 +1591,12 @@ function syncpediaSendPaymentReceiptEmail(
     string $plainBody,
     array $attachments = [],
 ): array {
+    syncpediaSetMailCategory('payment_receipts');
     $fromAddr = syncpediaSupportMailAddress();
     $name = getenv('SYNCPIEDIA_MAIL_FROM_NAME');
     $disp = ($name !== false && trim($name) !== '') ? trim($name) : 'Syncpedia';
 
-    if (syncpediaSmtpIsReady()) {
+    if (syncpediaLoadComposerAutoload()) {
         $smtp = syncpediaSendHtmlEmailViaSmtpWithOptions(
             $to,
             $subject,
@@ -1590,19 +1609,25 @@ function syncpediaSendPaymentReceiptEmail(
             $plainBody,
         );
         if ($smtp['ok']) {
-            $smtp['from'] = $fromAddr;
+            $smtp['from'] = $smtp['from'] ?? $fromAddr;
+            $smtp['transport'] = 'smtp';
             return $smtp;
         }
+        error_log('[email] payment receipt SMTP failed: ' . ($smtp['error'] ?? ''));
+        return [
+            'ok' => false,
+            'error' => $smtp['error'] ?? 'SMTP send failed — receipt not emailed',
+            'from' => $fromAddr,
+            'transport' => 'smtp',
+        ];
     }
 
-    $fallback = syncpediaDeliverHtmlEmail($to, $subject, $htmlBody, $fromAddr, $disp);
-    if ($fallback['ok']) {
-        $fallback['from'] = $fromAddr;
-        if ($attachments !== []) {
-            $fallback['warning'] = 'Invoice PDF could not be attached (configure SMTP for attachments).';
-        }
-    }
-    return $fallback;
+    return [
+        'ok' => false,
+        'error' => 'SMTP is not configured — cannot send payment receipt email',
+        'from' => $fromAddr,
+        'transport' => 'none',
+    ];
 }
 
 /** Base URL for CRM login links in emails. Override with SYNCPIEDIA_CRM_URL (no trailing slash). */
@@ -1727,14 +1752,8 @@ function syncpediaBuildPasswordResetOtpEmailHtml(string $fullName, string $otp):
  */
 function syncpediaSendPasswordResetOtpEmail(string $toEmail, string $fullName, string $otp): array
 {
+    syncpediaSetMailCategory('password_reset');
     $from = syncpediaSupportMailAddress();
-    if (!syncpediaSmtpIsReady()) {
-        return [
-            'email_sent' => false,
-            'email_error' => syncpediaSmtpNotReadyReason(),
-            'from' => $from,
-        ];
-    }
     $name = getenv('SYNCPIEDIA_MAIL_FROM_NAME');
     $disp = ($name !== false && trim($name) !== '') ? trim($name) : 'Syncpedia';
     $res = syncpediaSendHtmlEmailViaSmtp(
@@ -1748,7 +1767,7 @@ function syncpediaSendPasswordResetOtpEmail(string $toEmail, string $fullName, s
     return [
         'email_sent' => $ok,
         'email_error' => $ok ? null : ($res['error'] ?? 'Email send failed'),
-        'from' => $from,
+        'from' => (string) ($res['from'] ?? $from),
     ];
 }
 
@@ -1764,14 +1783,8 @@ function syncpediaSendMemberWelcomeEmail(
     string $roleKey,
     ?string $phone = null,
 ): array {
+    syncpediaSetMailCategory('member_welcome');
     $from = syncpediaSupportMailAddress();
-    if (!syncpediaSmtpIsReady()) {
-        return [
-            'email_sent' => false,
-            'email_error' => syncpediaSmtpNotReadyReason(),
-            'from' => $from,
-        ];
-    }
     $phoneStr = is_string($phone) ? trim($phone) : '';
     $html = syncpediaBuildTeamMemberWelcomeEmailHtml(
         $fullName,
@@ -1793,7 +1806,7 @@ function syncpediaSendMemberWelcomeEmail(
     return [
         'email_sent' => $ok,
         'email_error' => $ok ? null : ($res['error'] ?? 'Email send failed'),
-        'from' => $from,
+        'from' => (string) ($res['from'] ?? $from),
     ];
 }
 
@@ -1853,9 +1866,11 @@ function syncpediaBuildFresherTrainingInviteEmailHtml(string $fullName, string $
 }
 
 /**
- * Deliver HTML email: SMTP (Gmail / Google Workspace) when configured, else PHP mail().
+ * Deliver HTML email via SMTP only (default).
+ * PHP mail() is a common Hostinger false-positive (returns true, inbox empty) — disabled unless
+ * SMTP_ALLOW_MAIL_FALLBACK is explicitly true in api/config.php.
  *
- * @return array{ok: bool, error?: string}
+ * @return array{ok: bool, error?: string, transport?: string}
  */
 function syncpediaDeliverHtmlEmail(
     string $to,
@@ -1864,44 +1879,17 @@ function syncpediaDeliverHtmlEmail(
     string $fromAddr,
     string $fromDisplayName,
 ): array {
-    if (syncpediaSmtpIsReady()) {
-        $smtp = syncpediaSendHtmlEmailViaSmtp($to, $subject, $htmlBody, $fromAddr, $fromDisplayName);
-        if ($smtp['ok']) {
-            return $smtp;
-        }
-    }
-
     if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
         return ['ok' => false, 'error' => 'Invalid recipient email'];
     }
-    $fromAddr = trim($fromAddr);
-    if (!filter_var($fromAddr, FILTER_VALIDATE_EMAIL)) {
-        return ['ok' => false, 'error' => 'Invalid from email'];
+    $smtp = syncpediaSendHtmlEmailViaSmtp($to, $subject, $htmlBody, $fromAddr, $fromDisplayName);
+    if (!empty($smtp['ok'])) {
+        $smtp['transport'] = 'smtp';
+        return $smtp;
     }
-    $disp = trim($fromDisplayName) !== '' ? trim($fromDisplayName) : 'Syncpedia';
-    $subj = $subject;
-    if (function_exists('mb_encode_mimeheader')) {
-        $subj = mb_encode_mimeheader($subject, 'UTF-8', 'B', "\r\n");
-    }
-    $fromHeader = function_exists('mb_encode_mimeheader')
-        ? mb_encode_mimeheader($disp, 'UTF-8', 'B', "\r\n") . ' <' . $fromAddr . '>'
-        : $disp . ' <' . $fromAddr . '>';
-    $headers = [
-        'MIME-Version: 1.0',
-        'Content-type: text/html; charset=UTF-8',
-        'From: ' . $fromHeader,
-        'Reply-To: ' . $fromAddr,
-        'X-Mailer: Syncpedia-CRM/' . PHP_VERSION,
-    ];
-    $extraParams = '-f' . $fromAddr;
-    $ok = @mail($to, $subj, $htmlBody, implode("\r\n", $headers), $extraParams);
-    if ($ok) {
-        return ['ok' => true];
-    }
-    $hint = syncpediaSmtpIsReady()
-        ? 'SMTP send failed and PHP mail() fallback failed.'
-        : 'Enable SMTP in api/config.php (Google App Passwords) or configure Hostinger PHP mail.';
-    return ['ok' => false, 'error' => $hint];
+    $smtpErr = trim((string) ($smtp['error'] ?? 'SMTP send failed'));
+    error_log('[email] SMTP failed to ' . $to . ': ' . $smtpErr);
+    return ['ok' => false, 'error' => $smtpErr, 'transport' => 'smtp'];
 }
 
 /**
@@ -1909,8 +1897,9 @@ function syncpediaDeliverHtmlEmail(
  *
  * @return array{ok: bool, error?: string}
  */
-function syncpediaSendHtmlEmail(string $to, string $subject, string $htmlBody): array
+function syncpediaSendHtmlEmail(string $to, string $subject, string $htmlBody, string $category = 'default'): array
 {
+    syncpediaSetMailCategory($category);
     $fromAddr = syncpediaSupportMailAddress();
     $name = getenv('SYNCPIEDIA_MAIL_FROM_NAME');
     $disp = ($name !== false && trim($name) !== '') ? trim($name) : 'Syncpedia';
@@ -1928,7 +1917,9 @@ function syncpediaSendHtmlEmailWithFrom(
     string $htmlBody,
     string $fromAddr,
     string $fromDisplayName,
+    string $category = 'default',
 ): array {
+    syncpediaSetMailCategory($category);
     return syncpediaDeliverHtmlEmail($to, $subject, $htmlBody, $fromAddr, $fromDisplayName);
 }
 
@@ -1963,12 +1954,13 @@ function syncpediaSendCertificateEmail(
     string $bcc = '',
     array $attachments = [],
 ): array {
+    syncpediaSetMailCategory('certificates');
     $fromAddr = syncpediaSupportMailAddress();
     $name = getenv('SYNCPIEDIA_MAIL_FROM_NAME');
     $disp = ($name !== false && trim($name) !== '') ? trim($name) : 'Syncpedia Certifications';
     $html = syncpediaCertificateEmailHtml($plainBody);
 
-    if (syncpediaSmtpIsReady()) {
+    if (syncpediaLoadComposerAutoload()) {
         $smtp = syncpediaSendHtmlEmailViaSmtpWithOptions(
             $to,
             $subject,
@@ -1981,17 +1973,25 @@ function syncpediaSendCertificateEmail(
             $plainBody,
         );
         if ($smtp['ok']) {
-            $smtp['from'] = $fromAddr;
+            $smtp['from'] = $smtp['from'] ?? $fromAddr;
+            $smtp['transport'] = 'smtp';
             return $smtp;
         }
+        error_log('[email] certificate SMTP failed: ' . ($smtp['error'] ?? ''));
+        return [
+            'ok' => false,
+            'error' => $smtp['error'] ?? 'SMTP send failed',
+            'from' => $fromAddr,
+            'transport' => 'smtp',
+        ];
     }
 
-    $fallback = syncpediaDeliverHtmlEmail($to, $subject, $html, $fromAddr, $disp);
-    if ($fallback['ok']) {
-        $fallback['from'] = $fromAddr;
-        return $fallback;
-    }
-    return $fallback;
+    return [
+        'ok' => false,
+        'error' => 'SMTP is not configured — cannot send certificate email',
+        'from' => $fromAddr,
+        'transport' => 'none',
+    ];
 }
 
 /** Default HR From address for payslips and HR digests. */
@@ -2021,11 +2021,12 @@ function syncpediaSendPayslipEmail(
     string $cc = '',
     string $bcc = '',
 ): array {
+    syncpediaSetMailCategory('payslips');
     $fromAddr = syncpediaHrMailAddress();
     $disp = 'Syncpedia HR';
     $html = syncpediaCertificateEmailHtml($plainBody);
 
-    if (syncpediaSmtpIsReady()) {
+    if (syncpediaLoadComposerAutoload()) {
         $smtp = syncpediaSendHtmlEmailViaSmtpWithOptions(
             $to,
             $subject,
@@ -2038,17 +2039,25 @@ function syncpediaSendPayslipEmail(
             $plainBody,
         );
         if ($smtp['ok']) {
-            $smtp['from'] = $fromAddr;
+            $smtp['from'] = $smtp['from'] ?? $fromAddr;
+            $smtp['transport'] = 'smtp';
             return $smtp;
         }
+        error_log('[email] payslip SMTP failed: ' . ($smtp['error'] ?? ''));
+        return [
+            'ok' => false,
+            'error' => $smtp['error'] ?? 'SMTP send failed',
+            'from' => $fromAddr,
+            'transport' => 'smtp',
+        ];
     }
 
-    $fallback = syncpediaDeliverHtmlEmail($to, $subject, $html, $fromAddr, $disp);
-    if ($fallback['ok']) {
-        $fallback['from'] = $fromAddr;
-        return $fallback;
-    }
-    return $fallback;
+    return [
+        'ok' => false,
+        'error' => 'SMTP is not configured — cannot send payslip email',
+        'from' => $fromAddr,
+        'transport' => 'none',
+    ];
 }
 
 /**
@@ -2066,10 +2075,11 @@ function syncpediaSendHrHtmlEmail(
     string $cc = '',
     string $bcc = '',
 ): array {
+    syncpediaSetMailCategory('offer_letters');
     $fromAddr = syncpediaHrMailAddress();
     $disp = 'Syncpedia HR';
 
-    if (syncpediaSmtpIsReady()) {
+    if (syncpediaLoadComposerAutoload()) {
         $smtp = syncpediaSendHtmlEmailViaSmtpWithOptions(
             $to,
             $subject,
@@ -2082,22 +2092,34 @@ function syncpediaSendHrHtmlEmail(
             $altBody !== '' ? $altBody : trim(strip_tags($htmlBody)),
         );
         if ($smtp['ok']) {
-            $smtp['from'] = $fromAddr;
+            $smtp['from'] = $smtp['from'] ?? $fromAddr;
+            $smtp['transport'] = 'smtp';
             return $smtp;
         }
+        error_log('[email] HR SMTP failed: ' . ($smtp['error'] ?? ''));
+        return [
+            'ok' => false,
+            'error' => $smtp['error'] ?? 'SMTP send failed',
+            'from' => $fromAddr,
+            'transport' => 'smtp',
+        ];
     }
 
-    $fallback = syncpediaDeliverHtmlEmail(
-        $to,
-        $subject,
-        $htmlBody,
-        $fromAddr,
-        $disp,
-    );
-    if ($fallback['ok']) {
-        $fallback['from'] = $fromAddr;
+    // No attachments path can still use deliver (SMTP-only by default).
+    if ($attachments === []) {
+        $fallback = syncpediaDeliverHtmlEmail($to, $subject, $htmlBody, $fromAddr, $disp);
+        if ($fallback['ok']) {
+            $fallback['from'] = $fromAddr;
+        }
+        return $fallback;
     }
-    return $fallback;
+
+    return [
+        'ok' => false,
+        'error' => 'SMTP is not configured — cannot send HR email with attachments',
+        'from' => $fromAddr,
+        'transport' => 'none',
+    ];
 }
 
 /**
@@ -2155,7 +2177,7 @@ function syncpediaNotifySupportPaymentLinkCustomerMail(
         . '</table>'
         . '<p style="margin:16px 0 0 0;font-size:12px;color:#94a3b8;">This is an automated internal notice. Disable with SYNCPIEDIA_PAYMENT_LINK_NOTIFY=0 or change recipient with SYNCPIEDIA_PAYMENT_LINK_NOTIFY_EMAIL.</p>'
         . '</div></body></html>';
-    @syncpediaSendHtmlEmail($notify, $subj, $html);
+    @syncpediaSendHtmlEmail($notify, $subj, $html, 'notifications');
 }
 
 function respond($data, $status = 200) {
@@ -2195,9 +2217,141 @@ function enrollStudentRowAlreadyExists(PDO $db, string $leadId): bool {
     }
 }
 
+/** Best-effort unique index so concurrent enrolls cannot create two students per lead. */
+function ensureStudentsLeadIdUnique(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+    try {
+        if (!syncpediaColumnExists($db, 'students', 'lead_id')) {
+            return;
+        }
+        $db->exec('CREATE UNIQUE INDEX idx_students_lead_id_unique ON students (lead_id)');
+    } catch (Throwable $e) {
+        // Index may already exist, or duplicates prevent creation — log and continue.
+        error_log('[students] unique lead_id index: ' . $e->getMessage());
+    }
+}
+
 /** Pipeline statuses on `leads.status` (aligned with leads.php PUT). */
 function leadsAllowedStatuses(): array {
     return ['new', 'contacted', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'];
+}
+
+/**
+ * Normalize legacy / UI aliases to canonical CRM statuses.
+ */
+function leadsNormalizeStatus(string $status): string
+{
+    $s = strtolower(trim($status));
+    if ($s === 'converted') {
+        return 'enrolled';
+    }
+    if ($s === 'considering') {
+        return 'interested';
+    }
+    if ($s === 'not_interested') {
+        return 'lost';
+    }
+    return $s;
+}
+
+/**
+ * Valid status transitions (ops-friendly: forward, small rewind, lost/reopen).
+ *
+ * @return string|null error message, or null when OK
+ */
+function leadsAssertStatusTransition(?string $fromStatus, string $toStatus): ?string
+{
+    $from = leadsNormalizeStatus((string) ($fromStatus ?? 'new'));
+    $to = leadsNormalizeStatus($toStatus);
+    if ($from === $to) {
+        return null;
+    }
+    if (!in_array($to, leadsAllowedStatuses(), true)) {
+        return 'Invalid status';
+    }
+    if (!in_array($from, leadsAllowedStatuses(), true)) {
+        // Legacy junk in DB — allow move onto a known status.
+        return null;
+    }
+
+    $allowed = [
+        'new' => ['contacted', 'qualified', 'interested', 'demo_scheduled', 'lost'],
+        'contacted' => ['new', 'qualified', 'interested', 'demo_scheduled', 'lost'],
+        'qualified' => ['contacted', 'interested', 'demo_scheduled', 'demo_attended', 'lost'],
+        'interested' => ['contacted', 'qualified', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
+        'demo_scheduled' => ['interested', 'demo_attended', 'enrolled', 'lost'],
+        'demo_attended' => ['demo_scheduled', 'interested', 'enrolled', 'lost'],
+        'enrolled' => ['interested', 'demo_attended', 'lost'],
+        'lost' => ['new', 'contacted', 'interested', 'qualified'],
+    ];
+    $ok = $allowed[$from] ?? [];
+    if (!in_array($to, $ok, true)) {
+        return "Cannot change status from {$from} to {$to}";
+    }
+    return null;
+}
+
+/**
+ * Find an existing lead in the same org by email or phone (normalized).
+ */
+function leadsFindDuplicateInOrg(PDO $db, ?string $orgId, string $email, string $phone): ?array
+{
+    $email = strtolower(trim($email));
+    $phoneDigits = preg_replace('/\D+/', '', $phone) ?? '';
+    if (strlen($phoneDigits) > 10) {
+        $phoneDigits = substr($phoneDigits, -10);
+    }
+    if ($email === '' && $phoneDigits === '') {
+        return null;
+    }
+
+    if ($email !== '') {
+        if ($orgId) {
+            $st = $db->prepare(
+                'SELECT id, name, email, phone FROM leads WHERE org_id = ? AND email IS NOT NULL AND LOWER(TRIM(email)) = ? LIMIT 1',
+            );
+            $st->execute([$orgId, $email]);
+        } else {
+            $st = $db->prepare(
+                'SELECT id, name, email, phone FROM leads WHERE email IS NOT NULL AND LOWER(TRIM(email)) = ? LIMIT 1',
+            );
+            $st->execute([$email]);
+        }
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row)) {
+            return $row;
+        }
+    }
+
+    if ($phoneDigits !== '' && strlen($phoneDigits) >= 8) {
+        // Match by last digits (handles +91 / spacing variants).
+        if ($orgId) {
+            $st = $db->prepare(
+                "SELECT id, name, email, phone FROM leads
+                 WHERE org_id = ? AND phone IS NOT NULL AND TRIM(phone) <> ''
+                   AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,' ',''),'-',''),'+',''),'(',''),')','') LIKE ?
+                 LIMIT 1",
+            );
+            $st->execute([$orgId, '%' . $phoneDigits]);
+        } else {
+            $st = $db->prepare(
+                "SELECT id, name, email, phone FROM leads
+                 WHERE phone IS NOT NULL AND TRIM(phone) <> ''
+                   AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,' ',''),'-',''),'+',''),'(',''),')','') LIKE ?
+                 LIMIT 1",
+            );
+            $st->execute(['%' . $phoneDigits]);
+        }
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row)) {
+            return $row;
+        }
+    }
+    return null;
 }
 
 function userEffectiveOrgId(PDO $db, array $tokenData, string $userId): ?string {
@@ -2366,8 +2520,11 @@ function leadsTryAttachStudentForEnrollment(PDO $db, array $tokenData, string $l
                     'active',
                     $enrollDay,
                 ]);
-            } catch (Throwable $ignored) {
+            } catch (Throwable $fkRetry) {
+                throw $insErr;
             }
+        } else {
+            throw $insErr;
         }
     }
 }
@@ -2378,11 +2535,11 @@ function leadsTryAttachStudentForEnrollment(PDO $db, array $tokenData, string $l
  * @return string|null error message, or null when OK
  */
 function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $userId, string $rawRole, string $leadId, string $newStatus): ?string {
-    $newStatus = strtolower(trim($newStatus));
+    $newStatus = leadsNormalizeStatus($newStatus);
     if (!in_array($newStatus, leadsAllowedStatuses(), true)) {
         return 'Invalid lead_status';
     }
-    $st = $db->prepare('SELECT id, org_id, assigned_to, referred_by, email FROM leads WHERE id = ? LIMIT 1');
+    $st = $db->prepare('SELECT id, org_id, assigned_to, referred_by, email, status FROM leads WHERE id = ? LIMIT 1');
     $st->execute([$leadId]);
     $leadRow = $st->fetch(PDO::FETCH_ASSOC);
     if (!$leadRow) {
@@ -2391,20 +2548,47 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
     if (!userCanUpdateLeadForCallLog($db, $tokenData, $userId, $rawRole, $leadRow)) {
         return 'Not allowed to update this lead';
     }
+    $transitionErr = leadsAssertStatusTransition((string) ($leadRow['status'] ?? ''), $newStatus);
+    if ($transitionErr !== null) {
+        return $transitionErr;
+    }
     if ($newStatus === 'enrolled') {
         $em = trim((string) ($leadRow['email'] ?? ''));
         if ($em === '') {
             return 'Lead must have an email before Enroll status';
         }
     }
+    $prevStatus = leadsNormalizeStatus((string) ($leadRow['status'] ?? ''));
     try {
         $db->prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')->execute([$newStatus, $leadId]);
     } catch (Throwable $e) {
         return 'Could not update lead status';
     }
     if ($newStatus === 'enrolled') {
+        ensureStudentsLeadIdUnique($db);
         try {
             leadsTryAttachStudentForEnrollment($db, $tokenData, $leadId);
+        } catch (Throwable $e) {
+            // Revert status so we never leave enrolled-without-student.
+            try {
+                $db->prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+                    ->execute([$prevStatus !== '' ? $prevStatus : 'interested', $leadId]);
+            } catch (Throwable $ignored) {
+            }
+            return 'Could not create student for enrollment';
+        }
+        if (!enrollStudentRowAlreadyExists($db, $leadId)) {
+            try {
+                $db->prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+                    ->execute([$prevStatus !== '' ? $prevStatus : 'interested', $leadId]);
+            } catch (Throwable $ignored) {
+            }
+            return 'Could not create student for enrollment';
+        }
+    } elseif ($prevStatus === 'enrolled' || enrollStudentRowAlreadyExists($db, $leadId)) {
+        // Leaving enrolled (or cleaning stale enrolled students) via call-log status change.
+        try {
+            $db->prepare("UPDATE students SET lead_id = NULL, status = 'dropped' WHERE lead_id = ?")->execute([$leadId]);
         } catch (Throwable $ignored) {
         }
     }

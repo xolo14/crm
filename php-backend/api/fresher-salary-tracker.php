@@ -91,7 +91,7 @@ if ($method === 'POST') {
         }
         $html = syncpediaBuildFresherTrainingInviteEmailHtml($fullName, $joining);
         $subject = 'Welcome to Syncpedia fresher training';
-        $sent = syncpediaSendHtmlEmail($email, $subject, $html);
+        $sent = syncpediaSendHtmlEmail($email, $subject, $html, 'hr_updates');
         if (!(($sent['ok'] ?? false) === true)) {
             respond(['error' => $sent['error'] ?? 'Could not send email'], 502);
         }

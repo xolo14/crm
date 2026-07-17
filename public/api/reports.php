@@ -40,7 +40,7 @@ if ($action === 'summary') {
 
     $leadScope = reportsLeadOwnershipScopeSql($db, $tokenData, 'l');
     $stmt = $db->prepare(
-        'SELECT COUNT(*) as total, SUM(status = \'enrolled\') as converted FROM leads l WHERE 1=1'
+        'SELECT COUNT(*) as total, SUM(status IN (\'enrolled\', \'converted\')) as converted FROM leads l WHERE 1=1'
         . $leadScope['sql'] . $dLeads
     );
     $stmt->execute(array_merge($leadScope['params'], $pLeads));
@@ -100,7 +100,7 @@ if ($action === 'leads_by_source') {
     [$dLeads, $pLeads] = reportDateSql('l', $from, $to);
     $leadScope = reportsLeadOwnershipScopeSql($db, $tokenData, 'l');
     $stmt = $db->prepare(
-        'SELECT source, COUNT(*) as total, SUM(status = \'enrolled\') as converted FROM leads l WHERE 1=1'
+        'SELECT source, COUNT(*) as total, SUM(status IN (\'enrolled\', \'converted\')) as converted FROM leads l WHERE 1=1'
         . $leadScope['sql'] . $dLeads . ' GROUP BY source'
     );
     $stmt->execute(array_merge($leadScope['params'], $pLeads));

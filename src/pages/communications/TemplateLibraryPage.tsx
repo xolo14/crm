@@ -203,8 +203,8 @@ export default function TemplateLibraryPage() {
                     </div>
                     <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{t.body}</p>
                   </div>
-                  <div className="flex gap-2 shrink-0">
-                    {t.status === "draft" ? (
+                  <div className="flex flex-wrap gap-2 shrink-0 justify-end">
+                    {t.status === "draft" || t.status === "rejected" ? (
                       <Button size="sm" className="gap-1" onClick={() => submitMut.mutate(t.id)} disabled={submitMut.isPending}>
                         <Send className="h-3.5 w-3.5" /> Submit to Meta
                       </Button>
@@ -213,6 +213,24 @@ export default function TemplateLibraryPage() {
                     ) : t.status === "approved" ? (
                       <Badge className="gap-1"><CheckCircle2 className="h-3.5 w-3.5" /> Ready to send</Badge>
                     ) : null}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => {
+                        if (confirm(`Remove "${t.name}" from CRM? (Does not delete from Meta.)`)) {
+                          communicationsApi.deleteTemplate(t.id).then(
+                            () => {
+                              toast({ title: "Removed from CRM" });
+                              qc.invalidateQueries({ queryKey: ["comm"] });
+                            },
+                            (e: Error) => toast({ variant: "destructive", title: e.message }),
+                          );
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
                   </div>
                 </CardContent>
               </Card>

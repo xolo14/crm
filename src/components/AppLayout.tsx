@@ -6,10 +6,12 @@ import { cn } from '@/lib/utils';
 import { AUTH_PORTAL } from '@/lib/portalAuth';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
   CreditCard, BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import syncpediaIcon from '@/assets/syncpedia-icon.webp';
 import syncpediaLogo from '@/assets/syncpedia-logo.webp';
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet';
@@ -22,10 +24,28 @@ type AppRole = string;
 
 interface NavItem {
   to: string;
-  icon: any;
+  icon: LucideIcon;
   label: string;
   roles: string[];
   children?: NavItem[];
+}
+
+interface SidebarProfile {
+  full_name: string;
+  email: string;
+  avatar_url: string | null;
+}
+
+function storedAppearance(): { compactMode: boolean; collapsedSidebar: boolean } {
+  try {
+    const value = JSON.parse(localStorage.getItem("crm_general_settings") || "{}") as Record<string, unknown>;
+    return {
+      compactMode: value.compactMode === true,
+      collapsedSidebar: value.collapsedSidebar === true,
+    };
+  } catch {
+    return { compactMode: false, collapsedSidebar: false };
+  }
 }
 
 const navItems: NavItem[] = [
@@ -267,7 +287,7 @@ function SidebarContent({
   organization: { slug?: string | null; features?: Record<string, boolean> | null } | null;
   pageAccess?: { payments?: boolean; offer_letters?: boolean } | null;
   onSignOut: () => void;
-  profile: any;
+  profile: SidebarProfile | null;
   onNavigate?: () => void;
 }) {
   const location = useLocation();
@@ -308,9 +328,17 @@ function SidebarContent({
 
       <div className={cn("border-t border-sidebar-border p-3", collapsed && "p-2")}>
         {!collapsed && profile && (
-          <div className="mb-3 px-1">
-            <p className="text-sm font-semibold truncate text-sidebar-foreground">{profile.full_name || profile.email}</p>
-            <p className="text-xs text-sidebar-foreground/50 capitalize">{role?.replace(/_/g, ' ')}</p>
+          <div className="mb-3 flex min-w-0 items-center gap-2.5 px-1">
+            <Avatar className="h-9 w-9 border border-sidebar-border">
+              {profile.avatar_url && <AvatarImage src={profile.avatar_url} alt={profile.full_name || "Profile"} className="object-cover" />}
+              <AvatarFallback className="bg-sidebar-accent text-xs font-semibold text-sidebar-foreground">
+                {(profile.full_name || profile.email || "U").split(/\s+/).map((part: string) => part[0]).join("").slice(0, 2).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-sidebar-foreground">{profile.full_name || profile.email}</p>
+              <p className="text-xs capitalize text-sidebar-foreground/50">{role?.replace(/_/g, ' ')}</p>
+            </div>
           </div>
         )}
         <Button variant="ghost" size={collapsed ? "icon" : "default"} className="w-full justify-start gap-2 text-sidebar-foreground/60 hover:text-destructive hover:bg-destructive/10" onClick={onSignOut}>
@@ -328,9 +356,21 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const pageAccess = (user as { page_access?: { payments?: boolean; offer_letters?: boolean } } | null)?.page_access ?? null;
   const navigate = useNavigate();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => storedAppearance().collapsedSidebar);
+  const [compactMode, setCompactMode] = useState(() => storedAppearance().compactMode);
   const [sheetOpen, setSheetOpen] = useState(false);
   const showOrgViewingBadge = role === 'super_admin' && !!organization && location.pathname === '/org-crm';
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("crm-compact", compactMode);
+    const handleAppearanceChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ compactMode?: boolean; collapsedSidebar?: boolean }>).detail;
+      setCompactMode(detail?.compactMode === true);
+      setCollapsed(detail?.collapsedSidebar === true);
+    };
+    window.addEventListener("crm-appearance-change", handleAppearanceChange);
+    return () => window.removeEventListener("crm-appearance-change", handleAppearanceChange);
+  }, [compactMode]);
 
   const handleSignOut = async () => {
     await signOut();
@@ -427,7 +467,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           </div>
         )}
         {/* Content area */}
-        <div className="p-4 md:p-6 max-w-7xl mx-auto pb-safe w-full min-w-0">
+        <div className={cn("max-w-7xl mx-auto pb-safe w-full min-w-0", compactMode ? "p-3 md:p-4" : "p-4 md:p-6")}>
           {children}
         </div>
       </main>

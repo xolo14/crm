@@ -57,18 +57,27 @@ function paymentLinkResolveLeadId(PDO $db, array $row, array $rzpLink, array $no
     }
 
     $orgId = trim((string) ($row['org_id'] ?? ''));
+    $salespersonId = trim((string) ($row['salesperson_id'] ?? ''));
     if ($orgId !== '') {
         $st = $db->prepare(
             'SELECT id FROM leads WHERE LOWER(TRIM(email)) = LOWER(?) AND org_id = ?
-             ORDER BY updated_at DESC LIMIT 1',
+             ORDER BY
+               CASE WHEN ? <> \'\' AND assigned_to = ? THEN 0 ELSE 1 END,
+               CASE WHEN LOWER(TRIM(status)) = \'enrolled\' THEN 1 ELSE 0 END,
+               updated_at DESC
+             LIMIT 1',
         );
-        $st->execute([$email, $orgId]);
+        $st->execute([$email, $orgId, $salespersonId, $salespersonId]);
     } else {
         $st = $db->prepare(
             'SELECT id FROM leads WHERE LOWER(TRIM(email)) = LOWER(?)
-             ORDER BY updated_at DESC LIMIT 1',
+             ORDER BY
+               CASE WHEN ? <> \'\' AND assigned_to = ? THEN 0 ELSE 1 END,
+               CASE WHEN LOWER(TRIM(status)) = \'enrolled\' THEN 1 ELSE 0 END,
+               updated_at DESC
+             LIMIT 1',
         );
-        $st->execute([$email]);
+        $st->execute([$email, $salespersonId, $salespersonId]);
     }
     $found = $st->fetch(PDO::FETCH_ASSOC);
     if (!is_array($found)) {
@@ -279,6 +288,20 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
         ];
     } catch (Throwable $e) {
         paymentLinkReleaseEnrollmentClaim($plinkId);
+        // Revert enrolled status if no student was created (avoid enrolled-without-student).
+        try {
+            if (!enrollStudentRowAlreadyExists($db, $leadId)) {
+                $prev = strtolower(trim((string) ($leadRow['status'] ?? 'new')));
+                if ($prev === '' || $prev === 'enrolled') {
+                    $prev = 'interested';
+                }
+                $db->prepare(
+                    'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?',
+                )->execute([$prev, $leadId, 'enrolled']);
+            }
+        } catch (Throwable $revertErr) {
+            error_log('[payment_fulfillment] status revert: ' . $revertErr->getMessage());
+        }
         error_log('[payment_fulfillment] enroll failed for ' . $plinkId . ': ' . $e->getMessage());
 
         return [

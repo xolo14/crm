@@ -179,7 +179,14 @@ if (is_array($formRow)) {
     if ($requiresKey && $storedHash !== '') {
         $providedApiKey = trim((string) ($_SERVER['HTTP_X_FORM_API_KEY'] ?? ''));
         if ($providedApiKey === '') {
-            respond(['error' => 'Form API key required in X-Form-Api-Key header'], 401);
+            // Backward-compat for old shared links while we migrate callers off URL/body secrets.
+            $providedApiKey = trim((string) ($input['api_key'] ?? ($_GET['api_key'] ?? '')));
+        }
+        if ($providedApiKey === '') {
+            respond([
+                'error' => 'Form API key required',
+                'hint' => 'Send X-Form-Api-Key header (preferred) or rotate/update older integration links.',
+            ], 401);
         }
         if (!formExternalApiKeyVerify($providedApiKey, $storedHash)) {
             respond(['error' => 'Invalid form API key'], 401);

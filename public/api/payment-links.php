@@ -125,15 +125,15 @@ function paymentLinksResolveSalesperson(array $tokenData): array
     return ['name' => $name, 'email' => $email];
 }
 
+function paymentLinksSetMailContextForItem(string $paymentLinkId, string $category): void
+{
+    $row = paymentLinkFindByRazorpayId($paymentLinkId);
+    $orgId = trim((string) (is_array($row) ? ($row['org_id'] ?? '') : ''));
+    syncpediaSetMailContext($orgId !== '' ? $orgId : null, $category);
+}
+
 function handlePaymentLinkEmailReminder(string $paymentLinkId): void
 {
-    if (!syncpediaSmtpIsReady() && !function_exists('mail')) {
-        paymentLinksError(
-            'Email not configured. Set SMTP_SUPPORT_USER and SMTP_SUPPORT_PASS in api/config.php',
-            500,
-        );
-    }
-
     try {
         $link = razorpayFetchPaymentLink($paymentLinkId);
     } catch (Throwable $e) {
@@ -205,7 +205,8 @@ function handlePaymentLinkEmailReminder(string $paymentLinkId): void
     }
     $plain .= "Pay here: {$payUrl}\n\nRegards,\nSyncpedia\nsupport@syncpedia.in";
 
-    $result = syncpediaSendHtmlEmail($to, $subject, $html);
+    paymentLinksSetMailContextForItem($paymentLinkId, 'payment_links');
+    $result = syncpediaSendHtmlEmail($to, $subject, $html, 'payment_links');
     if (!$result['ok']) {
         paymentLinksError($result['error'] ?? 'Failed to send reminder email', 500);
     }
@@ -213,9 +214,10 @@ function handlePaymentLinkEmailReminder(string $paymentLinkId): void
     paymentLinksSuccess([
         'sent' => true,
         'to' => $to,
-        'from' => syncpediaSupportMailAddress(),
+        'from' => (string) ($result['from'] ?? syncpediaSupportMailAddress()),
         'type' => $isPartialBalance ? 'partial_balance' : 'pending',
-        'channel' => 'syncpedia_smtp',
+        'channel' => ($result['transport'] ?? '') === 'smtp' ? 'syncpedia_smtp' : ($result['transport'] ?? 'unknown'),
+        'transport' => $result['transport'] ?? 'smtp',
     ]);
 }
 
@@ -226,13 +228,6 @@ function handleSendPaymentLinkEmail(array $tokenData): void
 
     if ($linkId === '') {
         paymentLinksError('Payment link id required', 400);
-    }
-
-    if (!syncpediaSmtpIsReady() && !function_exists('mail')) {
-        paymentLinksError(
-            'Email not configured. Set SMTP_SUPPORT_USER and SMTP_SUPPORT_PASS in api/config.php',
-            500,
-        );
     }
 
     $db = paymentLinksDb();
@@ -280,7 +275,8 @@ function handleSendPaymentLinkEmail(array $tokenData): void
         $plinkId,
     );
 
-    $result = syncpediaSendHtmlEmail($to, $subject, $html);
+    paymentLinksSetMailContextForItem($linkId, 'payment_links');
+    $result = syncpediaSendHtmlEmail($to, $subject, $html, 'payment_links');
     $sales = paymentLinksResolveSalesperson($tokenData);
     $amountDisplay = 'INR ' . number_format($amountRupees, 2, '.', ',');
 
@@ -302,7 +298,149 @@ function handleSendPaymentLinkEmail(array $tokenData): void
     paymentLinksSuccess([
         'sent' => true,
         'to' => $to,
-        'from' => syncpediaSupportMailAddress(),
+        'from' => (string) ($result['from'] ?? syncpediaSupportMailAddress()),
+        'transport' => $result['transport'] ?? 'smtp',
+    ]);
+}
+
+/** Return an active form only when it is visible to the current user. */
+function paymentLinksFindAllowedForm(PDO $db, array $tokenData, string $formId): ?array
+{
+    $st = $db->prepare(
+        'SELECT lf.id, lf.name, lf.slug, lf.org_id, lf.created_by, lf.is_active,
+                LOWER(TRIM(o.slug)) AS org_slug,
+                LOWER(TRIM(cu.role)) AS creator_role
+         FROM lead_forms lf
+         LEFT JOIN organizations o ON o.id = lf.org_id
+         LEFT JOIN users cu ON cu.id = lf.created_by
+         WHERE lf.id = ? AND lf.is_active = 1
+         LIMIT 1',
+    );
+    $st->execute([$formId]);
+    $form = $st->fetch(PDO::FETCH_ASSOC);
+    if (!is_array($form)) {
+        return null;
+    }
+
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    $orgId = paymentLinksResolveOrgId($tokenData);
+    $formOrgId = trim((string) ($form['org_id'] ?? ''));
+
+    if ($role === 'super_admin' && tenantIsMasterView($tokenData)) {
+        return $form;
+    }
+    if ($orgId === null || $formOrgId === '' || $formOrgId !== $orgId) {
+        return null;
+    }
+    if ($role === 'admin' && ($form['org_slug'] ?? '') === 'syncpedia'
+        && syncpediaNormalizeRoleKey((string) ($form['creator_role'] ?? '')) !== 'super_admin') {
+        return null;
+    }
+    if ($role === 'marketing' && ($form['org_slug'] ?? '') === 'syncpedia'
+        && trim((string) ($form['created_by'] ?? '')) !== $userId) {
+        return null;
+    }
+    if (in_array($role, ['super_admin', 'admin', 'org', 'manager', 'marketing'], true)) {
+        return $form;
+    }
+
+    $assigned = $db->prepare(
+        'SELECT 1 FROM lead_form_assignments WHERE form_id = ? AND member_id = ? LIMIT 1',
+    );
+    $assigned->execute([$formId, $userId]);
+    return $assigned->fetchColumn() ? $form : null;
+}
+
+function paymentLinksPublicFormUrl(array $form, array $link): string
+{
+    $base = defined('CRM_PUBLIC_URL') ? trim((string) CRM_PUBLIC_URL) : '';
+    if ($base === '') {
+        $https = !empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off';
+        $host = preg_replace('/[^a-z0-9.:-]/i', '', (string) ($_SERVER['HTTP_HOST'] ?? ''));
+        $base = ($https ? 'https://' : 'http://') . $host;
+    }
+    $url = rtrim($base, '/') . '/apply?form=' . rawurlencode((string) ($form['slug'] ?? ''));
+
+    $notes = is_array($link['notes'] ?? null) ? $link['notes'] : [];
+    $referral = trim((string) ($notes['crm_referral'] ?? $notes['referral_code'] ?? ''));
+    if ($referral === '') {
+        $local = paymentLinkFindByRazorpayId((string) ($link['id'] ?? ''));
+        $referral = trim((string) (is_array($local) ? ($local['salesperson_referral_code'] ?? '') : ''));
+    }
+    if ($referral !== '') {
+        $url .= '&ref=' . rawurlencode($referral);
+    }
+    return $url;
+}
+
+function handleSendPaidFormLinkEmail(array $tokenData): void
+{
+    $body = getInput();
+    $linkId = trim((string) ($body['link_id'] ?? $body['id'] ?? ''));
+    $formId = trim((string) ($body['form_id'] ?? ''));
+    if ($linkId === '' || $formId === '') {
+        paymentLinksError('Payment link and form are required', 400);
+    }
+
+    $db = paymentLinksDb();
+    paymentLinksAssertItemAllowed($db, $tokenData, $linkId);
+    $form = paymentLinksFindAllowedForm($db, $tokenData, $formId);
+    if (!is_array($form)) {
+        paymentLinksError('Form not found or unavailable to your account', 404);
+    }
+
+    try {
+        $link = razorpayFetchPaymentLink($linkId);
+    } catch (Throwable $e) {
+        paymentLinksError($e->getMessage(), 500);
+    }
+    if (!is_array($link)) {
+        paymentLinksError('Payment link not found', 404);
+    }
+
+    $amount = (int) ($link['amount'] ?? 0);
+    $amountPaid = (int) ($link['amount_paid'] ?? 0);
+    $status = paymentLinkMapRazorpayStatus((string) ($link['status'] ?? ''), $amountPaid, $amount);
+    if ($status !== 'paid') {
+        paymentLinksError('Form links can only be emailed after the payment is fully paid', 409);
+    }
+
+    $customer = is_array($link['customer'] ?? null) ? $link['customer'] : [];
+    $to = trim((string) ($customer['email'] ?? ''));
+    if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        paymentLinksError('Customer email is required', 400);
+    }
+    $customerName = trim((string) ($customer['name'] ?? 'Customer'));
+    $formName = trim((string) ($form['name'] ?? 'Form'));
+    $formUrl = paymentLinksPublicFormUrl($form, $link);
+
+    $eName = htmlspecialchars($customerName, ENT_QUOTES, 'UTF-8');
+    $eForm = htmlspecialchars($formName, ENT_QUOTES, 'UTF-8');
+    $eUrl = htmlspecialchars($formUrl, ENT_QUOTES, 'UTF-8');
+    $html = '<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#1f2937">'
+        . '<h2 style="color:#0f5132">Please complete your form</h2>'
+        . '<p>Dear ' . $eName . ',</p>'
+        . '<p>Thank you for completing your payment. Please use the link below to complete <strong>'
+        . $eForm . '</strong>.</p>'
+        . '<p style="margin:28px 0"><a href="' . $eUrl
+        . '" style="background:#16a34a;color:#fff;padding:12px 22px;text-decoration:none;border-radius:6px;display:inline-block">'
+        . 'Open form</a></p>'
+        . '<p>If the button does not work, copy this URL:<br><a href="' . $eUrl . '">' . $eUrl . '</a></p>'
+        . '<p>Regards,<br>' . htmlspecialchars(syncpediaMailLegalEntityName(), ENT_QUOTES, 'UTF-8') . '</p>'
+        . '</div>';
+    paymentLinksSetMailContextForItem($linkId, 'form_links');
+    $result = syncpediaSendHtmlEmail($to, $formName . ' — form link', $html, 'form_links');
+    if (empty($result['ok'])) {
+        paymentLinksError($result['error'] ?? 'Failed to send form link email', 500);
+    }
+
+    paymentLinksSuccess([
+        'sent' => true,
+        'to' => $to,
+        'from' => (string) ($result['from'] ?? syncpediaSupportMailAddress()),
+        'form_id' => $formId,
+        'form_name' => $formName,
     ]);
 }
 
@@ -551,6 +689,13 @@ try {
                 paymentLinksError('Method not allowed', 405);
             }
             handleSendPaymentLinkEmail($tokenData);
+            break;
+
+        case 'send_form_link':
+            if ($method !== 'POST') {
+                paymentLinksError('Method not allowed', 405);
+            }
+            handleSendPaidFormLinkEmail($tokenData);
             break;
 
         default:

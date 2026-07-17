@@ -208,7 +208,21 @@ if ($action === 'update_lead' && ($method === 'PUT' || $method === 'POST')) {
         $allowedFields = ['status', 'notes'];
     }
     foreach ($allowedFields as $f) {
-        if (array_key_exists($f, $input)) { $fields[] = "$f = ?"; $params[] = $input[$f]; }
+        if (!array_key_exists($f, $input)) {
+            continue;
+        }
+        if ($f === 'status') {
+            $st = strtolower(trim((string) $input['status']));
+            $hrAllowed = ['new', 'contacted', 'interested', 'not_interested', 'converted', 'lost'];
+            if (!in_array($st, $hrAllowed, true)) {
+                respond(['error' => 'Invalid HR lead status'], 400);
+            }
+            $fields[] = 'status = ?';
+            $params[] = $st;
+            continue;
+        }
+        $fields[] = "$f = ?";
+        $params[] = $input[$f];
     }
     $newResumePath = null;
     if (!empty($_FILES['resume'])) {

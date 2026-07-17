@@ -255,24 +255,56 @@ class WhatsAppWebhookHandler
         return in_array($s, ['sent', 'delivered', 'read', 'failed'], true) ? $s : 'queued';
     }
 
+    /** Rank for monotonic status updates (failed always wins). */
+    private static function statusRank(string $status): int
+    {
+        $map = [
+            'queued' => 10,
+            'sent' => 20,
+            'delivered' => 30,
+            'read' => 40,
+            'failed' => 100,
+        ];
+        $key = strtolower($status);
+        return $map[$key] ?? 0;
+    }
+
     private static function updateMessageStatus(PDO $db, string $providerMessageId, string $status, ?string $ts, ?string $err = null): void
     {
         if ($providerMessageId === '') {
             return;
         }
         try {
-            if ($status === 'delivered') {
+            $cur = $db->prepare('SELECT status FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
+            $cur->execute([$providerMessageId]);
+            $row = $cur->fetch(PDO::FETCH_ASSOC);
+            if (!$row) {
+                return;
+            }
+            $current = strtolower(trim((string) ($row['status'] ?? '')));
+            $incoming = strtolower($status);
+            // Never regress (e.g. read → delivered). Failed always applies.
+            if ($incoming !== 'failed' && self::statusRank($incoming) < self::statusRank($current)) {
+                // Still stamp timestamps if useful
+                if ($incoming === 'delivered' && $ts) {
+                    $db->prepare('UPDATE comm_whatsapp_messages SET delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
+                        ->execute([$ts, $providerMessageId]);
+                }
+                return;
+            }
+
+            if ($incoming === 'delivered') {
                 $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
-                    ->execute([$status, $ts, $providerMessageId]);
-            } elseif ($status === 'read') {
+                    ->execute([$incoming, $ts, $providerMessageId]);
+            } elseif ($incoming === 'read') {
                 $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, read_at = COALESCE(read_at, ?), delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
-                    ->execute([$status, $ts, $ts, $providerMessageId]);
-            } elseif ($status === 'failed') {
+                    ->execute([$incoming, $ts, $ts, $providerMessageId]);
+            } elseif ($incoming === 'failed') {
                 $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, error_message = ? WHERE provider_message_id = ?')
-                    ->execute([$status, $err, $providerMessageId]);
+                    ->execute([$incoming, $err, $providerMessageId]);
             } else {
                 $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, sent_at = COALESCE(sent_at, ?) WHERE provider_message_id = ?')
-                    ->execute([$status, $ts, $providerMessageId]);
+                    ->execute([$incoming, $ts, $providerMessageId]);
             }
         } catch (Throwable $e) {
             error_log('[wa_webhook] status update: ' . $e->getMessage());

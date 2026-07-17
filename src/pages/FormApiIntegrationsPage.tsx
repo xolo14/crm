@@ -153,7 +153,9 @@ export default function FormApiIntegrationsPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Form API Integrations</h1>
           <p className="text-sm text-muted-foreground">
-            Use per-form API keys for external Apply/Enroll buttons.
+            Use per-form API keys for external Apply/Enroll buttons. Send the key in the
+            <code className="mx-1 rounded bg-muted px-1 py-0.5">X-Form-Api-Key</code>
+            header, not in the URL.
           </p>
         </div>
         <Button variant="outline" onClick={() => void loadForms()} disabled={loading}>
@@ -192,7 +194,7 @@ export default function FormApiIntegrationsPage() {
                     const enabled = Boolean(meta.external_api_enabled);
                     const hasKey = String(meta.external_api_key_hash || "").trim() !== "";
                     const plainKey = freshKeys[form.id] || "";
-                    const integrationUrl = `${origin}/apply?form=${encodeURIComponent(form.slug)}${plainKey ? `&api_key=${encodeURIComponent(plainKey)}` : ""}`;
+                    const integrationUrl = `${origin}/apply?form=${encodeURIComponent(form.slug)}`;
                     return (
                       <TableRow key={form.id}>
                         <TableCell>
@@ -222,7 +224,9 @@ export default function FormApiIntegrationsPage() {
                               </div>
                             ) : (
                               <div className="text-xs text-muted-foreground">
-                                Generate key to get full URL with <code>api_key</code>.
+                                Generate a key, then send it in the
+                                <code className="mx-1 rounded bg-muted px-1 py-0.5">X-Form-Api-Key</code>
+                                header.
                               </div>
                             )}
                           </div>
@@ -246,6 +250,15 @@ export default function FormApiIntegrationsPage() {
                             >
                               <Copy className="mr-1.5 h-3.5 w-3.5" />
                               Copy URL
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={!plainKey}
+                              onClick={() => void copy(plainKey, "API key")}
+                            >
+                              <Copy className="mr-1.5 h-3.5 w-3.5" />
+                              Copy Key
                             </Button>
                             <Button
                               size="sm"

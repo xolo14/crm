@@ -24,6 +24,7 @@ import PaymentLinksTable, {
 import CreatePaymentLinkModal from "@/components/payments/CreatePaymentLinkModal";
 import PaymentLinkSuccess from "@/components/payments/PaymentLinkSuccess";
 import LinkDetailModal from "@/components/paymentLinks/LinkDetailModal";
+import PaymentMailDialog from "@/components/paymentLinks/PaymentMailDialog";
 
 const initialFilters: TableFilters = {
   status: "",
@@ -55,6 +56,7 @@ export default function PaymentLinksPage() {
   const [detailLink, setDetailLink] = useState<RazorpayPaymentLink | null>(
     null,
   );
+  const [mailLink, setMailLink] = useState<RazorpayPaymentLink | null>(null);
 
   const loadLinks = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -305,7 +307,7 @@ export default function PaymentLinksPage() {
         onFilterChange={setFilters}
         onViewDetail={setDetailLink}
         onCancel={handleCancel}
-        onRemind={handleRemind}
+        onEmail={setMailLink}
         onRefresh={() => void loadLinks()}
         onCopyShortUrl={copyShortUrl}
         onCreate={() => setCreateOpen(true)}
@@ -321,6 +323,12 @@ export default function PaymentLinksPage() {
         open={!!successLink}
         link={successLink}
         onClose={handleSuccessClose}
+      />
+
+      <PaymentMailDialog
+        link={mailLink}
+        onClose={() => setMailLink(null)}
+        onReminder={handleRemind}
       />
 
       {detailLink && (

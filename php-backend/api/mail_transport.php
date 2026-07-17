@@ -3,6 +3,8 @@
 use PHPMailer\PHPMailer\Exception as MailerException;
 use PHPMailer\PHPMailer\PHPMailer;
 
+require_once __DIR__ . '/org_email_service.php';
+
 /**
  * Load Composer autoload (dompdf / PHPMailer). Vendor lives in php-backend/vendor.
  */
@@ -296,8 +298,9 @@ function syncpediaSmtpSendOnce(
         $mail->Body = $htmlBody;
         $mail->AltBody = $altBody !== '' ? $altBody : trim(strip_tags($htmlBody));
         $mail->send();
-        return ['ok' => true];
+        return ['ok' => true, 'from' => $creds['user']];
     } catch (MailerException $e) {
+        error_log('[smtp] send failed (' . $host . ':' . $port . '/' . $enc . ' as ' . $creds['user'] . '): ' . $e->getMessage());
         return ['ok' => false, 'error' => $e->getMessage()];
     }
 }
@@ -321,22 +324,19 @@ function syncpediaSendHtmlEmailViaSmtp(
     if (!filter_var($fromAddr, FILTER_VALIDATE_EMAIL)) {
         return ['ok' => false, 'error' => 'Invalid from email'];
     }
-    if (!syncpediaSmtpIsReady()) {
-        return ['ok' => false, 'error' => 'SMTP is not configured'];
-    }
-
     $account = syncpediaSmtpAccountForFrom($fromAddr);
-    $creds = syncpediaSmtpCredentialsForAccount($account);
-    if ($creds === null) {
-        $other = $account === 'hr' ? 'support' : 'hr';
-        $creds = syncpediaSmtpCredentialsForAccount($other);
+    $resolved = syncpediaResolveTenantSmtp($account);
+    if (empty($resolved['ok'])) {
+        return ['ok' => false, 'error' => $resolved['error'] ?? 'Email not configured for your organization'];
     }
-    if ($creds === null) {
-        return ['ok' => false, 'error' => 'SMTP credentials missing for ' . $account];
+    if (!syncpediaLoadComposerAutoload()) {
+        return ['ok' => false, 'error' => 'PHPMailer is not installed'];
     }
+    $creds = ['user' => (string) $resolved['user'], 'pass' => (string) $resolved['pass']];
+    if (!empty($resolved['from_name'])) $fromDisplayName = (string) $resolved['from_name'];
 
     $lastError = '';
-    foreach (syncpediaSmtpTransportProfiles() as $profile) {
+    foreach (($resolved['profiles'] ?? []) as $profile) {
         $res = syncpediaSmtpSendOnce(
             $to,
             $subject,
@@ -359,7 +359,10 @@ function syncpediaSendHtmlEmailViaSmtp(
     }
 
     if (preg_match('/authenticat|login|credentials|password|535|534|530/i', $lastError)) {
-        return ['ok' => false, 'error' => syncpediaSmtpAuthFailedMessage($creds['user'])];
+        $message = !empty($resolved['tenant'])
+            ? 'Gmail SMTP could not authenticate as ' . $creds['user'] . '. Generate a new Google App Password in Settings → Email Setup.'
+            : syncpediaSmtpAuthFailedMessage($creds['user']);
+        return ['ok' => false, 'error' => $message];
     }
     return ['ok' => false, 'error' => 'SMTP send failed: ' . $lastError];
 }
@@ -386,22 +389,19 @@ function syncpediaSendHtmlEmailViaSmtpWithOptions(
     if (!filter_var($fromAddr, FILTER_VALIDATE_EMAIL)) {
         return ['ok' => false, 'error' => 'Invalid from email'];
     }
-    if (!syncpediaSmtpIsReady()) {
-        return ['ok' => false, 'error' => 'SMTP is not configured'];
-    }
-
     $account = syncpediaSmtpAccountForFrom($fromAddr);
-    $creds = syncpediaSmtpCredentialsForAccount($account);
-    if ($creds === null) {
-        $other = $account === 'hr' ? 'support' : 'hr';
-        $creds = syncpediaSmtpCredentialsForAccount($other);
+    $resolved = syncpediaResolveTenantSmtp($account);
+    if (empty($resolved['ok'])) {
+        return ['ok' => false, 'error' => $resolved['error'] ?? 'Email not configured for your organization'];
     }
-    if ($creds === null) {
-        return ['ok' => false, 'error' => 'SMTP credentials missing for ' . $account];
+    if (!syncpediaLoadComposerAutoload()) {
+        return ['ok' => false, 'error' => 'PHPMailer is not installed'];
     }
+    $creds = ['user' => (string) $resolved['user'], 'pass' => (string) $resolved['pass']];
+    if (!empty($resolved['from_name'])) $fromDisplayName = (string) $resolved['from_name'];
 
     $lastError = '';
-    foreach (syncpediaSmtpTransportProfiles() as $profile) {
+    foreach (($resolved['profiles'] ?? []) as $profile) {
         $res = syncpediaSmtpSendOnce(
             $to,
             $subject,
@@ -427,7 +427,10 @@ function syncpediaSendHtmlEmailViaSmtpWithOptions(
     }
 
     if (preg_match('/authenticat|login|credentials|password|535|534|530/i', $lastError)) {
-        return ['ok' => false, 'error' => syncpediaSmtpAuthFailedMessage($creds['user'])];
+        $message = !empty($resolved['tenant'])
+            ? 'Gmail SMTP could not authenticate as ' . $creds['user'] . '. Generate a new Google App Password in Settings → Email Setup.'
+            : syncpediaSmtpAuthFailedMessage($creds['user']);
+        return ['ok' => false, 'error' => $message];
     }
     return ['ok' => false, 'error' => 'SMTP send failed: ' . $lastError];
 }

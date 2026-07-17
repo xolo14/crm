@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/hooks/useAuth";
 import { getRoleLevel, isL3AdminRole, normalizeAppRole } from "@/lib/roleUtils";
 import { SettingsNav } from "@/components/settings/SettingsNav";
@@ -9,6 +9,11 @@ import { DataPrivacy } from "@/components/settings/sections/DataPrivacy";
 import { GeneralSettings } from "@/components/settings/sections/GeneralSettings";
 import { Localization } from "@/components/settings/sections/Localization";
 import { Security } from "@/components/settings/sections/Security";
+import { EmailSetup } from "@/components/settings/sections/EmailSetup";
+
+function PersonalProfileSettings() {
+  return <GeneralSettings personalOnly />;
+}
 
 const adminSectionComponents: Record<string, React.FC> = {
   general: GeneralSettings,
@@ -20,7 +25,7 @@ const adminSectionComponents: Record<string, React.FC> = {
 };
 
 const limitedSectionComponents: Record<string, React.FC> = {
-  general: GeneralSettings,
+  general: PersonalProfileSettings,
   password: ChangePassword,
 };
 
@@ -34,14 +39,25 @@ function usesLimitedSettings(role?: string | null): boolean {
 export default function SettingsPage() {
   const { user } = useAuth();
   const limited = usesLimitedSettings(user?.role);
-  const sectionComponents = limited ? limitedSectionComponents : adminSectionComponents;
+  const normalizedRole = normalizeAppRole(user?.role);
+  const canSeeEmailSetup = normalizedRole === "super_admin" || isL3AdminRole(normalizedRole);
+  const sectionComponents = useMemo(
+    () =>
+      limited
+        ? limitedSectionComponents
+        : {
+            ...adminSectionComponents,
+            ...(canSeeEmailSetup ? { "email-setup": EmailSetup } : {}),
+          },
+    [limited, canSeeEmailSetup],
+  );
   const [activeSection, setActiveSection] = useState<string>("general");
 
   useEffect(() => {
     if (!(activeSection in sectionComponents)) {
       setActiveSection("general");
     }
-  }, [limited, activeSection]);
+  }, [activeSection, sectionComponents]);
 
   const ActiveSection = sectionComponents[activeSection] ?? GeneralSettings;
 
@@ -55,7 +71,7 @@ export default function SettingsPage() {
       </div>
 
       <div className="flex flex-col md:flex-row md:min-h-[calc(100dvh-160px)] gap-4 md:gap-6 md:rounded-lg md:border md:border-border md:bg-card md:overflow-hidden">
-        <SettingsNav active={activeSection} onChange={setActiveSection} limited={limited} />
+        <SettingsNav active={activeSection} onChange={setActiveSection} limited={limited} showEmailSetup={canSeeEmailSetup} />
         <div className="min-w-0 flex-1 md:overflow-y-auto md:p-6">
           <ActiveSection />
         </div>

@@ -16,6 +16,7 @@ export function paymentLinksUrl(
     | "cancel"
     | "remind"
     | "send_email"
+    | "send_form_link"
     | "invoice"
     | "crm_list"
     | "webhook",

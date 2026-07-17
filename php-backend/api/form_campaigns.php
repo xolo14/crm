@@ -360,7 +360,7 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
         return ['ok' => false, 'error' => 'Email template not found or not accessible for this form'];
     }
 
-    $orgId = trim((string) ($formRow['org_id'] ?? ''));
+    $orgId = formCampaignEffectiveOrgId($db, $tokenData, $formRow);
     $campaignId = generateUUID();
     $valid = [];
     foreach ($recipients as $row) {
@@ -390,10 +390,12 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
     $sendStmt = $db->prepare('INSERT INTO email_sends (id, campaign_id, recipient_email, status, error_message) VALUES (?,?,?,?,?)');
     $sent = 0;
     $failed = 0;
+    $firstError = null;
     $fromAddr = 'support@syncpedia.in';
     $fromName = trim((string) ($formRow['name'] ?? 'Syncpedia'));
     $subject = (string) ($draft['subject'] ?? 'Message from Syncpedia');
     $html = (string) ($draft['html_body'] ?? '');
+    syncpediaSetMailContext($orgId !== '' ? $orgId : null, 'form_campaigns');
     if ($html === '') {
         $html = '<p>' . nl2br(htmlspecialchars((string) ($draft['plain_text'] ?? ''), ENT_QUOTES, 'UTF-8')) . '</p>';
     }
@@ -408,6 +410,9 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
             $sent++;
         } else {
             $failed++;
+            if ($firstError === null) {
+                $firstError = trim((string) ($res['error'] ?? 'SMTP send failed'));
+            }
         }
         $sendStmt->execute([generateUUID(), $campaignId, $email, $status, $res['error'] ?? null]);
     }
@@ -428,7 +433,14 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
         ]);
     }
 
-    return ['ok' => true, 'sent' => $sent, 'failed' => $failed, 'skipped' => 0, 'campaign_id' => $campaignId];
+    return [
+        'ok' => $sent > 0,
+        'sent' => $sent,
+        'failed' => $failed,
+        'skipped' => 0,
+        'campaign_id' => $campaignId,
+        'error' => $sent === 0 ? ($firstError ?: 'No emails were accepted by SMTP') : null,
+    ];
 }
 
 /** @return array{ok:bool,sent?:int,skipped?:int,failed?:int,error?:string,campaign_id?:string} */

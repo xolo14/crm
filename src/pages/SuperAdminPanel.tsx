@@ -26,6 +26,10 @@ import { generateTempPassword } from '@/lib/randomPassword';
 
 const ALL_FEATURE_KEYS = IMPLEMENTED_FEATURE_KEYS;
 const FEATURE_SECTIONS = implementedFeaturesBySection();
+const isValidAdminPhone = (value: string) => {
+  const digits = value.replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 15;
+};
 
 export default function SuperAdminPanel() {
   const { role, switchOrg, organization, refreshOrganization } = useAuth();
@@ -48,11 +52,11 @@ export default function SuperAdminPanel() {
   const [createFeatures, setCreateFeatures] = useState<Record<string, boolean>>({});
   const [form, setForm] = useState({
     name: '', slug: '', plan: 'starter', max_users: '10',
-    admin_name: '', admin_email: '', admin_password: generateTempPassword(),
+    admin_name: '', admin_email: '', admin_phone: '', admin_password: generateTempPassword(),
   });
   const [createAdminAccount, setCreateAdminAccount] = useState(true);
   const [provisionOrg, setProvisionOrg] = useState<any | null>(null);
-  const [provisionForm, setProvisionForm] = useState({ admin_name: '', admin_email: '', admin_password: generateTempPassword() });
+  const [provisionForm, setProvisionForm] = useState({ admin_name: '', admin_email: '', admin_phone: '', admin_password: generateTempPassword() });
   const [provisioning, setProvisioning] = useState(false);
   const [syncPlatformSalesLoading, setSyncPlatformSalesLoading] = useState(false);
 
@@ -87,8 +91,12 @@ export default function SuperAdminPanel() {
 
   const handleCreate = async () => {
     if (!form.name || !form.slug) { toast({ variant: 'destructive', title: 'Name and slug required' }); return; }
-    if (createAdminAccount && (!form.admin_name.trim() || !form.admin_email.trim())) {
-      toast({ variant: 'destructive', title: 'Admin name and email required', description: 'Turn off “Create org admin login” if you want to add credentials later from the org row.' });
+    if (createAdminAccount && (!form.admin_name.trim() || !form.admin_email.trim() || !form.admin_phone.trim())) {
+      toast({ variant: 'destructive', title: 'Admin name, email, and phone required', description: 'Turn off “Create org admin login” if you want to add credentials later from the org row.' });
+      return;
+    }
+    if (createAdminAccount && !isValidAdminPhone(form.admin_phone)) {
+      toast({ variant: 'destructive', title: 'Invalid admin phone', description: 'Enter a valid phone number with 7 to 15 digits.' });
       return;
     }
     setCreating(true);
@@ -111,7 +119,7 @@ export default function SuperAdminPanel() {
         toast({ title: 'Organization created!' });
       }
       setShowCreate(false);
-      setForm({ name: '', slug: '', plan: 'starter', max_users: '10', admin_name: '', admin_email: '', admin_password: generateTempPassword() });
+      setForm({ name: '', slug: '', plan: 'starter', max_users: '10', admin_name: '', admin_email: '', admin_phone: '', admin_password: generateTempPassword() });
       setCreateAdminAccount(true);
       setCreateFeatures({});
       fetchOrgs();
@@ -133,7 +141,7 @@ export default function SuperAdminPanel() {
 
   const openProvisionAdmin = (org: any) => {
     setProvisionOrg(org);
-    setProvisionForm({ admin_name: '', admin_email: '', admin_password: generateTempPassword() });
+    setProvisionForm({ admin_name: '', admin_email: '', admin_phone: '', admin_password: generateTempPassword() });
   };
 
   const handleSyncPlatformSales = async () => {
@@ -154,8 +162,12 @@ export default function SuperAdminPanel() {
 
   const handleProvisionAdmin = async () => {
     if (!provisionOrg) return;
-    if (!provisionForm.admin_name.trim() || !provisionForm.admin_email.trim()) {
-      toast({ variant: 'destructive', title: 'Name and email required' });
+    if (!provisionForm.admin_name.trim() || !provisionForm.admin_email.trim() || !provisionForm.admin_phone.trim()) {
+      toast({ variant: 'destructive', title: 'Name, email, and phone required' });
+      return;
+    }
+    if (!isValidAdminPhone(provisionForm.admin_phone)) {
+      toast({ variant: 'destructive', title: 'Invalid phone', description: 'Enter a valid phone number with 7 to 15 digits.' });
       return;
     }
     if (provisionForm.admin_password.length < 6) {
@@ -168,6 +180,7 @@ export default function SuperAdminPanel() {
         org_id: provisionOrg.id,
         admin_name: provisionForm.admin_name.trim(),
         admin_email: provisionForm.admin_email.trim(),
+        admin_phone: provisionForm.admin_phone.trim(),
         admin_password: provisionForm.admin_password,
       });
       toast({ title: 'Admin credentials saved', description: `${provisionForm.admin_email} can sign in at the Login Portal (/login).` });
@@ -380,6 +393,7 @@ export default function SuperAdminPanel() {
                         <div><Label className="text-xs">Admin Name *</Label><Input value={form.admin_name} onChange={e => setForm(f => ({ ...f, admin_name: e.target.value }))} placeholder="John Doe" className="h-10" /></div>
                         <div><Label className="text-xs">Admin Email *</Label><Input type="email" value={form.admin_email} onChange={e => setForm(f => ({ ...f, admin_email: e.target.value }))} placeholder="admin@acme.com" className="h-10" /></div>
                       </div>
+                      <div className="mt-3"><Label className="text-xs">Admin Phone *</Label><Input type="tel" value={form.admin_phone} onChange={e => setForm(f => ({ ...f, admin_phone: e.target.value }))} placeholder="+91 98765 43210" className="h-10" autoComplete="tel" /></div>
                       <div className="mt-3"><Label className="text-xs">Initial Password</Label><PasswordInput value={form.admin_password} onChange={e => setForm(f => ({ ...f, admin_password: e.target.value }))} className="h-10" autoComplete="new-password" /></div>
                     </>
                   )}
@@ -620,6 +634,10 @@ export default function SuperAdminPanel() {
               <div className="space-y-2">
                 <Label className="text-xs">Admin email *</Label>
                 <Input type="email" value={provisionForm.admin_email} onChange={e => setProvisionForm(f => ({ ...f, admin_email: e.target.value }))} placeholder="admin@organization.com" className="h-10" />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs">Admin phone *</Label>
+                <Input type="tel" value={provisionForm.admin_phone} onChange={e => setProvisionForm(f => ({ ...f, admin_phone: e.target.value }))} placeholder="+91 98765 43210" className="h-10" autoComplete="tel" />
               </div>
               <div className="space-y-2">
                 <Label className="text-xs">Password *</Label>

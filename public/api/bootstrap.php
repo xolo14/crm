@@ -101,6 +101,15 @@ if (!defined('CRM_PUBLIC_URL')) {
 if (!defined('PUBLIC_LEAD_API_KEY')) {
     define('PUBLIC_LEAD_API_KEY', '');
 }
+if (!defined('LEAD_INGEST_ORG_ID')) {
+    define('LEAD_INGEST_ORG_ID', '');
+}
+if (!defined('LEAD_INGEST_EXTRA_ORIGINS')) {
+    define('LEAD_INGEST_EXTRA_ORIGINS', '');
+}
+if (!defined('SMTP_ALLOW_MAIL_FALLBACK')) {
+    define('SMTP_ALLOW_MAIL_FALLBACK', false);
+}
 
 function syncpediaCorsOrigin(): string
 {
@@ -123,6 +132,34 @@ function syncpediaCorsOrigin(): string
         return $scheme . '://' . $_SERVER['HTTP_HOST'];
     }
     return '*';
+}
+
+/** CORS for lead-ingest — never use * in production; allow FRONTEND_URL + optional extra origins. */
+function syncpediaLeadIngestCorsOrigin(): string
+{
+    $requestOrigin = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+    $allowed = [];
+    if (defined('FRONTEND_URL') && FRONTEND_URL !== '' && FRONTEND_URL !== '*') {
+        $allowed[] = rtrim((string) FRONTEND_URL, '/');
+    }
+    if (defined('LEAD_INGEST_EXTRA_ORIGINS') && LEAD_INGEST_EXTRA_ORIGINS !== '') {
+        foreach (explode(',', (string) LEAD_INGEST_EXTRA_ORIGINS) as $origin) {
+            $origin = rtrim(trim($origin), '/');
+            if ($origin !== '') {
+                $allowed[] = $origin;
+            }
+        }
+    }
+    if ($requestOrigin !== '') {
+        $normalized = rtrim($requestOrigin, '/');
+        if (in_array($normalized, $allowed, true)) {
+            return $requestOrigin;
+        }
+    }
+    if ($allowed !== []) {
+        return $allowed[0];
+    }
+    return syncpediaCorsOrigin();
 }
 
 function syncpediaPublicSiteUrl(): string

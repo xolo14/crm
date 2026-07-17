@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Printer, Download, Mail, Send } from "lucide-react";
+import { Calculator, Printer, Download, Mail, Send } from "lucide-react";
 import { api } from "@/lib/api";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import type { Employee, Payslip, PayslipStatus } from "@/types/payslip";
+import type { Employee, Payslip, PayslipStatus, SalaryComponents } from "@/types/payslip";
 import { amountInWords, calculateSalaryComponents, formatINR } from "@/types/payslip";
 import { buildDefaultPayslipEmailDraft, type PayslipEmailDraft } from "@/lib/payslipEmail";
 import { buildPayslipPdfBase64, exportPayslipPDF, printPayslip } from "@/utils/payslipExporter";
@@ -33,6 +33,62 @@ function monthLabelFromYm(ym: string): string {
   if (!y || !m) return ym;
   const d = new Date(y, m - 1, 1);
   return d.toLocaleString("en-IN", { month: "long", year: "numeric" });
+}
+
+type EditableSalary = Pick<
+  SalaryComponents,
+  "basic" | "hra" | "specialAllowance" | "otherAllowance" | "pfEmployee" | "professionalTax" | "tds" | "otherDeductions"
+>;
+
+const EMPTY_SALARY: EditableSalary = {
+  basic: 0,
+  hra: 0,
+  specialAllowance: 0,
+  otherAllowance: 0,
+  pfEmployee: 0,
+  professionalTax: 0,
+  tds: 0,
+  otherDeductions: 0,
+};
+
+function editableFromComponents(components: SalaryComponents): EditableSalary {
+  return {
+    basic: components.basic,
+    hra: components.hra,
+    specialAllowance: components.specialAllowance,
+    otherAllowance: components.otherAllowance,
+    pfEmployee: components.pfEmployee,
+    professionalTax: components.professionalTax,
+    tds: components.tds,
+    otherDeductions: components.otherDeductions,
+  };
+}
+
+function MoneyInput({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="relative w-32">
+      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-xs text-gray-500">₹</span>
+      <Input
+        id={id}
+        type="number"
+        min={0}
+        step={1}
+        inputMode="decimal"
+        value={value}
+        onFocus={(event) => event.currentTarget.select()}
+        onChange={(event) => onChange(Math.max(0, Number(event.target.value) || 0))}
+        className="h-9 rounded-lg pl-7 text-right focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
+      />
+    </div>
+  );
 }
 
 function buildPayslip(opts: {
@@ -85,8 +141,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
   const [payMonth, setPayMonth] = useState(currentMonth());
   const [workingDays, setWorkingDays] = useState(26);
   const [paidDays, setPaidDays] = useState(26);
-  const [tds, setTds] = useState(0);
-  const [otherDeductions, setOtherDeductions] = useState(0);
+  const [salary, setSalary] = useState<EditableSalary>(EMPTY_SALARY);
 
   const [postGenOpen, setPostGenOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
@@ -104,6 +159,10 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
   const storedPdfForId = useRef<string | null>(null);
 
   const employee = useMemo(() => employees.find((e) => e.id === employeeId) ?? null, [employees, employeeId]);
+
+  useEffect(() => {
+    if (!employeeId && employees[0]) setEmployeeId(employees[0].id);
+  }, [employeeId, employees]);
 
   useEffect(() => {
     if (paidDays > workingDays) setPaidDays(workingDays);
@@ -128,11 +187,53 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
   }, [postGenOpen, lastGenerated]);
 
   const components = useMemo(() => {
-    if (!employee) {
-      return calculateSalaryComponents(0, 0, 1, false, false, 0, 0);
-    }
-    return calculateSalaryComponents(employee.ctc, paidDays, workingDays, employee.pfApplicable, employee.ptApplicable, tds, otherDeductions);
-  }, [employee, paidDays, workingDays, tds, otherDeductions]);
+    const basic = Math.max(0, Number(salary.basic) || 0);
+    const hra = Math.max(0, Number(salary.hra) || 0);
+    const specialAllowance = Math.max(0, Number(salary.specialAllowance) || 0);
+    const otherAllowance = Math.max(0, Number(salary.otherAllowance) || 0);
+    const pfEmployee = Math.max(0, Number(salary.pfEmployee) || 0);
+    const professionalTax = Math.max(0, Number(salary.professionalTax) || 0);
+    const tds = Math.max(0, Number(salary.tds) || 0);
+    const otherDeductions = Math.max(0, Number(salary.otherDeductions) || 0);
+    const grossEarnings = basic + hra + specialAllowance + otherAllowance;
+    const totalDeductions = pfEmployee + professionalTax + tds + otherDeductions;
+    return {
+      basic,
+      hra,
+      specialAllowance,
+      otherAllowance,
+      grossEarnings,
+      pfEmployee,
+      pfEmployer: pfEmployee,
+      professionalTax,
+      tds,
+      otherDeductions,
+      totalDeductions,
+      netPay: Math.max(0, grossEarnings - totalDeductions),
+    };
+  }, [salary]);
+
+  const updateSalary = (field: keyof EditableSalary, value: number) => {
+    setSalary((current) => ({ ...current, [field]: value }));
+  };
+
+  const loadCtcSuggestion = () => {
+    if (!employee) return;
+    setSalary(
+      editableFromComponents(
+        calculateSalaryComponents(
+          employee.ctc,
+          paidDays,
+          workingDays,
+          employee.pfApplicable,
+          employee.ptApplicable,
+          salary.tds,
+          salary.otherDeductions,
+        ),
+      ),
+    );
+    toast({ title: "CTC suggestion loaded", description: "All amounts remain editable." });
+  };
 
   const previewPayslip = useMemo(() => {
     if (!employee) return null;
@@ -150,11 +251,24 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
 
   const [submitting, setSubmitting] = useState(false);
 
+  const validateAmounts = () => {
+    if (components.grossEarnings <= 0) {
+      toast({ title: "Enter earnings", description: "Gross earnings must be greater than zero.", variant: "destructive" });
+      return false;
+    }
+    if (components.totalDeductions > components.grossEarnings) {
+      toast({ title: "Deductions exceed earnings", description: "Total deductions cannot exceed gross earnings.", variant: "destructive" });
+      return false;
+    }
+    return true;
+  };
+
   const handleSaveDraft = async () => {
     if (!employee) {
       toast({ title: "Select an employee", variant: "destructive" });
       return;
     }
+    if (!validateAmounts()) return;
     const slip = buildPayslip({
       employee,
       month: payMonth,
@@ -180,6 +294,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
       toast({ title: "Select an employee", variant: "destructive" });
       return;
     }
+    if (!validateAmounts()) return;
     const slip = buildPayslip({
       employee,
       month: payMonth,
@@ -272,7 +387,13 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
           {/* Employee */}
           <div className="space-y-3">
             <Label className="text-[#0f2318]">Employee</Label>
-            <Select value={employeeId} onValueChange={setEmployeeId}>
+            <Select
+              value={employeeId}
+              onValueChange={(value) => {
+                setEmployeeId(value);
+                setSalary({ ...EMPTY_SALARY });
+              }}
+            >
               <SelectTrigger className="h-11 rounded-lg focus-visible:ring-[#2ed573] focus-visible:ring-offset-1">
                 <SelectValue placeholder="Select employee" />
               </SelectTrigger>
@@ -349,26 +470,38 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
           </div>
 
           {/* Salary breakdown */}
+          <div className="flex flex-col gap-3 rounded-xl border border-blue-100 bg-blue-50/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-gray-900">Manual salary breakdown</p>
+              <p className="mt-1 text-xs text-gray-600">
+                Enter the actual amounts for this payslip. Changes to CTC or paid days will not overwrite them.
+              </p>
+            </div>
+            <Button type="button" variant="outline" size="sm" onClick={loadCtcSuggestion} disabled={!employee} className="shrink-0 bg-white">
+              <Calculator className="mr-2 h-4 w-4" />
+              Load CTC suggestion
+            </Button>
+          </div>
+
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-xl border border-gray-200 bg-white p-4 border-l-4 border-l-[#2ed573]">
               <div className="mb-3 text-xs font-bold uppercase tracking-wide text-[#0f2318]">Earnings</div>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Basic Salary</span>
-                  <span className="font-semibold text-gray-900">₹ {formatINR(components.basic)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">HRA</span>
-                  <span className="font-semibold text-gray-900">₹ {formatINR(components.hra)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Special Allowance</span>
-                  <span className="font-semibold text-gray-900">₹ {formatINR(components.specialAllowance)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Other Allowance</span>
-                  <span className="font-semibold text-gray-900">₹ {formatINR(components.otherAllowance)}</span>
-                </div>
+              <div className="space-y-3 text-sm">
+                {[
+                  ["basic", "Basic Salary"],
+                  ["hra", "HRA"],
+                  ["specialAllowance", "Special Allowance"],
+                  ["otherAllowance", "Other Allowance"],
+                ].map(([field, label]) => (
+                  <div key={field} className="flex items-center justify-between gap-3">
+                    <Label htmlFor={`salary-${field}`} className="text-gray-600">{label}</Label>
+                    <MoneyInput
+                      id={`salary-${field}`}
+                      value={salary[field as keyof EditableSalary]}
+                      onChange={(value) => updateSalary(field as keyof EditableSalary, value)}
+                    />
+                  </div>
+                ))}
                 <div className="my-2 border-t border-gray-200" />
                 <div className="flex justify-between text-base font-bold text-[#0f2318]">
                   <span>Gross Earnings</span>
@@ -379,41 +512,22 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
 
             <div className="rounded-xl border border-gray-200 bg-white p-4 border-l-4 border-l-red-400">
               <div className="mb-3 text-xs font-bold uppercase tracking-wide text-[#0f2318]">Deductions</div>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">PF (Employee 12%)</span>
-                  <span className="font-semibold text-gray-900">₹ {formatINR(components.pfEmployee)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Professional Tax</span>
-                  <span className="font-semibold text-gray-900">₹ {formatINR(components.professionalTax)}</span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <Label htmlFor="tds" className="text-gray-600">
-                    TDS
-                  </Label>
-                  <Input
-                    id="tds"
-                    type="number"
-                    min={0}
-                    className="h-9 w-32 rounded-lg text-right focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
-                    value={tds}
-                    onChange={(e) => setTds(Math.max(0, Number(e.target.value) || 0))}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <Label htmlFor="other-ded" className="text-gray-600">
-                    Other Deductions
-                  </Label>
-                  <Input
-                    id="other-ded"
-                    type="number"
-                    min={0}
-                    className="h-9 w-32 rounded-lg text-right focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
-                    value={otherDeductions}
-                    onChange={(e) => setOtherDeductions(Math.max(0, Number(e.target.value) || 0))}
-                  />
-                </div>
+              <div className="space-y-3 text-sm">
+                {[
+                  ["pfEmployee", "PF (Employee)"],
+                  ["professionalTax", "Professional Tax"],
+                  ["tds", "TDS"],
+                  ["otherDeductions", "Other Deductions"],
+                ].map(([field, label]) => (
+                  <div key={field} className="flex items-center justify-between gap-3">
+                    <Label htmlFor={`salary-${field}`} className="text-gray-600">{label}</Label>
+                    <MoneyInput
+                      id={`salary-${field}`}
+                      value={salary[field as keyof EditableSalary]}
+                      onChange={(value) => updateSalary(field as keyof EditableSalary, value)}
+                    />
+                  </div>
+                ))}
                 <div className="my-2 border-t border-gray-200" />
                 <div className="flex justify-between text-base font-bold text-[#0f2318]">
                   <span>Total Deductions</span>
@@ -427,6 +541,9 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
           <div className="rounded-xl border-2 border-[#2ed573] bg-[#e6faf0] p-4">
             <div className="text-2xl font-extrabold text-[#0f2318]">Net Pay: ₹ {formatINR(components.netPay)}</div>
             <div className="mt-1 text-sm italic text-gray-700">Amount in Words: {amountInWords(components.netPay)}</div>
+            {components.totalDeductions > components.grossEarnings ? (
+              <p className="mt-2 text-sm font-semibold text-red-700">Reduce deductions—they cannot exceed gross earnings.</p>
+            ) : null}
           </div>
 
           {/* PF / PT badges */}

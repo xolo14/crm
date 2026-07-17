@@ -219,3 +219,49 @@ export function mapCsvRowsToLeads(
 
   return { leads, skipped, errors };
 }
+
+/** Sample CSV for the Import leads dialog (headers match CORE_ALIASES). */
+export const LEAD_IMPORT_TEMPLATE_HEADERS = [
+  "name",
+  "email",
+  "phone",
+  "college",
+  "year_of_study",
+  "course_interest",
+  "company",
+  "source",
+  "notes",
+] as const;
+
+export function buildLeadImportTemplateCsv(): string {
+  const sample = [
+    "Rahul Sharma",
+    "rahul@example.com",
+    "9876543210",
+    "ABC College",
+    "3rd year",
+    "Full Stack",
+    "",
+    "other",
+    "Interested in weekend batch",
+  ];
+  const escape = (v: string) => {
+    if (/[",\n\r]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+    return v;
+  };
+  return [
+    LEAD_IMPORT_TEMPLATE_HEADERS.join(","),
+    sample.map(escape).join(","),
+  ].join("\n");
+}
+
+export function downloadLeadImportTemplate(): void {
+  const csv = buildLeadImportTemplateCsv();
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "leads-import-template.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}

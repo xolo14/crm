@@ -158,7 +158,7 @@ export default function CommunicationsAdminPage() {
         <div>
           <h1 className="text-2xl font-bold">Communications Admin</h1>
           <p className="text-sm text-muted-foreground">
-            Assign virtual numbers to organizations — each org connects their own Meta WhatsApp API
+            Assign virtual numbers as caller-ID labels for the device dialer (tel:) and WhatsApp — not Exotel/cloud call routing
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -170,7 +170,9 @@ export default function CommunicationsAdminPage() {
 
       <Card className="border-primary/20 bg-primary/5">
         <CardContent className="pt-6 text-sm text-muted-foreground">
-          Step 1: Assign a virtual number to an organization. Step 2: Assign that number to employees (org admins also receive numbers automatically).
+          Step 1: Assign a virtual number to an organization (metadata/label only). Step 2: Assign that number to employees.
+          Dialing always uses the phone&apos;s native dialer — there is no Exotel webhook or cloud telephony in this CRM.
+          Each org connects their own Meta WhatsApp API separately.
         </CardContent>
       </Card>
 
@@ -223,7 +225,7 @@ export default function CommunicationsAdminPage() {
 
         <TabsContent value="numbers" className="mt-4 space-y-4">
           <div className="flex justify-between items-center">
-            <h2 className="font-semibold">Virtual numbers (assigned by Syncpedia)</h2>
+            <h2 className="font-semibold">Virtual numbers (caller ID labels)</h2>
             <Dialog open={vnOpen} onOpenChange={setVnOpen}>
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1"><Plus className="h-4 w-4" /> Assign number</Button>

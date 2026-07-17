@@ -372,6 +372,8 @@ if ($action === 'send_email' && $method === 'POST') {
     $cc = trim((string) ($input['cc'] ?? ''));
     $bcc = trim((string) ($input['bcc'] ?? ''));
 
+    $payslipOrgId = trim((string) ($row['org_id'] ?? ''));
+    syncpediaSetMailContext($payslipOrgId !== '' ? $payslipOrgId : null, 'payslips');
     $send = syncpediaSendPayslipEmail(
         $to,
         $subject,

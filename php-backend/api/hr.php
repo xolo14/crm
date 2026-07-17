@@ -39,6 +39,7 @@ if ($action === 'create_hr' && $method === 'POST') {
     $orgId = resolveCreatorOrgId($db, $tokenData);
     $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, created_by, referral_code) VALUES (?,?,?,?,?,?,?,?,?)");
     $stmt->execute([$id, $email, $hash, $fullName, $input['phone'] ?? null, 'hr', $orgId, $userId, strtoupper(substr(str_replace('-', '', $id), 0, 8))]);
+    syncpediaSetMailContext($orgId !== '' ? $orgId : null, 'member_welcome');
     $welcomeResult = syncpediaSendMemberWelcomeEmail($fullName, $email, $password, 'hr', $input['phone'] ?? null);
     $payload = ['id' => $id, 'message' => 'HR user created', 'email_sent' => $welcomeResult['email_sent'], 'email_from' => $welcomeResult['from']];
     if ($welcomeResult['email_error'] !== null) {
@@ -176,10 +177,38 @@ if ($action === 'assigned_leads' && $method === 'GET') {
 
 if ($action === 'assigned_leads' && $method === 'PUT') {
     $id = trim((string) ($input['id'] ?? ''));
-    $status = trim((string) ($input['status'] ?? ''));
+    $status = leadsNormalizeStatus(trim((string) ($input['status'] ?? '')));
     if ($id === '' || $status === '') respond(['error' => 'id/status required'], 400);
-    $stmt = $db->prepare("UPDATE leads SET status=? WHERE id=? AND assigned_to=?");
+    if (!in_array($status, leadsAllowedStatuses(), true)) {
+        respond(['error' => 'Invalid status'], 400);
+    }
+    $sel = $db->prepare('SELECT id, status FROM leads WHERE id = ? AND assigned_to = ? LIMIT 1');
+    $sel->execute([$id, $userId]);
+    $lead = $sel->fetch(PDO::FETCH_ASSOC);
+    if (!$lead) {
+        respond(['error' => 'Lead not found'], 404);
+    }
+    $transitionErr = leadsAssertStatusTransition((string) ($lead['status'] ?? ''), $status);
+    if ($transitionErr !== null) {
+        respond(['error' => $transitionErr], 400);
+    }
+    if ($status === 'enrolled') {
+        $em = $db->prepare('SELECT email FROM leads WHERE id = ? LIMIT 1');
+        $em->execute([$id]);
+        $email = trim((string) ($em->fetchColumn() ?: ''));
+        if ($email === '') {
+            respond(['error' => 'Add an email on the lead before enrolling'], 400);
+        }
+    }
+    $stmt = $db->prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND assigned_to = ?');
     $stmt->execute([$status, $id, $userId]);
+    if ($status === 'enrolled') {
+        try {
+            leadsTryAttachStudentForEnrollment($db, $tokenData, $id);
+        } catch (Throwable $e) {
+            error_log('[hr] enroll student: ' . $e->getMessage());
+        }
+    }
     respond(['message' => 'Lead status updated']);
 }
 

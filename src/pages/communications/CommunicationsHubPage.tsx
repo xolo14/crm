@@ -139,7 +139,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
     const phone = normalizePhone(dialNumber);
     if (!phone) return;
     window.location.href = `tel:${phone}`;
-    setSelectedContact(null);
+    // Keep selected contact so Log Call pre-fills the dialed lead.
     setLogCallOpen(true);
   };
 
@@ -263,8 +263,8 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
                 <CardTitle className="text-lg flex items-center gap-2"><Smartphone className="h-5 w-5" /> Phone dialer</CardTitle>
                 <CardDescription>
                   {activeNumber
-                    ? `Calling via ${activeNumber.label} (${activeNumber.phone_number})`
-                    : "Use your device dialer — assign a virtual number in admin"}
+                    ? `Opens your phone dialer (tel:) — caller ID label ${activeNumber.label} (${activeNumber.phone_number}). Virtual numbers are metadata only; calls are not routed through Exotel or the CRM.`
+                    : "Opens your device dialer (tel:) — assign a virtual number in admin for caller ID labels only. No cloud telephony integration."}
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -521,7 +521,14 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
         </TabsContent>
       </Tabs>
 
-      <LogCallDialog open={logCallOpen} onOpenChange={setLogCallOpen} />
+      <LogCallDialog
+        open={logCallOpen}
+        onOpenChange={(o) => {
+          setLogCallOpen(o);
+          if (!o) setSelectedContact(null);
+        }}
+        initialLeadId={selectedContact?.id || null}
+      />
 
       {isOrgAdmin ? (
         <WhatsAppSetupWizard

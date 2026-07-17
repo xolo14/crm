@@ -7,6 +7,19 @@ import { SettingsSection } from "@/components/settings/ui/SettingsSection";
 import { SettingsSelect } from "@/components/settings/ui/SettingsSelect";
 import { ToggleSwitch } from "@/components/settings/ui/ToggleSwitch";
 
+interface OrganizationDataSettingsResponse {
+  data?: {
+    profile?: {
+      retention?: {
+        lead_retention?: string;
+        activity_retention?: string;
+        auto_archive?: boolean;
+        auto_archive_after?: string;
+      };
+    };
+  };
+}
+
 export function DataPrivacy() {
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
@@ -22,7 +35,7 @@ export function DataPrivacy() {
       try {
         const res = await api.organizations.myOrg();
         if (!active) return;
-        const org = (res as any)?.data;
+        const org = (res as OrganizationDataSettingsResponse)?.data;
         if (!org) return;
         const retention = org.profile?.retention || {};
         setLeadRetention(retention.lead_retention || "1y");
@@ -70,11 +83,8 @@ export function DataPrivacy() {
         <SettingsRow label="Export All CRM Data" description="Download complete backup as CSV/JSON">
           <button type="button" className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm">Export Data</button>
         </SettingsRow>
-        <SettingsRow label="Export Contacts Only">
-          <button type="button" className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm">Export Contacts</button>
-        </SettingsRow>
-        <SettingsRow label="Export Deals Only" border={false}>
-          <button type="button" className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm">Export Deals</button>
+        <SettingsRow label="Export Leads Only" border={false}>
+          <button type="button" className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-2 text-sm">Export Leads</button>
         </SettingsRow>
       </SettingsSection>
 

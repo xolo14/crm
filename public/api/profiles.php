@@ -18,16 +18,38 @@ if ($method === 'GET') {
         $normRole = syncpediaNormalizeRoleKey((string) ($role ?? ''));
         $managerVisibleIds = ($normRole === 'manager') ? hierarchyGetVisibleUserIds($db, $tokenData) : [];
 
-        // Leads (tenant + hierarchy)
+        // Leads (tenant + hierarchy) — count all, return recent sample for UI widgets
         $leadScope = tenantLeadsScopeSql($db, $tokenData, '');
         $where = '1=1' . $leadScope['sql'];
         $params = $leadScope['params'];
-        $stmt = $db->prepare("SELECT id, status, source, referred_by, assigned_to, created_at FROM leads WHERE $where ORDER BY created_at DESC LIMIT 1000");
+
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM leads WHERE $where");
+        $countStmt->execute($params);
+        $result['leads_total'] = (int) $countStmt->fetchColumn();
+
+        $statusStmt = $db->prepare("SELECT status, COUNT(*) AS cnt FROM leads WHERE $where GROUP BY status");
+        $statusStmt->execute($params);
+        $byStatus = [];
+        while ($sr = $statusStmt->fetch(PDO::FETCH_ASSOC)) {
+            $byStatus[(string) ($sr['status'] ?? '')] = (int) ($sr['cnt'] ?? 0);
+        }
+        $result['leads_by_status'] = $byStatus;
+
+        $stmt = $db->prepare("SELECT id, name, email, phone, status, source, referred_by, assigned_to, created_at FROM leads WHERE $where ORDER BY created_at DESC LIMIT 10000");
         $stmt->execute($params);
         $result['leads'] = $stmt->fetchAll();
 
-        // Counts — managers see students tied to their downline leads / mentors
-        if ($normRole === 'manager' && !empty($managerVisibleIds)) {
+        // Counts — managers see org students (aligned with org-wide leads)
+        if ($normRole === 'manager' && $useOrg) {
+            $tenant = orgFilterStudentsTenantSql($orgId);
+            $stmt = $db->prepare("
+                SELECT COUNT(*) as total, SUM(CASE WHEN s.status='active' THEN 1 ELSE 0 END) as active
+                FROM students s
+                LEFT JOIN leads l ON l.id = s.lead_id
+                WHERE 1=1{$tenant['sql']}
+            ");
+            $stmt->execute($tenant['params']);
+        } elseif ($normRole === 'manager' && !empty($managerVisibleIds)) {
             $inUsers = implode(',', array_fill(0, count($managerVisibleIds), '?'));
             $orgClause = $useOrg ? ' AND (s.org_id = ? OR l.org_id = ?)' : ' AND (s.org_id IS NULL OR l.org_id IS NULL)';
             $stmt = $db->prepare("
