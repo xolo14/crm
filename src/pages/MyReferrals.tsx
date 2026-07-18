@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useNavigate } from 'react-router-dom';
 import { DateRangeFilter, DateRange } from '@/components/DateRangeFilter';
+import { parseServerDateTime } from '@/lib/dateTime';
 
 const statusColors: Record<string, string> = {
   new: 'bg-blue-500/10 text-blue-700 border-blue-200',
@@ -86,9 +87,10 @@ export default function MyReferrals() {
   const dateFilteredLeads = useMemo(() => {
     if (!dateRange.from && !dateRange.to) return allLeads;
     return allLeads.filter(l => {
-      const d = new Date(l.created_at);
-      if (dateRange.from && d < dateRange.from) return false;
-      if (dateRange.to && d > new Date(dateRange.to.getTime() + 86400000)) return false;
+      const d = parseServerDateTime(l.created_at);
+      if (!d) return true;
+      if (dateRange.from && d.getTime() < dateRange.from.getTime()) return false;
+      if (dateRange.to && d.getTime() > dateRange.to.getTime()) return false;
       return true;
     });
   }, [allLeads, dateRange]);
@@ -96,9 +98,10 @@ export default function MyReferrals() {
   const dateFilteredReports = useMemo(() => {
     if (!dateRange.from && !dateRange.to) return dailyReports;
     return dailyReports.filter(r => {
-      const d = new Date(r.report_date);
-      if (dateRange.from && d < dateRange.from) return false;
-      if (dateRange.to && d > new Date(dateRange.to.getTime() + 86400000)) return false;
+      const d = parseServerDateTime(r.report_date);
+      if (!d) return true;
+      if (dateRange.from && d.getTime() < dateRange.from.getTime()) return false;
+      if (dateRange.to && d.getTime() > dateRange.to.getTime()) return false;
       return true;
     });
   }, [dailyReports, dateRange]);

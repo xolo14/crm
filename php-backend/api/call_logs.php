@@ -458,15 +458,22 @@ if ($method === 'POST' && $action === 'add_log') {
         $callTime,
     ];
 
+    // TIME column reads back as HH:MM:SS — pad HH:MM input so identical resubmits still match.
+    $dupTime = $callTime;
+    if (is_string($dupTime) && preg_match('/^\d{1,2}:\d{2}$/', $dupTime)) {
+        $dupTime .= ':00';
+    }
     $dupSt = $db->prepare(
         "SELECT id FROM call_logs
          WHERE sales_rep_id = ? AND org_id = ? AND call_date = ? AND call_type = ?
            AND COALESCE(lead_id, '') = COALESCE(?, '')
            AND COALESCE(client_phone, '') = COALESCE(?, '')
+           AND COALESCE(call_time, '') = COALESCE(?, '')
+           AND COALESCE(duration_seconds, 0) = ?
            AND created_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
          LIMIT 1",
     );
-    $dupSt->execute([$repId, $orgId, $callDate, $callType, $leadId, $clientPhone]);
+    $dupSt->execute([$repId, $orgId, $callDate, $callType, $leadId, $clientPhone, $dupTime, $duration]);
     if ($dupSt->fetch(PDO::FETCH_ASSOC)) {
         respond(['error' => 'Duplicate call log — already logged in the last 2 minutes'], 409);
     }

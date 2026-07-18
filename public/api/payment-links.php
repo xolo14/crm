@@ -93,10 +93,19 @@ function handlePaymentLinksWebhook(): void
     error_log('[RAZORPAY WEBHOOK] ' . $type);
 
     try {
-        paymentLinkProcessWebhookEvent($event);
+        $result = paymentLinkProcessWebhookEvent($event);
     } catch (Throwable $e) {
         error_log('[RAZORPAY WEBHOOK] process error: ' . $e->getMessage());
         paymentLinksError('Webhook processing failed', 500);
+    }
+
+    // Payment row is persisted before the receipt attempt; fail so Razorpay retries the receipt.
+    if (in_array($type, ['payment_link.paid', 'payment_link.partially_paid'], true)) {
+        $receipt = is_array($result['receipt'] ?? null) ? $result['receipt'] : null;
+        if ($receipt !== null && empty($receipt['ok'])) {
+            error_log('[RAZORPAY WEBHOOK] receipt failed: ' . (string) ($receipt['error'] ?? 'unknown'));
+            paymentLinksError('Receipt delivery failed', 500);
+        }
     }
 
     paymentLinksSuccess(['received' => true, 'event' => $type]);
@@ -385,6 +394,7 @@ function handleSendPaidFormLinkEmail(array $tokenData): void
 
     $db = paymentLinksDb();
     paymentLinksAssertItemAllowed($db, $tokenData, $linkId);
+    syncpediaRateLimitConsume('payment_link_send_form_' . $linkId, 1, 15);
     $form = paymentLinksFindAllowedForm($db, $tokenData, $formId);
     if (!is_array($form)) {
         paymentLinksError('Form not found or unavailable to your account', 404);
@@ -608,6 +618,7 @@ try {
                 'count' => 100,
                 'skip' => $_GET['skip'] ?? 0,
                 'max_pages' => $maxPages,
+                'force' => !empty($_GET['force']),
             ], $tokenData);
             paymentLinksSuccess($result);
             break;
@@ -675,6 +686,7 @@ try {
             }
             $db = paymentLinksDb();
             paymentLinksAssertItemAllowed($db, $tokenData, $id);
+            syncpediaRateLimitConsume('payment_link_remind_' . $id, 1, 15);
             $input = getInput();
             $medium = (($input['medium'] ?? 'email') === 'sms') ? 'sms' : 'email';
             if ($medium === 'sms') {

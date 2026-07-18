@@ -6,15 +6,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Search, Trash2, UserPlus, Users, Filter } from 'lucide-react';
+import { Search, Shuffle, Trash2, UserPlus, Users, Filter } from 'lucide-react';
+import { BulkAssignDialog } from '@/components/BulkAssignDialog';
 import { SOURCE_BUCKET_LABELS, type LeadSourceBucket } from '@/lib/leadSources';
 
 const LEAD_STATUSES = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
@@ -33,10 +26,10 @@ type SourceLeadsDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   sourceKey: LeadSourceBucket | string | null;
+  title?: string;
   initialStatus?: string;
   leads: any[];
   teamMembers: TeamMember[];
-  groupedTeamMembers: Record<string, TeamMember[]>;
   isManager: boolean;
   canBulkAssign: boolean;
   canBulkDelete?: boolean;
@@ -44,7 +37,8 @@ type SourceLeadsDialogProps = {
   getLeadAssignedNames: (lead: any) => string[];
   onOpenDetail: (lead: any) => void;
   onOpenAssign: (leadId: string) => void;
-  onBulkAssign: (repId: string, leadIds: string[]) => void | Promise<void>;
+  onBulkAutoAssign: (count: number, repIds: string[], poolLeadIds: string[]) => void | Promise<void>;
+  isAutoAssigning?: boolean;
   onBulkDelete?: (leadIds: string[]) => void | Promise<void>;
 };
 
@@ -52,10 +46,10 @@ export function SourceLeadsDialog({
   open,
   onOpenChange,
   sourceKey,
+  title,
   initialStatus = 'all',
   leads,
   teamMembers,
-  groupedTeamMembers,
   isManager,
   canBulkAssign,
   canBulkDelete = false,
@@ -63,13 +57,15 @@ export function SourceLeadsDialog({
   getLeadAssignedNames,
   onOpenDetail,
   onOpenAssign,
-  onBulkAssign,
+  onBulkAutoAssign,
+  isAutoAssigning = false,
   onBulkDelete,
 }: SourceLeadsDialogProps) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState(initialStatus || 'all');
   const [unassignedOnly, setUnassignedOnly] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [autoAssignOpen, setAutoAssignOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -77,10 +73,12 @@ export function SourceLeadsDialog({
       setSearch('');
       setUnassignedOnly(false);
       setSelectedIds(new Set());
+      setAutoAssignOpen(false);
     }
   }, [open, initialStatus, sourceKey]);
 
   const label =
+    (title && title.trim()) ||
     (sourceKey && SOURCE_BUCKET_LABELS[sourceKey as LeadSourceBucket]) ||
     String(sourceKey || '').replace(/_/g, ' ') ||
     'Source';
@@ -122,12 +120,11 @@ export function SourceLeadsDialog({
 
   const canSelect = canBulkAssign || canBulkDelete;
 
-  const handleAssign = async (repId: string) => {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-    await onBulkAssign(repId, ids);
-    setSelectedIds(new Set());
-  };
+  // Pool for auto-assign: selected leads if any, otherwise every unassigned lead in the current view.
+  const autoAssignPool = useMemo(() => {
+    const base = selectedIds.size > 0 ? filtered.filter((l) => selectedIds.has(l.id)) : filtered;
+    return base.filter((l) => !l.assigned_to);
+  }, [filtered, selectedIds]);
 
   const handleBulkDelete = async () => {
     const ids = Array.from(selectedIds);
@@ -137,28 +134,23 @@ export function SourceLeadsDialog({
     setSelectedIds(new Set());
   };
 
-  const bulkAssignMenu = canBulkAssign && teamMembers.length > 0 && (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="outline" className="gap-1.5 h-10 min-h-10 touch-target">
-          <UserPlus className="h-3.5 w-3.5" />
-          Bulk Assign
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="max-h-[50vh] overflow-y-auto">
-        {Object.entries(groupedTeamMembers).map(([group, members], idx) => (
-          <div key={group}>
-            {idx > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuLabel>{group}</DropdownMenuLabel>
-            {members.map((m) => (
-              <DropdownMenuItem key={m.id} onClick={() => void handleAssign(m.id)}>
-                {m.full_name}
-              </DropdownMenuItem>
-            ))}
-          </div>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
+  const handleAutoAssign = async (count: number, repIds: string[]) => {
+    await onBulkAutoAssign(count, repIds, autoAssignPool.map((l) => l.id));
+    setAutoAssignOpen(false);
+    setSelectedIds(new Set());
+  };
+
+  const bulkAssignButton = canBulkAssign && teamMembers.length > 0 && (
+    <Button
+      size="sm"
+      variant="default"
+      className="gap-1.5 h-10 min-h-10 touch-target"
+      disabled={autoAssignPool.length === 0}
+      onClick={() => setAutoAssignOpen(true)}
+    >
+      <Shuffle className="h-3.5 w-3.5" />
+      Bulk Assign
+    </Button>
   );
 
   return (
@@ -207,13 +199,14 @@ export function SourceLeadsDialog({
               >
                 Unassigned
               </Button>
+              {selectedIds.size === 0 && bulkAssignButton}
             </div>
           </div>
 
           {selectedIds.size > 0 && (
             <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg bg-primary/5 border border-primary/20">
               <span className="text-sm font-medium text-primary">{selectedIds.size} selected</span>
-              {bulkAssignMenu}
+              {bulkAssignButton}
               {canBulkDelete && onBulkDelete ? (
                 <Button
                   size="sm"
@@ -423,6 +416,15 @@ export function SourceLeadsDialog({
             </Table>
           </div>
         </div>
+
+        <BulkAssignDialog
+          open={autoAssignOpen}
+          onOpenChange={setAutoAssignOpen}
+          teamMembers={teamMembers}
+          unassignedCount={autoAssignPool.length}
+          onAssign={(count, repIds) => void handleAutoAssign(count, repIds)}
+          isAssigning={isAutoAssigning}
+        />
       </DialogContent>
     </Dialog>
   );

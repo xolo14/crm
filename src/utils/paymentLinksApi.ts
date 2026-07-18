@@ -48,9 +48,12 @@ export async function getAllPaymentLinks(filters?: {
   skip?: number;
   /** Applies Razorpay `from` / `to` on the server (paginated list). */
   period?: PaymentLinkPeriod;
+  /** Bypass the server-side sync cache and force a full Razorpay sync. */
+  force?: boolean;
 }): Promise<PaymentLinksListResult> {
   const extra: Record<string, string> = {};
   if (filters?.status) extra.status = filters.status;
+  if (filters?.force) extra.force = "1";
 
   let from = filters?.from;
   let to = filters?.to;

@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Bell, Check, CheckCheck, Trash2, UserPlus, Info, AlertTriangle } from 'lucide-react';
+import { Bell, Check, CheckCheck, Trash2, UserPlus, Info, AlertTriangle, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -18,7 +19,7 @@ interface Notification {
   created_at: string;
 }
 
-const typeIcons: Record<string, any> = {
+const typeIcons: Record<string, LucideIcon> = {
   lead_assigned: UserPlus,
   info: Info,
   warning: AlertTriangle,
@@ -26,33 +27,35 @@ const typeIcons: Record<string, any> = {
 
 export function NotificationBell() {
   const { user } = useAuth();
-  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  // Shared react-query key: the two always-mounted bells (mobile + desktop)
+  // dedupe into a single 30s poll, which also pauses while the tab is hidden.
+  const { data } = useQuery({
+    queryKey: ['notifications', user?.id],
+    queryFn: async () => {
+      const res = await api.notifications.list();
+      return Array.isArray(res) ? (res as Notification[]) : [];
+    },
+    enabled: Boolean(user?.id),
+    refetchInterval: 30000,
+    staleTime: 25000,
+  });
+  const notifications = data ?? [];
 
   const unreadCount = notifications.filter(n => !n.is_read).length;
 
-  const fetchNotifications = useCallback(async () => {
-    if (!user?.id) return;
-    try {
-      const data = await api.notifications.list();
-      if (Array.isArray(data)) setNotifications(data);
-    } catch (err) {
-      console.error('Failed to fetch notifications:', err);
-    }
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (!user?.id) return;
-    fetchNotifications();
-    // Poll every 30 seconds for new notifications
-    const interval = setInterval(fetchNotifications, 30000);
-    return () => clearInterval(interval);
-  }, [user?.id, fetchNotifications]);
+  const patchNotifications = (updater: (prev: Notification[]) => Notification[]) => {
+    queryClient.setQueryData<Notification[]>(['notifications', user?.id], prev =>
+      updater(prev ?? []),
+    );
+  };
 
   const markAsRead = async (id: string) => {
     try {
       await api.notifications.update(id, { is_read: true });
-      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+      patchNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
     } catch (err) { console.error(err); }
   };
 
@@ -61,14 +64,14 @@ export function NotificationBell() {
     if (unreadIds.length === 0) return;
     try {
       await api.notifications.markAllRead(unreadIds);
-      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+      patchNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
     } catch (err) { console.error(err); }
   };
 
   const deleteNotification = async (id: string) => {
     try {
       await api.notifications.delete(id);
-      setNotifications(prev => prev.filter(n => n.id !== id));
+      patchNotifications(prev => prev.filter(n => n.id !== id));
     } catch (err) { console.error(err); }
   };
 

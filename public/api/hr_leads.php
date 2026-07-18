@@ -430,8 +430,9 @@ if ($action === 'lead_stats' && $method === 'GET') {
     $qStatus->execute($params);
     foreach ($qStatus->fetchAll() as $r) $byStatus[$r['status']] = (int) $r['c'];
 
-    $qWeek = $db->prepare("SELECT COUNT(*) c FROM hr_leads WHERE $where AND created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)");
-    $qWeek->execute($params);
+    $weekBounds = hrLeadsWeekBoundsAndMeta();
+    $qWeek = $db->prepare("SELECT COUNT(*) c FROM hr_leads WHERE $where AND created_at >= ? AND created_at <= ?");
+    $qWeek->execute(array_merge($params, [$weekBounds['start'], $weekBounds['end']]));
     $thisWeek = (int) (($qWeek->fetch()['c'] ?? 0));
 
     $qMonth = $db->prepare("SELECT COUNT(*) c FROM hr_leads WHERE $where AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)");

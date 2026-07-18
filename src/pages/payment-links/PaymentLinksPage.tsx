@@ -59,14 +59,17 @@ export default function PaymentLinksPage() {
   const [mailLink, setMailLink] = useState<RazorpayPaymentLink | null>(null);
 
   const loadLinks = useCallback(
-    async (options?: { silent?: boolean }) => {
+    async (options?: { silent?: boolean; force?: boolean }) => {
       const silent = options?.silent === true;
       if (!silent) {
         setLoading(true);
         setError(null);
       }
       try {
-        const res = await getAllPaymentLinks({ period });
+        const res = await getAllPaymentLinks({
+          period,
+          force: options?.force === true,
+        });
         setLinks(res.items ?? []);
         if (!silent) {
           setError(null);
@@ -116,6 +119,9 @@ export default function PaymentLinksPage() {
   useEffect(() => {
     if (!hasPendingLinks) return;
     const timer = window.setInterval(() => {
+      // Don't burn requests while the tab is in the background; the
+      // visibilitychange handler below refreshes as soon as it's visible again.
+      if (document.visibilityState === "hidden") return;
       refreshLinksQuiet();
     }, POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
@@ -308,7 +314,7 @@ export default function PaymentLinksPage() {
         onViewDetail={setDetailLink}
         onCancel={handleCancel}
         onEmail={setMailLink}
-        onRefresh={() => void loadLinks()}
+        onRefresh={() => void loadLinks({ force: true })}
         onCopyShortUrl={copyShortUrl}
         onCreate={() => setCreateOpen(true)}
       />

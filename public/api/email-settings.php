@@ -62,10 +62,16 @@ function emailSettingsResponse(PDO $db, array $org): void
             break;
         }
     }
-    if ($hasEmailOne) {
+    $injectSlot = null;
+    if (isset($routes['default'])) {
+        $injectSlot = (int) $routes['default'];
+    } elseif ($hasEmailOne) {
+        $injectSlot = 1;
+    }
+    if ($injectSlot !== null) {
         foreach ($categories as $category) {
             $key = (string) $category['key'];
-            if (!array_key_exists($key, $routes)) $routes[$key] = 1;
+            if (!array_key_exists($key, $routes)) $routes[$key] = $injectSlot;
         }
     }
     respond([
@@ -198,9 +204,16 @@ if ($method === 'PUT' && $action === 'setup') {
         $routeStmt = $db->prepare(
             'INSERT INTO org_email_routes (id, org_id, category, smtp_account_id, updated_by) VALUES (?,?,?,?,?)',
         );
+        $fallbackSlot = (int) ($routesInput['default'] ?? 0);
+        if ($fallbackSlot > 0 && !isset($savedIds[$fallbackSlot])) {
+            $fallbackSlot = 0;
+        }
+        if ($fallbackSlot === 0 && isset($savedIds[1])) {
+            $fallbackSlot = 1;
+        }
         foreach ($allowedCategories as $category) {
             $slot = (int) ($routesInput[$category] ?? 0);
-            if ($slot === 0 && isset($savedIds[1])) $slot = 1;
+            if ($slot === 0) $slot = $fallbackSlot;
             if ($slot === 0) continue;
             if (!isset($savedIds[$slot])) {
                 throw new InvalidArgumentException("Select a configured account for {$category}");

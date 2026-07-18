@@ -254,6 +254,9 @@ function syncpediaSmtpSendOnce(
     try {
         $mail->isSMTP();
         $mail->Host = $host;
+        // PHPMailer's default is 300s; a slow SMTP handshake would hold the PHP
+        // worker (and the user's request) for minutes. Fail fast and surface it.
+        $mail->Timeout = 20;
         $mail->SMTPAuth = true;
         $mail->AuthType = 'LOGIN';
         $mail->Username = $creds['user'];

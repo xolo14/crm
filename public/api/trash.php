@@ -35,23 +35,29 @@ function trashRestoreRow(PDO $db, array $trashRow, array $typeMap): void {
     if (!is_array($payload)) {
         throw new RuntimeException('Invalid archived payload');
     }
-    $stmt = $db->prepare(
-        "SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = ?",
-    );
-    $stmt->execute([$table]);
-    $allowed = [];
-    while ($c = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $allowed[] = $c['column_name'];
+    // MySQL (phpMyAdmin / Hostinger): TABLE_SCHEMA = DATABASE()
+    // PostgreSQL: current_schema() — never hardcode 'public' (returns 0 rows on MySQL).
+    $allowed = syncpediaTableColumns($db, $table);
+    if ($allowed === []) {
+        throw new RuntimeException('Restore failed: could not read columns for ' . $table);
     }
     $use = [];
     foreach ($allowed as $c) {
         if (array_key_exists($c, $payload)) {
-            $use[$c] = $payload[$c];
+            $val = $payload[$c];
+            // JSON columns may arrive as arrays after json_decode of the archive.
+            if (is_array($val) || is_object($val)) {
+                $val = json_encode($val, JSON_UNESCAPED_UNICODE);
+            }
+            $use[$c] = $val;
         }
     }
     if (empty($use['id'])) {
         $use['id'] = $trashRow['entity_id'];
+    }
+    // Need at least id + one real field; id-only insert fails NOT NULL columns (e.g. leads.name).
+    if (count($use) < 2) {
+        throw new RuntimeException('Restore failed: archived payload has no matching columns for ' . $table);
     }
     $cols = array_keys($use);
     $ph = implode(',', array_fill(0, count($cols), '?'));

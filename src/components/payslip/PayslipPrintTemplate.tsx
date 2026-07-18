@@ -1,5 +1,5 @@
 import { forwardRef, type CSSProperties } from "react";
-import syncpediaIcon from "@/assets/syncpedia-icon.png";
+import syncpediaIcon from "@/assets/syncpedia-icon.webp";
 import type { Payslip } from "@/types/payslip";
 import { amountInWords, formatINR } from "@/types/payslip";
 

@@ -34,7 +34,6 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { createWorker } from "tesseract.js";
 
 type CertStatus = "active" | "draft" | "archived";
 type IssuedStatus = "issued" | "revoked" | "expired";
@@ -2057,6 +2056,9 @@ async function createImageBitmapFromDataUrl(dataUrl: string): Promise<{ width: n
 }
 
 async function extractTextLayersFromImage(dataUrl: string): Promise<CertLayer[]> {
+  // OCR is only needed for template import — load tesseract.js on demand
+  // instead of shipping it with the Certificates page chunk.
+  const { createWorker } = await import("tesseract.js");
   const worker = await createWorker("eng");
   try {
     const { data } = await worker.recognize(dataUrl);

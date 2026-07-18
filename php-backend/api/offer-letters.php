@@ -443,50 +443,9 @@ if ($method === 'POST') {
     }
 
     if ($action === 'bulk_send') {
-        $letters = $input['letters'] ?? [];
-        if (empty($letters)) respond(['error' => 'No letters provided'], 400);
-
-        $ids = [];
-        $orgId = getOrgId($tokenData);
-        foreach ($letters as $letter) {
-            $id = generateUUID();
-            $html = (string)($letter['html_content'] ?? '');
-            $pdfUrl = null;
-            $rendered = offerLetterRenderHtmlToPdf($html, offerLetterPdfFilePath($id));
-            if (!empty($rendered['ok'])) {
-                $pdfUrl = offerLetterPublicPdfUrl($id);
-            }
-            try {
-                $stmtWithOrg = $db->prepare("INSERT INTO offer_letters_sent (id, template_id, recipient_name, recipient_email, role_title, html_content, pdf_url, status, sent_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmtWithOrg->execute([
-                    $id,
-                    $letter['template_id'] ?? null,
-                    $letter['recipient_name'],
-                    $letter['recipient_email'],
-                    $letter['role_title'] ?? '',
-                    $html,
-                    $pdfUrl,
-                    $letter['status'] ?? 'sent',
-                    $userId,
-                    $orgId,
-                ]);
-            } catch (Exception $e) {
-                $stmt = $db->prepare("INSERT INTO offer_letters_sent (id, template_id, recipient_name, recipient_email, role_title, html_content, pdf_url, status, sent_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([
-                    $id,
-                    $letter['template_id'] ?? null,
-                    $letter['recipient_name'],
-                    $letter['recipient_email'],
-                    $letter['role_title'] ?? '',
-                    $html,
-                    $pdfUrl,
-                    $letter['status'] ?? 'sent',
-                    $userId,
-                ]);
-            }
-            $ids[] = $id;
-        }
-        respond(['ids' => $ids, 'message' => count($ids) . ' offer letters created'], 201);
+        respond([
+            'error' => 'bulk_send is retired. Use action=send for each letter so email is actually delivered.',
+        ], 410);
     }
 
     respond(['error' => 'Invalid action'], 400);

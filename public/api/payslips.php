@@ -179,6 +179,17 @@ if ($action === 'create' && $method === 'POST') {
         if ($ts !== false) $monthLabel = date('F Y', $ts);
     }
 
+    $dup = $db->prepare(
+        'SELECT id FROM payslips WHERE org_id = ? AND employee_id = ? AND `month` = ? AND deleted_at IS NULL LIMIT 1',
+    );
+    $dup->execute([$orgId, $employeeId, $month]);
+    $existingPayslipId = $dup->fetchColumn();
+    if ($existingPayslipId) {
+        respond([
+            'error' => 'A payslip already exists for this employee and month (id: ' . $existingPayslipId . ')',
+        ], 409);
+    }
+
     try {
         $st = $db->prepare("
             INSERT INTO payslips

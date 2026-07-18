@@ -11,6 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Users, Building2, Layers, IndianRupee, TrendingUp, ExternalLink, Shield, Activity, Loader2, Link2, UserPlus } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { DateRangeFilter, DateRange } from '@/components/DateRangeFilter';
+import { parseServerDateTime } from '@/lib/dateTime';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/hooks/use-toast';
 
@@ -77,7 +78,7 @@ export default function AdminDashboard() {
 
   const filteredLeads = useMemo(() => {
     if (!dateRange.from && !dateRange.to) return leads;
-    return leads.filter(l => { const d = new Date(l.created_at); if (dateRange.from && d < dateRange.from) return false; if (dateRange.to && d > new Date(dateRange.to.getTime() + 86400000)) return false; return true; });
+    return leads.filter(l => { const d = parseServerDateTime(l.created_at); if (!d) return true; const t = d.getTime(); if (dateRange.from && t < dateRange.from.getTime()) return false; if (dateRange.to && t > dateRange.to.getTime()) return false; return true; });
   }, [leads, dateRange]);
 
   const leadsByStatus = useMemo(() => {

@@ -32,7 +32,12 @@ import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails'
 import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
 import * as perms from '@/lib/permissions';
 import { isMarketingFamilyRole } from '@/lib/roleUtils';
-import { downloadLeadImportTemplate, mapCsvRowsToLeads, parseCsvText } from '@/lib/leadImportCsv';
+import {
+  downloadLeadImportTemplate,
+  downloadLeadImportTemplateExcel,
+  mapCsvRowsToLeads,
+  parseLeadImportFile,
+} from '@/lib/leadImportCsv';
 import {
   IMPORT_SET_PREFIX,
   buildSourceSummaries,
@@ -158,7 +163,8 @@ export default function Leads() {
   const [importOrgId, setImportOrgId] = useState('');
   const [importOrgs, setImportOrgs] = useState<{ id: string; name: string }[]>([]);
   const [importBusy, setImportBusy] = useState(false);
-  const [sourceDialogKey, setSourceDialogKey] = useState<LeadSourceBucket | null>(null);
+  const [sourceDialogKey, setSourceDialogKey] = useState<string | null>(null);
+  const [sourceDialogLabel, setSourceDialogLabel] = useState<string>('');
   const [sourceDialogStatus, setSourceDialogStatus] = useState<string>('all');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -370,24 +376,26 @@ export default function Leads() {
     }
   }, [isSuperAdmin, hasImport, organization?.id]);
 
-  const runCsvImport = async (file: File, orgIdForImport?: string) => {
+  const runLeadImport = async (file: File, orgIdForImport?: string) => {
     setImportBusy(true);
     try {
-      const text = await file.text();
+      const isExcel = /\.(xlsx|xls)$/i.test(file.name);
+      const rows = await parseLeadImportFile(file);
       const importSetTag = `${IMPORT_SET_PREFIX}${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`;
-      const { leads: mapped, skipped, errors } = mapCsvRowsToLeads(parseCsvText(text), { importSetTag });
+      const { leads: mapped, skipped, errors } = mapCsvRowsToLeads(rows, {
+        importSetTag,
+        fileType: isExcel ? 'excel' : 'csv',
+        fileName: file.name,
+      });
       if (mapped.length === 0) {
         toast({
           variant: 'destructive',
           title: 'No leads imported',
-          description: errors[0] || 'CSV needs a header and at least one row with name, phone, or email.',
+          description: errors[0] || 'The file needs a header and at least one row with name, phone, or email.',
         });
         return;
       }
-      const payload = mapped.map((row) => ({
-        ...row,
-        ...(role === 'manager' && user?.id ? { assigned_to: user.id } : {}),
-      }));
+      const payload = mapped.map((row) => ({ ...row }));
       const res: any = await api.leads.bulkCreate(
         payload,
         orgIdForImport ? { org_id: orgIdForImport } : undefined,
@@ -411,7 +419,7 @@ export default function Leads() {
       toast({
         variant: 'destructive',
         title: 'Import failed',
-        description: err?.message || 'Could not import CSV',
+        description: err?.message || 'Could not import the selected file',
       });
     } finally {
       setImportBusy(false);
@@ -422,8 +430,16 @@ export default function Leads() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      toast({
+        variant: 'destructive',
+        title: 'File is too large',
+        description: 'Choose a CSV or Excel file smaller than 10 MB.',
+      });
+      return;
+    }
     const orgId = isSuperAdmin ? importOrgId : String(organization?.id || importOrgId || '').trim();
-    void runCsvImport(file, orgId || undefined);
+    void runLeadImport(file, orgId || undefined);
   };
 
   const openImport = () => {
@@ -659,10 +675,13 @@ export default function Leads() {
     void failed;
   };
 
-  const handleBulkAutoAssign = async (count: number, repIds: string[]) => {
+  const handleBulkAutoAssign = async (count: number, repIds: string[], poolLeadIds?: string[]) => {
     setBulkAssigning(true);
     try {
-      const toAssign = leads.slice(0, count);
+      const pool = poolLeadIds
+        ? leads.filter(l => poolLeadIds.includes(l.id) && !l.assigned_to)
+        : leads.filter(l => !l.assigned_to);
+      const toAssign = pool.slice(0, count);
       if (toAssign.length === 0) return;
       const repAssignments: Record<string, string[]> = {};
       repIds.forEach(id => { repAssignments[id] = []; });
@@ -805,8 +824,9 @@ export default function Leads() {
     return filterLeadsBySourceBucket(leads, sourceDialogKey);
   }, [leads, sourceDialogKey]);
 
-  const openSourceDialog = (key: LeadSourceBucket, status: string = 'all') => {
+  const openSourceDialog = (key: string, label: string, status: string = 'all') => {
     setSourceDialogKey(key);
+    setSourceDialogLabel(label);
     setSourceDialogStatus(status);
   };
 
@@ -833,7 +853,13 @@ export default function Leads() {
         <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
           {hasImport && (
             <>
-              <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleImport} />
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                className="hidden"
+                onChange={handleImport}
+              />
               <Button
                 variant="outline"
                 size="sm"
@@ -842,7 +868,7 @@ export default function Leads() {
                 disabled={importBusy}
               >
                 <Upload className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Import CSV</span>
+                <span className="hidden sm:inline">Import</span>
               </Button>
               {!isSuperAdmin && organization?.name ? (
                 <span className="text-[11px] text-muted-foreground hidden md:inline">
@@ -937,12 +963,14 @@ export default function Leads() {
             <div className="flex flex-col items-center justify-center py-16 rounded-lg border border-dashed border-border/60">
               <Users className="h-12 w-12 text-muted-foreground/20 mb-4" />
               <p className="text-sm font-medium text-muted-foreground">No leads yet</p>
-              <p className="text-xs text-muted-foreground mt-1">Import a CSV or add a lead to get started</p>
+              <p className="text-xs text-muted-foreground mt-1">Import a CSV or Excel file, or add a lead to get started</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
               {sourceSummaries.map((summary) => {
-                const Icon = SOURCE_BUCKET_ICONS[summary.key] || CircleHelp;
+                const Icon = summary.isImport
+                  ? UploadIcon
+                  : SOURCE_BUCKET_ICONS[summary.key as LeadSourceBucket] || CircleHelp;
                 const statusChips = SOURCE_STATUS_CHIP_ORDER.filter((s) => (summary.byStatus[s] || 0) > 0);
                 const visibleChips = statusChips.slice(0, 4);
                 const hiddenChipCount = statusChips.length - visibleChips.length;
@@ -950,7 +978,7 @@ export default function Leads() {
                   <Card
                     key={summary.key}
                     className="border-border/50 shadow-none hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group"
-                    onClick={() => openSourceDialog(summary.key, 'all')}
+                    onClick={() => openSourceDialog(summary.key, summary.label, 'all')}
                   >
                     <CardContent className="pt-4 pb-3 px-4">
                       <div className="flex items-start justify-between gap-2 mb-3">
@@ -977,7 +1005,7 @@ export default function Leads() {
                             className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] capitalize transition-colors hover:ring-1 hover:ring-primary/40 min-h-8 ${statusColors[status] || 'bg-muted'}`}
                             onClick={(e) => {
                               e.stopPropagation();
-                              openSourceDialog(summary.key, status);
+                              openSourceDialog(summary.key, summary.label, status);
                             }}
                           >
                             <span>{formatLeadStatus(status)}</span>
@@ -1003,10 +1031,10 @@ export default function Leads() {
               if (!open) setSourceDialogKey(null);
             }}
             sourceKey={sourceDialogKey}
+            title={sourceDialogLabel}
             initialStatus={sourceDialogStatus}
             leads={sourceDialogLeads}
             teamMembers={teamMembers}
-            groupedTeamMembers={groupedTeamMembers}
             isManager={isManager}
             canBulkAssign={isManager || hasBulkDelete}
             canBulkDelete={hasBulkDelete}
@@ -1014,7 +1042,8 @@ export default function Leads() {
             getLeadAssignedNames={getLeadAssignedNames}
             onOpenDetail={openDetail}
             onOpenAssign={openAssignDialog}
-            onBulkAssign={handleBulkAssign}
+            onBulkAutoAssign={handleBulkAutoAssign}
+            isAutoAssigning={bulkAssigning}
             onBulkDelete={hasBulkDelete ? handleBulkDelete : undefined}
           />
         </>
@@ -1522,7 +1551,7 @@ export default function Leads() {
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Import leads (CSV)</DialogTitle>
+            <DialogTitle>Import leads</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-1">
             {isSuperAdmin ? (
@@ -1550,22 +1579,41 @@ export default function Leads() {
             <div className="rounded-lg border border-dashed px-3 py-3 space-y-2">
               <p className="text-sm font-medium">Need a template?</p>
               <p className="text-xs text-muted-foreground">
-                Download a sample CSV with the expected columns (name, email, phone, college, source, notes, …).
-                Fill it in Excel or Google Sheets, save as CSV, then import.
+                Upload CSV, Excel XLSX, or legacy Excel XLS files. The first worksheet must contain a header row.
+                Columns can use flexible names (Student Name, Company Name, Mobile, Email ID, …) — order and extra columns do not matter.
               </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="gap-1.5 h-9"
-                onClick={() => {
-                  downloadLeadImportTemplate();
-                  toast({ title: 'Template downloaded', description: 'leads-import-template.csv' });
-                }}
-              >
-                <Download className="h-3.5 w-3.5" />
-                Download CSV template
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 h-9"
+                  onClick={() => {
+                    void downloadLeadImportTemplateExcel()
+                      .then(() => {
+                        toast({ title: 'Template downloaded', description: 'leads-import-template.xlsx' });
+                      })
+                      .catch(() => {
+                        toast({ variant: 'destructive', title: 'Could not create Excel template' });
+                      });
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download Excel template
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-9"
+                  onClick={() => {
+                    downloadLeadImportTemplate();
+                    toast({ title: 'Template downloaded', description: 'leads-import-template.csv' });
+                  }}
+                >
+                  CSV template
+                </Button>
+              </div>
             </div>
           </div>
           <DialogFooter className="gap-2">
@@ -1583,7 +1631,7 @@ export default function Leads() {
               }}
             >
               {importBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              {importBusy ? 'Importing…' : 'Choose CSV'}
+              {importBusy ? 'Importing…' : 'Choose CSV or Excel'}
             </Button>
           </DialogFooter>
         </DialogContent>

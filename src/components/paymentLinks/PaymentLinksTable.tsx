@@ -131,7 +131,7 @@ export default function PaymentLinksTable({
   }
 
   const filtered = useMemo(() => {
-    let list = filterLinksByPeriod(links, period);
+    const list = filterLinksByPeriod(links, period);
 
     const fromTs = filters.from
       ? Math.floor(new Date(filters.from + "T00:00:00").getTime() / 1000)
@@ -200,6 +200,7 @@ export default function PaymentLinksTable({
           >
             <option value="">All statuses</option>
             <option value="created">Pending</option>
+            <option value="partially_paid">Partially paid</option>
             <option value="paid">Paid</option>
             <option value="cancelled">Cancelled</option>
             <option value="expired">Expired</option>

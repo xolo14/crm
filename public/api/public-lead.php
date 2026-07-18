@@ -164,6 +164,10 @@ if (!$collectEmail && $email === '') {
 }
 
 $phone = !empty($input['phone']) ? trim((string) $input['phone']) : null;
+$phone = publicFormResolvePhone($phone, $extraAnswers);
+if ($phone === '' || $phone === '0000000000') {
+    $phone = null;
+}
 $college = !empty($input['college']) ? trim((string) $input['college']) : null;
 $yearOfStudy = !empty($input['year_of_study']) ? trim((string) $input['year_of_study']) : null;
 $courseInterest = !empty($input['course_interest']) ? trim((string) $input['course_interest']) : null;
@@ -308,6 +312,42 @@ if ($routesToHr) {
             $hrLeadOrgId = $creatorOrg;
         }
     }
+    $dupEmail = strtolower(trim((string) ($email ?? '')));
+    $dupPhoneDigits = preg_replace('/\D+/', '', (string) $hrPhone) ?? '';
+    if (strlen($dupPhoneDigits) > 10) {
+        $dupPhoneDigits = substr($dupPhoneDigits, -10);
+    }
+    if ($dupPhoneDigits === '0000000000') {
+        $dupPhoneDigits = '';
+    }
+    $dupWhere = [];
+    $dupParams = [];
+    if ($dupEmail !== '') {
+        $dupWhere[] = '(email IS NOT NULL AND LOWER(TRIM(email)) = ?)';
+        $dupParams[] = $dupEmail;
+    }
+    if (strlen($dupPhoneDigits) >= 10) {
+        $dupWhere[] = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,' ',''),'-',''),'+',''),'(',''),')','') LIKE ?";
+        $dupParams[] = '%' . $dupPhoneDigits;
+    }
+    if ($dupWhere !== []) {
+        $dupSql = 'SELECT id FROM hr_leads WHERE deleted_at IS NULL AND (' . implode(' OR ', $dupWhere) . ')';
+        if ($hrLeadOrgId !== null) {
+            $dupSql .= ' AND org_id = ?';
+            $dupParams[] = $hrLeadOrgId;
+        }
+        $dupSql .= ' LIMIT 1';
+        $dupSt = $db->prepare($dupSql);
+        $dupSt->execute($dupParams);
+        $dupRow = $dupSt->fetch(PDO::FETCH_ASSOC);
+        if (is_array($dupRow)) {
+            respond([
+                'success' => true,
+                'hr_lead_id' => (int) $dupRow['id'],
+                'destination' => 'hr_leads',
+            ]);
+        }
+    }
     try {
         $stmt = $db->prepare(
             'INSERT INTO hr_leads (hr_id, assigned_by, full_name, phone, email, source, status, priority, notes, resume_path, is_assigned, org_id)
@@ -346,6 +386,12 @@ if ($routesToHr) {
     } catch (PDOException $e) {
         respond(['error' => 'Failed to save HR lead'], 500);
     }
+}
+
+$dupOrgId = ($orgId !== null && $orgId !== '') ? $orgId : null;
+$dup = leadsFindDuplicateInOrg($db, $dupOrgId, (string) ($email ?? ''), (string) ($phone ?? ''));
+if (is_array($dup)) {
+    respond(['success' => true, 'lead_id' => $dup['id'], 'destination' => 'leads']);
 }
 
 $id = generateUUID();

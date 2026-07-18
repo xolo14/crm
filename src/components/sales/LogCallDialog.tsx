@@ -14,6 +14,7 @@ import { formatCallDuration } from "@/lib/callDuration";
 import { useAddCallLog, useUpdateCallLog } from "@/hooks/useCallLogs";
 import { useToast } from "@/hooks/use-toast";
 import { openProtectedUpload } from "@/lib/resumeHref";
+import { APP_TIMEZONE } from "@/lib/dateTime";
 import type { CallLog, CreateCallLogInput } from "@/types/callLog";
 
 /** Mirrors CRM lead statuses (`leads.status`). Labels aligned with Leads UI; enroll maps to DB `enrolled`. */
@@ -74,7 +75,8 @@ const schema = z
 type FormValues = z.infer<typeof schema>;
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+  // en-CA yields YYYY-MM-DD; keep the date in app timezone, not UTC
+  return new Date().toLocaleDateString("en-CA", { timeZone: APP_TIMEZONE });
 }
 
 function secondsToMinSec(total: number) {

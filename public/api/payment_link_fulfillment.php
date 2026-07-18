@@ -378,7 +378,7 @@ function paymentLinkProcessPaymentSideEffects(
  *
  * @param array<int, mixed> $items
  */
-function paymentLinksFulfillPaidItems(array $items, int $maxCheck = 20): void
+function paymentLinksFulfillPaidItems(array $items, int $maxCheck = 100): void
 {
     $checked = 0;
     foreach ($items as $item) {

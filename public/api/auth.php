@@ -431,7 +431,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
             respond(['error' => 'Enter a valid phone number containing 7 to 15 digits'], 400);
         }
 
-        $currentStmt = $db->prepare('SELECT avatar_url FROM users WHERE id = ? LIMIT 1');
+        $currentStmt = $db->prepare('SELECT avatar_url, email FROM users WHERE id = ? LIMIT 1');
         $currentStmt->execute([$userId]);
         $current = $currentStmt->fetch(PDO::FETCH_ASSOC);
         if (!is_array($current)) respond(['error' => 'User not found'], 404);
@@ -443,6 +443,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
         }
 
         $oldAvatar = trim((string) ($current['avatar_url'] ?? ''));
+        $oldEmail = strtolower(trim((string) ($current['email'] ?? '')));
         $avatarUrl = $removeAvatar ? null : ($oldAvatar !== '' ? $oldAvatar : null);
         $newAvatarPath = null;
         $avatar = $_FILES['avatar'] ?? null;
@@ -481,6 +482,13 @@ if ($method === 'POST' && isset($_GET['action'])) {
                 respond(['error' => 'This email address is already used by another account'], 409);
             }
             throw $e;
+        }
+
+        if ($oldEmail !== $email) {
+            try {
+                $db->prepare('UPDATE marketing_members SET email = ? WHERE user_id = ?')->execute([$email, $userId]);
+            } catch (Throwable $e) {
+            }
         }
 
         if ($oldAvatar !== '' && $oldAvatar !== $avatarUrl && strpos($oldAvatar, '/uploads/avatars/') === 0) {

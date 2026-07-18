@@ -844,7 +844,7 @@ export default function OfferLetters() {
         throw new Error(pdfErr?.message || 'Could not generate offer letter PDF in the browser');
       }
 
-      await api.offerLetters.send({
+      const sendResult = await api.offerLetters.send({
         template_id: sendTemplate!.id,
         recipient_name: sendForm.recipient_name,
         recipient_email: emailDraft.to.trim(),
@@ -858,6 +858,18 @@ export default function OfferLetters() {
         status: 'sent',
         pdf_base64: pdfBase64,
       });
+
+      if (sendResult?.record_saved === false) {
+        toast({
+          variant: 'destructive',
+          title: 'Email sent, record not saved',
+          description: sendResult?.warning
+            || 'The offer letter email was sent, but the sent record could not be saved. Do not resend.',
+        });
+        setShowSend(false);
+        fetchData();
+        return;
+      }
 
       toast({
         title: 'Offer letter sent',
@@ -1019,49 +1031,78 @@ export default function OfferLetters() {
       toast({ variant: 'destructive', title: 'Add at least one candidate with name and email' }); return;
     }
     setBulkGenerating(true);
+    const succeeded: string[] = [];
+    const failed: string[] = [];
+    const sentUnrecorded: string[] = [];
     try {
       for (const candidate of valid) {
-        const refNum = `OL-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
-        const finalHtml = bulkTemplate.html_content
-          .replace(/\{\{candidate_name\}\}/g, candidate.candidate_name)
-          .replace(/\{\{role_title\}\}/g, candidate.role_title || bulkTemplate.role_title)
-          .replace(/\{\{company_name\}\}/g, bulkCompany.company_name)
-          .replace(/\{\{date\}\}/g, format(new Date(), 'MMMM dd, yyyy'))
-          .replace(/\{\{department\}\}/g, candidate.department)
-          .replace(/\{\{start_date\}\}/g, candidate.start_date)
-          .replace(/\{\{salary\}\}/g, candidate.salary)
-          .replace(/\{\{reporting_to\}\}/g, candidate.reporting_to)
-          .replace(/\{\{deadline\}\}/g, candidate.deadline)
-          .replace(/\{\{sender_name\}\}/g, bulkCompany.sender_name)
-          .replace(/\{\{sender_title\}\}/g, bulkCompany.sender_title)
-          .replace(/\{\{sender_email\}\}/g, bulkCompany.sender_email)
-          .replace(/\{\{company_address\}\}/g, bulkCompany.company_address)
-          .replace(/\{\{company_website\}\}/g, bulkCompany.company_website)
-          .replace(/\{\{company_phone\}\}/g, bulkCompany.company_phone)
-          .replace(/\{\{ref_number\}\}/g, refNum)
-          .replace(/\{\{work_location\}\}/g, candidate.work_location)
-          .replace(/\{\{employment_type\}\}/g, candidate.employment_type)
-          .replace(/\{\{probation_period\}\}/g, candidate.probation_period);
-
-        let pdfBase64 = '';
         try {
-          pdfBase64 = await buildHtmlDocumentPdfBase64(finalHtml);
-        } catch (pdfErr: any) {
-          throw new Error(pdfErr?.message || `Could not generate PDF for ${candidate.candidate_name}`);
-        }
+          const refNum = `OL-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
+          const finalHtml = bulkTemplate.html_content
+            .replace(/\{\{candidate_name\}\}/g, candidate.candidate_name)
+            .replace(/\{\{role_title\}\}/g, candidate.role_title || bulkTemplate.role_title)
+            .replace(/\{\{company_name\}\}/g, bulkCompany.company_name)
+            .replace(/\{\{date\}\}/g, format(new Date(), 'MMMM dd, yyyy'))
+            .replace(/\{\{department\}\}/g, candidate.department)
+            .replace(/\{\{start_date\}\}/g, candidate.start_date)
+            .replace(/\{\{salary\}\}/g, candidate.salary)
+            .replace(/\{\{reporting_to\}\}/g, candidate.reporting_to)
+            .replace(/\{\{deadline\}\}/g, candidate.deadline)
+            .replace(/\{\{sender_name\}\}/g, bulkCompany.sender_name)
+            .replace(/\{\{sender_title\}\}/g, bulkCompany.sender_title)
+            .replace(/\{\{sender_email\}\}/g, bulkCompany.sender_email)
+            .replace(/\{\{company_address\}\}/g, bulkCompany.company_address)
+            .replace(/\{\{company_website\}\}/g, bulkCompany.company_website)
+            .replace(/\{\{company_phone\}\}/g, bulkCompany.company_phone)
+            .replace(/\{\{ref_number\}\}/g, refNum)
+            .replace(/\{\{work_location\}\}/g, candidate.work_location)
+            .replace(/\{\{employment_type\}\}/g, candidate.employment_type)
+            .replace(/\{\{probation_period\}\}/g, candidate.probation_period);
 
-        await api.offerLetters.send({
-          template_id: bulkTemplate.id,
-          recipient_name: candidate.candidate_name,
-          recipient_email: candidate.recipient_email,
-          role_title: candidate.role_title || bulkTemplate.role_title,
-          html_content: finalHtml,
-          status: 'sent',
-          pdf_base64: pdfBase64,
-        });
+          let pdfBase64 = '';
+          try {
+            pdfBase64 = await buildHtmlDocumentPdfBase64(finalHtml);
+          } catch (pdfErr: any) {
+            throw new Error(pdfErr?.message || `Could not generate PDF for ${candidate.candidate_name}`);
+          }
+
+          const sendResult = await api.offerLetters.send({
+            template_id: bulkTemplate.id,
+            recipient_name: candidate.candidate_name,
+            recipient_email: candidate.recipient_email,
+            role_title: candidate.role_title || bulkTemplate.role_title,
+            html_content: finalHtml,
+            status: 'sent',
+            pdf_base64: pdfBase64,
+          });
+          if (sendResult?.record_saved === false) {
+            sentUnrecorded.push(candidate.candidate_name);
+          } else {
+            succeeded.push(candidate.candidate_name);
+          }
+        } catch {
+          failed.push(candidate.candidate_name);
+        }
       }
-      toast({ title: `${valid.length} offer letter(s) generated!`, description: 'Records saved. You can preview/print from Sent Letters tab.' });
-      setShowBulk(false);
+      const total = valid.length;
+      if (failed.length === 0 && sentUnrecorded.length === 0) {
+        toast({ title: `${succeeded.length} offer letter(s) generated!`, description: 'Records saved. You can preview/print from Sent Letters tab.' });
+        setShowBulk(false);
+      } else {
+        const parts: string[] = [`Sent ${succeeded.length + sentUnrecorded.length} of ${total}`];
+        if (sentUnrecorded.length > 0) {
+          parts.push(`emailed but record not saved (do NOT resend): ${sentUnrecorded.join(', ')}`);
+        }
+        if (failed.length > 0) {
+          parts.push(`failed (safe to retry): ${failed.join(', ')}`);
+        }
+        toast({
+          variant: 'destructive',
+          title: 'Bulk send incomplete',
+          description: parts.join('; '),
+        });
+        if (succeeded.length + sentUnrecorded.length > 0) setShowBulk(false);
+      }
       fetchData();
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
     finally { setBulkGenerating(false); }

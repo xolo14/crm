@@ -2285,7 +2285,7 @@ function leadsAssertStatusTransition(?string $fromStatus, string $toStatus): ?st
         'interested' => ['contacted', 'qualified', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
         'demo_scheduled' => ['interested', 'demo_attended', 'enrolled', 'lost'],
         'demo_attended' => ['demo_scheduled', 'interested', 'enrolled', 'lost'],
-        'enrolled' => ['interested', 'demo_attended', 'lost'],
+        'enrolled' => ['lost'],
         'lost' => ['new', 'contacted', 'interested', 'qualified'],
     ];
     $ok = $allowed[$from] ?? [];
@@ -2327,8 +2327,8 @@ function leadsFindDuplicateInOrg(PDO $db, ?string $orgId, string $email, string 
         }
     }
 
-    if ($phoneDigits !== '' && strlen($phoneDigits) >= 8) {
-        // Match by last digits (handles +91 / spacing variants).
+    if ($phoneDigits !== '' && strlen($phoneDigits) >= 10) {
+        // Match by last 10 digits (handles +91 / spacing variants).
         if ($orgId) {
             $st = $db->prepare(
                 "SELECT id, name, email, phone FROM leads
@@ -2352,6 +2352,41 @@ function leadsFindDuplicateInOrg(PDO $db, ?string $orgId, string $email, string 
         }
     }
     return null;
+}
+
+/**
+ * Load an org's dedup keys once so bulk import can check duplicates in memory
+ * instead of running one full-table REPLACE(...) LIKE scan per imported row.
+ *
+ * Semantics mirror leadsFindDuplicateInOrg exactly:
+ * - emails: LOWER(TRIM(email)) equality
+ * - phones: last 10 chars of phone with " -+()" stripped (suffix match)
+ *
+ * @return array{emails: array<string, array{id: string, name: string}>, phones: array<string, array{id: string, name: string}>}
+ */
+function leadsLoadDedupIndex(PDO $db, string $orgId): array
+{
+    $index = ['emails' => [], 'phones' => []];
+    $st = $db->prepare('SELECT id, name, email, phone FROM leads WHERE org_id = ?');
+    $st->execute([$orgId]);
+    while (($row = $st->fetch(PDO::FETCH_ASSOC)) !== false) {
+        $ref = ['id' => (string) $row['id'], 'name' => (string) ($row['name'] ?? '')];
+        $email = strtolower(trim((string) ($row['email'] ?? '')));
+        if ($email !== '' && !isset($index['emails'][$email])) {
+            $index['emails'][$email] = $ref;
+        }
+        $phone = trim((string) ($row['phone'] ?? ''));
+        if ($phone !== '') {
+            $stripped = str_replace([' ', '-', '+', '(', ')'], '', $phone);
+            if (strlen($stripped) >= 10) {
+                $key = substr($stripped, -10);
+                if (!isset($index['phones'][$key])) {
+                    $index['phones'][$key] = $ref;
+                }
+            }
+        }
+    }
+    return $index;
 }
 
 function userEffectiveOrgId(PDO $db, array $tokenData, string $userId): ?string {

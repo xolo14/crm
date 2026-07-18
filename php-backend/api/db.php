@@ -90,6 +90,46 @@ function syncpediaColumnExists(PDO $db, string $table, string $column): bool
     }
 }
 
+/**
+ * Column names for a table in the current database (MySQL phpMyAdmin / Hostinger,
+ * or PostgreSQL). Never hardcode schema = 'public' — that is Postgres-only and
+ * returns zero rows on MySQL, which breaks trash restore.
+ *
+ * @return list<string>
+ */
+function syncpediaTableColumns(PDO $db, string $table): array
+{
+    $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table) ?? '';
+    if ($table === '') {
+        return [];
+    }
+    try {
+        if (syncpediaDbIsMysql($db)) {
+            $st = $db->prepare(
+                'SELECT COLUMN_NAME AS col_name FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+            );
+        } else {
+            $st = $db->prepare(
+                "SELECT column_name AS col_name FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = ?",
+            );
+        }
+        $st->execute([$table]);
+        $cols = [];
+        while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
+            $name = (string) ($row['col_name'] ?? $row['COLUMN_NAME'] ?? $row['column_name'] ?? '');
+            if ($name !== '') {
+                $cols[] = $name;
+            }
+        }
+        return $cols;
+    } catch (Throwable $e) {
+        error_log('[syncpedia] table columns ' . $table . ': ' . $e->getMessage());
+        return [];
+    }
+}
+
 function isMysqlDuplicateKey(Throwable $e): bool
 {
     if ($e instanceof PDOException && isset($e->errorInfo[1]) && (int) $e->errorInfo[1] === 1062) {

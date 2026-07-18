@@ -215,6 +215,76 @@ function paymentLinkReceiptMakeInvoiceNumber(array $row, string $paymentId): str
 }
 
 /**
+ * Atomically claim receipt sending (CAS on invoice_sent_for_amount_paid) so
+ * concurrent webhook retries / list polls cannot double-send the same receipt.
+ *
+ * @param list<string> $previousProcessed
+ */
+function paymentLinkClaimReceiptSend(
+    string $plinkId,
+    int $previousSentFor,
+    int $newSentFor,
+    array $previousProcessed,
+    string $paymentId,
+): bool {
+    $db = paymentLinksDb();
+    $processed = $previousProcessed;
+    if ($paymentId !== '' && !in_array($paymentId, $processed, true)) {
+        $processed[] = $paymentId;
+    }
+    if (count($processed) > 100) {
+        $processed = array_slice($processed, -100);
+    }
+    $st = $db->prepare(
+        'UPDATE payment_links SET
+            invoice_sent_for_amount_paid = ?,
+            processed_payment_ids = ?,
+            updated_at = CURRENT_TIMESTAMP
+         WHERE razorpay_payment_link_id = ?
+           AND COALESCE(invoice_sent_for_amount_paid, 0) = ?',
+    );
+    $st->execute([
+        $newSentFor,
+        json_encode(array_values($processed)) ?: '[]',
+        $plinkId,
+        $previousSentFor,
+    ]);
+    return $st->rowCount() > 0;
+}
+
+/**
+ * Undo a receipt claim after a failed email send so a later pass retries.
+ *
+ * @param list<string> $previousProcessed
+ */
+function paymentLinkReleaseReceiptClaim(
+    string $plinkId,
+    int $previousSentFor,
+    int $claimedSentFor,
+    array $previousProcessed,
+): void {
+    try {
+        $db = paymentLinksDb();
+        $st = $db->prepare(
+            'UPDATE payment_links SET
+                invoice_sent_for_amount_paid = ?,
+                processed_payment_ids = ?,
+                updated_at = CURRENT_TIMESTAMP
+             WHERE razorpay_payment_link_id = ?
+               AND COALESCE(invoice_sent_for_amount_paid, 0) = ?',
+        );
+        $st->execute([
+            $previousSentFor > 0 ? $previousSentFor : null,
+            json_encode(array_values($previousProcessed)) ?: '[]',
+            $plinkId,
+            $claimedSentFor,
+        ]);
+    } catch (Throwable $e) {
+        error_log('[payment_receipt] release claim failed for ' . $plinkId . ': ' . $e->getMessage());
+    }
+}
+
+/**
  * Send receipt email + store invoice. Returns summary array.
  *
  * @param array<string, mixed> $row DB row
@@ -270,74 +340,91 @@ function paymentLinkDeliverReceipt(
         return ['ok' => true, 'skipped' => true, 'reason' => 'payment_id_already_processed'];
     }
 
+    $plinkId = (string) $row['razorpay_payment_link_id'];
+    $claimed = paymentLinkClaimReceiptSend(
+        $plinkId,
+        $previouslySentFor,
+        $amountPaidPaise,
+        $processed,
+        $paymentId,
+    );
+    if (!$claimed) {
+        return ['ok' => true, 'skipped' => true, 'reason' => 'claimed_by_other_process'];
+    }
+
     $invoiceNumber = paymentLinkReceiptMakeInvoiceNumber($row, $paymentId !== '' ? $paymentId : (string) microtime(true));
     $amountThisRupees = $amountThisPaymentPaise / 100;
     $cumulativeRupees = $amountPaidPaise / 100;
     $totalRupees = $totalAmountPaise / 100;
 
-    $pdfPath = paymentLinkReceiptGenerateInvoicePdf(
-        $row,
-        $rzpLink,
-        $paymentEntity,
-        $amountThisRupees,
-        $cumulativeRupees,
-        $invoiceNumber,
-        $paymentId,
-        $isPartial,
-    );
+    try {
+        $pdfPath = paymentLinkReceiptGenerateInvoicePdf(
+            $row,
+            $rzpLink,
+            $paymentEntity,
+            $amountThisRupees,
+            $cumulativeRupees,
+            $invoiceNumber,
+            $paymentId,
+            $isPartial,
+        );
 
-    $customerName = trim((string) ($row['customer_name'] ?? 'Customer'));
-    $description = trim((string) ($row['description'] ?? ''));
-    $html = syncpediaBuildPaymentReceiptEmailHtml(
-        $customerName,
-        $amountThisRupees,
-        $totalRupees,
-        $cumulativeRupees,
-        $invoiceNumber,
-        $paymentId,
-        $description,
-        $isPartial,
-    );
+        $customerName = trim((string) ($row['customer_name'] ?? 'Customer'));
+        $description = trim((string) ($row['description'] ?? ''));
+        $html = syncpediaBuildPaymentReceiptEmailHtml(
+            $customerName,
+            $amountThisRupees,
+            $totalRupees,
+            $cumulativeRupees,
+            $invoiceNumber,
+            $paymentId,
+            $description,
+            $isPartial,
+        );
 
-    $subject = $isPartial
-        ? 'Partial payment received — INR ' . number_format($amountThisRupees, 2) . ' (Invoice attached)'
-        : 'Payment received — INR ' . number_format($amountThisRupees, 2) . ' (Invoice attached)';
+        $subject = $isPartial
+            ? 'Partial payment received — INR ' . number_format($amountThisRupees, 2) . ' (Invoice attached)'
+            : 'Payment received — INR ' . number_format($amountThisRupees, 2) . ' (Invoice attached)';
 
-    $plain = "Dear {$customerName},\n\n"
-        . 'We received your payment of INR ' . number_format($amountThisRupees, 2) . ".\n"
-        . "Invoice number: {$invoiceNumber}\n";
-    if ($paymentId !== '') {
-        $plain .= "Payment ID: {$paymentId}\n";
-    }
-    if ($isPartial) {
-        $plain .= 'Paid so far: INR ' . number_format($cumulativeRupees, 2)
-            . ' of INR ' . number_format($totalRupees, 2) . "\n";
-    }
-    $plain .= "\nYour invoice PDF is attached.\n\nRegards,\nSyncpedia";
-
-    $attachments = [];
-    if ($pdfPath !== null) {
-        $resolvedAttach = syncpediaDocumentStorageResolvePath($pdfPath);
-        if ($resolvedAttach !== null && is_file($resolvedAttach)) {
-            $isHtml = preg_match('/\.html?$/i', $resolvedAttach) === 1;
-            $attachments[] = [
-                'path' => $resolvedAttach,
-                'name' => syncpediaDocumentSafeFilename(
-                    $invoiceNumber . ($isHtml ? '.html' : '.pdf'),
-                ),
-            ];
+        $plain = "Dear {$customerName},\n\n"
+            . 'We received your payment of INR ' . number_format($amountThisRupees, 2) . ".\n"
+            . "Invoice number: {$invoiceNumber}\n";
+        if ($paymentId !== '') {
+            $plain .= "Payment ID: {$paymentId}\n";
         }
-    }
+        if ($isPartial) {
+            $plain .= 'Paid so far: INR ' . number_format($cumulativeRupees, 2)
+                . ' of INR ' . number_format($totalRupees, 2) . "\n";
+        }
+        $plain .= "\nYour invoice PDF is attached.\n\nRegards,\nSyncpedia";
 
-    $receiptOrgId = trim((string) ($row['org_id'] ?? ''));
-    syncpediaSetMailContext($receiptOrgId !== '' ? $receiptOrgId : null, 'payment_receipts');
-    $send = syncpediaSendPaymentReceiptEmail(
-        $customerEmail,
-        $subject,
-        $html,
-        $plain,
-        $attachments,
-    );
+        $attachments = [];
+        if ($pdfPath !== null) {
+            $resolvedAttach = syncpediaDocumentStorageResolvePath($pdfPath);
+            if ($resolvedAttach !== null && is_file($resolvedAttach)) {
+                $isHtml = preg_match('/\.html?$/i', $resolvedAttach) === 1;
+                $attachments[] = [
+                    'path' => $resolvedAttach,
+                    'name' => syncpediaDocumentSafeFilename(
+                        $invoiceNumber . ($isHtml ? '.html' : '.pdf'),
+                    ),
+                ];
+            }
+        }
+
+        $receiptOrgId = trim((string) ($row['org_id'] ?? ''));
+        syncpediaSetMailContext($receiptOrgId !== '' ? $receiptOrgId : null, 'payment_receipts');
+        $send = syncpediaSendPaymentReceiptEmail(
+            $customerEmail,
+            $subject,
+            $html,
+            $plain,
+            $attachments,
+        );
+    } catch (Throwable $e) {
+        paymentLinkReleaseReceiptClaim($plinkId, $previouslySentFor, $amountPaidPaise, $processed);
+        throw $e;
+    }
 
     if ($send['ok']) {
         $storedPath = is_string($pdfPath) ? trim($pdfPath) : '';
@@ -364,6 +451,8 @@ function paymentLinkDeliverReceipt(
             '',
             null,
         );
+    } else {
+        paymentLinkReleaseReceiptClaim($plinkId, $previouslySentFor, $amountPaidPaise, $processed);
     }
 
     return [
@@ -378,8 +467,10 @@ function paymentLinkDeliverReceipt(
 
 /**
  * Handle Razorpay webhook payload for payment link paid / partial.
+ *
+ * @return array<string, mixed> Side-effect result (receipt/enrollment) for the caller to inspect.
  */
-function paymentLinkProcessWebhookEvent(array $event): void
+function paymentLinkProcessWebhookEvent(array $event): array
 {
     $type = (string) ($event['event'] ?? '');
     $handled = [
@@ -389,7 +480,7 @@ function paymentLinkProcessWebhookEvent(array $event): void
         'payment_link.expired',
     ];
     if (!in_array($type, $handled, true)) {
-        return;
+        return [];
     }
 
     $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
@@ -400,12 +491,12 @@ function paymentLinkProcessWebhookEvent(array $event): void
 
     if (!is_array($plinkEntity)) {
         error_log('[payment_receipt] webhook missing payment_link entity');
-        return;
+        return [];
     }
 
     $plinkId = trim((string) ($plinkEntity['id'] ?? ''));
     if ($plinkId === '') {
-        return;
+        return [];
     }
 
     $paymentWrap = $payload['payment'] ?? null;
@@ -423,12 +514,12 @@ function paymentLinkProcessWebhookEvent(array $event): void
     $row = paymentLinkUpsertFromRazorpay($fullLink, $paymentEntity);
     if (!is_array($row)) {
         error_log('[payment_receipt] could not upsert payment link ' . $plinkId);
-        return;
+        return [];
     }
 
     if (in_array($type, ['payment_link.cancelled', 'payment_link.expired'], true)) {
         error_log('[payment_receipt] ' . $plinkId . ' status=' . ($fullLink['status'] ?? $type));
-        return;
+        return [];
     }
 
     if (!function_exists('paymentLinkProcessPaymentSideEffects')) {
@@ -436,4 +527,5 @@ function paymentLinkProcessWebhookEvent(array $event): void
     }
     $result = paymentLinkProcessPaymentSideEffects($row, $fullLink, $paymentEntity, $type);
     error_log('[payment_receipt] ' . $plinkId . ' ' . json_encode($result, JSON_UNESCAPED_UNICODE));
+    return $result;
 }

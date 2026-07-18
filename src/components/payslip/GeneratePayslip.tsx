@@ -209,7 +209,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
       tds,
       otherDeductions,
       totalDeductions,
-      netPay: Math.max(0, grossEarnings - totalDeductions),
+      netPay: grossEarnings - totalDeductions,
     };
   }, [salary]);
 
@@ -391,7 +391,24 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
               value={employeeId}
               onValueChange={(value) => {
                 setEmployeeId(value);
-                setSalary({ ...EMPTY_SALARY });
+                const next = employees.find((e) => e.id === value);
+                if (!next) {
+                  setSalary({ ...EMPTY_SALARY });
+                  return;
+                }
+                setSalary(
+                  editableFromComponents(
+                    calculateSalaryComponents(
+                      next.ctc,
+                      paidDays,
+                      workingDays,
+                      next.pfApplicable,
+                      next.ptApplicable,
+                      0,
+                      0,
+                    ),
+                  ),
+                );
               }}
             >
               <SelectTrigger className="h-11 rounded-lg focus-visible:ring-[#2ed573] focus-visible:ring-offset-1">

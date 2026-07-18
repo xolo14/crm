@@ -300,119 +300,112 @@ if ($method === 'POST') {
         $errors = [];
         $seenEmails = [];
         $seenPhones = [];
-        foreach ($rows as $i => $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-            $name = trim((string) ($row['name'] ?? ''));
-            $phone = trim((string) ($row['phone'] ?? ''));
-            $email = trim((string) ($row['email'] ?? ''));
-            if ($name === '') {
-                if ($phone !== '') {
-                    $name = $phone;
-                } elseif ($email !== '') {
-                    $name = $email;
-                } else {
-                    $errors[] = "Row $i: name, phone, or email is required";
+        // Per-org dedup index loaded once (one scan) instead of one
+        // REPLACE(...) LIKE full-table scan per imported row.
+        $dedupIndexByOrg = [];
+        try {
+            $db->beginTransaction();
+            foreach ($rows as $i => $row) {
+                if (!is_array($row)) {
                     continue;
                 }
-            }
-            $referredBy = trim((string) ($row['referred_by'] ?? ''));
-            $referredBy = $referredBy !== '' ? $referredBy : null;
-            $assignedTo = $row['assigned_to'] ?? null;
-            if ($assignedTo !== null && trim((string) $assignedTo) === '') {
-                $assignedTo = null;
-            }
-            // Managers: auto-assign imports to the importer
-            if ($callerRole === 'manager' && ($assignedTo === null || $assignedTo === '')) {
-                $assignedTo = $userId;
-            }
-            $orgId = $bulkOrgId;
-            if ($callerRole === 'super_admin') {
-                $rowOrg = trim((string) ($row['org_id'] ?? ''));
-                if ($rowOrg !== '') {
-                    // Validate per-row org exists
-                    $chkRow = $db->prepare('SELECT id FROM organizations WHERE id = ? AND is_active = 1 LIMIT 1');
-                    $chkRow->execute([$rowOrg]);
-                    if (!$chkRow->fetch()) {
-                        $errors[] = "Row $i: org_id not found";
+                $name = trim((string) ($row['name'] ?? ''));
+                $phone = trim((string) ($row['phone'] ?? ''));
+                $email = trim((string) ($row['email'] ?? ''));
+                if ($name === '') {
+                    if ($phone !== '') {
+                        $name = $phone;
+                    } elseif ($email !== '') {
+                        $name = $email;
+                    } else {
+                        $errors[] = "Row $i: name, phone, or email is required";
                         continue;
                     }
-                    $orgId = $rowOrg;
                 }
-            }
-            if ($orgId === null && !empty($assignedTo)) {
-                try {
-                    $oStmt = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
-                    $oStmt->execute([$assignedTo]);
-                    $oRow = $oStmt->fetch(PDO::FETCH_ASSOC);
-                    $pick = is_array($oRow) ? trim((string) ($oRow['org_id'] ?? '')) : '';
-                    if ($pick !== '') {
-                        $orgId = $pick;
+                $referredBy = trim((string) ($row['referred_by'] ?? ''));
+                $referredBy = $referredBy !== '' ? $referredBy : null;
+                // Imports always land unassigned unless a row explicitly names an assignee.
+                // Admins/managers assign to L1 members later via bulk assign.
+                $assignedTo = $row['assigned_to'] ?? null;
+                if ($assignedTo !== null && trim((string) $assignedTo) === '') {
+                    $assignedTo = null;
+                }
+                $orgId = $bulkOrgId;
+                if ($callerRole === 'super_admin') {
+                    $rowOrg = trim((string) ($row['org_id'] ?? ''));
+                    if ($rowOrg !== '') {
+                        // Validate per-row org exists
+                        $chkRow = $db->prepare('SELECT id FROM organizations WHERE id = ? AND is_active = 1 LIMIT 1');
+                        $chkRow->execute([$rowOrg]);
+                        if (!$chkRow->fetch()) {
+                            $errors[] = "Row $i: org_id not found";
+                            continue;
+                        }
+                        $orgId = $rowOrg;
                     }
-                } catch (Throwable $ignored) {
                 }
-            }
+                if ($orgId === null && !empty($assignedTo)) {
+                    try {
+                        $oStmt = $db->prepare('SELECT org_id FROM users WHERE id = ? LIMIT 1');
+                        $oStmt->execute([$assignedTo]);
+                        $oRow = $oStmt->fetch(PDO::FETCH_ASSOC);
+                        $pick = is_array($oRow) ? trim((string) ($oRow['org_id'] ?? '')) : '';
+                        if ($pick !== '') {
+                            $orgId = $pick;
+                        }
+                    } catch (Throwable $ignored) {
+                    }
+                }
 
-            $emailKey = strtolower($email);
-            $phoneDigits = preg_replace('/\D+/', '', $phone) ?? '';
-            if (strlen($phoneDigits) > 10) {
-                $phoneDigits = substr($phoneDigits, -10);
-            }
-            if ($emailKey !== '' && isset($seenEmails[$emailKey])) {
-                $skipped++;
-                $errors[] = "Row $i: duplicate email in this import ({$email})";
-                continue;
-            }
-            if ($phoneDigits !== '' && strlen($phoneDigits) >= 8 && isset($seenPhones[$phoneDigits])) {
-                $skipped++;
-                $errors[] = "Row $i: duplicate phone in this import ({$phone})";
-                continue;
-            }
-            $dup = leadsFindDuplicateInOrg($db, is_string($orgId) ? $orgId : null, $email, $phone);
-            if ($dup) {
-                $skipped++;
-                $errors[] = "Row $i: already exists as lead {$dup['id']} ({$dup['name']})";
-                continue;
-            }
-            if ($emailKey !== '') {
-                $seenEmails[$emailKey] = true;
-            }
-            if ($phoneDigits !== '' && strlen($phoneDigits) >= 8) {
-                $seenPhones[$phoneDigits] = true;
-            }
+                $emailKey = strtolower($email);
+                $phoneDigits = preg_replace('/\D+/', '', $phone) ?? '';
+                if (strlen($phoneDigits) > 10) {
+                    $phoneDigits = substr($phoneDigits, -10);
+                }
+                if ($emailKey !== '' && isset($seenEmails[$emailKey])) {
+                    $skipped++;
+                    $errors[] = "Row $i: duplicate email in this import ({$email})";
+                    continue;
+                }
+                if ($phoneDigits !== '' && strlen($phoneDigits) >= 8 && isset($seenPhones[$phoneDigits])) {
+                    $skipped++;
+                    $errors[] = "Row $i: duplicate phone in this import ({$phone})";
+                    continue;
+                }
+                $dup = null;
+                if (is_string($orgId) && $orgId !== '') {
+                    if (!isset($dedupIndexByOrg[$orgId])) {
+                        $dedupIndexByOrg[$orgId] = leadsLoadDedupIndex($db, $orgId);
+                    }
+                    if ($emailKey !== '' && isset($dedupIndexByOrg[$orgId]['emails'][$emailKey])) {
+                        $dup = $dedupIndexByOrg[$orgId]['emails'][$emailKey];
+                    } elseif (strlen($phoneDigits) >= 10 && isset($dedupIndexByOrg[$orgId]['phones'][$phoneDigits])) {
+                        $dup = $dedupIndexByOrg[$orgId]['phones'][$phoneDigits];
+                    }
+                } else {
+                    // No org context — fall back to the DB check (rare path).
+                    $dup = leadsFindDuplicateInOrg($db, null, $email, $phone);
+                }
+                if ($dup) {
+                    $skipped++;
+                    $errors[] = "Row $i: already exists as lead {$dup['id']} ({$dup['name']})";
+                    continue;
+                }
+                if ($emailKey !== '') {
+                    $seenEmails[$emailKey] = true;
+                }
+                if ($phoneDigits !== '' && strlen($phoneDigits) >= 8) {
+                    $seenPhones[$phoneDigits] = true;
+                }
 
-            $statusIn = leadsNormalizeStatus((string) ($row['status'] ?? 'new'));
-            if (!in_array($statusIn, leadsAllowedStatuses(), true)) {
-                $statusIn = 'new';
-            }
+                $statusIn = leadsNormalizeStatus((string) ($row['status'] ?? 'new'));
+                if (!in_array($statusIn, leadsAllowedStatuses(), true)) {
+                    $statusIn = 'new';
+                }
 
-            $id = generateUUID();
-            try {
-                $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                $stmt->execute([
-                    $id,
-                    $name,
-                    $email !== '' ? $email : null,
-                    $phone !== '' ? $phone : null,
-                    $row['company'] ?? null,
-                    $row['college'] ?? null,
-                    $row['year_of_study'] ?? null,
-                    $row['course_interest'] ?? null,
-                    $referredBy,
-                    $row['source'] ?? 'other',
-                    $row['notes'] ?? null,
-                    $assignedTo,
-                    isset($row['tags']) ? json_encode($row['tags']) : null,
-                    $orgId,
-                    $statusIn,
-                    $userId,
-                ]);
-                $created++;
-            } catch (Throwable $e) {
-                // Older schema without created_by
+                $id = generateUUID();
                 try {
-                    $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                     $stmt->execute([
                         $id,
                         $name,
@@ -429,12 +422,58 @@ if ($method === 'POST') {
                         isset($row['tags']) ? json_encode($row['tags']) : null,
                         $orgId,
                         $statusIn,
+                        $userId,
                     ]);
                     $created++;
-                } catch (Throwable $e2) {
-                    $errors[] = "Row $i: " . $e2->getMessage();
+                } catch (Throwable $e) {
+                    // Older schema without created_by
+                    try {
+                        $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, assigned_to, tags, org_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                        $stmt->execute([
+                            $id,
+                            $name,
+                            $email !== '' ? $email : null,
+                            $phone !== '' ? $phone : null,
+                            $row['company'] ?? null,
+                            $row['college'] ?? null,
+                            $row['year_of_study'] ?? null,
+                            $row['course_interest'] ?? null,
+                            $referredBy,
+                            $row['source'] ?? 'other',
+                            $row['notes'] ?? null,
+                            $assignedTo,
+                            isset($row['tags']) ? json_encode($row['tags']) : null,
+                            $orgId,
+                            $statusIn,
+                        ]);
+                        $created++;
+                    } catch (Throwable $e2) {
+                        $errors[] = "Row $i: " . $e2->getMessage();
+                    }
                 }
             }
+            if ($db->inTransaction()) {
+                if (!$db->commit()) {
+                    throw new RuntimeException('Database commit failed');
+                }
+            }
+        } catch (Throwable $bulkErr) {
+            try {
+                $db->rollBack();
+            } catch (Throwable $ignored) {
+            }
+            $msg = $bulkErr->getMessage();
+            if (!is_string($msg) || $msg === '') {
+                $msg = 'Unknown error';
+            }
+            if (strlen($msg) > 500) {
+                $msg = substr($msg, 0, 500) . '…';
+            }
+            respond([
+                'error' => 'Bulk create failed: ' . $msg,
+                'processed_rows' => $created + $skipped,
+                'rolled_back' => true,
+            ], 500);
         }
 
         $orgName = '';
@@ -944,6 +983,7 @@ if ($method === 'PUT') {
             } else {
                 $assignId = trim((string) $rawAssign);
                 try {
+                    $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$id, $assignId]);
                     $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
                     $exists->execute([$id, $assignId]);
                     if (!$exists->fetch()) {
@@ -1016,6 +1056,7 @@ if ($method === 'PUT') {
             } else {
                 $assignId = trim((string) $rawAssign);
                 try {
+                    $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$id, $assignId]);
                     $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
                     $exists->execute([$id, $assignId]);
                     if (!$exists->fetch()) {
@@ -1063,6 +1104,7 @@ if ($method === 'PUT') {
         } else {
             $assignId = trim((string) $rawAssign);
             try {
+                $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$id, $assignId]);
                 $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
                 $exists->execute([$id, $assignId]);
                 if (!$exists->fetch()) {

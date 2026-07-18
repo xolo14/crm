@@ -166,9 +166,11 @@ if ($method === 'POST') {
         $assignStmt = $db->prepare("INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?, ?, ?)");
         $existsStmt = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
         $updateStmt = $db->prepare("UPDATE leads SET assigned_to = ? WHERE id = ?");
+        $cleanupStmt = $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?');
 
         foreach ($leadIds as $leadId) {
             syncpediaAssertLeadInScope($db, $tokenData, (string) $leadId);
+            $cleanupStmt->execute([(string) $leadId, $assignTo]);
             $existsStmt->execute([(string) $leadId, $assignTo]);
             if (!$existsStmt->fetch()) {
                 try {
@@ -192,6 +194,8 @@ if ($method === 'POST') {
     }
     syncpediaAssertLeadInScope($db, $tokenData, $leadId);
     syncpediaAssertUserInCallerOrg($db, $tokenData, $assignTo);
+
+    $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$leadId, $assignTo]);
 
     $id = generateUUID();
     $stmt = $db->prepare("INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?, ?, ?)");

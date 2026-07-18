@@ -89,12 +89,12 @@ export function calculateSalaryComponents(
   const basic = Math.round(monthlyCTC * 0.4 * factor);
   const hra = Math.round(monthlyCTC * 0.2 * factor);
   const special = Math.round(monthlyCTC * 0.3 * factor);
-  const other = Math.round(monthlyCTC * 0.1 * factor);
+  const other = Math.max(0, Math.round(monthlyCTC * factor) - (basic + hra + special));
   const gross = basic + hra + special + other;
 
   const pfEmp = pfApplicable ? Math.round(basic * 0.12) : 0;
   const pfEr = pfApplicable ? Math.round(basic * 0.12) : 0;
-  // PT prorates only if no days were paid (i.e., absent entire month).
+  // PT is a flat ₹200 whenever any day is paid (not prorated).
   const pt = ptApplicable && safePaid > 0 ? 200 : 0;
   const safeTds = Math.max(0, Number(tds) || 0);
   const safeOther = Math.max(0, Number(otherDeductions) || 0);

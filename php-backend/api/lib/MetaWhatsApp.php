@@ -35,11 +35,15 @@ class MetaWhatsApp
     public static function normalizePhone(string $phone): string
     {
         $digits = preg_replace('/\D+/', '', $phone);
-        if ($digits === null || $digits === '') {
+        if ($digits === null) {
+            return '';
+        }
+        $digits = ltrim($digits, '0');
+        if ($digits === '') {
             return '';
         }
         // India: 10-digit local → 91 prefix
-        if (strlen($digits) === 10 && $digits[0] >= '6' && $digits[0] <= '9') {
+        if (strlen($digits) === 10) {
             $digits = '91' . $digits;
         }
         return $digits;

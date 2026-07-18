@@ -24,7 +24,14 @@ export default defineConfig(() => ({
     rollupOptions: {
       output: {
         manualChunks(id) {
+          // Vite's dynamic-import preload helper is needed by the entry chunk.
+          // Without an explicit assignment Rollup colocates it inside vendor-pdf,
+          // which forces the entry to statically import ~590 kB of PDF code on
+          // first paint. Pin it (and other tiny shared utils like clsx, which
+          // otherwise lands in vendor-charts) into the always-loaded React chunk.
+          if (id.includes("vite/preload-helper")) return "vendor-react";
           if (!id.includes("node_modules")) return;
+          if (/node_modules\/(clsx|tslib)\//.test(id)) return "vendor-react";
 
           // Keep the entire React runtime in one chunk (splitting react vs react-dom causes runtime crashes).
           if (/node_modules\/(react-dom|react-router|react|scheduler)\//.test(id)) {

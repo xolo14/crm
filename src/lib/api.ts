@@ -568,7 +568,6 @@ export const api = {
     updateTemplate: (id: string, data: any) => request(`/offer-letters.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteTemplate: (id: string) => request(`/offer-letters.php?id=${id}`, { method: 'DELETE' }),
     send: (data: any) => request('/offer-letters.php?action=send', { method: 'POST', body: JSON.stringify(data) }),
-    bulkSend: (letters: any[]) => request('/offer-letters.php?action=bulk_send', { method: 'POST', body: JSON.stringify({ letters }) }),
     deleteSent: (id: string) => request(`/offer-letters.php?id=${id}&action=sent`, { method: 'DELETE' }),
     /** Stored server PDF for a sent letter (PHP backend + Dompdf). */
     fetchSentPdfBlob: (id: string) =>

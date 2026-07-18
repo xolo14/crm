@@ -156,16 +156,28 @@ function paymentLinkMapRazorpayStatus(string $status, int $amountPaid, int $amou
     if ($s === 'paid') {
         return 'paid';
     }
-    if ($s === 'partially_paid' || ($amountPaid > 0 && $amountPaid < $amount)) {
-        return 'partially_paid';
-    }
     if ($s === 'cancelled') {
         return 'cancelled';
     }
     if ($s === 'expired') {
         return 'expired';
     }
+    if ($s === 'partially_paid' || ($amountPaid > 0 && $amountPaid < $amount)) {
+        return 'partially_paid';
+    }
     return 'created';
+}
+
+/** Rank used to prevent status downgrades on concurrent writes (paid always wins, terminal beats pending). */
+function paymentLinkStatusRankSql(string $expr): string
+{
+    return "CASE {$expr}
+        WHEN 'paid' THEN 5
+        WHEN 'cancelled' THEN 4
+        WHEN 'expired' THEN 4
+        WHEN 'partially_paid' THEN 2
+        WHEN 'created' THEN 1
+        ELSE 0 END";
 }
 
 /**
@@ -234,8 +246,10 @@ function paymentLinkPersistOnCreate(
             amount = VALUES(amount),
             description = VALUES(description),
             reference_id = VALUES(reference_id),
-            status = VALUES(status),
-            amount_paid = VALUES(amount_paid),
+            status = CASE WHEN ' . paymentLinkStatusRankSql('VALUES(status)')
+                . ' >= ' . paymentLinkStatusRankSql('status') . '
+                THEN VALUES(status) ELSE status END,
+            amount_paid = GREATEST(COALESCE(amount_paid, 0), VALUES(amount_paid)),
             razorpay_short_url = VALUES(razorpay_short_url),
             notes = VALUES(notes),
             updated_at = CURRENT_TIMESTAMP';
@@ -249,8 +263,10 @@ function paymentLinkPersistOnCreate(
             amount = EXCLUDED.amount,
             description = EXCLUDED.description,
             reference_id = EXCLUDED.reference_id,
-            status = EXCLUDED.status,
-            amount_paid = EXCLUDED.amount_paid,
+            status = CASE WHEN ' . paymentLinkStatusRankSql('EXCLUDED.status')
+                . ' >= ' . paymentLinkStatusRankSql('payment_links.status') . '
+                THEN EXCLUDED.status ELSE payment_links.status END,
+            amount_paid = GREATEST(COALESCE(payment_links.amount_paid, 0), EXCLUDED.amount_paid),
             razorpay_short_url = EXCLUDED.razorpay_short_url,
             notes = EXCLUDED.notes,
             updated_at = CURRENT_TIMESTAMP';
@@ -341,7 +357,9 @@ function paymentLinkUpsertFromRazorpay(
         $upd = $db->prepare(
             'UPDATE payment_links SET
                 customer_name = ?, customer_email = ?, customer_phone = ?,
-                amount = ?, description = ?, reference_id = ?, status = ?,
+                amount = ?, description = ?, reference_id = ?,
+                status = CASE WHEN ' . paymentLinkStatusRankSql('?')
+                    . ' >= ' . paymentLinkStatusRankSql('status') . ' THEN ? ELSE status END,
                 amount_paid = GREATEST(COALESCE(amount_paid, 0), ?), razorpay_short_url = ?, expire_by = ?, notes = ?,
                 updated_at = CURRENT_TIMESTAMP
              WHERE razorpay_payment_link_id = ?',
@@ -353,6 +371,7 @@ function paymentLinkUpsertFromRazorpay(
             $amount,
             trim((string) ($rzpLink['description'] ?? $existing['description'] ?? '')) ?: null,
             trim((string) ($rzpLink['reference_id'] ?? $existing['reference_id'] ?? '')) ?: null,
+            $status,
             $status,
             $amountPaid,
             trim((string) ($rzpLink['short_url'] ?? $existing['razorpay_short_url'] ?? '')),
@@ -843,8 +862,88 @@ function paymentLinksRefreshStalePending(array &$items, int $maxRefresh = 80): v
     }
 }
 
+/** Seconds a full Razorpay sync stays fresh; polls within this window are served from cache + DB. */
+const PAYMENT_LINKS_SYNC_TTL = 180;
+
+function paymentLinksSyncCachePath(array $filters): string
+{
+    $dir = dirname(__DIR__) . '/storage/payment_links_cache';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0775, true);
+    }
+    $key = md5(implode('|', [
+        (string) ($filters['from'] ?? ''),
+        (string) ($filters['to'] ?? ''),
+        (string) ($filters['status'] ?? ''),
+        (string) ($filters['skip'] ?? '0'),
+    ]));
+    return $dir . '/' . $key . '.json';
+}
+
+/** @return list<array<string, mixed>>|null Cached unscoped items, or null when absent/expired. */
+function paymentLinksSyncCacheRead(string $file, int $ttl): ?array
+{
+    $raw = @file_get_contents($file);
+    if (!is_string($raw) || $raw === '') {
+        return null;
+    }
+    $decoded = json_decode($raw, true);
+    if (!is_array($decoded) || !isset($decoded['synced_at']) || !is_array($decoded['items'] ?? null)) {
+        return null;
+    }
+    if ((time() - (int) $decoded['synced_at']) > $ttl) {
+        return null;
+    }
+    return array_values($decoded['items']);
+}
+
+/**
+ * Overlay current DB state (webhook/CRM updates) onto cached items, and append
+ * CRM rows created after the cache was written. Rank-guarded merge means a
+ * stale cached "created" never overrides a webhook-persisted "paid".
+ *
+ * @param list<mixed> $items
+ * @return list<mixed>
+ */
+function paymentLinksOverlayCrmRows(array $items, ?int $from, ?int $to): array
+{
+    $crmById = [];
+    try {
+        foreach (paymentLinkListCrmRows($from, $to, 500, null) as $row) {
+            $id = trim((string) ($row['razorpay_payment_link_id'] ?? ''));
+            if ($id !== '') {
+                $crmById[$id] = $row;
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[payment_links] CRM overlay: ' . $e->getMessage());
+        return $items;
+    }
+
+    foreach ($items as $i => $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $id = trim((string) ($item['id'] ?? ''));
+        if ($id !== '' && isset($crmById[$id])) {
+            $items[$i] = paymentLinkMergeRazorpayWithCrm($item, $crmById[$id]);
+            unset($crmById[$id]);
+        }
+    }
+    foreach ($crmById as $row) {
+        $items[] = paymentLinkCrmRowToRazorpayShape($row);
+    }
+    return $items;
+}
+
 /**
  * Razorpay list + CRM rows (merged status) + live refresh for recent pending links.
+ *
+ * The full Razorpay sync (paginated list + per-pending refresh + fulfillment) runs
+ * at most once per PAYMENT_LINKS_SYNC_TTL per filter window; requests inside the
+ * window are served from the cached sync overlaid with fresh DB rows, so webhook
+ * status changes still appear on the next poll without any outbound HTTP.
+ * Pass filters['force'] to bypass the cache (manual refresh button).
  *
  * @param array<string, mixed> $filters
  * @return array<string, mixed>
@@ -858,60 +957,71 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
         $accessScope = paymentLinksBuildAccessScope(paymentLinksDb(), $tokenData);
     }
 
-    $crmById = [];
-    try {
-        foreach (paymentLinkListCrmRows($from, $to, 500, $accessScope) as $row) {
-            $id = trim((string) ($row['razorpay_payment_link_id'] ?? ''));
-            if ($id !== '') {
-                $crmById[$id] = $row;
+    $cacheFile = paymentLinksSyncCachePath($filters);
+    $items = null;
+    if (empty($filters['force'])) {
+        $items = paymentLinksSyncCacheRead($cacheFile, PAYMENT_LINKS_SYNC_TTL);
+        if ($items !== null) {
+            $items = paymentLinksOverlayCrmRows($items, $from, $to);
+        }
+    }
+
+    if ($items === null) {
+        // Full sync. Built unscoped so the cache can be shared across users;
+        // per-requester visibility is applied below via paymentLinksApplyListScope.
+        $crmById = [];
+        try {
+            foreach (paymentLinkListCrmRows($from, $to, 500, null) as $row) {
+                $id = trim((string) ($row['razorpay_payment_link_id'] ?? ''));
+                if ($id !== '') {
+                    $crmById[$id] = $row;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[payment_links] CRM list preload: ' . $e->getMessage());
+        }
+
+        $result = razorpayFetchAllPaymentLinks($filters);
+        $items = is_array($result['items'] ?? null) ? $result['items'] : [];
+
+        foreach ($items as $i => $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $id = trim((string) ($item['id'] ?? ''));
+            if ($id !== '' && isset($crmById[$id])) {
+                $items[$i] = paymentLinkMergeRazorpayWithCrm($item, $crmById[$id]);
+                unset($crmById[$id]);
             }
         }
-    } catch (Throwable $e) {
-        error_log('[payment_links] CRM list preload: ' . $e->getMessage());
-    }
 
-    $result = razorpayFetchAllPaymentLinks($filters);
-    $items = is_array($result['items'] ?? null) ? $result['items'] : [];
-
-    foreach ($items as $i => $item) {
-        if (!is_array($item)) {
-            continue;
+        foreach ($crmById as $row) {
+            $items[] = paymentLinkCrmRowToRazorpayShape($row);
         }
-        $id = trim((string) ($item['id'] ?? ''));
-        if ($id !== '' && isset($crmById[$id])) {
-            $items[$i] = paymentLinkMergeRazorpayWithCrm($item, $crmById[$id]);
-            unset($crmById[$id]);
-        }
-    }
 
-    foreach ($crmById as $row) {
-        $items[] = paymentLinkCrmRowToRazorpayShape($row);
+        paymentLinksRefreshStalePending($items);
+
+        // Re-merge once from a single DB read (refresh/fulfill may have updated rows).
+        $items = paymentLinksOverlayCrmRows($items, $from, $to);
+
+        if (!function_exists('paymentLinksFulfillPaidItems')) {
+            require_once __DIR__ . '/payment_link_fulfillment.php';
+        }
+        paymentLinksFulfillPaidItems($items);
+
+        try {
+            @file_put_contents(
+                $cacheFile,
+                json_encode(['synced_at' => time(), 'items' => array_values($items)]),
+            );
+        } catch (Throwable $e) {
+            error_log('[payment_links] sync cache write: ' . $e->getMessage());
+        }
     }
 
     if ($accessScope !== null) {
         $items = paymentLinksApplyListScope($items, $accessScope);
     }
-
-    paymentLinksRefreshStalePending($items);
-
-    foreach ($items as $i => $item) {
-        if (!is_array($item)) {
-            continue;
-        }
-        $id = trim((string) ($item['id'] ?? ''));
-        if ($id === '') {
-            continue;
-        }
-        $row = paymentLinkFindByRazorpayId($id);
-        if (is_array($row)) {
-            $items[$i] = paymentLinkMergeRazorpayWithCrm($item, $row);
-        }
-    }
-
-    if (!function_exists('paymentLinksFulfillPaidItems')) {
-        require_once __DIR__ . '/payment_link_fulfillment.php';
-    }
-    paymentLinksFulfillPaidItems($items);
 
     usort($items, static function ($a, $b): int {
         $a = is_array($a) ? $a : [];

@@ -1,5 +1,5 @@
-/* display=swap reduces invisible-text period / layout jump once webfonts load */
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Webfonts are loaded via <link> in index.html so the fonts CSS downloads in
+   parallel with the app bundle instead of chaining behind this stylesheet. */
 
 @tailwind base;
 @tailwind components;

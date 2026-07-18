@@ -795,6 +795,11 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
         ], $send['ok'] ? 500 : 502);
     }
 
+    if ($wamid !== '') {
+        require_once __DIR__ . '/lib/WhatsAppWebhookHandler.php';
+        WhatsAppWebhookHandler::applyOrphanStatus($db, $wamid);
+    }
+
     if ($convId) {
         WhatsAppInbox::touchOutboundOwnership($db, (string) $convId, $userId);
         if ($send['ok']) {
@@ -864,6 +869,8 @@ if ($action === 'send_whatsapp_reply' && $method === 'POST') {
                 $db->prepare(
                     'UPDATE comm_whatsapp_messages SET status = ?, error_message = ?, conversation_id = COALESCE(conversation_id, ?), sent_at = COALESCE(sent_at, ?) WHERE id = ?',
                 )->execute([$status, $send['error'] ?? null, $convId, $send['ok'] ? $now : null, $msgId]);
+                require_once __DIR__ . '/lib/WhatsAppWebhookHandler.php';
+                WhatsAppWebhookHandler::applyOrphanStatus($db, $wamid);
                 if ($convId) {
                     WhatsAppInbox::touchOutboundOwnership($db, (string) $convId, $userId);
                     if ($send['ok']) {
@@ -925,6 +932,11 @@ if ($action === 'send_whatsapp_reply' && $method === 'POST') {
                     ->execute(['outbound', $convId, 'text', $msgId]);
             } catch (Throwable $ignored) {
             }
+        }
+
+        if ($wamid !== '') {
+            require_once __DIR__ . '/lib/WhatsAppWebhookHandler.php';
+            WhatsAppWebhookHandler::applyOrphanStatus($db, $wamid);
         }
 
         if ($convId) {

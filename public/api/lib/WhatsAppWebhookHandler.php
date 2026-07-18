@@ -95,8 +95,16 @@ class WhatsAppWebhookHandler
             exit;
         }
 
+        try {
+            self::processMeta($db, $payload);
+        } catch (Throwable $e) {
+            error_log('[wa_webhook] processing failed: ' . $e->getMessage());
+            http_response_code(500);
+            header('Content-Type: application/json; charset=UTF-8');
+            echo json_encode(['error' => 'Processing failed']);
+            exit;
+        }
         self::ackFast();
-        self::processMeta($db, $payload);
     }
 
     private static function ackFast(): void
@@ -255,7 +263,7 @@ class WhatsAppWebhookHandler
         return in_array($s, ['sent', 'delivered', 'read', 'failed'], true) ? $s : 'queued';
     }
 
-    /** Rank for monotonic status updates (failed always wins). */
+    /** Rank for monotonic status updates (failed only applies before delivered). */
     private static function statusRank(string $status): int
     {
         $map = [
@@ -279,11 +287,15 @@ class WhatsAppWebhookHandler
             $cur->execute([$providerMessageId]);
             $row = $cur->fetch(PDO::FETCH_ASSOC);
             if (!$row) {
+                self::storeStatusOrphan($db, $providerMessageId, strtolower($status), $ts);
                 return;
             }
             $current = strtolower(trim((string) ($row['status'] ?? '')));
             $incoming = strtolower($status);
-            // Never regress (e.g. read → delivered). Failed always applies.
+            // Never regress (e.g. read → delivered). Failed only applies before delivered.
+            if ($incoming === 'failed' && self::statusRank($current) >= self::statusRank('delivered')) {
+                return;
+            }
             if ($incoming !== 'failed' && self::statusRank($incoming) < self::statusRank($current)) {
                 // Still stamp timestamps if useful
                 if ($incoming === 'delivered' && $ts) {
@@ -308,6 +320,54 @@ class WhatsAppWebhookHandler
             }
         } catch (Throwable $e) {
             error_log('[wa_webhook] status update: ' . $e->getMessage());
+        }
+    }
+
+    /** Status webhook arrived before the outbound row was inserted — park it by wamid. */
+    private static function storeStatusOrphan(PDO $db, string $wamid, string $status, ?string $ts): void
+    {
+        try {
+            WhatsAppInbox::ensureTables($db);
+            $cur = $db->prepare('SELECT status FROM wa_status_orphans WHERE wamid = ? LIMIT 1');
+            $cur->execute([$wamid]);
+            $existing = $cur->fetchColumn();
+            if ($existing !== false && $existing !== null) {
+                if (self::statusRank($status) > self::statusRank((string) $existing)) {
+                    $db->prepare('UPDATE wa_status_orphans SET status = ?, ts = ? WHERE wamid = ?')
+                        ->execute([$status, $ts, $wamid]);
+                }
+                return;
+            }
+            $db->prepare('INSERT INTO wa_status_orphans (wamid, status, ts) VALUES (?, ?, ?)')
+                ->execute([$wamid, $status, $ts]);
+        } catch (Throwable $e) {
+            error_log('[wa_webhook] orphan status store: ' . $e->getMessage());
+        }
+    }
+
+    /** Apply a parked status event (if any) after the outbound row exists. */
+    public static function applyOrphanStatus(PDO $db, string $providerMessageId): void
+    {
+        if ($providerMessageId === '') {
+            return;
+        }
+        try {
+            WhatsAppInbox::ensureTables($db);
+            $st = $db->prepare('SELECT status, ts FROM wa_status_orphans WHERE wamid = ? LIMIT 1');
+            $st->execute([$providerMessageId]);
+            $orphan = $st->fetch(PDO::FETCH_ASSOC);
+            if (!$orphan) {
+                return;
+            }
+            self::updateMessageStatus(
+                $db,
+                $providerMessageId,
+                (string) ($orphan['status'] ?? ''),
+                isset($orphan['ts']) && $orphan['ts'] !== null ? (string) $orphan['ts'] : null,
+            );
+            $db->prepare('DELETE FROM wa_status_orphans WHERE wamid = ?')->execute([$providerMessageId]);
+        } catch (Throwable $e) {
+            error_log('[wa_webhook] orphan status apply: ' . $e->getMessage());
         }
     }
 }

@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
 import { Users, TrendingUp, UserPlus, Award, Loader2, Filter, Phone, ClipboardList, Eye, CheckCircle, XCircle } from 'lucide-react';
 import { DateRangeFilter, DateRange } from '@/components/DateRangeFilter';
+import { parseServerDateTime } from '@/lib/dateTime';
 
 const STATUS_LABELS: Record<string, string> = {
   new: 'New', contacted: 'Contacted', interested: 'Interested',
@@ -98,9 +99,10 @@ export default function ReferralAnalytics() {
     }
     if (dateRange.from || dateRange.to) {
       result = result.filter(l => {
-        const d = new Date(l.created_at);
-        if (dateRange.from && d < dateRange.from) return false;
-        if (dateRange.to && d > new Date(dateRange.to.getTime() + 86400000)) return false;
+        const d = parseServerDateTime(l.created_at);
+        if (!d) return true;
+        if (dateRange.from && d.getTime() < dateRange.from.getTime()) return false;
+        if (dateRange.to && d.getTime() > dateRange.to.getTime()) return false;
         return true;
       });
     }
@@ -115,9 +117,10 @@ export default function ReferralAnalytics() {
     }
     if (dateRange.from || dateRange.to) {
       result = result.filter(r => {
-        const d = new Date(r.report_date);
-        if (dateRange.from && d < dateRange.from) return false;
-        if (dateRange.to && d > new Date(dateRange.to.getTime() + 86400000)) return false;
+        const d = parseServerDateTime(r.report_date);
+        if (!d) return true;
+        if (dateRange.from && d.getTime() < dateRange.from.getTime()) return false;
+        if (dateRange.to && d.getTime() > dateRange.to.getTime()) return false;
         return true;
       });
     }

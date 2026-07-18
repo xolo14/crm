@@ -44,7 +44,24 @@ class WhatsAppInbox
         }
         self::ensureMessageColumns($db);
         self::ensureConversationOwnershipColumns($db);
+        self::ensureStatusOrphanTable($db);
         $done = true;
+    }
+
+    /** Parking table for status webhooks that arrive before the outbound message row exists. */
+    private static function ensureStatusOrphanTable(PDO $db): void
+    {
+        try {
+            $db->exec(
+                "CREATE TABLE IF NOT EXISTS wa_status_orphans (
+                    wamid VARCHAR(128) NOT NULL PRIMARY KEY,
+                    status VARCHAR(20) NOT NULL,
+                    ts DATETIME NULL DEFAULT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            );
+        } catch (Throwable $e) {
+        }
     }
 
     private static function ensureConversationOwnershipColumns(PDO $db): void
@@ -264,10 +281,11 @@ class WhatsAppInbox
     public static function normalizePhone(string $phone): string
     {
         $digits = preg_replace('/\D+/', '', $phone) ?? '';
+        $digits = ltrim($digits, '0');
         if ($digits === '') {
             return '';
         }
-        if (strlen($digits) === 10 && $digits[0] >= '6' && $digits[0] <= '9') {
+        if (strlen($digits) === 10) {
             return '91' . $digits;
         }
         return $digits;
@@ -301,18 +319,26 @@ class WhatsAppInbox
 
         $leadId = self::findOrCreateLeadForPhone($db, $orgId, $phone, $contactName);
         $id = generateUUID();
-        $db->prepare(
-            'INSERT INTO wa_conversations (id, org_id, lead_id, contact_phone, contact_name, waba_id, phone_number_id, last_message_at, unread_count)
-             VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), 0)',
-        )->execute([
-            $id,
-            $orgId,
-            $leadId,
-            $phone,
-            $contactName ? trim($contactName) : null,
-            $wabaId,
-            $phoneNumberId,
-        ]);
+        try {
+            $db->prepare(
+                'INSERT INTO wa_conversations (id, org_id, lead_id, contact_phone, contact_name, waba_id, phone_number_id, last_message_at, unread_count)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), 0)',
+            )->execute([
+                $id,
+                $orgId,
+                $leadId,
+                $phone,
+                $contactName ? trim($contactName) : null,
+                $wabaId,
+                $phoneNumberId,
+            ]);
+        } catch (PDOException $e) {
+            // Concurrent first message lost the race on UNIQUE(org_id, contact_phone) — reuse the winner's row.
+            $sqlState = (string) ($e->errorInfo[0] ?? $e->getCode());
+            if ($sqlState !== '23000' && $sqlState !== '23505') {
+                throw $e;
+            }
+        }
         $st->execute([$orgId, $phone]);
         return $st->fetch(PDO::FETCH_ASSOC) ?: null;
     }
@@ -325,17 +351,28 @@ class WhatsAppInbox
         }
         $local = strlen($phone) > 10 ? substr($phone, -10) : $phone;
 
+        $exact = $db->prepare(
+            "SELECT id FROM leads
+             WHERE org_id = ?
+               AND REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', '') = ?
+             ORDER BY created_at DESC LIMIT 1",
+        );
+        $exact->execute([$orgId, $phone]);
+        $existing = $exact->fetchColumn();
+        if ($existing) {
+            return (string) $existing;
+        }
+
         $st = $db->prepare(
             "SELECT id FROM leads
              WHERE org_id = ?
                AND (
-                 REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', '') = ?
-                 OR REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', '') LIKE ?
+                 REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', '') LIKE ?
                  OR REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', '') LIKE ?
                )
              ORDER BY created_at DESC LIMIT 1",
         );
-        $st->execute([$orgId, $phone, '%' . $local, $phone . '%']);
+        $st->execute([$orgId, '%' . $local, $phone . '%']);
         $existing = $st->fetchColumn();
         if ($existing) {
             return (string) $existing;
