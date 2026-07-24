@@ -106,6 +106,14 @@
     @apply border-border;
   }
 
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-background text-foreground antialiased;
     font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
@@ -219,4 +227,23 @@
   .crm-stat-grid {
     @apply grid grid-cols-2 gap-2;
   }
+}
+
+/* Appearance → Compact mode (toggled on <html> from settings) */
+html.crm-compact .mobile-card {
+  @apply p-3;
+}
+
+html.crm-compact .space-y-6 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 1rem;
+}
+
+html.crm-compact .space-y-4 > :not([hidden]) ~ :not([hidden]) {
+  margin-top: 0.75rem;
+}
+
+html.crm-compact table th,
+html.crm-compact table td {
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
 }

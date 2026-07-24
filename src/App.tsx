@@ -11,6 +11,7 @@ import { ThemeProvider } from "next-themes";
 import LoginPortal from "@/pages/LoginPortal";
 import Auth from "@/pages/Auth";
 import { getPortalLoginRedirect, AUTH_PORTAL } from "@/lib/portalAuth";
+import { normalizeAppRole } from "@/lib/roleUtils";
 import HRLayout from "@/layouts/HRLayout";
 import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from "@/lib/orgAccess";
 import { isPathAllowedByOrgFeatures, FEATURE_FORM_MANAGEMENT } from "@/lib/orgFeatures";
@@ -23,6 +24,7 @@ import {
   CertificatesPage,
   CommunicationsAdminPage,
   CommunicationsHubPage,
+  WhatsAppInboxPage,
   Courses,
   DailyReports,
   DailyReportsAnalytics,
@@ -71,6 +73,8 @@ import {
   WhatsAppPortal,
   PrivacyPolicyPage,
   TermsOfServicePage,
+  AssessmentsAdminPage,
+  PeaklyyAssessmentPage,
 } from "@/routes/lazyPages";
 
 const queryClient = new QueryClient();
@@ -112,6 +116,10 @@ function RootHome() {
   const { user, loading } = useAuth();
   if (loading) return <AuthLoading />;
   if (!user) return <LoginPortal />;
+  const role = normalizeAppRole(user.role);
+  if (role === "marketing") {
+    return <Navigate to="/marketing/dashboard" replace />;
+  }
   return (
     <AppLayout>
       <OrgFeatureRoute>
@@ -229,6 +237,10 @@ function RoleGate({ allow, children }: { allow: string[]; children: ReactNode })
 }
 
 function SettingsGate({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const role = normalizePlatformRole(user);
+  // Keep HR inside the HR portal shell
+  if (role === "hr") return <Navigate to="/hr/settings" replace />;
   return (
     <RoleGate
       allow={[
@@ -237,7 +249,6 @@ function SettingsGate({ children }: { children: ReactNode }) {
         "org",
         "manager",
         "sales_representative",
-        "hr",
         "marketing",
         "trainer",
         "finance",
@@ -267,7 +278,13 @@ function HRProtectedRoute({ children }: { children: ReactNode }) {
 }
 
 const App = () => (
-  <ThemeProvider attribute="class" defaultTheme="light" enableSystem>
+  <ThemeProvider
+    attribute="class"
+    defaultTheme="system"
+    enableSystem
+    storageKey="crm-ui-theme"
+    disableTransitionOnChange
+  >
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
@@ -278,6 +295,7 @@ const App = () => (
           <Suspense fallback={<AuthLoading />}>
           <Routes>
             <Route path="/apply" element={<Apply />} />
+            <Route path="/assessment/:slug" element={<PeaklyyAssessmentPage />} />
             <Route path="/privacy" element={<PrivacyPolicyPage />} />
             <Route path="/terms" element={<TermsOfServicePage />} />
             <Route path="/login" element={<LoginPortal />} />
@@ -317,7 +335,8 @@ const App = () => (
               <Route path="/daily-reports" element={<DailyReports />} />
               <Route path="/daily-reports/analytics" element={<DailyReportsAnalytics />} />
               <Route path="/communications" element={<CommunicationsHubPage />} />
-              <Route path="/communications/whatsapp-setup" element={<AdminSuperOrOrgGate><OrgWhatsAppSetupPage /></AdminSuperOrOrgGate>} />
+              <Route path="/communications/whatsapp-inbox" element={<WhatsAppInboxPage />} />
+              <Route path="/communications/whatsapp-setup" element={<RoleGate allow={["super_admin", "admin", "org", "manager", "marketing"]}><OrgWhatsAppSetupPage /></RoleGate>} />
               <Route path="/communications/template-library" element={<AdminSuperOrOrgGate><TemplateLibraryPage /></AdminSuperOrOrgGate>} />
               <Route path="/communications/meta-partner" element={<SuperAdminGate><MetaPartnerPage /></SuperAdminGate>} />
               <Route path="/communications/admin" element={<SuperAdminGate><CommunicationsAdminPage /></SuperAdminGate>} />
@@ -350,6 +369,7 @@ const App = () => (
               <Route path="/marketing/whatsapp" element={<MarketingGate><WhatsAppPortal /></MarketingGate>} />
               <Route path="/marketing/whatsapp-analytics" element={<MarketingGate><WhatsAppAnalytics /></MarketingGate>} />
               <Route path="/holidays" element={<Holidays />} />
+              <Route path="/assessments" element={<SuperAdminGate><AssessmentsAdminPage /></SuperAdminGate>} />
               <Route path="/trash" element={<TrashGate><Trash /></TrashGate>} />
               <Route path="/offer-letters" element={<OfferLettersGate><OfferLetters /></OfferLettersGate>} />
               <Route path="/certificates" element={<CertificatesGate><CertificatesPage /></CertificatesGate>} />
@@ -367,6 +387,7 @@ const App = () => (
             <Route path="/hr/notifications" element={<HRProtectedRoute><HRNotifications /></HRProtectedRoute>} />
             <Route path="/hr/communications" element={<HRProtectedRoute><HRCommunicationsPage /></HRProtectedRoute>} />
             <Route path="/hr/holidays" element={<HRProtectedRoute><HRHolidays /></HRProtectedRoute>} />
+            <Route path="/hr/settings" element={<HRProtectedRoute><SettingsPage /></HRProtectedRoute>} />
           </Routes>
           </Suspense>
         </AuthProvider>

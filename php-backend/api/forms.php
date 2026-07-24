@@ -170,7 +170,8 @@ function formsBuildListScope(PDO $db, array $tokenData): array {
             $where .= ' AND 1=0';
         }
     } elseif ($role === 'marketing') {
-        $where .= ' AND lf.is_active = 1 AND (';
+        // Marketing manages their own forms (including inactive) so they can reactivate/delete.
+        $where .= ' AND (';
         if ($isSyncpediaOrg) {
             $where .= 'lf.created_by = ?';
             $params[] = $userId;
@@ -433,7 +434,7 @@ if ($method === 'GET') {
                 $lst = $db->prepare($listSql);
                 $lst->execute($countParams);
                 $submissions = $lst->fetchAll(PDO::FETCH_ASSOC);
-            } else {
+        } else {
                 $filters = formsSubmissionLeadFilters($db, $tokenData, $role, $search, $status, $formOrgId !== '' ? $formOrgId : null);
                 $countSql = 'SELECT COUNT(*) FROM leads l WHERE l.source = ?' . $filters['where'];
                 $countParams = array_merge([$sourceKey], $filters['params']);
@@ -585,9 +586,9 @@ if ($method === 'POST') {
             $formRow = ['id' => $accessible['id'], 'slug' => $accessible['slug'] ?? '', 'org_id' => $accessible['org_id'] ?? null];
         } else {
             $chk = $db->prepare("SELECT id, slug, org_id FROM lead_forms WHERE id = ? LIMIT 1");
-            $chk->execute($chkParams);
-            $formRow = $chk->fetch();
-            if (!$formRow) respond(['error' => 'Form not found'], 404);
+        $chk->execute($chkParams);
+        $formRow = $chk->fetch();
+        if (!$formRow) respond(['error' => 'Form not found'], 404);
         }
 
         $cleanMemberIds = [];
@@ -730,6 +731,36 @@ if ($method === 'POST') {
         $slug = trim($slug, '-');
     }
     if (!$slug) respond(['error' => 'slug required'], 400);
+    $slug = strtolower(preg_replace('/[^a-z0-9\-]+/', '-', $slug));
+    $slug = trim($slug, '-');
+    if ($slug === '') respond(['error' => 'slug required'], 400);
+
+    $writeOrgId = resolveWriteOrgId($db, $tokenData);
+    if ($role === 'super_admin' && array_key_exists('org_id', $input)) {
+        $writeOrgId = formsResolveSuperAdminOrgId($db, $tokenData, $input['org_id']);
+    }
+
+    // Unique (slug, org_id): append a short suffix when the slug is already taken in this org.
+    $baseSlug = $slug;
+    $try = 0;
+    while ($try < 12) {
+        $candidate = $try === 0 ? $baseSlug : ($baseSlug . '-' . substr(str_replace('-', '', generateUUID()), 0, 8));
+        if ($writeOrgId) {
+            $chk = $db->prepare('SELECT id FROM lead_forms WHERE slug = ? AND org_id = ? LIMIT 1');
+            $chk->execute([$candidate, $writeOrgId]);
+        } else {
+            $chk = $db->prepare('SELECT id FROM lead_forms WHERE slug = ? AND (org_id IS NULL OR TRIM(org_id) = \'\') LIMIT 1');
+            $chk->execute([$candidate]);
+        }
+        if (!$chk->fetch(PDO::FETCH_ASSOC)) {
+            $slug = $candidate;
+            break;
+        }
+        $try++;
+    }
+    if ($try >= 12) {
+        $slug = $baseSlug . '-' . substr(str_replace('-', '', generateUUID()), 0, 12);
+    }
 
     $id = generateUUID();
     $stmt = $db->prepare("
@@ -744,23 +775,40 @@ if ($method === 'POST') {
     if (isset($input['meta_json']) && is_array($input['meta_json'])) {
         $metaJson = $input['meta_json'];
     }
-    $writeOrgId = resolveWriteOrgId($db, $tokenData);
-    if ($role === 'super_admin' && array_key_exists('org_id', $input)) {
-        $writeOrgId = formsResolveSuperAdminOrgId($db, $tokenData, $input['org_id']);
+    try {
+        $stmt->execute([
+            $id,
+            $name,
+            $slug,
+            $input['description'] ?? null,
+            json_encode($fieldsJson),
+            json_encode($metaJson),
+            !empty($input['is_active']) ? 1 : 0,
+            $userId,
+            $writeOrgId
+        ]);
+    } catch (PDOException $e) {
+        // Race: another insert took the same slug — retry once with a fresh suffix.
+        if ((int) ($e->errorInfo[1] ?? 0) === 1062) {
+            $slug = $baseSlug . '-' . substr(str_replace('-', '', generateUUID()), 0, 10);
+            $id = generateUUID();
+            $stmt->execute([
+                $id,
+                $name,
+                $slug,
+                $input['description'] ?? null,
+                json_encode($fieldsJson),
+                json_encode($metaJson),
+                !empty($input['is_active']) ? 1 : 0,
+                $userId,
+                $writeOrgId
+            ]);
+        } else {
+            throw $e;
+        }
     }
-    $stmt->execute([
-        $id,
-        $name,
-        $slug,
-        $input['description'] ?? null,
-        json_encode($fieldsJson),
-        json_encode($metaJson),
-        !empty($input['is_active']) ? 1 : 0,
-        $userId,
-        $writeOrgId
-    ]);
 
-    respond(['id' => $id, 'message' => 'Form created'], 201);
+    respond(['id' => $id, 'slug' => $slug, 'message' => 'Form created'], 201);
 }
 
 if ($method === 'PUT') {
@@ -854,18 +902,22 @@ if ($method === 'DELETE') {
         respond(['message' => 'Form API key revoked']);
     }
 
-    requireRole($tokenData, ['super_admin', 'admin']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'id required'], 400);
 
     $params = [$id];
     $orgClause = '';
-    if ($role !== 'super_admin') {
+    $roleNorm = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? $role ?? ''));
+    if ($roleNorm === 'marketing') {
+        $orgClause = ' AND created_by = ?';
+        $params[] = $userId;
+    } elseif ($roleNorm !== 'super_admin') {
         $orgClause = ' AND org_id = ?';
         $params[] = $orgId;
     }
 
-    $chk = $db->prepare("SELECT slug, org_id FROM lead_forms WHERE id = ? $orgClause LIMIT 1");
+    $chk = $db->prepare("SELECT slug, org_id, created_by FROM lead_forms WHERE id = ? $orgClause LIMIT 1");
     $chk->execute($params);
     $row = $chk->fetch(PDO::FETCH_ASSOC);
     if (!$row) {

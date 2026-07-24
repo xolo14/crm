@@ -281,6 +281,7 @@ function paymentLinkReleaseReceiptClaim(
         ]);
     } catch (Throwable $e) {
         error_log('[payment_receipt] release claim failed for ' . $plinkId . ': ' . $e->getMessage());
+        paymentLinkMarkNeedsReconcile($plinkId);
     }
 }
 
@@ -299,7 +300,9 @@ function paymentLinkDeliverReceipt(
 ): array {
     $customerEmail = trim((string) ($row['customer_email'] ?? ''));
     if ($customerEmail === '' || !filter_var($customerEmail, FILTER_VALIDATE_EMAIL)) {
-        return ['ok' => false, 'error' => 'No valid customer email'];
+        // Do not fail the webhook forever — mark for reconcile when email is fixed.
+        paymentLinkMarkNeedsReconcile(trim((string) ($row['razorpay_payment_link_id'] ?? '')));
+        return ['ok' => true, 'skipped' => true, 'reason' => 'no_customer_email'];
     }
 
     $amountPaidPaise = (int) ($rzpLink['amount_paid'] ?? $row['amount_paid'] ?? 0);
@@ -439,6 +442,7 @@ function paymentLinkDeliverReceipt(
             $amountPaidPaise,
             $paymentId,
         );
+        paymentLinkClearNeedsReconcile($plinkId);
         $notes = json_decode((string) ($row['notes'] ?? '{}'), true);
         $salesName = is_array($notes) ? (string) ($notes['salesperson_name'] ?? '') : '';
         syncpediaNotifySupportPaymentLinkCustomerMail(
@@ -453,6 +457,7 @@ function paymentLinkDeliverReceipt(
         );
     } else {
         paymentLinkReleaseReceiptClaim($plinkId, $previouslySentFor, $amountPaidPaise, $processed);
+        paymentLinkMarkNeedsReconcile($plinkId);
     }
 
     return [

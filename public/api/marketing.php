@@ -515,4 +515,382 @@ if ($action === 'n8n_webhook' && $method === 'POST') {
     respond(['ok' => $status >= 200 && $status < 300, 'status' => $status, 'body' => is_string($body) ? substr($body, 0, 500) : '']);
 }
 
-respond(['error' => 'Invalid action. Use ?action=members|email_drafts|email_campaigns|email_sends|whatsapp_drafts|whatsapp_campaigns|whatsapp_sends|upload_resume|n8n_webhook'], 400);
+// ---- Dispatch email campaign via org SMTP (Email Setup) ----
+if ($action === 'dispatch_email_campaign' && $method === 'POST') {
+    requireRole($tokenData, marketingGateRoles());
+    require_once __DIR__ . '/org_email_service.php';
+    require_once __DIR__ . '/mail_transport.php';
+
+    $input = getInput();
+    $draftId = trim((string) ($input['draft_id'] ?? ''));
+    $recipientsIn = $input['recipients'] ?? [];
+    if ($draftId === '' || !is_array($recipientsIn)) {
+        respond(['error' => 'draft_id and recipients array required'], 400);
+    }
+
+    $draft = marketingAssertRowInScope($db, 'email_drafts', $draftId, $tokenData);
+    $orgId = trim((string) ($draft['org_id'] ?? ''));
+    if ($orgId === '') {
+        $orgId = trim((string) (marketingResolveOrgId($tokenData, $input, $db) ?? ''));
+    }
+
+    $emails = [];
+    foreach ($recipientsIn as $row) {
+        $email = is_array($row)
+            ? trim((string) ($row['recipient_email'] ?? $row['email'] ?? ''))
+            : trim((string) $row);
+        if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $emails[strtolower($email)] = $email;
+        }
+    }
+    $emails = array_values($emails);
+    if ($emails === []) {
+        respond(['error' => 'No valid recipient emails'], 400);
+    }
+
+    $campaignId = generateUUID();
+    $subject = (string) ($draft['subject'] ?? $draft['name'] ?? 'Campaign');
+    $html = (string) ($draft['html_body'] ?? '');
+    if ($html === '') {
+        $html = '<p>' . nl2br(htmlspecialchars((string) ($draft['plain_text'] ?? ''), ENT_QUOTES, 'UTF-8')) . '</p>';
+    }
+
+    $db->prepare('INSERT INTO email_campaigns (id, subject, draft_id, recipient_count, pending_count, sent_count, failed_count, status, created_by, org_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        ->execute([
+            $campaignId,
+            $subject,
+            $draftId,
+            count($emails),
+            count($emails),
+            0,
+            0,
+            'sending',
+            $userId,
+            $orgId !== '' ? $orgId : null,
+        ]);
+
+    $sendStmt = $db->prepare('INSERT INTO email_sends (id, campaign_id, recipient_email, status, error_message) VALUES (?,?,?,?,?)');
+    $sent = 0;
+    $failed = 0;
+    $firstError = null;
+    $fromAddr = function_exists('syncpediaSupportMailAddress') ? syncpediaSupportMailAddress() : 'support@syncpedia.in';
+    $fromName = 'Syncpedia';
+
+    if ($orgId !== '') {
+        syncpediaSetMailContext($orgId, 'marketing_campaigns');
+    } else {
+        syncpediaSetMailContext(null, 'marketing_campaigns');
+    }
+
+    foreach ($emails as $email) {
+        $res = syncpediaSendHtmlEmailViaSmtp($email, $subject, $html, $fromAddr, $fromName);
+        $ok = !empty($res['ok']);
+        if ($ok) {
+            $sent++;
+        } else {
+            $failed++;
+            if ($firstError === null) {
+                $firstError = trim((string) ($res['error'] ?? 'SMTP send failed'));
+            }
+        }
+        $sendStmt->execute([
+            generateUUID(),
+            $campaignId,
+            $email,
+            $ok ? 'sent' : 'failed',
+            $ok ? null : ($res['error'] ?? 'Send failed'),
+        ]);
+    }
+
+    $pending = max(0, count($emails) - $sent - $failed);
+    $status = ($sent === 0 && $failed > 0) ? 'failed' : 'completed';
+    $db->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
+        ->execute([$sent, $failed, $pending, $status, $campaignId]);
+
+    // Optional n8n mirror (does not block SMTP delivery)
+    $n8nUrl = (defined('N8N_EMAIL_WEBHOOK') ? trim((string) N8N_EMAIL_WEBHOOK) : '');
+    if ($n8nUrl !== '' && preg_match('#^https?://#i', $n8nUrl)) {
+        $ch = curl_init($n8nUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode([
+                'campaign_id' => $campaignId,
+                'subject' => $subject,
+                'html_body' => $html,
+                'recipients' => $emails,
+            ]),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 12,
+        ]);
+        curl_exec($ch);
+        curl_close($ch);
+    }
+
+    respond([
+        'ok' => $sent > 0,
+        'campaign_id' => $campaignId,
+        'sent' => $sent,
+        'failed' => $failed,
+        'pending' => $pending,
+        'error' => $sent === 0 ? ($firstError ?: 'No emails were sent. Configure Email Setup for your organization.') : null,
+        'message' => $sent > 0
+            ? "Sent {$sent} email(s)" . ($failed ? ", {$failed} failed" : '')
+            : ($firstError ?: 'Send failed'),
+    ], $sent > 0 ? 200 : 502);
+}
+
+// ---- Dispatch WhatsApp campaign via Meta (templates) or session text (drafts) ----
+if ($action === 'dispatch_whatsapp_campaign' && $method === 'POST') {
+    requireRole($tokenData, marketingGateRoles());
+    require_once __DIR__ . '/communications_org.php';
+
+    $input = getInput();
+    $source = strtolower(trim((string) ($input['source'] ?? 'communications')));
+    $templateId = trim((string) ($input['template_id'] ?? $input['draft_id'] ?? ''));
+    $recipientsIn = $input['recipients'] ?? [];
+    $variablesIn = $input['variables'] ?? [];
+    if ($templateId === '' || !is_array($recipientsIn)) {
+        respond(['error' => 'template_id/draft_id and recipients array required'], 400);
+    }
+    $baseVars = [];
+    if (is_array($variablesIn)) {
+        foreach ($variablesIn as $v) {
+            $baseVars[] = trim((string) $v);
+        }
+    }
+
+    $recipients = [];
+    foreach ($recipientsIn as $row) {
+        $phone = is_array($row)
+            ? trim((string) ($row['recipient_phone'] ?? $row['phone'] ?? ''))
+            : trim((string) $row);
+        $phone = preg_replace('/\s+/', '', $phone) ?? '';
+        $digits = preg_replace('/\D+/', '', $phone) ?? '';
+        if ($phone === '' || strlen($digits) < 10) {
+            continue;
+        }
+        $name = is_array($row) ? trim((string) ($row['name'] ?? $row['full_name'] ?? '')) : '';
+        if (!isset($recipients[$digits])) {
+            $recipients[$digits] = ['phone' => $phone, 'name' => $name];
+        } elseif ($name !== '' && $recipients[$digits]['name'] === '') {
+            $recipients[$digits]['name'] = $name;
+        }
+    }
+    $recipients = array_values($recipients);
+    if ($recipients === []) {
+        respond(['error' => 'No valid recipient phone numbers'], 400);
+    }
+
+    $orgId = trim((string) (marketingResolveOrgId($tokenData, $input, $db) ?? ''));
+    $subject = 'WhatsApp campaign';
+    $bodyText = '';
+    $template = null;
+
+    if ($source === 'communications') {
+        $tst = $db->prepare("SELECT * FROM whatsapp_message_templates WHERE id = ? AND status = 'approved' LIMIT 1");
+        $tst->execute([$templateId]);
+        $template = $tst->fetch(PDO::FETCH_ASSOC);
+        if (!$template) {
+            respond(['error' => 'Approved WhatsApp template not found. Complete Setup step 2: Sync Meta templates.'], 404);
+        }
+        $templateOrg = trim((string) ($template['org_id'] ?? ''));
+        if ($orgId === '') {
+            $orgId = $templateOrg;
+        }
+        if ($templateOrg !== '' && $orgId !== '' && $templateOrg !== $orgId && marketingNormRole($tokenData) !== 'super_admin') {
+            respond(['error' => 'Template belongs to another organization'], 403);
+        }
+        if ($templateOrg !== '') {
+            $orgId = $templateOrg;
+        }
+        $subject = (string) ($template['name'] ?? 'WhatsApp template');
+        $bodyText = (string) ($template['body'] ?? '');
+        $needed = 0;
+        if (preg_match_all('/\{\{(\d+)\}\}/', $bodyText, $m)) {
+            $nums = array_map('intval', $m[1]);
+            $needed = $nums !== [] ? max($nums) : 0;
+        }
+        if ($needed === 0 && !empty($template['variables'])) {
+            $decoded = is_string($template['variables'])
+                ? json_decode($template['variables'], true)
+                : $template['variables'];
+            if (is_array($decoded)) {
+                $needed = count($decoded);
+            }
+        }
+        // Pad / trim shared template vars to Meta's expected count.
+        while (count($baseVars) < $needed) {
+            $baseVars[] = '';
+        }
+        if ($needed > 0) {
+            $baseVars = array_slice($baseVars, 0, $needed);
+        }
+        // Require all params except {{1}}, which may be filled per-recipient from name.
+        for ($i = 0; $i < $needed; $i++) {
+            if ($i === 0) {
+                continue;
+            }
+            if ($baseVars[$i] === '') {
+                respond([
+                    'error' => "Template requires {{" . ($i + 1) . "}}. Fill all parameters before sending.",
+                ], 400);
+            }
+        }
+        if ($needed > 0 && $baseVars[0] === '') {
+            $anyNamed = false;
+            foreach ($recipients as $rec) {
+                if (trim((string) ($rec['name'] ?? '')) !== '') {
+                    $anyNamed = true;
+                    break;
+                }
+            }
+            if (!$anyNamed) {
+                respond([
+                    'error' => 'Template requires {{1}}. Enter a value, or select named leads/members so {{1}} can use each recipient name.',
+                ], 400);
+            }
+        }
+    } else {
+        $draft = marketingAssertRowInScope($db, 'whatsapp_drafts', $templateId, $tokenData);
+        if ($orgId === '') {
+            $orgId = trim((string) ($draft['org_id'] ?? ''));
+        }
+        $subject = (string) ($draft['subject'] ?? $draft['name'] ?? 'WhatsApp campaign');
+        $bodyText = trim((string) ($draft['body'] ?? ''));
+        if ($bodyText === '') {
+            respond(['error' => 'Draft body is empty'], 400);
+        }
+    }
+
+    if ($orgId === '') {
+        respond(['error' => 'Organization is required. Complete Setup step 1: Connect WhatsApp.'], 400);
+    }
+
+    $cfg = commLoadOrgConfig($db, $orgId);
+    if ($cfg === [] || !(int) ($cfg['is_active'] ?? 0)) {
+        respond(['error' => 'WhatsApp is not connected for your organization. Complete Setup step 1 in WhatsApp Marketing.'], 400);
+    }
+
+    $campaignId = generateUUID();
+    $db->prepare('INSERT INTO whatsapp_campaigns (id, subject, draft_id, recipient_count, pending_count, sent_count, failed_count, status, created_by, org_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        ->execute([
+            $campaignId,
+            $subject,
+            $source === 'marketing' ? $templateId : null,
+            count($recipients),
+            count($recipients),
+            0,
+            0,
+            'sending',
+            $userId,
+            $orgId,
+        ]);
+
+    $sendStmt = $db->prepare('INSERT INTO whatsapp_sends (id, campaign_id, recipient_phone, status, error_message) VALUES (?,?,?,?,?)');
+    $sent = 0;
+    $failed = 0;
+    $firstError = null;
+    $phoneList = [];
+
+    foreach ($recipients as $rec) {
+        $phone = (string) $rec['phone'];
+        $name = trim((string) ($rec['name'] ?? ''));
+        $phoneList[] = $phone;
+        $res = ['ok' => false, 'error' => 'Send failed'];
+        if ($source === 'communications' && is_array($template)) {
+            $vars = $baseVars;
+            if ($vars !== [] && ($vars[0] ?? '') === '' && $name !== '') {
+                $vars[0] = $name;
+            } elseif ($vars === [] && $name !== '') {
+                $vars = [$name];
+            }
+            $missingParam = null;
+            foreach ($vars as $vi => $vv) {
+                if (trim((string) $vv) === '') {
+                    $missingParam = $vi + 1;
+                    break;
+                }
+            }
+            if ($missingParam !== null) {
+                $res = [
+                    'ok' => false,
+                    'error' => 'Missing template parameter {{' . $missingParam . '}} for ' . $phone,
+                ];
+            } else {
+                $res = commSendViaOrgProvider($db, $orgId, $phone, $template, $vars, null);
+            }
+        } else {
+            $personalized = $bodyText;
+            if ($name !== '') {
+                $personalized = str_replace(
+                    ['{{name}}', '{name}', '{{1}}', '{{Name}}'],
+                    $name,
+                    $personalized
+                );
+            }
+            $res = commSendTextViaOrgProvider($db, $orgId, $phone, $personalized);
+        }
+        $ok = !empty($res['ok']);
+        if ($ok) {
+            $sent++;
+        } else {
+            $failed++;
+            if ($firstError === null) {
+                $firstError = trim((string) ($res['error'] ?? 'WhatsApp send failed'));
+            }
+        }
+        $sendStmt->execute([
+            generateUUID(),
+            $campaignId,
+            $phone,
+            $ok ? 'sent' : 'failed',
+            $ok ? null : ($res['error'] ?? 'Send failed'),
+        ]);
+    }
+
+    $pending = max(0, count($recipients) - $sent - $failed);
+    $status = ($sent === 0 && $failed > 0) ? 'failed' : 'completed';
+    $db->prepare('UPDATE whatsapp_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
+        ->execute([$sent, $failed, $pending, $status, $campaignId]);
+
+    $n8nUrl = (defined('N8N_WHATSAPP_WEBHOOK') ? trim((string) N8N_WHATSAPP_WEBHOOK) : '');
+    if ($n8nUrl !== '' && preg_match('#^https?://#i', $n8nUrl)) {
+        $ch = curl_init($n8nUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode([
+                'campaign_id' => $campaignId,
+                'subject' => $subject,
+                'body' => $bodyText,
+                'recipients' => $phoneList,
+                'source' => $source,
+            ]),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 12,
+        ]);
+        curl_exec($ch);
+        curl_close($ch);
+    }
+
+    $hint = '';
+    if ($source !== 'communications' && $failed > 0) {
+        $hint = ' Free-text drafts only work inside the 24-hour customer care window. Use Setup step 2 templates for cold outreach.';
+    }
+
+    respond([
+        'ok' => $sent > 0,
+        'campaign_id' => $campaignId,
+        'sent' => $sent,
+        'failed' => $failed,
+        'pending' => $pending,
+        'source' => $source,
+        'error' => $sent === 0 ? (($firstError ?: 'No WhatsApp messages were sent') . $hint) : null,
+        'message' => $sent > 0
+            ? ("Sent {$sent} message(s)" . ($failed ? ", {$failed} failed" : '') . $hint)
+            : (($firstError ?: 'Send failed') . $hint),
+    ], $sent > 0 ? 200 : 502);
+}
+
+respond(['error' => 'Invalid action. Use ?action=members|email_drafts|email_campaigns|email_sends|whatsapp_drafts|whatsapp_campaigns|whatsapp_sends|upload_resume|n8n_webhook|dispatch_email_campaign|dispatch_whatsapp_campaign'], 400);

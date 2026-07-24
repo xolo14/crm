@@ -88,7 +88,9 @@
   # each deploy, and a cached index.html pointing at deleted hashes white-screens
   # the app until the cache expires.
   <FilesMatch "^index\.html$">
-    Header set Cache-Control "no-cache, must-revalidate"
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
   </FilesMatch>
   <FilesMatch "^(robots\.txt|sitemap\.xml)$">
     Header set Cache-Control "public, max-age=3600"

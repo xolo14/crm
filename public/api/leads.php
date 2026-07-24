@@ -367,7 +367,7 @@ if ($method === 'POST') {
                     $errors[] = "Row $i: duplicate email in this import ({$email})";
                     continue;
                 }
-                if ($phoneDigits !== '' && strlen($phoneDigits) >= 8 && isset($seenPhones[$phoneDigits])) {
+                if ($phoneDigits !== '' && strlen($phoneDigits) >= 10 && isset($seenPhones[$phoneDigits])) {
                     $skipped++;
                     $errors[] = "Row $i: duplicate phone in this import ({$phone})";
                     continue;
@@ -394,14 +394,12 @@ if ($method === 'POST') {
                 if ($emailKey !== '') {
                     $seenEmails[$emailKey] = true;
                 }
-                if ($phoneDigits !== '' && strlen($phoneDigits) >= 8) {
+                if ($phoneDigits !== '' && strlen($phoneDigits) >= 10) {
                     $seenPhones[$phoneDigits] = true;
                 }
 
-                $statusIn = leadsNormalizeStatus((string) ($row['status'] ?? 'new'));
-                if (!in_array($statusIn, leadsAllowedStatuses(), true)) {
-                    $statusIn = 'new';
-                }
+                // Imports always land as "new" — never teleport to enrolled/lost without the pipeline.
+                $statusIn = 'new';
 
                 $id = generateUUID();
                 try {
@@ -424,6 +422,9 @@ if ($method === 'POST') {
                         $statusIn,
                         $userId,
                     ]);
+                    if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
+                        leadsSetAssignee($db, $id, (string) $assignedTo);
+                    }
                     $created++;
                 } catch (Throwable $e) {
                     // Older schema without created_by
@@ -446,6 +447,9 @@ if ($method === 'POST') {
                             $orgId,
                             $statusIn,
                         ]);
+                        if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
+                            leadsSetAssignee($db, $id, (string) $assignedTo);
+                        }
                         $created++;
                     } catch (Throwable $e2) {
                         $errors[] = "Row $i: " . $e2->getMessage();
@@ -642,6 +646,9 @@ if ($method === 'POST') {
                 $orgId,
             ]);
         }
+        if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
+            leadsSetAssignee($db, $id, (string) $assignedTo);
+        }
         respond(['id' => $id, 'message' => 'Lead created'], 201);
     } catch (Exception $e) {
         try {
@@ -683,6 +690,9 @@ if ($method === 'POST') {
                     json_encode($input['tags'] ?? []),
                     $orgId,
                 ]);
+            }
+            if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
+                leadsSetAssignee($db, $id, (string) $assignedTo);
             }
             respond(['id' => $id, 'message' => 'Lead created'], 201);
         } catch (Exception $e2) {
@@ -978,19 +988,13 @@ if ($method === 'PUT') {
         }
         if (array_key_exists('assigned_to', $input)) {
             $rawAssign = $input['assigned_to'];
-            if ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === '')) {
-                try { $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$id]); } catch (Throwable $ignored) {}
-            } else {
-                $assignId = trim((string) $rawAssign);
-                try {
-                    $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$id, $assignId]);
-                    $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
-                    $exists->execute([$id, $assignId]);
-                    if (!$exists->fetch()) {
-                        $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
-                            ->execute([generateUUID(), $id, $assignId]);
-                    }
-                } catch (Throwable $ignored) {}
+            $assignId = ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === ''))
+                ? null
+                : trim((string) $rawAssign);
+            try {
+                leadsSetAssignee($db, $id, $assignId);
+            } catch (Throwable $e) {
+                respond(['error' => 'Lead updated but assignment sync failed: ' . $e->getMessage()], 500);
             }
         }
         respond(['message' => 'Lead updated']);
@@ -1051,19 +1055,13 @@ if ($method === 'PUT') {
         }
         if (array_key_exists('assigned_to', $input)) {
             $rawAssign = $input['assigned_to'];
-            if ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === '')) {
-                try { $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$id]); } catch (Throwable $ignored) {}
-            } else {
-                $assignId = trim((string) $rawAssign);
-                try {
-                    $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$id, $assignId]);
-                    $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
-                    $exists->execute([$id, $assignId]);
-                    if (!$exists->fetch()) {
-                        $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
-                            ->execute([generateUUID(), $id, $assignId]);
-                    }
-                } catch (Throwable $ignored) {}
+            $assignId = ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === ''))
+                ? null
+                : trim((string) $rawAssign);
+            try {
+                leadsSetAssignee($db, $id, $assignId);
+            } catch (Throwable $e) {
+                respond(['error' => 'Lead updated but assignment sync failed: ' . $e->getMessage()], 500);
             }
         }
         respond(['message' => 'Lead updated']);
@@ -1096,23 +1094,13 @@ if ($method === 'PUT') {
     // Keep lead_assignments in sync with primary assigned_to.
     if (array_key_exists('assigned_to', $input)) {
         $rawAssign = $input['assigned_to'];
-        if ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === '')) {
-            try {
-                $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$id]);
-            } catch (Throwable $ignored) {
-            }
-        } else {
-            $assignId = trim((string) $rawAssign);
-            try {
-                $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$id, $assignId]);
-                $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
-                $exists->execute([$id, $assignId]);
-                if (!$exists->fetch()) {
-                    $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
-                        ->execute([generateUUID(), $id, $assignId]);
-                }
-            } catch (Throwable $ignored) {
-            }
+        $assignId = ($rawAssign === null || (is_string($rawAssign) && trim($rawAssign) === ''))
+            ? null
+            : trim((string) $rawAssign);
+        try {
+            leadsSetAssignee($db, $id, $assignId);
+        } catch (Throwable $e) {
+            respond(['error' => 'Lead updated but assignment sync failed: ' . $e->getMessage()], 500);
         }
     }
 

@@ -209,10 +209,24 @@ export const communicationsApi = {
     );
   },
 
-  conversations: (limit = 50) =>
-    commRequest<{ data: WaConversation[]; can_assign: boolean; scope: 'org' | 'mine' }>(
-      `/communications.php?action=conversations&limit=${limit}`,
-    ),
+  conversations: (limit = 50, opts?: { search?: string; offset?: number }) => {
+    const q = new URLSearchParams({ action: 'conversations', limit: String(limit) });
+    if (opts?.search) q.set('search', opts.search);
+    if (opts?.offset) q.set('offset', String(opts.offset));
+    return commRequest<{
+      data: WaConversation[];
+      conversations?: WaConversation[];
+      total?: number;
+      can_assign: boolean;
+      scope: 'org' | 'mine';
+    }>(`/communications.php?${q}`);
+  },
+
+  markRead: (conversationId: string) =>
+    commRequest<{ success: boolean }>('/communications.php?action=mark_read', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_id: conversationId }),
+    }),
 
   assignableMembers: () =>
     commRequest<{ data: WaAssignableMember[] }>('/communications.php?action=assignable_members'),

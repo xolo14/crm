@@ -1,5 +1,10 @@
 import type { CSSProperties, ReactNode } from "react";
 import {
+  descriptionToEditorHtml,
+  looksLikeHtml,
+  sanitizeFormDescriptionHtml,
+} from "@/components/forms/formDescriptionHtml";
+import {
   publicFormBrandToStyle,
   resolveFormCompanyName,
   type PublicFormBrand,
@@ -125,7 +130,20 @@ export function PublicFormShell({
           font-size: 0.9rem;
           margin: 0 0 18px;
           color: var(--sp-description-color);
-          line-height: 1.5;
+          line-height: 1.55;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
+        .sp-form-desc--rich {
+          white-space: normal;
+        }
+        .sp-form-desc p,
+        .sp-form-desc div {
+          margin: 0 0 0.35em;
+        }
+        .sp-form-desc p:last-child,
+        .sp-form-desc div:last-child {
+          margin-bottom: 0;
         }
         .sp-form-section {
           border: var(--sp-section-border-width) solid var(--sp-section-border);
@@ -311,7 +329,18 @@ export function PublicFormShell({
         <div className="sp-form-body-wrap">
           <div className="sp-form-body-card">
             <h2 className="sp-form-title">{formTitle}</h2>
-            {formDescription ? <p className="sp-form-desc">{formDescription}</p> : null}
+            {formDescription ? (
+              looksLikeHtml(formDescription) ? (
+                <div
+                  className="sp-form-desc sp-form-desc--rich"
+                  dangerouslySetInnerHTML={{
+                    __html: sanitizeFormDescriptionHtml(descriptionToEditorHtml(formDescription)),
+                  }}
+                />
+              ) : (
+                <p className="sp-form-desc">{formDescription}</p>
+              )
+            ) : null}
             {children}
           </div>
           {footer}

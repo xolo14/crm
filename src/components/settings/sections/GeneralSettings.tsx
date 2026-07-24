@@ -11,17 +11,51 @@ import { SettingsSection } from "@/components/settings/ui/SettingsSection";
 import { SettingsSelect } from "@/components/settings/ui/SettingsSelect";
 import { ToggleSwitch } from "@/components/settings/ui/ToggleSwitch";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 interface GeneralSettingsProps {
   personalOnly?: boolean;
 }
 
-const GENERAL_SETTINGS_KEY = "crm_general_settings";
+export const GENERAL_SETTINGS_KEY = "crm_general_settings";
+export const THEME_STORAGE_KEY = "crm-ui-theme";
+
+type ThemeChoice = "light" | "dark" | "system";
+
+function isThemeChoice(value: unknown): value is ThemeChoice {
+  return value === "light" || value === "dark" || value === "system";
+}
+
+function readStoredTheme(): ThemeChoice | null {
+  try {
+    const fromNext = localStorage.getItem(THEME_STORAGE_KEY);
+    if (isThemeChoice(fromNext)) return fromNext;
+  } catch {
+    /* ignore */
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(GENERAL_SETTINGS_KEY) || "{}") as Record<string, unknown>;
+    if (isThemeChoice(saved.theme)) return saved.theme;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function persistThemePreference(theme: ThemeChoice) {
+  try {
+    const prev = JSON.parse(localStorage.getItem(GENERAL_SETTINGS_KEY) || "{}") as Record<string, unknown>;
+    localStorage.setItem(GENERAL_SETTINGS_KEY, JSON.stringify({ ...prev, theme }));
+  } catch {
+    /* ignore */
+  }
+}
 
 export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) {
   const { profile, refreshOrganization } = useAuth();
   const { toast } = useToast();
-  const { setTheme: applyTheme } = useTheme();
+  const { theme: activeTheme, setTheme: applyTheme, resolvedTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -30,7 +64,7 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
   const [removeAvatar, setRemoveAvatar] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState("");
-  const [theme, setTheme] = useState("light");
+  const [theme, setTheme] = useState<ThemeChoice>("light");
   const [compactMode, setCompactMode] = useState(false);
   const [collapsedSidebar, setCollapsedSidebar] = useState(false);
   const [emailNotifications, setEmailNotifications] = useState(true);
@@ -43,9 +77,16 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     try {
       const saved = JSON.parse(localStorage.getItem(GENERAL_SETTINGS_KEY) || "{}") as Record<string, unknown>;
-      if (["light", "dark", "system"].includes(String(saved.theme))) setTheme(String(saved.theme));
+      const storedTheme = readStoredTheme();
+      if (storedTheme) {
+        setTheme(storedTheme);
+        applyTheme(storedTheme);
+      } else if (isThemeChoice(activeTheme)) {
+        setTheme(activeTheme);
+      }
       setCompactMode(saved.compactMode === true);
       setCollapsedSidebar(saved.collapsedSidebar === true);
       setEmailNotifications(saved.emailNotifications !== false);
@@ -58,7 +99,13 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
     } catch {
       // Invalid browser storage falls back to safe defaults.
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrate once on mount
   }, []);
+
+  useEffect(() => {
+    if (!mounted || !isThemeChoice(activeTheme)) return;
+    setTheme(activeTheme);
+  }, [activeTheme, mounted]);
 
   useEffect(() => {
     setFullName(profile?.full_name ?? "");
@@ -138,6 +185,25 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
     }
   };
 
+  const selectTheme = (next: ThemeChoice) => {
+    setTheme(next);
+    applyTheme(next);
+    persistThemePreference(next);
+    // Ensure class is correct even if next-themes is mid-hydration
+    const root = document.documentElement;
+    if (next === "light") {
+      root.classList.remove("dark");
+      root.style.colorScheme = "light";
+    } else if (next === "dark") {
+      root.classList.add("dark");
+      root.style.colorScheme = "dark";
+    } else {
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      root.classList.toggle("dark", prefersDark);
+      root.style.colorScheme = prefersDark ? "dark" : "light";
+    }
+  };
+
   const onSave = () => {
     setSaving(true);
     const settings = {
@@ -154,7 +220,7 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
     };
     try {
       localStorage.setItem(GENERAL_SETTINGS_KEY, JSON.stringify(settings));
-      applyTheme(theme);
+      selectTheme(theme);
       document.documentElement.classList.toggle("crm-compact", compactMode);
       window.dispatchEvent(new CustomEvent("crm-appearance-change", {
         detail: { compactMode, collapsedSidebar },
@@ -167,26 +233,28 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
     }
   };
 
-  const themeOptions = [
+  const themeOptions: { key: ThemeChoice; icon: string; label: string }[] = [
     { key: "light", icon: "☀", label: "Light" },
     { key: "dark", icon: "🌙", label: "Dark" },
     { key: "system", icon: "💻", label: "System" },
   ];
 
+  const selectedTheme = mounted && isThemeChoice(activeTheme) ? activeTheme : theme;
+
   return (
     <div className="bg-transparent">
       <SettingsSection title="Personal Profile" description="Manage the personal details shown on your account.">
-        <div className="border-b border-gray-100 px-5 py-5">
+        <div className="border-b border-border px-5 py-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-            <Avatar className="h-20 w-20 border border-gray-200">
+            <Avatar className="h-20 w-20 border border-border">
               {avatarPreview && <AvatarImage src={avatarPreview} alt={fullName || "Profile photo"} className="object-cover" />}
-              <AvatarFallback className="bg-emerald-50 text-lg font-semibold text-emerald-700">
+              <AvatarFallback className="bg-primary/10 text-lg font-semibold text-primary">
                 {(fullName || email || "U").split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}
               </AvatarFallback>
             </Avatar>
             <div>
               <div className="flex flex-wrap gap-2">
-                <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium hover:bg-gray-50">
+                <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-muted">
                   <Upload className="h-4 w-4" />
                   Choose photo
                   <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleAvatarChange} className="hidden" />
@@ -199,14 +267,14 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
                       setAvatarFile(null);
                       setRemoveAvatar(Boolean(profile?.avatar_url));
                     }}
-                    className="inline-flex items-center gap-2 rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+                    className="inline-flex items-center gap-2 rounded-lg border border-destructive/30 px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10"
                   >
                     <Trash2 className="h-4 w-4" />
                     Remove
                   </button>
                 )}
               </div>
-              <p className="mt-2 text-xs text-gray-500">JPG, PNG, or WebP. Maximum size 2 MB.</p>
+              <p className="mt-2 text-xs text-muted-foreground">JPG, PNG, or WebP. Maximum size 2 MB.</p>
             </div>
           </div>
         </div>
@@ -219,33 +287,26 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
         <SettingsRow label="Phone number" description="Include the country code when applicable." border={false}>
           <Input type="tel" value={phone} maxLength={24} onChange={(event) => { setPhone(event.target.value); setProfileError(""); }} autoComplete="tel" />
         </SettingsRow>
-        <div className="flex flex-col gap-3 border-t border-gray-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-red-600">{profileError}</p>
+        <div className="flex flex-col gap-3 border-t border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-destructive">{profileError}</p>
           <SaveButton onClick={() => void saveProfile()} loading={profileSaving} disabled={!profileChanged} label="Save Changes" />
         </div>
       </SettingsSection>
 
-      {!personalOnly && (
-        <>
-      <SettingsSection title="Account" description="Profile information and referral code.">
-        <SettingsRow label="Referral code" description="Read-only. Contact your administrator if this is blank." border={false}>
-          <Input readOnly value={profile?.referral_code || "—"} className="max-w-md rounded-lg border border-gray-200 bg-gray-50 font-mono text-sm" />
-        </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection title="Appearance" description="Customize how the CRM looks and feels.">
-        <SettingsRow label="Theme" description="Choose your interface theme">
+      <SettingsSection title="Appearance" description="Customize how the CRM looks and feels. Theme applies immediately.">
+        <SettingsRow label="Theme" description={`Choose light, dark, or follow your device (${mounted ? resolvedTheme || "…" : "…"})`}>
           <div className="flex gap-2">
             {themeOptions.map((option) => (
               <button
                 key={option.key}
                 type="button"
-                onClick={() => setTheme(option.key)}
-                className={`w-24 rounded-xl p-3 text-center text-xs font-medium transition-all duration-150 ease-in-out ${
-                  option.key === theme
-                    ? "border-2 border-[#2ed573] bg-[#e6faf0] text-[#0f5230]"
-                    : "border border-border bg-card text-muted-foreground hover:bg-muted"
-                }`}
+                onClick={() => selectTheme(option.key)}
+                className={cn(
+                  "w-24 rounded-xl p-3 text-center text-xs font-medium transition-all duration-150 ease-in-out",
+                  option.key === selectedTheme
+                    ? "border-2 border-primary bg-primary/10 text-foreground"
+                    : "border border-border bg-card text-muted-foreground hover:bg-muted",
+                )}
               >
                 <div>{option.icon}</div>
                 <div className="mt-1">{option.label}</div>
@@ -253,11 +314,25 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
             ))}
           </div>
         </SettingsRow>
-        <SettingsRow label="Compact Mode" description="Reduce spacing for denser layout">
-          <ToggleSwitch enabled={compactMode} onChange={setCompactMode} />
-        </SettingsRow>
-        <SettingsRow label="Sidebar collapsed by default" description="Start with sidebar minimized" border={false}>
-          <ToggleSwitch enabled={collapsedSidebar} onChange={setCollapsedSidebar} />
+        {!personalOnly ? (
+          <>
+            <SettingsRow label="Compact Mode" description="Reduce spacing for denser layout">
+              <ToggleSwitch enabled={compactMode} onChange={setCompactMode} />
+            </SettingsRow>
+            <SettingsRow label="Sidebar collapsed by default" description="Start with sidebar minimized" border={false}>
+              <ToggleSwitch enabled={collapsedSidebar} onChange={setCollapsedSidebar} />
+            </SettingsRow>
+          </>
+        ) : (
+          <div className="px-5 pb-4 text-xs text-muted-foreground">Theme is saved automatically when you select an option.</div>
+        )}
+      </SettingsSection>
+
+      {!personalOnly && (
+        <>
+      <SettingsSection title="Account" description="Profile information and referral code.">
+        <SettingsRow label="Referral code" description="Read-only. Contact your administrator if this is blank." border={false}>
+          <Input readOnly value={profile?.referral_code || "—"} className="max-w-md rounded-lg border border-border bg-muted font-mono text-sm" />
         </SettingsRow>
       </SettingsSection>
 

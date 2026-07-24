@@ -603,6 +603,8 @@ export const api = {
     },
     createEmailSends: (campaignId: string, recipients: Array<string | { recipient_email?: string; email?: string; status?: string }>) =>
       request('/marketing.php?action=email_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
+    dispatchEmailCampaign: (data: { draft_id: string; recipients: Array<string | { email?: string; recipient_email?: string }> }) =>
+      request('/marketing.php?action=dispatch_email_campaign', { method: 'POST', body: JSON.stringify(data) }),
     whatsappDrafts: (params?: { mine?: boolean }) =>
       request(`/marketing.php?action=whatsapp_drafts${params?.mine ? '&mine=1' : ''}`),
     createWhatsappDraft: (data: any) => request('/marketing.php?action=whatsapp_drafts', { method: 'POST', body: JSON.stringify(data) }),
@@ -618,6 +620,14 @@ export const api = {
     },
     createWhatsappSends: (campaignId: string, recipients: Array<string | { recipient_phone?: string; phone?: string; status?: string }>) =>
       request('/marketing.php?action=whatsapp_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
+    dispatchWhatsappCampaign: (data: {
+      source: 'communications' | 'marketing';
+      template_id?: string;
+      draft_id?: string;
+      /** Body params for Meta templates ({{1}}, {{2}}, …). Empty {{1}} may use each recipient's name. */
+      variables?: string[];
+      recipients: Array<string | { phone?: string; recipient_phone?: string; name?: string }>;
+    }) => request('/marketing.php?action=dispatch_whatsapp_campaign', { method: 'POST', body: JSON.stringify(data) }),
     triggerN8nWebhook: (channel: 'email' | 'whatsapp', payload: Record<string, unknown>) =>
       request('/marketing.php?action=n8n_webhook', {
         method: 'POST',

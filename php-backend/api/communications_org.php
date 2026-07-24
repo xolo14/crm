@@ -332,6 +332,15 @@ function commSyncMetaTemplatesForOrg(PDO $db, string $orgId, string $userId): ar
         $status = strtolower((string) ($mt['status'] ?? ''));
         $crmStatus = $status === 'approved' ? 'approved' : ($status === 'rejected' ? 'rejected' : 'pending_approval');
         $body = MetaWhatsApp::extractBodyFromComponents($mt['components'] ?? []);
+        $paramCount = MetaWhatsApp::countBodyParamsFromComponents($mt['components'] ?? []);
+        $variablesJson = null;
+        if ($paramCount > 0) {
+            $labels = [];
+            for ($i = 1; $i <= $paramCount; $i++) {
+                $labels[] = '{{' . $i . '}}';
+            }
+            $variablesJson = json_encode($labels);
+        }
         $lang = (string) ($mt['language'] ?? 'en');
         $cat = strtolower((string) ($mt['category'] ?? 'marketing'));
         $metaId = (string) ($mt['id'] ?? '');
@@ -340,13 +349,13 @@ function commSyncMetaTemplatesForOrg(PDO $db, string $orgId, string $userId): ar
         $existing->execute([$orgId, $name, $name]);
         $row = $existing->fetch(PDO::FETCH_ASSOC);
         if ($row) {
-            $db->prepare('UPDATE whatsapp_message_templates SET body = ?, language = ?, category = ?, status = ?, meta_template_id = ?, meta_status = ?, provider_template_id = ? WHERE id = ?')
-                ->execute([$body ?: $name, $lang, $cat, $crmStatus, $metaId, strtoupper($status), $name, $row['id']]);
+            $db->prepare('UPDATE whatsapp_message_templates SET body = ?, language = ?, category = ?, status = ?, meta_template_id = ?, meta_status = ?, provider_template_id = ?, variables = ? WHERE id = ?')
+                ->execute([$body ?: $name, $lang, $cat, $crmStatus, $metaId, strtoupper($status), $name, $variablesJson, $row['id']]);
             $updated++;
         } else {
             $id = generateUUID();
-            $db->prepare('INSERT INTO whatsapp_message_templates (id, org_id, name, category, language, body, provider_template_id, meta_template_id, meta_status, status, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-                ->execute([$id, $orgId, $name, $cat, $lang, $body ?: $name, $name, $metaId, strtoupper($status), $crmStatus, $userId]);
+            $db->prepare('INSERT INTO whatsapp_message_templates (id, org_id, name, category, language, body, variables, provider_template_id, meta_template_id, meta_status, status, created_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+                ->execute([$id, $orgId, $name, $cat, $lang, $body ?: $name, $variablesJson, $name, $metaId, strtoupper($status), $crmStatus, $userId]);
             $imported++;
         }
     }

@@ -1,0 +1,90 @@
+/* WhatsApp Web–inspired theme (scoped under .wa-inbox) */
+.wa-inbox {
+  --wa-header: #075e54;
+  --wa-header-2: #128c7e;
+  --wa-send: #25d366;
+  --wa-out: #dcf8c6;
+  --wa-in: #ffffff;
+  --wa-chat-bg: #ece5dd;
+  --wa-panel: #ffffff;
+  --wa-input-bar: #f0f0f0;
+  --wa-muted: #667781;
+  --wa-tick: #9e9e9e;
+  --wa-tick-read: #34b7f1;
+  --wa-active: #e7f8ef;
+  --wa-border: #e9edef;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--wa-border);
+  background: var(--wa-panel);
+}
+
+/* Fullscreen route: fill remaining viewport — messages scroll inside chat pane */
+.wa-inbox--fullscreen {
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+/* Hub embed: fixed usable height so thread scrolls instead of stretching the page */
+.wa-inbox--embedded {
+  height: min(68dvh, 640px);
+  min-height: 480px;
+  max-height: min(72dvh, 720px);
+  overflow: hidden;
+}
+
+/* Mobile chat-only: one full-width window */
+.wa-inbox--solo-chat {
+  width: 100%;
+}
+
+.wa-inbox--solo-chat .wa-chat-pane {
+  width: 100%;
+  flex: 1 1 auto;
+}
+
+.wa-inbox-chat-bg {
+  background-color: var(--wa-chat-bg);
+  background-image:
+    url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23d4cdc4' fill-opacity='0.35'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+.wa-msg-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 767px) {
+  .wa-inbox {
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+
+  .wa-inbox--fullscreen {
+    height: 100%;
+  }
+
+  .wa-inbox--embedded {
+    height: min(62dvh, 560px);
+    min-height: 420px;
+    max-height: min(68dvh, 620px);
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .wa-inbox--embedded {
+    height: min(66dvh, 600px);
+    min-height: 460px;
+  }
+}

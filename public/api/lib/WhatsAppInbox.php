@@ -99,6 +99,8 @@ class WhatsAppInbox
             'assigned_to' => 'CHAR(36) DEFAULT NULL',
             'assigned_by' => 'CHAR(36) DEFAULT NULL',
             'assigned_at' => 'TIMESTAMP NULL DEFAULT NULL',
+            'window_open' => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'window_expires_at' => 'DATETIME NULL DEFAULT NULL',
         ];
         foreach ($cols as $name => $def) {
             if (function_exists('syncpediaColumnExists') && syncpediaColumnExists($db, 'wa_conversations', $name)) {
@@ -117,6 +119,60 @@ class WhatsAppInbox
             $db->exec('CREATE INDEX idx_wa_conv_assigned ON wa_conversations (org_id, assigned_to)');
         } catch (Throwable $e) {
         }
+        try {
+            $db->exec('CREATE INDEX idx_wa_conv_window ON wa_conversations (window_open, window_expires_at)');
+        } catch (Throwable $e) {
+        }
+    }
+
+    /** Open/refresh the Meta 24h customer-care window after an inbound customer message. */
+    public static function openCustomerCareWindow(PDO $db, string $conversationId, ?string $fromTs = null): void
+    {
+        if ($conversationId === '') {
+            return;
+        }
+        $base = $fromTs && strtotime($fromTs) ? strtotime($fromTs) : time();
+        $expires = date('Y-m-d H:i:s', $base + 86400);
+        try {
+            $db->prepare(
+                'UPDATE wa_conversations
+                 SET window_open = 1, window_expires_at = ?, updated_at = NOW()
+                 WHERE id = ?',
+            )->execute([$expires, $conversationId]);
+        } catch (Throwable $e) {
+        }
+    }
+
+    /** Close expired windows (also run from cron every ~5 minutes). */
+    public static function closeExpiredWindows(PDO $db): int
+    {
+        try {
+            $st = $db->prepare(
+                'UPDATE wa_conversations
+                 SET window_open = 0, updated_at = NOW()
+                 WHERE window_open = 1
+                   AND window_expires_at IS NOT NULL
+                   AND window_expires_at < NOW()',
+            );
+            $st->execute();
+            return (int) $st->rowCount();
+        } catch (Throwable $e) {
+            return 0;
+        }
+    }
+
+    /** True if free-text session messages are allowed for this conversation row. */
+    public static function isWindowOpen(array $conversation): bool
+    {
+        if (!(int) ($conversation['window_open'] ?? 0)) {
+            return false;
+        }
+        $exp = trim((string) ($conversation['window_expires_at'] ?? ''));
+        if ($exp === '') {
+            return true;
+        }
+        $ts = strtotime($exp);
+        return $ts === false || $ts > time();
     }
 
     /**
@@ -291,7 +347,36 @@ class WhatsAppInbox
         return $digits;
     }
 
-    /** @return array<string,mixed>|null */
+    /**
+     * Return $leadId only if it still exists in leads; otherwise null.
+     * When a conversation id is given and the lead is gone, clear the stale FK on the conversation.
+     */
+    public static function resolveValidLeadId(PDO $db, ?string $leadId, ?string $conversationId = null): ?string
+    {
+        $leadId = $leadId !== null ? trim($leadId) : '';
+        if ($leadId === '') {
+            return null;
+        }
+        try {
+            $st = $db->prepare('SELECT id FROM leads WHERE id = ? LIMIT 1');
+            $st->execute([$leadId]);
+            if ($st->fetchColumn()) {
+                return $leadId;
+            }
+        } catch (Throwable $e) {
+            return null;
+        }
+        if ($conversationId !== null && trim($conversationId) !== '') {
+            try {
+                $db->prepare('UPDATE wa_conversations SET lead_id = NULL WHERE id = ? AND lead_id = ?')
+                    ->execute([trim($conversationId), $leadId]);
+            } catch (Throwable $e) {
+                // Best-effort cleanup; message insert must still proceed with null lead_id.
+            }
+        }
+        return null;
+    }
+
     public static function findOrCreateConversation(
         PDO $db,
         string $orgId,
@@ -313,6 +398,13 @@ class WhatsAppInbox
             if ($contactName && trim($contactName) !== '' && empty($row['contact_name'])) {
                 $db->prepare('UPDATE wa_conversations SET contact_name = ? WHERE id = ?')->execute([trim($contactName), $row['id']]);
                 $row['contact_name'] = trim($contactName);
+            }
+            $staleLead = isset($row['lead_id']) ? trim((string) $row['lead_id']) : '';
+            if ($staleLead !== '') {
+                $valid = self::resolveValidLeadId($db, $staleLead, (string) ($row['id'] ?? ''));
+                if ($valid === null) {
+                    $row['lead_id'] = null;
+                }
             }
             return $row;
         }
@@ -437,7 +529,11 @@ class WhatsAppInbox
         $ts = isset($msg['timestamp']) ? date('Y-m-d H:i:s', (int) $msg['timestamp']) : date('Y-m-d H:i:s');
         $id = generateUUID();
         $convId = (string) ($conversation['id'] ?? '');
-        $leadId = $conversation['lead_id'] ?? null;
+        $leadId = self::resolveValidLeadId(
+            $db,
+            isset($conversation['lead_id']) ? (string) $conversation['lead_id'] : null,
+            $convId !== '' ? $convId : null,
+        );
 
         try {
             $db->prepare(
@@ -474,6 +570,7 @@ class WhatsAppInbox
         $db->prepare(
             'UPDATE wa_conversations SET last_message_at = ?, last_message_preview = ?, unread_count = unread_count + 1, updated_at = NOW() WHERE id = ?',
         )->execute([$ts, $preview, $convId]);
+        self::openCustomerCareWindow($db, $convId, $ts);
 
         return $id;
     }

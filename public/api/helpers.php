@@ -2217,6 +2217,40 @@ function enrollStudentRowAlreadyExists(PDO $db, string $leadId): bool {
     }
 }
 
+/**
+ * Single source of truth for lead assignment: leads.assigned_to + lead_assignments.
+ * Clears other assignees, upserts the primary row, and updates the lead column.
+ *
+ * @throws Throwable on DB failure (callers must not swallow)
+ */
+function leadsSetAssignee(PDO $db, string $leadId, ?string $userId): void
+{
+    $leadId = trim($leadId);
+    if ($leadId === '') {
+        throw new InvalidArgumentException('lead_id required');
+    }
+    $uid = $userId !== null ? trim($userId) : '';
+    if ($uid === '') {
+        $db->prepare('UPDATE leads SET assigned_to = NULL WHERE id = ?')->execute([$leadId]);
+        $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$leadId]);
+        return;
+    }
+    $db->prepare('UPDATE leads SET assigned_to = ? WHERE id = ?')->execute([$uid, $leadId]);
+    $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$leadId, $uid]);
+    $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
+    $exists->execute([$leadId, $uid]);
+    if (!$exists->fetch()) {
+        try {
+            $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
+                ->execute([generateUUID(), $leadId, $uid]);
+        } catch (Throwable $e) {
+            if (!isMysqlDuplicateKey($e)) {
+                throw $e;
+            }
+        }
+    }
+}
+
 /** Best-effort unique index so concurrent enrolls cannot create two students per lead. */
 function ensureStudentsLeadIdUnique(PDO $db): void {
     static $done = false;
@@ -2274,8 +2308,8 @@ function leadsAssertStatusTransition(?string $fromStatus, string $toStatus): ?st
         return 'Invalid status';
     }
     if (!in_array($from, leadsAllowedStatuses(), true)) {
-        // Legacy junk in DB — allow move onto a known status.
-        return null;
+        // Legacy junk in DB — treat as starting from "new" so we cannot teleport to enrolled.
+        $from = 'new';
     }
 
     $allowed = [

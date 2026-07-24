@@ -405,6 +405,31 @@ class MetaWhatsApp
     }
 
     /**
+     * Count BODY placeholders ({{1}}, {{2}}, …) from Meta components.
+     * Falls back to example.body_text length when text has no markers.
+     */
+    public static function countBodyParamsFromComponents(array $components): int
+    {
+        $body = self::extractBodyFromComponents($components);
+        if (preg_match_all('/\{\{(\d+)\}\}/', $body, $m)) {
+            $nums = array_map('intval', $m[1]);
+            if ($nums !== []) {
+                return max($nums);
+            }
+        }
+        foreach ($components as $c) {
+            if (strtoupper((string) ($c['type'] ?? '')) !== 'BODY') {
+                continue;
+            }
+            $example = $c['example']['body_text'][0] ?? null;
+            if (is_array($example)) {
+                return count($example);
+            }
+        }
+        return 0;
+    }
+
+    /**
      * Register business phone for Cloud API (Embedded Signup post-onboarding step).
      * @see https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/implementation
      */

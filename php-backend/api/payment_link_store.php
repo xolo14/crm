@@ -79,6 +79,56 @@ function paymentLinkEnsureSchema(PDO $db): void
     } catch (Throwable $e) {
         // Column already exists.
     }
+
+    try {
+        if (!syncpediaColumnExists($db, 'payment_links', 'reconcile_needed')) {
+            if (syncpediaDbIsMysql($db)) {
+                $db->exec(
+                    'ALTER TABLE payment_links ADD COLUMN reconcile_needed TINYINT(1) NOT NULL DEFAULT 0',
+                );
+            } else {
+                $db->exec(
+                    'ALTER TABLE payment_links ADD COLUMN reconcile_needed BOOLEAN NOT NULL DEFAULT FALSE',
+                );
+            }
+        }
+    } catch (Throwable $e) {
+        // Column already exists.
+    }
+}
+
+/** Mark a link so list/cache-hit fulfill will retry receipt/enrollment. */
+function paymentLinkMarkNeedsReconcile(string $plinkId): void
+{
+    if ($plinkId === '') {
+        return;
+    }
+    try {
+        $db = paymentLinksDb();
+        paymentLinkEnsureSchema($db);
+        $db->prepare(
+            'UPDATE payment_links SET reconcile_needed = 1, updated_at = CURRENT_TIMESTAMP
+             WHERE razorpay_payment_link_id = ?',
+        )->execute([$plinkId]);
+    } catch (Throwable $e) {
+        error_log('[payment_links] mark reconcile failed for ' . $plinkId . ': ' . $e->getMessage());
+    }
+}
+
+function paymentLinkClearNeedsReconcile(string $plinkId): void
+{
+    if ($plinkId === '') {
+        return;
+    }
+    try {
+        $db = paymentLinksDb();
+        $db->prepare(
+            'UPDATE payment_links SET reconcile_needed = 0, updated_at = CURRENT_TIMESTAMP
+             WHERE razorpay_payment_link_id = ?',
+        )->execute([$plinkId]);
+    } catch (Throwable $e) {
+        error_log('[payment_links] clear reconcile failed for ' . $plinkId . ': ' . $e->getMessage());
+    }
 }
 
 /** Resolve tenant org for payment link storage (JWT + users table fallback). */
@@ -149,12 +199,19 @@ function paymentLinksOrgMemberIds(PDO $db, string $orgId): array
 
 function paymentLinkMapRazorpayStatus(string $status, int $amountPaid, int $amount): string
 {
+    // Money already captured always wins over Razorpay cancelled/expired labels.
     if ($amount > 0 && $amountPaid >= $amount) {
         return 'paid';
+    }
+    if ($amountPaid > 0) {
+        return 'partially_paid';
     }
     $s = strtolower(trim($status));
     if ($s === 'paid') {
         return 'paid';
+    }
+    if ($s === 'partially_paid') {
+        return 'partially_paid';
     }
     if ($s === 'cancelled') {
         return 'cancelled';
@@ -162,21 +219,22 @@ function paymentLinkMapRazorpayStatus(string $status, int $amountPaid, int $amou
     if ($s === 'expired') {
         return 'expired';
     }
-    if ($s === 'partially_paid' || ($amountPaid > 0 && $amountPaid < $amount)) {
-        return 'partially_paid';
-    }
     return 'created';
 }
 
-/** Rank used to prevent status downgrades on concurrent writes (paid always wins, terminal beats pending). */
+/**
+ * Rank used to prevent status downgrades on concurrent writes.
+ * Must match paymentLinkStatusRank(): paid > partially_paid > created > expired > cancelled.
+ * Money-bearing states must never lose to terminal cancel/expire.
+ */
 function paymentLinkStatusRankSql(string $expr): string
 {
     return "CASE {$expr}
         WHEN 'paid' THEN 5
-        WHEN 'cancelled' THEN 4
-        WHEN 'expired' THEN 4
-        WHEN 'partially_paid' THEN 2
-        WHEN 'created' THEN 1
+        WHEN 'partially_paid' THEN 4
+        WHEN 'created' THEN 3
+        WHEN 'expired' THEN 2
+        WHEN 'cancelled' THEN 1
         ELSE 0 END";
 }
 
@@ -747,32 +805,21 @@ function paymentLinkMergeRazorpayWithCrm(array $item, array $crmRow): array
     $paid = max((int) ($item['amount_paid'] ?? 0), (int) ($crm['amount_paid'] ?? 0));
     $item['amount_paid'] = $paid;
 
+    // Remap both sides with the merged amount so cancelled/expired never
+    // erase partially_paid / paid when money is already on the row.
     $rzpStatus = paymentLinkMapRazorpayStatus(
         (string) ($item['status'] ?? 'created'),
         $paid,
         $amount,
     );
-    $crmStatus = (string) ($crm['status'] ?? 'created');
-    $terminal = ['cancelled', 'expired'];
-    if ($rzpStatus === 'paid' || $crmStatus === 'paid') {
-        $picked = 'paid';
-    } elseif (in_array($rzpStatus, $terminal, true) || in_array($crmStatus, $terminal, true)) {
-        if (in_array($rzpStatus, $terminal, true) && in_array($crmStatus, $terminal, true)) {
-            $picked = paymentLinkStatusRank($crmStatus) >= paymentLinkStatusRank($rzpStatus) ? $crmStatus : $rzpStatus;
-        } elseif (in_array($rzpStatus, $terminal, true)) {
-            $picked = $rzpStatus;
-        } else {
-            $picked = $crmStatus;
-        }
-    } elseif (in_array($rzpStatus, $terminal, true) && $crmStatus === 'created') {
-        $picked = $rzpStatus;
-    } elseif (in_array($crmStatus, $terminal, true) && $rzpStatus === 'created') {
-        $picked = $crmStatus;
-    } else {
-        $picked = paymentLinkStatusRank($crmStatus) > paymentLinkStatusRank($rzpStatus)
-            ? $crmStatus
-            : $rzpStatus;
-    }
+    $crmStatus = paymentLinkMapRazorpayStatus(
+        (string) ($crm['status'] ?? 'created'),
+        $paid,
+        $amount,
+    );
+    $picked = paymentLinkStatusRank($crmStatus) >= paymentLinkStatusRank($rzpStatus)
+        ? $crmStatus
+        : $rzpStatus;
     $item['status'] = paymentLinkMapRazorpayStatus($picked, $paid, $amount);
 
     $itemNotes = is_array($item['notes'] ?? null) ? $item['notes'] : [];
@@ -963,6 +1010,11 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
         $items = paymentLinksSyncCacheRead($cacheFile, PAYMENT_LINKS_SYNC_TTL);
         if ($items !== null) {
             $items = paymentLinksOverlayCrmRows($items, $from, $to);
+            // Cache hit skips Razorpay HTTP but must still reconcile receipt/enrollment.
+            if (!function_exists('paymentLinksFulfillPaidItems')) {
+                require_once __DIR__ . '/payment_link_fulfillment.php';
+            }
+            paymentLinksFulfillPaidItems($items);
         }
     }
 

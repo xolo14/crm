@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
-  CreditCard, BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee
+  CreditCard, BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import syncpediaIcon from '@/assets/syncpedia-icon.webp';
@@ -18,6 +18,7 @@ import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/s
 import { NotificationBell } from '@/components/NotificationBell';
 import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from '@/lib/orgAccess';
 import { featureKeyForPath, isOrgFeatureEnabled } from '@/lib/orgFeatures';
+import { normalizeAppRole } from '@/lib/roleUtils';
 import { useToast } from '@/hooks/use-toast';
 
 type AppRole = string;
@@ -49,7 +50,7 @@ function storedAppearance(): { compactMode: boolean; collapsedSidebar: boolean }
 }
 
 const navItems: NavItem[] = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance', 'marketing'] },
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance'] },
   { to: '/organizations', icon: Building2, label: 'Organizations', roles: ['super_admin'] },
   {
     to: '/leads', icon: Users, label: 'Leads', roles: ['super_admin', 'admin', 'org', 'manager', 'marketing', 'hr'],
@@ -59,6 +60,8 @@ const navItems: NavItem[] = [
     ],
   },
   { to: '/form-management', icon: ClipboardList, label: 'Form Management', roles: ['super_admin', 'admin', 'org', 'marketing', 'manager'] },
+  // Marketing home — only this Dashboard entry (not the main `/` CRM dashboard)
+  { to: '/marketing/dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['marketing'] },
   { to: '/my-leads', icon: ClipboardList, label: 'My Leads', roles: ['marketing'] },
   {
     to: '/leads-management',
@@ -104,7 +107,11 @@ const navItems: NavItem[] = [
     label: 'Payment Records',
     roles: ['super_admin', 'admin', 'manager'],
   },
-  { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'trainer', 'finance', 'hr'] },
+  { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'trainer', 'finance', 'hr'],
+    children: [
+      { to: '/communications/whatsapp-inbox', icon: MessageSquare, label: 'WhatsApp Inbox', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing'] },
+    ],
+  },
   {
     to: '/daily-reports', icon: ClipboardList, label: 'Daily Reports', roles: ['super_admin', 'admin', 'manager', 'sales_representative'],
     children: [
@@ -121,7 +128,6 @@ const navItems: NavItem[] = [
       { to: '/marketing/whatsapp-analytics', icon: MessageSquare, label: 'WhatsApp Analytics', roles: ['super_admin', 'admin', 'org'] },
     ],
   },
-  { to: '/marketing/dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['marketing'] },
   {
     to: '/marketing/portal', icon: Mail, label: 'Email Marketing', roles: ['marketing'],
     children: [
@@ -155,6 +161,7 @@ const navItems: NavItem[] = [
   { to: '/tasks', icon: CheckSquare, label: 'Tasks', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'marketing'] },
   { to: '/notifications', icon: Bell, label: 'Notifications', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance', 'marketing'] },
   { to: '/holidays', icon: CalendarDays, label: 'Holidays', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'marketing'] },
+  { to: '/assessments', icon: ClipboardCheck, label: 'Assessments', roles: ['super_admin'] },
   { to: '/trash', icon: Trash2, label: 'Trash', roles: ['super_admin', 'admin', 'org', 'manager'] },
   { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'hr', 'marketing', 'trainer', 'finance'] },
 ];
@@ -254,19 +261,20 @@ function navItemAllowed(
   organization: { slug?: string | null; features?: Record<string, boolean> | null } | null,
   pageAccess?: { payments?: boolean; offer_letters?: boolean } | null,
 ): boolean {
-  if (!role || !item.roles.includes(role)) return false;
-  if (item.to === "/offer-letters") return canAccessOfferLetters(role, organization, pageAccess);
-  if (item.to === "/fresher-salary-tracker") return canAccessFresherSalary(role, organization);
-  if (item.to === "/certificates") return canAccessCertificates(role, organization);
-  if (item.to === "/payslip") return canAccessPayslip(role, organization);
-  if (item.to === "/payments/records") return canAccessPaymentRecords(role);
-  if (item.to === "/payments") return canAccessPaymentsPage(role, pageAccess);
+  const normalized = normalizeAppRole(role);
+  if (!normalized || !item.roles.includes(normalized)) return false;
+  if (item.to === "/offer-letters") return canAccessOfferLetters(normalized, organization, pageAccess);
+  if (item.to === "/fresher-salary-tracker") return canAccessFresherSalary(normalized, organization);
+  if (item.to === "/certificates") return canAccessCertificates(normalized, organization);
+  if (item.to === "/payslip") return canAccessPayslip(normalized, organization);
+  if (item.to === "/payments/records") return canAccessPaymentRecords(normalized);
+  if (item.to === "/payments") return canAccessPaymentsPage(normalized, pageAccess);
 
   const feat = featureKeyForPath(item.to);
-  if (feat && !isOrgFeatureEnabled(role, organization, feat)) return false;
+  if (feat && !isOrgFeatureEnabled(normalized, organization, feat)) return false;
 
   if (item.children) {
-    const visibleChildren = item.children.filter((c) => navItemAllowed(c, role, organization, pageAccess));
+    const visibleChildren = item.children.filter((c) => navItemAllowed(c, normalized, organization, pageAccess));
     if (visibleChildren.length === 0 && item.children.length > 0) return false;
   }
 

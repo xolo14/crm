@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Search, Shuffle, Trash2, UserPlus, Users, Filter } from 'lucide-react';
 import { BulkAssignDialog } from '@/components/BulkAssignDialog';
-import { SOURCE_BUCKET_LABELS, type LeadSourceBucket } from '@/lib/leadSources';
+import { SOURCE_BUCKET_LABELS, getPeaklyyAttemptCount, isPeaklyySourceBucket, type LeadSourceBucket } from '@/lib/leadSources';
 
 const LEAD_STATUSES = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
 
@@ -82,6 +82,8 @@ export function SourceLeadsDialog({
     (sourceKey && SOURCE_BUCKET_LABELS[sourceKey as LeadSourceBucket]) ||
     String(sourceKey || '').replace(/_/g, ' ') ||
     'Source';
+
+  const showAttempts = isPeaklyySourceBucket(sourceKey);
 
   const filtered = useMemo(() => {
     return leads.filter((lead) => {
@@ -289,6 +291,11 @@ export function SourceLeadsDialog({
                           >
                             {formatLeadStatus(lead.status)}
                           </Badge>
+                          {showAttempts && (
+                            <Badge variant="secondary" className="text-[11px] font-normal">
+                              {getPeaklyyAttemptCount(lead)} attempt{getPeaklyyAttemptCount(lead) === 1 ? '' : 's'}
+                            </Badge>
+                          )}
                           {isManager && (
                             <span className={`text-[11px] font-medium ${names.length ? 'text-primary' : 'text-amber-600'}`}>
                               {names.length ? names.join(', ') : 'Unassigned'}
@@ -333,6 +340,7 @@ export function SourceLeadsDialog({
                   <TableHead>Lead</TableHead>
                   <TableHead>Contact</TableHead>
                   <TableHead>Status</TableHead>
+                  {showAttempts && <TableHead>Attempts</TableHead>}
                   {isManager && <TableHead>Assigned</TableHead>}
                   <TableHead>Created</TableHead>
                   {isManager && <TableHead className="w-24">Action</TableHead>}
@@ -341,7 +349,7 @@ export function SourceLeadsDialog({
               <TableBody>
                 {filtered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={isManager ? 7 : 5} className="text-center py-12">
+                    <TableCell colSpan={(isManager ? 7 : 5) + (showAttempts ? 1 : 0)} className="text-center py-12">
                       <Users className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
                       <p className="text-sm text-muted-foreground">No leads in this view</p>
                     </TableCell>
@@ -381,6 +389,11 @@ export function SourceLeadsDialog({
                           {formatLeadStatus(lead.status)}
                         </Badge>
                       </TableCell>
+                      {showAttempts && (
+                        <TableCell className="text-sm tabular-nums">
+                          {getPeaklyyAttemptCount(lead)}
+                        </TableCell>
+                      )}
                       {isManager && (
                         <TableCell>
                           {(() => {

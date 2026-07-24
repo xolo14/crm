@@ -21,7 +21,7 @@ import {
   Plus, Search, Filter, Download, Upload, MoreHorizontal, Pencil, Trash2, Loader2, Phone, Mail,
   UserPlus, Users, Target, CheckCircle2, Clock, Eye, History, CalendarDays, Building2, GraduationCap,
   StickyNote, ArrowUpRight, XCircle, Shuffle, ChevronLeft, ChevronRight, Megaphone, Globe2,
-  MessageCircle, MapPin, School, CircleHelp, Youtube, FileText, Upload as UploadIcon,
+  MessageCircle, MapPin, School, CircleHelp, Youtube, FileText, Upload as UploadIcon, ClipboardCheck,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { BulkActionsBar } from '@/components/BulkActions';
@@ -42,6 +42,9 @@ import {
   IMPORT_SET_PREFIX,
   buildSourceSummaries,
   filterLeadsBySourceBucket,
+  isFormLead as isFormLeadRow,
+  isFormSourceBucket,
+  isPeaklyySourceBucket,
   type LeadSourceBucket,
 } from '@/lib/leadSources';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -116,6 +119,7 @@ const SOURCE_BUCKET_ICONS: Record<LeadSourceBucket, LucideIcon> = {
   youtube: Youtube,
   website: Globe2,
   form_leads: FileText,
+  peaklyy: ClipboardCheck,
   import: UploadIcon,
   whatsapp: MessageCircle,
   referral: Users,
@@ -133,7 +137,12 @@ export default function Leads() {
   const location = useLocation();
   const isMobile = useIsMobile();
   const isFormLeadsPage = location.pathname === '/leads/form-leads';
-  const useSourceCards = location.pathname === '/leads';
+  const useSourceCards = [
+    '/leads',
+    '/leads-management',
+    '/my-leads',
+    '/leads/form-leads',
+  ].includes(location.pathname);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
@@ -208,18 +217,16 @@ export default function Leads() {
       fetchProfiles();
       fetchAssignments();
     }
-    if (!isFormLeadsPage) {
-      api.forms.list()
-        .then((res) => {
-          const rows = Array.isArray(res) ? res : res?.data || [];
-          setLeadForms(
-            rows
-              .filter((f: { slug?: string; name?: string }) => f?.slug && f?.name)
-              .map((f: { slug: string; name: string }) => ({ slug: String(f.slug), name: String(f.name) })),
-          );
-        })
-        .catch(() => {});
-    }
+    api.forms.list()
+      .then((res) => {
+        const rows = Array.isArray(res) ? res : res?.data || [];
+        setLeadForms(
+          rows
+            .filter((f: { slug?: string; name?: string }) => f?.slug && f?.name)
+            .map((f: { slug: string; name: string }) => ({ slug: String(f.slug), name: String(f.name) })),
+        );
+      })
+      .catch(() => {});
   }, [isFormLeadsPage, isSalesRepMyLeadsPage, role, profile?.referral_code]);
 
   const fetchAssignments = async () => {
@@ -259,11 +266,10 @@ export default function Leads() {
     try {
       const data = await api.leads.list();
       const allLeads = data.data || [];
-      const isFormLead = (l: any) => !!l.referred_by || l.source === 'google_forms';
 
       if (isFormLeadsPage) {
-        // Form Leads page: only form-generated leads.
-        setLeads(allLeads.filter(isFormLead));
+        // Form Leads page: only form-generated leads (per-form cards).
+        setLeads(allLeads.filter((l: any) => isFormLeadRow(l)));
       } else if (isSalesRepMyLeadsPage) {
         const code = String(profile?.referral_code ?? '').trim();
         setLeads(
@@ -817,7 +823,19 @@ export default function Leads() {
     ];
   }, [leadForms, availableSources, extendedSourceLabels]);
 
-  const sourceSummaries = useMemo(() => buildSourceSummaries(leads), [leads]);
+  const formLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    leadForms.forEach((f) => {
+      labels[f.slug] = f.name;
+      labels[`form_${f.slug}`] = f.name;
+    });
+    return labels;
+  }, [leadForms]);
+
+  const sourceSummaries = useMemo(
+    () => buildSourceSummaries(leads, { formLabels }),
+    [leads, formLabels],
+  );
 
   const sourceDialogLeads = useMemo(() => {
     if (!sourceDialogKey) return [];
@@ -956,8 +974,14 @@ export default function Leads() {
       {useSourceCards ? (
         <>
           <div className="mb-2">
-            <h2 className="text-sm font-semibold tracking-tight">Leads by source</h2>
-            <p className="text-xs text-muted-foreground">Open a source to view leads, filter by status, and bulk assign.</p>
+            <h2 className="text-sm font-semibold tracking-tight">
+              {isFormLeadsPage || isSalesRepMyLeadsPage ? 'Leads by form' : 'Leads by source'}
+            </h2>
+            <p className="text-xs text-muted-foreground">
+              {isFormLeadsPage || isSalesRepMyLeadsPage
+                ? 'Each form has its own card. Open a card to view leads, filter, and assign.'
+                : 'Open a source or form card to view leads, filter by status, and bulk assign.'}
+            </p>
           </div>
           {sourceSummaries.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 rounded-lg border border-dashed border-border/60">
@@ -970,7 +994,11 @@ export default function Leads() {
               {sourceSummaries.map((summary) => {
                 const Icon = summary.isImport
                   ? UploadIcon
-                  : SOURCE_BUCKET_ICONS[summary.key as LeadSourceBucket] || CircleHelp;
+                  : summary.isPeaklyy || isPeaklyySourceBucket(summary.key)
+                    ? ClipboardCheck
+                    : summary.isForm || isFormSourceBucket(summary.key)
+                      ? FileText
+                      : SOURCE_BUCKET_ICONS[summary.key as LeadSourceBucket] || CircleHelp;
                 const statusChips = SOURCE_STATUS_CHIP_ORDER.filter((s) => (summary.byStatus[s] || 0) > 0);
                 const visibleChips = statusChips.slice(0, 4);
                 const hiddenChipCount = statusChips.length - visibleChips.length;
@@ -1050,21 +1078,21 @@ export default function Leads() {
       ) : (
       <>
       {/* Filters Row */}
-      <div className="flex flex-col sm:flex-row gap-2 mb-4">
-        <div className="relative flex-1 max-w-xs sm:max-w-sm">
+      <div className="flex flex-col gap-2 mb-4 md:flex-row md:items-center">
+        <div className="relative flex-1 min-w-0 md:max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search by name, email, phone..." value={search} onChange={(e: any) => setSearch(e.target.value)} className="pl-9 h-9" />
+          <Input placeholder="Search by name, email, phone..." value={search} onChange={(e: any) => setSearch(e.target.value)} className="pl-9 h-11 md:h-9" />
         </div>
-        <div className="flex gap-2">
+        <div className="grid grid-cols-2 gap-2 md:flex md:w-auto">
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[140px] h-9"><Filter className="h-3.5 w-3.5 mr-1.5" /><SelectValue placeholder="Status" /></SelectTrigger>
+            <SelectTrigger className="w-full min-w-0 h-11 md:h-9 md:w-[160px]"><Filter className="h-3.5 w-3.5 mr-1.5 shrink-0" /><SelectValue placeholder="Status" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Statuses</SelectItem>
               {LEAD_STATUSES.map(s => <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>)}
             </SelectContent>
           </Select>
           <Select value={sourceFilter} onValueChange={setSourceFilter}>
-            <SelectTrigger className="w-[140px] h-9"><SelectValue placeholder="Source" /></SelectTrigger>
+            <SelectTrigger className="w-full min-w-0 h-11 md:h-9 md:w-[160px]"><SelectValue placeholder="Source" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Sources</SelectItem>
               {sourceFilterOptions.map(s => <SelectItem key={s.value} value={s.value} className="capitalize">{s.label}</SelectItem>)}
@@ -1167,8 +1195,8 @@ export default function Leads() {
                     <p className="font-semibold text-[15px] truncate leading-tight">{lead.name}</p>
                   </div>
                   {(lead.college || lead.company) && (
-                    <p className="text-xs text-muted-foreground ml-7 flex items-center gap-1">
-                      {lead.college ? <><GraduationCap className="h-3 w-3 shrink-0" />{lead.college}</> : <><Building2 className="h-3 w-3 shrink-0" />{lead.company}</>}
+                    <p className="text-xs text-muted-foreground ml-7 flex items-center gap-1 min-w-0">
+                      {lead.college ? <><GraduationCap className="h-3 w-3 shrink-0" /><span className="truncate">{lead.college}</span></> : <><Building2 className="h-3 w-3 shrink-0" /><span className="truncate">{lead.company}</span></>}
                     </p>
                   )}
                 </div>
@@ -1191,7 +1219,7 @@ export default function Leads() {
                     <Badge variant="outline" className={`${statusColors[statusBadgeKey(lead.status)]} capitalize text-[11px] px-2 py-0.5`}>{formatLeadStatus(lead.status)}</Badge>
                   )}
                   <DropdownMenu>
-                    <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={(e) => e.stopPropagation()}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                    <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-10 w-10 max-md:h-11 max-md:w-11 rounded-lg touch-target" onClick={(e) => e.stopPropagation()}><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openDetail(lead); }}><Eye className="h-4 w-4 mr-2" /> View</DropdownMenuItem>
                       {canEditLead(lead) && <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openEdit(lead); }}><Pencil className="h-4 w-4 mr-2" /> Edit</DropdownMenuItem>}
@@ -1215,9 +1243,9 @@ export default function Leads() {
                 {isManager && (() => {
                   const names = getLeadAssignedNames(lead);
                   return names.length > 0 ? (
-                    <span className="text-[11px] text-primary font-medium">{names.join(', ')}</span>
+                    <span className="text-[11px] text-primary font-medium truncate max-w-[45%] text-right">{names.join(', ')}</span>
                   ) : (
-                    <span className="text-[11px] text-amber-600 font-medium">Unassigned</span>
+                    <span className="text-[11px] text-amber-600 font-medium shrink-0">Unassigned</span>
                   );
                 })()}
               </div>
@@ -1225,8 +1253,9 @@ export default function Leads() {
           ))}
         </div>
       ) : (
-        <Card className="border-border/50 shadow-none">
-          <Table>
+        <Card className="border-border/50 shadow-none overflow-hidden">
+          <div className="crm-table-scroll overflow-x-auto">
+          <Table className="min-w-[720px]">
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 {hasBulkDelete && <TableHead className="w-10"><Checkbox checked={allSelected ? true : someSelected ? 'indeterminate' : false} onCheckedChange={toggleSelectAll} /></TableHead>}
@@ -1252,15 +1281,15 @@ export default function Leads() {
                 <TableRow key={lead.id} className={`cursor-pointer transition-colors ${selectedIds.has(lead.id) ? 'bg-primary/5' : 'hover:bg-muted/50'}`} onClick={() => openDetail(lead)}>
                   {hasBulkDelete && <TableCell onClick={(e) => e.stopPropagation()}><Checkbox checked={selectedIds.has(lead.id)} onCheckedChange={() => toggleSelect(lead.id)} /></TableCell>}
                   <TableCell className="text-muted-foreground text-xs font-mono">{(currentPage - 1) * pageSize + index + 1}</TableCell>
-                  <TableCell>
-                    <div>
-                      <p className="font-medium text-sm">{lead.name}</p>
-                      <p className="text-xs text-muted-foreground">{lead.college || lead.company || ''}</p>
+                  <TableCell className="max-w-[220px]">
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm truncate">{lead.name}</p>
+                      <p className="text-xs text-muted-foreground truncate">{lead.college || lead.company || ''}</p>
                     </div>
                   </TableCell>
-                  <TableCell>
-                    <div className="text-sm">{lead.email || '—'}</div>
-                    {lead.phone && <div className="text-xs text-muted-foreground">{lead.phone}</div>}
+                  <TableCell className="max-w-[220px]">
+                    <div className="text-sm truncate">{lead.email || '—'}</div>
+                    {lead.phone && <div className="text-xs text-muted-foreground truncate">{lead.phone}</div>}
                   </TableCell>
                   <TableCell><Badge variant="secondary" className="text-xs capitalize">{extendedSourceLabels[lead.source] || lead.source?.replace(/_/g, ' ')}</Badge></TableCell>
                   <TableCell onClick={(e) => e.stopPropagation()}>
@@ -1281,21 +1310,21 @@ export default function Leads() {
                     )}
                   </TableCell>
                   {isManager && (
-                    <TableCell>
+                    <TableCell className="max-w-[160px]">
                       {(() => {
                         const names = getLeadAssignedNames(lead);
                         return names.length > 0 ? (
-                          <span className="text-sm font-medium">{names.join(', ')}</span>
+                          <span className="text-sm font-medium truncate block">{names.join(', ')}</span>
                         ) : (
                           <span className="text-xs text-amber-600 font-medium">Unassigned</span>
                         );
                       })()}
                     </TableCell>
                   )}
-                  <TableCell className="text-sm text-muted-foreground">{new Date(lead.created_at).toLocaleDateString()}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{new Date(lead.created_at).toLocaleDateString()}</TableCell>
                   {isManager && (
                     <TableCell onClick={(e) => e.stopPropagation()}>
-                      <Button variant="outline" size="sm" className="gap-1 h-7 text-xs" onClick={() => openAssignDialog(lead.id)}>
+                      <Button variant="outline" size="sm" className="gap-1 h-9 text-xs" onClick={() => openAssignDialog(lead.id)}>
                         <UserPlus className="h-3 w-3" />
                         {getLeadAssignedNames(lead).length > 0 ? 'Reassign' : 'Assign'}
                       </Button>
@@ -1303,7 +1332,7 @@ export default function Leads() {
                   )}
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
-                      <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
+                      <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-9 w-9"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem onClick={() => openDetail(lead)}><Eye className="h-4 w-4 mr-2" /> View Details</DropdownMenuItem>
                         {canEditLead(lead) && <DropdownMenuItem onClick={() => openEdit(lead)}><Pencil className="h-4 w-4 mr-2" /> Edit</DropdownMenuItem>}
@@ -1315,6 +1344,7 @@ export default function Leads() {
               ))}
             </TableBody>
           </Table>
+          </div>
         </Card>
       )}
 
@@ -1325,7 +1355,7 @@ export default function Leads() {
             Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} of {filtered.length}
           </p>
           <div className="flex items-center gap-1">
-            <Button variant="outline" size="icon" className="h-8 w-8" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)}>
+            <Button variant="outline" size="icon" className="h-10 w-10 max-md:h-11 max-md:w-11" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)}>
               <ChevronLeft className="h-4 w-4" />
             </Button>
             {Array.from({ length: Math.min(totalPages, isMobile ? 3 : 5) }, (_, i) => {
@@ -1341,7 +1371,7 @@ export default function Leads() {
                 </button>
               );
             })}
-            <Button variant="outline" size="icon" className="h-8 w-8" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)}>
+            <Button variant="outline" size="icon" className="h-10 w-10 max-md:h-11 max-md:w-11" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)}>
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>

@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { phpList } from '@/lib/phpList';
+import { communicationsApi } from '@/services/communications';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,10 +17,18 @@ import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   MessageSquare, Send, Plus, Eye, Loader2, FileText, Trash2,
-  Upload, CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, Phone
+  CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, Phone
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  CampaignRecipientPicker,
+  mergeCampaignPhoneRecipients,
+  type CampaignPickPerson,
+} from '@/components/marketing/CampaignRecipientPicker';
+import { WhatsAppCampaignSetupPanel } from '@/components/marketing/WhatsAppCampaignSetupPanel';
+import { normalizeAppRole } from '@/lib/roleUtils';
+import { fillTemplatePreview, templateVarCount } from '@/components/WhatsApp/waUtils';
 
 export default function WhatsAppPortal() {
   const { user } = useAuth();
@@ -33,6 +42,14 @@ export default function WhatsAppPortal() {
   const [loading, setLoading] = useState(true);
   const [referralCode, setReferralCode] = useState('');
   const [formLeads, setFormLeads] = useState<any[]>([]);
+  const [marketingMembers, setMarketingMembers] = useState<any[]>([]);
+  const [metaTemplates, setMetaTemplates] = useState<any[]>([]);
+  const [pendingTemplates, setPendingTemplates] = useState(0);
+  const [waConnected, setWaConnected] = useState(false);
+  const [waBusinessPhone, setWaBusinessPhone] = useState<string | null>(null);
+  const [waConnectionStatus, setWaConnectionStatus] = useState<string | null>(null);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [syncingTemplates, setSyncingTemplates] = useState(false);
 
   const [drafts, setDrafts] = useState<any[]>([]);
   const [showEditor, setShowEditor] = useState(false);
@@ -50,27 +67,96 @@ export default function WhatsAppPortal() {
 
   const [showBulkSend, setShowBulkSend] = useState(false);
   const [bulkPhones, setBulkPhones] = useState('');
+  const [waSource, setWaSource] = useState<'communications' | 'marketing'>('communications');
   const [selectedDraftId, setSelectedDraftId] = useState('');
+  const [templateVars, setTemplateVars] = useState<string[]>([]);
+  const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
+
+  const role = normalizeAppRole(user?.role);
+  const canManageCredentials = ['super_admin', 'admin', 'org', 'manager'].includes(role);
+
+  const recipientPeople = useMemo<CampaignPickPerson[]>(() => {
+    const leads: CampaignPickPerson[] = formLeads
+      .filter((l) => String(l.phone || '').replace(/\D+/g, '').length >= 10)
+      .map((l) => ({
+        id: `lead:${l.id}`,
+        name: String(l.name || l.full_name || 'Lead'),
+        email: String(l.email || '').trim() || undefined,
+        phone: String(l.phone || '').trim(),
+        group: 'leads' as const,
+      }));
+    const members: CampaignPickPerson[] = marketingMembers
+      .filter((m) => String(m.phone || '').replace(/\D+/g, '').length >= 10)
+      .map((m) => ({
+        id: `member:${m.id}`,
+        name: String(m.name || 'Member'),
+        email: String(m.email || '').trim() || undefined,
+        phone: String(m.phone || '').trim(),
+        group: 'members' as const,
+      }));
+    return [...leads, ...members];
+  }, [formLeads, marketingMembers]);
+
+  const recipientCount = mergeCampaignPhoneRecipients(recipientPeople, selectedRecipientIds, bulkPhones).length;
+
+  const selectedMetaTemplate = useMemo(
+    () => metaTemplates.find((t: any) => t.id === selectedDraftId) || null,
+    [metaTemplates, selectedDraftId],
+  );
+  const selectedVarCount = waSource === 'communications' ? templateVarCount(selectedMetaTemplate) : 0;
+  const templatePreview = useMemo(() => {
+    if (!selectedMetaTemplate) return '';
+    return fillTemplatePreview(String(selectedMetaTemplate.body || ''), templateVars);
+  }, [selectedMetaTemplate, templateVars]);
+
+  useEffect(() => {
+    if (waSource !== 'communications' || !selectedMetaTemplate) {
+      setTemplateVars([]);
+      return;
+    }
+    const n = templateVarCount(selectedMetaTemplate);
+    setTemplateVars((prev) => Array.from({ length: n }, (_, i) => prev[i] ?? ''));
+  }, [waSource, selectedDraftId, selectedMetaTemplate]);
 
   useEffect(() => { fetchAll(); }, []);
 
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [draftsRes, campaignsRes] = await Promise.all([
+      const [draftsRes, campaignsRes, membersRes, templatesRes, hubRes, allTplRes] = await Promise.all([
         api.marketing.whatsappDrafts({ mine: true }),
         api.marketing.whatsappCampaigns({ mine: true }),
+        api.marketing.members().catch(() => ({ data: [] })),
+        communicationsApi.templates({ status: 'approved' }).catch(() => ({ data: [] })),
+        communicationsApi.hubSummary().catch(() => null),
+        communicationsApi.templates().catch(() => ({ data: [] })),
       ]);
       const draftsData = phpList(draftsRes);
       const campaignsData = phpList(campaignsRes);
       setDrafts(draftsData);
       setCampaigns(campaignsData);
+      setMarketingMembers(phpList(membersRes));
+      const approved = Array.isArray(templatesRes?.data) ? templatesRes.data : phpList(templatesRes);
+      setMetaTemplates(approved);
+      const allTpl = Array.isArray(allTplRes?.data) ? allTplRes.data : phpList(allTplRes);
+      setPendingTemplates(allTpl.filter((t: any) => String(t.status || '') !== 'approved').length);
+
+      const orgWa = hubRes?.org_whatsapp;
+      const connected = Boolean(orgWa && (Number(orgWa.is_active) === 1 || orgWa.is_active === true));
+      setWaConnected(connected);
+      setWaBusinessPhone(orgWa?.business_phone ? String(orgWa.business_phone) : null);
+      setWaConnectionStatus(orgWa?.connection_status ? String(orgWa.connection_status) : connected ? 'connected' : 'not_connected');
+
       const code = user?.referral_code || (user?.id ? 'SP-' + user.id.substring(0, 8).toUpperCase() : '');
       setReferralCode(code);
-      if (code) {
-        const leadsRes = await api.leads.list({ referred_by: code });
+      try {
+        const leadsRes = code
+          ? await api.leads.list({ referred_by: code })
+          : await api.leads.list();
         setFormLeads(phpList(leadsRes));
+      } catch {
+        setFormLeads([]);
       }
       if (campaignsData.length > 0) {
         const sendsRes = await api.marketing.whatsappSends(campaignsData.map((c: any) => c.id));
@@ -80,7 +166,51 @@ export default function WhatsAppPortal() {
       }
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    try {
+      const res = await communicationsApi.testWhatsappConnection();
+      toast({
+        title: 'WhatsApp connected',
+        description: res?.data?.display_phone_number
+          ? `Number: ${res.data.display_phone_number}`
+          : res?.message || 'Connection OK',
+      });
+      await fetchAll();
+    } catch (err: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Connection failed',
+        description: err.message || 'Open WhatsApp Setup and save Meta credentials first.',
+      });
+    } finally {
+      setTestingConnection(false);
+    }
+  };
+
+  const handleSyncTemplates = async () => {
+    setSyncingTemplates(true);
+    try {
+      const res = await communicationsApi.syncMetaTemplates();
+      toast({
+        title: 'Templates synced',
+        description: `${res?.imported ?? 0} new, ${res?.updated ?? 0} updated (${res?.total ?? 0} from Meta)`,
+      });
+      await fetchAll();
+    } catch (err: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Sync failed',
+        description: err.message || 'Connect WhatsApp first, then sync again.',
+      });
+    } finally {
+      setSyncingTemplates(false);
+    }
   };
 
   const saveDraft = async () => {
@@ -142,42 +272,95 @@ export default function WhatsAppPortal() {
   };
 
   const handleBulkSend = async () => {
-    const phones = bulkPhones.split('\n').map(e => e.trim()).filter(e => e && e.length >= 10);
-    if (phones.length === 0) { toast({ variant: 'destructive', title: 'No valid phone numbers provided' }); return; }
-    if (!selectedDraftId) { toast({ variant: 'destructive', title: 'Please select a draft' }); return; }
-    const draft = drafts.find((d: any) => d.id === selectedDraftId);
-    if (!draft) return;
+    if (!waConnected) {
+      toast({
+        variant: 'destructive',
+        title: 'WhatsApp not connected',
+        description: 'Complete Setup step 1 first (Connect WhatsApp).',
+      });
+      return;
+    }
+    const recipients = mergeCampaignPhoneRecipients(recipientPeople, selectedRecipientIds, bulkPhones);
+    if (recipients.length === 0) { toast({ variant: 'destructive', title: 'No valid phone numbers provided' }); return; }
+    if (!selectedDraftId) {
+      toast({
+        variant: 'destructive',
+        title: waSource === 'communications' ? 'Please select a Meta template' : 'Please select a draft',
+      });
+      return;
+    }
+    if (waSource === 'communications' && metaTemplates.length === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'No approved templates',
+        description: 'Complete Setup step 2: Sync templates from Meta.',
+      });
+      return;
+    }
+    if (waSource === 'communications' && selectedVarCount > 0) {
+      const missing: number[] = [];
+      for (let i = 0; i < selectedVarCount; i++) {
+        if ((templateVars[i] ?? '').trim()) continue;
+        // {{1}} may be filled per recipient from lead/member name
+        if (i === 0 && selectedRecipientIds.length > 0) continue;
+        missing.push(i + 1);
+      }
+      if (missing.length > 0) {
+        toast({
+          variant: 'destructive',
+          title: 'Fill template parameters',
+          description: `This template needs {{${missing.join('}}, {{')}}}. Enter values below the template picker.`,
+        });
+        return;
+      }
+    }
     setSending(true);
     try {
-      const campaignRes = await api.marketing.createWhatsappCampaign({
+      const res = await api.marketing.dispatchWhatsappCampaign({
+        source: waSource,
+        template_id: selectedDraftId,
         draft_id: selectedDraftId,
-        subject: draft.subject,
-        recipient_count: phones.length,
-        pending_count: phones.length,
-        status: 'sending',
+        variables: waSource === 'communications'
+          ? Array.from({ length: selectedVarCount }, (_, i) => (templateVars[i] ?? '').trim())
+          : undefined,
+        recipients,
       });
-      const campaignId = campaignRes.id || campaignRes.data?.id;
-      if (!campaignId) throw new Error('Campaign was not created');
-      await api.marketing.createWhatsappSends(
-        campaignId,
-        phones.map((phone) => ({ recipient_phone: phone, status: 'pending' })),
-      );
-      // Trigger n8n via authenticated PHP proxy (URL stays server-side in config.php)
-      try {
-        await api.marketing.triggerN8nWebhook('whatsapp', {
-          campaign_id: campaignId,
-          subject: draft.subject,
-          body: draft.body,
-          recipients: phones,
-        });
-      } catch (webhookErr) {
-        console.warn('n8n WhatsApp webhook not configured:', webhookErr);
+      const sent = Number(res?.sent ?? 0);
+      const failed = Number(res?.failed ?? 0);
+      if (sent <= 0) {
+        throw new Error(res?.error || res?.message || 'WhatsApp send failed');
       }
-      toast({ title: `Campaign created with ${phones.length} recipients!` });
-      setShowBulkSend(false); setBulkPhones(''); setSelectedDraftId(''); fetchAll();
+      toast({
+        title: `Sent ${sent} message(s)`,
+        description: failed
+          ? `${failed} failed. ${String(res?.message || '')}`
+          : waSource === 'communications'
+            ? 'Delivered via Meta approved template.'
+            : 'Delivered as session text (24h window).',
+      });
+      setShowBulkSend(false);
+      setBulkPhones('');
+      setSelectedDraftId('');
+      setTemplateVars([]);
+      setSelectedRecipientIds([]);
+      fetchAll();
     } catch (err: any) {
-      toast({ variant: 'destructive', title: 'Error', description: err.message });
-    } finally { setSending(false); }
+      toast({ variant: 'destructive', title: 'Send failed', description: err.message });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const openSendCampaign = () => {
+    if (!waConnected) {
+      toast({
+        variant: 'destructive',
+        title: 'Connect WhatsApp first',
+        description: 'Use Setup step 1 above, then try Send Campaign again.',
+      });
+      return;
+    }
+    setShowBulkSend(true);
   };
 
   const totalSent = campaigns.reduce((s: number, c: any) => s + (c.sent_count || 0), 0);
@@ -209,11 +392,29 @@ export default function WhatsAppPortal() {
           <Button size="sm" variant="outline" className="gap-1.5" onClick={() => openEditor()}>
             <Plus className="h-3.5 w-3.5" />New Draft
           </Button>
-          <Button size="sm" className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" onClick={() => setShowBulkSend(true)}>
+          <Button size="sm" className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" onClick={openSendCampaign}>
             <Send className="h-3.5 w-3.5" />Send Campaign
           </Button>
         </div>
       </div>
+
+      <WhatsAppCampaignSetupPanel
+        status={{
+          connected: waConnected,
+          businessPhone: waBusinessPhone,
+          connectionStatus: waConnectionStatus,
+          approvedTemplates: metaTemplates.length,
+          pendingTemplates,
+        }}
+        testing={testingConnection}
+        syncing={syncingTemplates}
+        canManageCredentials={canManageCredentials}
+        onTestConnection={() => void handleTestConnection()}
+        onSyncTemplates={() => void handleSyncTemplates()}
+        onOpenCredentialsSetup={() => navigate('/communications/whatsapp-setup')}
+        onSendCampaign={openSendCampaign}
+        onCreateDraft={() => openEditor()}
+      />
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -444,7 +645,10 @@ export default function WhatsAppPortal() {
                 <Label className="text-xs font-medium">Message Body</Label>
                 <Button size="sm" variant="ghost" className="h-7 text-xs gap-1" onClick={() => setShowPreview(true)}><Eye className="h-3 w-3" />Preview</Button>
               </div>
-              <Textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} placeholder="Write your WhatsApp message here..." className="min-h-[200px] text-sm" />
+              <Textarea value={draftBody} onChange={e => setDraftBody(e.target.value)} placeholder={"Hi {{name}}, thanks for reaching out..."} className="min-h-[200px] text-sm" />
+              <p className="text-[10px] text-muted-foreground">
+                Session drafts send as free text via Meta (24h window only). Use {'{{name}}'} to personalize. For cold outreach use Meta templates in Send Campaign.
+              </p>
             </div>
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setShowEditor(false)}>Cancel</Button>
@@ -472,38 +676,127 @@ export default function WhatsAppPortal() {
       </Dialog>
 
       {/* Bulk Send */}
-      <Dialog open={showBulkSend} onOpenChange={setShowBulkSend}>
-        <DialogContent className="max-w-lg">
+      <Dialog open={showBulkSend} onOpenChange={(open) => {
+        setShowBulkSend(open);
+        if (!open) {
+          setSelectedRecipientIds([]);
+          setTemplateVars([]);
+        }
+      }}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle className="flex items-center gap-2"><MessageSquare className="h-4 w-4 text-emerald-500" />Send WhatsApp Campaign</DialogTitle></DialogHeader>
           <div className="space-y-4">
-            <div>
-              <Label className="text-xs font-medium">Select Draft *</Label>
-              <Select value={selectedDraftId} onValueChange={setSelectedDraftId}>
-                <SelectTrigger className="mt-1"><SelectValue placeholder="Choose a message draft" /></SelectTrigger>
-                <SelectContent>
-                  {drafts.filter((d: any) => d.subject).map((d: any) => (
-                    <SelectItem key={d.id} value={d.id}>{d.name || d.subject}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                className={`rounded-xl border p-3 text-left transition ${waSource === 'communications' ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-400' : 'hover:bg-muted/40'}`}
+                onClick={() => { setWaSource('communications'); setSelectedDraftId(''); setTemplateVars([]); }}
+              >
+                <p className="text-sm font-semibold">1. Meta template</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Cold outreach to any lead (recommended)</p>
+              </button>
+              <button
+                type="button"
+                className={`rounded-xl border p-3 text-left transition ${waSource === 'marketing' ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-400' : 'hover:bg-muted/40'}`}
+                onClick={() => { setWaSource('marketing'); setSelectedDraftId(''); setTemplateVars([]); }}
+              >
+                <p className="text-sm font-semibold">2. Session draft</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Free text — only within 24h chat window</p>
+              </button>
             </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <Label className="text-xs font-medium">Phone Numbers *</Label>
-                <Button size="sm" variant="ghost" className="h-7 text-xs gap-1" onClick={() => fileInputRef.current?.click()}>
-                  <Upload className="h-3 w-3" />Upload CSV
-                </Button>
-                <input ref={fileInputRef} type="file" accept=".csv,.txt,.xlsx" className="hidden" onChange={handleFileUpload} />
+
+            {waSource === 'communications' ? (
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-xs font-medium">Approved Meta template *</Label>
+                  <Select value={selectedDraftId} onValueChange={setSelectedDraftId}>
+                    <SelectTrigger className="mt-1"><SelectValue placeholder="Choose approved template" /></SelectTrigger>
+                    <SelectContent>
+                      {metaTemplates.map((t: any) => (
+                        <SelectItem key={t.id} value={t.id}>{t.name || t.provider_template_id}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {metaTemplates.length === 0 ? (
+                    <p className="text-[10px] text-amber-600 mt-1">
+                      No approved templates. Use Setup step 2 → Sync from Meta.
+                    </p>
+                  ) : null}
+                </div>
+                {selectedMetaTemplate && selectedVarCount > 0 ? (
+                  <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+                    <p className="text-xs font-semibold">Template parameters ({selectedVarCount})</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      Meta requires every {'{{n}}'} value. Leave {'{{1}}'} blank to use each selected lead/member name.
+                    </p>
+                    {Array.from({ length: selectedVarCount }, (_, i) => (
+                      <div key={i} className="space-y-1">
+                        <Label htmlFor={`wa-campaign-var-${i}`} className="text-xs">{`{{${i + 1}}}`}</Label>
+                        <Input
+                          id={`wa-campaign-var-${i}`}
+                          value={templateVars[i] ?? ''}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            setTemplateVars((prev) => {
+                              const next = Array.from({ length: selectedVarCount }, (_, j) => prev[j] ?? '');
+                              next[i] = value;
+                              return next;
+                            });
+                          }}
+                          placeholder={
+                            i === 0
+                              ? 'Name (or blank = each recipient name)'
+                              : i === 1
+                                ? 'Course / topic / company'
+                                : `Value for {{${i + 1}}}`
+                          }
+                          className={!(templateVars[i] ?? '').trim() && i > 0 ? 'border-amber-400' : undefined}
+                        />
+                      </div>
+                    ))}
+                    {selectedMetaTemplate.body ? (
+                      <div className="rounded-md border bg-background p-2 text-xs whitespace-pre-wrap text-muted-foreground">
+                        {templatePreview}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : selectedMetaTemplate ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    This template has no {'{{n}}'} placeholders in its body.
+                  </p>
+                ) : null}
               </div>
-              <Textarea value={bulkPhones} onChange={e => setBulkPhones(e.target.value)} placeholder="Enter phone numbers, one per line...&#10;+919876543210&#10;+918765432109" className="min-h-[150px] text-sm font-mono" />
-              <p className="text-[10px] text-muted-foreground mt-1">
-                {bulkPhones.split('\n').filter(e => e.trim() && e.trim().length >= 10).length} valid numbers
-              </p>
-            </div>
+            ) : (
+              <div>
+                <Label className="text-xs font-medium">Marketing draft *</Label>
+                <Select value={selectedDraftId} onValueChange={setSelectedDraftId}>
+                  <SelectTrigger className="mt-1"><SelectValue placeholder="Choose a message draft" /></SelectTrigger>
+                  <SelectContent>
+                    {drafts.filter((d: any) => d.subject).map((d: any) => (
+                      <SelectItem key={d.id} value={d.id}>{d.name || d.subject}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Use {'{{name}}'} in the draft body to personalize. Outside the 24h window Meta will reject free text.
+                </p>
+              </div>
+            )}
+
+            <CampaignRecipientPicker
+              mode="phone"
+              people={recipientPeople}
+              selectedIds={selectedRecipientIds}
+              onSelectedIdsChange={setSelectedRecipientIds}
+              manualText={bulkPhones}
+              onManualTextChange={setBulkPhones}
+              onUploadFile={handleFileUpload}
+              fileInputRef={fileInputRef}
+            />
             <DialogFooter>
-              <Button onClick={handleBulkSend} disabled={sending} className="w-full gap-1.5 bg-emerald-600 hover:bg-emerald-700">
+              <Button onClick={handleBulkSend} disabled={sending || !waConnected} className="w-full gap-1.5 bg-emerald-600 hover:bg-emerald-700">
                 {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                Send to {bulkPhones.split('\n').filter(e => e.trim() && e.trim().length >= 10).length} Recipients
+                Send to {recipientCount} Recipients
               </Button>
             </DialogFooter>
           </div>

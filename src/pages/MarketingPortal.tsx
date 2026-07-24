@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { phpList } from '@/lib/phpList';
@@ -16,10 +16,15 @@ import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Mail, Send, Plus, Eye, Loader2, FileText, Trash2,
-  Upload, CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users
+  CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  CampaignRecipientPicker,
+  mergeCampaignRecipients,
+  type CampaignPickPerson,
+} from '@/components/marketing/CampaignRecipientPicker';
 
 export default function MarketingPortal() {
   const { user } = useAuth();
@@ -33,6 +38,7 @@ export default function MarketingPortal() {
   const [loading, setLoading] = useState(true);
   const [referralCode, setReferralCode] = useState('');
   const [formLeads, setFormLeads] = useState<any[]>([]);
+  const [marketingMembers, setMarketingMembers] = useState<any[]>([]);
 
   // Drafts
   const [drafts, setDrafts] = useState<any[]>([]);
@@ -54,7 +60,30 @@ export default function MarketingPortal() {
   const [showBulkSend, setShowBulkSend] = useState(false);
   const [bulkEmails, setBulkEmails] = useState('');
   const [selectedDraftId, setSelectedDraftId] = useState('');
+  const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
+
+  const recipientPeople = useMemo<CampaignPickPerson[]>(() => {
+    const leads: CampaignPickPerson[] = formLeads
+      .filter((l) => String(l.email || '').includes('@'))
+      .map((l) => ({
+        id: `lead:${l.id}`,
+        name: String(l.name || l.full_name || 'Lead'),
+        email: String(l.email || '').trim(),
+        phone: String(l.phone || '').trim() || undefined,
+        group: 'leads' as const,
+      }));
+    const members: CampaignPickPerson[] = marketingMembers
+      .filter((m) => String(m.email || '').includes('@'))
+      .map((m) => ({
+        id: `member:${m.id}`,
+        name: String(m.name || 'Member'),
+        email: String(m.email || '').trim(),
+        phone: String(m.phone || '').trim() || undefined,
+        group: 'members' as const,
+      }));
+    return [...leads, ...members];
+  }, [formLeads, marketingMembers]);
 
   useEffect(() => {
     fetchAll();
@@ -63,21 +92,32 @@ export default function MarketingPortal() {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [draftsRes, campaignsRes] = await Promise.all([
+      const [draftsRes, campaignsRes, membersRes] = await Promise.all([
         api.marketing.emailDrafts({ mine: true }),
         api.marketing.emailCampaigns({ mine: true }),
+        api.marketing.members().catch(() => ({ data: [] })),
       ]);
       const draftsData = phpList(draftsRes);
       const campaignsData = phpList(campaignsRes);
       setDrafts(draftsData);
       setCampaigns(campaignsData);
+      setMarketingMembers(phpList(membersRes));
 
       const code = user?.referral_code || (user?.id ? 'SP-' + user.id.substring(0, 8).toUpperCase() : '');
       setReferralCode(code);
 
-      if (code) {
-        const leadsRes = await api.leads.list({ referred_by: code });
+      try {
+        const leadsRes = code
+          ? await api.leads.list({ referred_by: code })
+          : await api.leads.list();
         setFormLeads(phpList(leadsRes));
+      } catch {
+        if (code) {
+          const leadsRes = await api.leads.list({ referred_by: code }).catch(() => ({ data: [] }));
+          setFormLeads(phpList(leadsRes));
+        } else {
+          setFormLeads([]);
+        }
       }
 
       if (campaignsData.length > 0) {
@@ -173,49 +213,32 @@ export default function MarketingPortal() {
   };
 
   const handleBulkSend = async () => {
-    const emails = bulkEmails.split('\n').map(e => e.trim()).filter(e => e && e.includes('@'));
+    const emails = mergeCampaignRecipients('email', recipientPeople, selectedRecipientIds, bulkEmails);
     if (emails.length === 0) { toast({ variant: 'destructive', title: 'No valid emails provided' }); return; }
     if (!selectedDraftId) { toast({ variant: 'destructive', title: 'Please select a draft' }); return; }
 
-    const draft = drafts.find(d => d.id === selectedDraftId);
-    if (!draft) return;
-
     setSending(true);
     try {
-      const campaignRes = await api.marketing.createEmailCampaign({
+      const res = await api.marketing.dispatchEmailCampaign({
         draft_id: selectedDraftId,
-        subject: draft.subject,
-        recipient_count: emails.length,
-        pending_count: emails.length,
-        status: 'sending',
+        recipients: emails,
       });
-      const campaignId = campaignRes.id || campaignRes.data?.id;
-      if (!campaignId) throw new Error('Campaign was not created');
-
-      await api.marketing.createEmailSends(
-        campaignId,
-        emails.map((email) => ({ recipient_email: email, status: 'pending' })),
-      );
-
-      // Trigger n8n via authenticated PHP proxy (URL stays server-side in config.php)
-      try {
-        await api.marketing.triggerN8nWebhook('email', {
-          campaign_id: campaignId,
-          subject: draft.subject,
-          html_body: draft.html_body,
-          recipients: emails,
-        });
-      } catch (webhookErr) {
-        console.warn('n8n webhook not configured or failed:', webhookErr);
+      const sent = Number(res?.sent ?? 0);
+      const failed = Number(res?.failed ?? 0);
+      if (sent <= 0) {
+        throw new Error(res?.error || res?.message || 'Send failed. Check Settings → Email Setup for your organization SMTP.');
       }
-
-      toast({ title: `Campaign created with ${emails.length} recipients!` });
+      toast({
+        title: `Sent ${sent} email(s)`,
+        description: failed ? `${failed} failed — check campaign history.` : 'Delivered via your organization email settings.',
+      });
       setShowBulkSend(false);
       setBulkEmails('');
       setSelectedDraftId('');
+      setSelectedRecipientIds([]);
       fetchAll();
     } catch (err: any) {
-      toast({ variant: 'destructive', title: 'Error', description: err.message });
+      toast({ variant: 'destructive', title: 'Send failed', description: err.message });
     } finally {
       setSending(false);
     }
@@ -532,10 +555,18 @@ export default function MarketingPortal() {
       </Dialog>
 
       {/* Bulk Send Dialog */}
-      <Dialog open={showBulkSend} onOpenChange={setShowBulkSend}>
-        <DialogContent className="max-w-lg">
+      <Dialog open={showBulkSend} onOpenChange={(open) => {
+        setShowBulkSend(open);
+        if (!open) {
+          setSelectedRecipientIds([]);
+        }
+      }}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle className="flex items-center gap-2"><Send className="h-4 w-4" />Send Campaign</DialogTitle></DialogHeader>
           <div className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              Sends through your organization email (Settings → Email Setup → Marketing email campaigns).
+            </p>
             <div>
               <Label className="text-xs font-medium">Select Draft *</Label>
               <Select value={selectedDraftId} onValueChange={setSelectedDraftId}>
@@ -547,28 +578,20 @@ export default function MarketingPortal() {
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <Label className="text-xs font-medium">Recipient Emails *</Label>
-                <Button size="sm" variant="ghost" className="h-7 text-xs gap-1" onClick={() => fileInputRef.current?.click()}>
-                  <Upload className="h-3 w-3" />Upload CSV
-                </Button>
-                <input ref={fileInputRef} type="file" accept=".csv,.txt,.xlsx" className="hidden" onChange={handleFileUpload} />
-              </div>
-              <Textarea
-                value={bulkEmails}
-                onChange={e => setBulkEmails(e.target.value)}
-                placeholder="Enter emails, one per line...&#10;john@example.com&#10;jane@example.com"
-                className="min-h-[150px] text-sm"
-              />
-              <p className="text-[10px] text-muted-foreground mt-1">
-                {bulkEmails.split('\n').filter(e => e.trim() && e.includes('@')).length} valid emails
-              </p>
-            </div>
+            <CampaignRecipientPicker
+              mode="email"
+              people={recipientPeople}
+              selectedIds={selectedRecipientIds}
+              onSelectedIdsChange={setSelectedRecipientIds}
+              manualText={bulkEmails}
+              onManualTextChange={setBulkEmails}
+              onUploadFile={handleFileUpload}
+              fileInputRef={fileInputRef}
+            />
             <DialogFooter>
               <Button onClick={handleBulkSend} disabled={sending} className="w-full gap-1.5">
                 {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                Send to {bulkEmails.split('\n').filter(e => e.trim() && e.includes('@')).length} Recipients
+                Send to {mergeCampaignRecipients('email', recipientPeople, selectedRecipientIds, bulkEmails).length} Recipients
               </Button>
             </DialogFooter>
           </div>

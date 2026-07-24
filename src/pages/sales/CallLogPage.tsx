@@ -199,7 +199,7 @@ function DailyLogsStrip({
               setPage(1);
             }}
           >
-            <SelectTrigger className="h-8 w-[130px] text-xs">
+            <SelectTrigger className="h-10 w-full max-w-[160px] text-xs md:h-8 md:w-[130px]">
               <SelectValue placeholder="Per page" />
             </SelectTrigger>
             <SelectContent>
@@ -225,8 +225,8 @@ function DailyLogsStrip({
         </div>
       ) : (
         <Card className="border-border/50 shadow-none">
-          <div className="overflow-x-auto max-h-[65vh]">
-            <Table>
+          <div className="crm-table-scroll overflow-x-auto max-h-[65dvh]">
+            <Table className="min-w-[960px]">
               <TableHeader>
                 <TableRow>
                   <TableHead className="sticky top-0 z-10 bg-card w-[56px]">#</TableHead>
@@ -260,8 +260,8 @@ function DailyLogsStrip({
                         {log.call_status.replace(/_/g, " ")}
                       </Badge>
                     </TableCell>
-                    <TableCell className="font-medium">{log.client_name || "—"}</TableCell>
-                    <TableCell>{log.client_phone || "—"}</TableCell>
+                    <TableCell className="font-medium max-w-[160px] truncate">{log.client_name || "—"}</TableCell>
+                    <TableCell className="max-w-[140px] truncate">{log.client_phone || "—"}</TableCell>
                     <TableCell className="font-mono">{formatCallDuration(log.duration_seconds)}</TableCell>
                     <TableCell className="max-w-[180px] truncate text-muted-foreground">{callLogLeadStatusCell(log)}</TableCell>
                     {showRepColumn ? <TableCell>{log.sales_rep_name || "—"}</TableCell> : null}
@@ -286,11 +286,11 @@ function DailyLogsStrip({
                     </TableCell>
                     <TableCell>
                       {canMutate(log) ? (
-                        <div className="flex items-center gap-1">
-                          <Button variant="outline" size="sm" className="h-8 gap-1" onClick={() => onEdit(log)}>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <Button variant="outline" size="sm" className="h-9 gap-1 max-md:min-h-11" onClick={() => onEdit(log)}>
                             <Pencil className="h-3 w-3" /> Edit
                           </Button>
-                          <Button variant="outline" size="sm" className="h-8 gap-1 text-destructive" onClick={() => onDelete(log)}>
+                          <Button variant="outline" size="sm" className="h-9 gap-1 text-destructive max-md:min-h-11" onClick={() => onDelete(log)}>
                             <Trash2 className="h-3 w-3" /> Delete
                           </Button>
                         </div>

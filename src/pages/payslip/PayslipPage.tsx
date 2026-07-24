@@ -120,7 +120,7 @@ export default function PayslipPage() {
 
   if (!canAccess) {
     return (
-      <div className="min-h-[calc(100vh-8rem)] bg-[#f9fafb]">
+      <div className="min-h-[calc(100dvh-8rem)] bg-[#f9fafb]">
         <AccessDenied />
       </div>
     );

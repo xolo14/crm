@@ -290,33 +290,46 @@ class WhatsAppWebhookHandler
                 self::storeStatusOrphan($db, $providerMessageId, strtolower($status), $ts);
                 return;
             }
-            $current = strtolower(trim((string) ($row['status'] ?? '')));
-            $incoming = strtolower($status);
             // Never regress (e.g. read → delivered). Failed only applies before delivered.
-            if ($incoming === 'failed' && self::statusRank($current) >= self::statusRank('delivered')) {
-                return;
-            }
-            if ($incoming !== 'failed' && self::statusRank($incoming) < self::statusRank($current)) {
-                // Still stamp timestamps if useful
-                if ($incoming === 'delivered' && $ts) {
-                    $db->prepare('UPDATE comm_whatsapp_messages SET delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
-                        ->execute([$ts, $providerMessageId]);
-                }
+            // Atomic CAS: apply only when incoming rank is still ahead of the row at write time.
+            $incoming = strtolower($status);
+            $rankIncoming = self::statusRank($incoming);
+            if ($incoming === 'failed') {
+                $db->prepare(
+                    'UPDATE comm_whatsapp_messages SET status = ?, error_message = ?
+                     WHERE provider_message_id = ?
+                       AND LOWER(COALESCE(status, \'\')) NOT IN (\'delivered\', \'read\')',
+                )->execute([$incoming, $err, $providerMessageId]);
                 return;
             }
 
             if ($incoming === 'delivered') {
-                $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
-                    ->execute([$incoming, $ts, $providerMessageId]);
+                $db->prepare(
+                    'UPDATE comm_whatsapp_messages
+                     SET status = ?, delivered_at = COALESCE(delivered_at, ?)
+                     WHERE provider_message_id = ?
+                       AND CASE LOWER(COALESCE(status, \'\'))
+                         WHEN \'queued\' THEN 10 WHEN \'sent\' THEN 20 WHEN \'delivered\' THEN 30
+                         WHEN \'read\' THEN 40 WHEN \'failed\' THEN 100 ELSE 0 END <= ?',
+                )->execute([$incoming, $ts, $providerMessageId, $rankIncoming]);
             } elseif ($incoming === 'read') {
-                $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, read_at = COALESCE(read_at, ?), delivered_at = COALESCE(delivered_at, ?) WHERE provider_message_id = ?')
-                    ->execute([$incoming, $ts, $ts, $providerMessageId]);
-            } elseif ($incoming === 'failed') {
-                $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, error_message = ? WHERE provider_message_id = ?')
-                    ->execute([$incoming, $err, $providerMessageId]);
+                $db->prepare(
+                    'UPDATE comm_whatsapp_messages
+                     SET status = ?, read_at = COALESCE(read_at, ?), delivered_at = COALESCE(delivered_at, ?)
+                     WHERE provider_message_id = ?
+                       AND CASE LOWER(COALESCE(status, \'\'))
+                         WHEN \'queued\' THEN 10 WHEN \'sent\' THEN 20 WHEN \'delivered\' THEN 30
+                         WHEN \'read\' THEN 40 WHEN \'failed\' THEN 100 ELSE 0 END <= ?',
+                )->execute([$incoming, $ts, $ts, $providerMessageId, $rankIncoming]);
             } else {
-                $db->prepare('UPDATE comm_whatsapp_messages SET status = ?, sent_at = COALESCE(sent_at, ?) WHERE provider_message_id = ?')
-                    ->execute([$incoming, $ts, $providerMessageId]);
+                $db->prepare(
+                    'UPDATE comm_whatsapp_messages
+                     SET status = ?, sent_at = COALESCE(sent_at, ?)
+                     WHERE provider_message_id = ?
+                       AND CASE LOWER(COALESCE(status, \'\'))
+                         WHEN \'queued\' THEN 10 WHEN \'sent\' THEN 20 WHEN \'delivered\' THEN 30
+                         WHEN \'read\' THEN 40 WHEN \'failed\' THEN 100 ELSE 0 END <= ?',
+                )->execute([$incoming, $ts, $providerMessageId, $rankIncoming]);
             }
         } catch (Throwable $e) {
             error_log('[wa_webhook] status update: ' . $e->getMessage());

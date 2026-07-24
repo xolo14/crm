@@ -345,6 +345,7 @@ if ($routesToHr) {
                 'success' => true,
                 'hr_lead_id' => (int) $dupRow['id'],
                 'destination' => 'hr_leads',
+                'duplicate' => true,
             ]);
         }
     }
@@ -391,7 +392,12 @@ if ($routesToHr) {
 $dupOrgId = ($orgId !== null && $orgId !== '') ? $orgId : null;
 $dup = leadsFindDuplicateInOrg($db, $dupOrgId, (string) ($email ?? ''), (string) ($phone ?? ''));
 if (is_array($dup)) {
-    respond(['success' => true, 'lead_id' => $dup['id'], 'destination' => 'leads']);
+    respond([
+        'success' => true,
+        'lead_id' => $dup['id'],
+        'destination' => 'leads',
+        'duplicate' => true,
+    ]);
 }
 
 $id = generateUUID();
@@ -418,6 +424,14 @@ try {
         $orgId !== '' ? $orgId : null,
         $createdBy !== '' ? $createdBy : null,
     ]);
+
+    if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
+        try {
+            leadsSetAssignee($db, $id, (string) $assignedTo);
+        } catch (Throwable $e) {
+            error_log('[public-lead] assignment sync: ' . $e->getMessage());
+        }
+    }
 
     if (is_array($formRow)) {
         require_once __DIR__ . '/form_campaigns.php';

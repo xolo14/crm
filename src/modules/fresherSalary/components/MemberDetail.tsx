@@ -69,7 +69,7 @@ export function MemberDetail({
         </Button>
       </SheetHeader>
 
-      <ScrollArea className="mt-6 h-[calc(100vh-8rem)] pr-4">
+      <ScrollArea className="mt-6 h-[calc(100dvh-8rem)] pr-4">
         <PhaseTimeline current={member.currentPhase} />
 
         <div className={cn(glass, "mt-4 border-border p-3 text-[11px] text-muted-foreground")}>

@@ -463,62 +463,81 @@ if ($method === 'POST' && $action === 'add_log') {
     if (is_string($dupTime) && preg_match('/^\d{1,2}:\d{2}$/', $dupTime)) {
         $dupTime .= ':00';
     }
-    $dupSt = $db->prepare(
-        "SELECT id FROM call_logs
-         WHERE sales_rep_id = ? AND org_id = ? AND call_date = ? AND call_type = ?
-           AND COALESCE(lead_id, '') = COALESCE(?, '')
-           AND COALESCE(client_phone, '') = COALESCE(?, '')
-           AND COALESCE(call_time, '') = COALESCE(?, '')
-           AND COALESCE(duration_seconds, 0) = ?
-           AND created_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
-         LIMIT 1",
-    );
-    $dupSt->execute([$repId, $orgId, $callDate, $callType, $leadId, $clientPhone, $dupTime, $duration]);
-    if ($dupSt->fetch(PDO::FETCH_ASSOC)) {
-        respond(['error' => 'Duplicate call log — already logged in the last 2 minutes'], 409);
-    }
 
+    $db->beginTransaction();
     try {
-        $stmt = $db->prepare('INSERT INTO call_logs (sales_rep_id, org_id, lead_id, call_type, call_status, duration_seconds, client_phone, client_name, notes, attachment_path, call_date, call_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
-        $stmt->execute($rowVals);
-    } catch (PDOException $e) {
-        $em = $e->getMessage();
-        $missingAttachCol = stripos($em, 'attachment_path') !== false;
-        if ($missingAttachCol) {
-            callLogsEnsureAttachmentColumn($db);
-            try {
-                $stmt = $db->prepare('INSERT INTO call_logs (sales_rep_id, org_id, lead_id, call_type, call_status, duration_seconds, client_phone, client_name, notes, attachment_path, call_date, call_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
-                $stmt->execute($rowVals);
-            } catch (PDOException $eRetry) {
-                $emRetry = $eRetry->getMessage();
-                if ($attachPath !== null) {
-                    respond([
-                        'error' => 'Could not save call log with recording',
-                        'detail' => $emRetry . ' — run: ALTER TABLE call_logs ADD COLUMN attachment_path VARCHAR(500) NULL;',
-                    ], 500);
-                }
-                try {
-                    $stmt2 = $db->prepare('INSERT INTO call_logs (sales_rep_id, org_id, lead_id, call_type, call_status, duration_seconds, client_phone, client_name, notes, call_date, call_time) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
-                    $stmt2->execute([
-                        $repId,
-                        $orgId,
-                        $leadId,
-                        $callType,
-                        $callStatus,
-                        $duration,
-                        $clientPhone,
-                        $clientName,
-                        $input['notes'] ?? null,
-                        $callDate,
-                        $callTime,
-                    ]);
-                } catch (PDOException $e2) {
-                    respond(['error' => 'Could not save call log', 'detail' => $e2->getMessage()], 500);
-                }
-            }
-        } else {
-            respond(['error' => 'Could not save call log', 'detail' => $em], 500);
+        // Serialize concurrent logs for the same lead (reduces double-insert races).
+        if (is_string($leadId) && $leadId !== '') {
+            $lock = $db->prepare('SELECT id FROM leads WHERE id = ? FOR UPDATE');
+            $lock->execute([$leadId]);
         }
+        $dupSt = $db->prepare(
+            "SELECT id FROM call_logs
+             WHERE sales_rep_id = ? AND org_id = ? AND call_date = ? AND call_type = ?
+               AND COALESCE(lead_id, '') = COALESCE(?, '')
+               AND COALESCE(client_phone, '') = COALESCE(?, '')
+               AND COALESCE(call_time, '') = COALESCE(?, '')
+               AND COALESCE(duration_seconds, 0) = ?
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 2 MINUTE)
+             LIMIT 1",
+        );
+        $dupSt->execute([$repId, $orgId, $callDate, $callType, $leadId, $clientPhone, $dupTime, $duration]);
+        if ($dupSt->fetch(PDO::FETCH_ASSOC)) {
+            $db->rollBack();
+            respond(['error' => 'Duplicate call log — already logged in the last 2 minutes'], 409);
+        }
+
+        try {
+            $stmt = $db->prepare('INSERT INTO call_logs (sales_rep_id, org_id, lead_id, call_type, call_status, duration_seconds, client_phone, client_name, notes, attachment_path, call_date, call_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+            $stmt->execute($rowVals);
+        } catch (PDOException $e) {
+            $em = $e->getMessage();
+            $missingAttachCol = stripos($em, 'attachment_path') !== false;
+            if ($missingAttachCol) {
+                callLogsEnsureAttachmentColumn($db);
+                try {
+                    $stmt = $db->prepare('INSERT INTO call_logs (sales_rep_id, org_id, lead_id, call_type, call_status, duration_seconds, client_phone, client_name, notes, attachment_path, call_date, call_time) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+                    $stmt->execute($rowVals);
+                } catch (PDOException $eRetry) {
+                    $emRetry = $eRetry->getMessage();
+                    if ($attachPath !== null) {
+                        $db->rollBack();
+                        respond([
+                            'error' => 'Could not save call log with recording',
+                            'detail' => $emRetry . ' — run: ALTER TABLE call_logs ADD COLUMN attachment_path VARCHAR(500) NULL;',
+                        ], 500);
+                    }
+                    try {
+                        $stmt2 = $db->prepare('INSERT INTO call_logs (sales_rep_id, org_id, lead_id, call_type, call_status, duration_seconds, client_phone, client_name, notes, call_date, call_time) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+                        $stmt2->execute([
+                            $repId,
+                            $orgId,
+                            $leadId,
+                            $callType,
+                            $callStatus,
+                            $duration,
+                            $clientPhone,
+                            $clientName,
+                            $input['notes'] ?? null,
+                            $callDate,
+                            $callTime,
+                        ]);
+                    } catch (PDOException $e2) {
+                        $db->rollBack();
+                        respond(['error' => 'Could not save call log', 'detail' => $e2->getMessage()], 500);
+                    }
+                }
+            } else {
+                $db->rollBack();
+                respond(['error' => 'Could not save call log', 'detail' => $em], 500);
+            }
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            try { $db->rollBack(); } catch (Throwable $ignored) {}
+        }
+        respond(['error' => 'Could not save call log', 'detail' => $e->getMessage()], 500);
     }
     $id = (int) $db->lastInsertId();
 

@@ -173,6 +173,7 @@ function paymentLinkReleaseEnrollmentClaim(string $plinkId): void
         )->execute([$plinkId]);
     } catch (Throwable $e) {
         error_log('[payment_fulfillment] release claim failed for ' . $plinkId . ': ' . $e->getMessage());
+        paymentLinkMarkNeedsReconcile($plinkId);
     }
 }
 
@@ -237,6 +238,7 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
     }
 
     if (trim((string) ($leadRow['email'] ?? '')) === '') {
+        paymentLinkMarkNeedsReconcile($plinkId);
         return ['ok' => false, 'error' => 'lead_missing_email', 'lead_id' => $leadId];
     }
 
@@ -247,6 +249,7 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
     );
     $claim->execute([$plinkId]);
     if ($claim->rowCount() < 1) {
+        paymentLinkClearNeedsReconcile($plinkId);
         return ['ok' => true, 'skipped' => true, 'reason' => 'already_enrolled'];
     }
 
@@ -280,6 +283,8 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
             }
         }
 
+        paymentLinkClearNeedsReconcile($plinkId);
+
         return [
             'ok' => true,
             'lead_id' => $leadId,
@@ -303,6 +308,7 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
             error_log('[payment_fulfillment] status revert: ' . $revertErr->getMessage());
         }
         error_log('[payment_fulfillment] enroll failed for ' . $plinkId . ': ' . $e->getMessage());
+        paymentLinkMarkNeedsReconcile($plinkId);
 
         return [
             'ok' => false,
@@ -413,15 +419,24 @@ function paymentLinksFulfillPaidItems(array $items, int $maxCheck = 100): void
 
         $needsReceipt = $amountPaid > (int) ($row['invoice_sent_for_amount_paid'] ?? 0);
         $needsEnroll = $status === 'paid' && empty($row['enrollment_applied_at']);
-        if (!$needsReceipt && !$needsEnroll) {
+        $needsReconcile = !empty($row['reconcile_needed']);
+        if (!$needsReceipt && !$needsEnroll && !$needsReconcile) {
             continue;
         }
 
         $checked++;
         $eventType = $status === 'paid' ? 'payment_link.paid' : 'payment_link.partially_paid';
         try {
-            paymentLinkProcessPaymentSideEffects($row, $item, null, $eventType);
+            $side = paymentLinkProcessPaymentSideEffects($row, $item, null, $eventType);
+            $receiptOk = !is_array($side['receipt'] ?? null) || !empty($side['receipt']['ok']);
+            $enrollOk = !is_array($side['enrollment'] ?? null) || !empty($side['enrollment']['ok']) || !empty($side['enrollment']['skipped']);
+            if ($receiptOk && $enrollOk) {
+                paymentLinkClearNeedsReconcile($id);
+            } else {
+                paymentLinkMarkNeedsReconcile($id);
+            }
         } catch (Throwable $e) {
+            paymentLinkMarkNeedsReconcile($id);
             error_log('[payment_links] fulfill paid item ' . $id . ': ' . $e->getMessage());
         }
     }

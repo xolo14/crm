@@ -32,6 +32,7 @@ function syncpediaMailCategories(): array
         ['key' => 'payslips', 'label' => 'Payslips'],
         ['key' => 'form_links', 'label' => 'Form links'],
         ['key' => 'form_campaigns', 'label' => 'Form email campaigns'],
+        ['key' => 'marketing_campaigns', 'label' => 'Marketing email campaigns'],
         ['key' => 'hr_updates', 'label' => 'HR and fresher updates'],
         ['key' => 'notifications', 'label' => 'Email notifications'],
     ];

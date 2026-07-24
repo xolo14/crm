@@ -1,12 +1,6 @@
 import { api } from "@/lib/api";
 import { normalizeAppRole } from "@/lib/roleUtils";
 
-/** Org-level admin roles (L3), not a separate login URL anymore. */
-export function isAdminPortalRole(role?: string | null): boolean {
-  const n = normalizeAppRole(role);
-  return n === "admin" || n === "org";
-}
-
 /** Roles that must use `/super_admin`. */
 export function isSuperAdminPortalRole(role?: string | null): boolean {
   return normalizeAppRole(role) === "super_admin";

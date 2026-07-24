@@ -59,11 +59,43 @@ function trashRestoreRow(PDO $db, array $trashRow, array $typeMap): void {
     if (count($use) < 2) {
         throw new RuntimeException('Restore failed: archived payload has no matching columns for ' . $table);
     }
+
+    // Soften dead FKs so restore succeeds after assignee/creator users were deleted.
+    if ($table === 'leads') {
+        foreach (['assigned_to', 'created_by'] as $fkCol) {
+            $fkVal = trim((string) ($use[$fkCol] ?? ''));
+            if ($fkVal === '') {
+                continue;
+            }
+            try {
+                $chk = $db->prepare('SELECT id FROM users WHERE id = ? LIMIT 1');
+                $chk->execute([$fkVal]);
+                if (!$chk->fetch()) {
+                    $use[$fkCol] = null;
+                }
+            } catch (Throwable $e) {
+                $use[$fkCol] = null;
+            }
+        }
+    }
+
     $cols = array_keys($use);
     $ph = implode(',', array_fill(0, count($cols), '?'));
     $sql = 'INSERT INTO `' . $table . '` (`' . implode('`,`', $cols) . '`) VALUES (' . $ph . ')';
     $ins = $db->prepare($sql);
     $ins->execute(array_values($use));
+
+    // Leads: assignment rows CASCADE-deleted on delete — recreate from assigned_to.
+    if ($table === 'leads') {
+        $assignee = trim((string) ($use['assigned_to'] ?? ''));
+        if ($assignee !== '') {
+            try {
+                leadsSetAssignee($db, (string) $use['id'], $assignee);
+            } catch (Throwable $e) {
+                leadsSetAssignee($db, (string) $use['id'], null);
+            }
+        }
+    }
 }
 
 if ($method === 'GET') {

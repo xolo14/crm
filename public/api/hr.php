@@ -205,8 +205,24 @@ if ($action === 'assigned_leads' && $method === 'PUT') {
     if ($status === 'enrolled') {
         try {
             leadsTryAttachStudentForEnrollment($db, $tokenData, $id);
+            if (!enrollStudentRowAlreadyExists($db, $id)) {
+                throw new RuntimeException('student_create_failed');
+            }
         } catch (Throwable $e) {
             error_log('[hr] enroll student: ' . $e->getMessage());
+            // Revert status — never leave enrolled without a student.
+            try {
+                $prev = strtolower(trim((string) ($lead['status'] ?? 'interested')));
+                if ($prev === '' || $prev === 'enrolled') {
+                    $prev = 'interested';
+                }
+                $db->prepare(
+                    'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?',
+                )->execute([$prev, $id, 'enrolled']);
+            } catch (Throwable $revertErr) {
+                error_log('[hr] enroll status revert: ' . $revertErr->getMessage());
+            }
+            respond(['error' => 'Could not create student for enrollment — status reverted'], 500);
         }
     }
     respond(['message' => 'Lead status updated']);

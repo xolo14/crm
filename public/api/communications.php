@@ -12,6 +12,14 @@ $action = $_GET['action'] ?? '';
 $userId = $tokenData['user_id'];
 $input = getInput();
 
+// Aliases for WhatsApp Inbox clients
+if ($action === 'get_conversations') {
+    $action = 'conversations';
+}
+if ($action === 'get_messages') {
+    $action = 'messages';
+}
+
 function commNormRole(array $tokenData): string {
     return syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 }
@@ -210,6 +218,39 @@ function commRenderTemplate(string $body, array $vars): string {
 }
 
 /**
+ * Only keep lead_id if the lead row still exists. Clears stale wa_conversations.lead_id when given.
+ * Safe if an older WhatsAppInbox.php (without resolveValidLeadId) is on the server.
+ */
+function commResolveValidLeadId(PDO $db, ?string $leadId, ?string $conversationId = null): ?string
+{
+    if (class_exists('WhatsAppInbox', false) && method_exists('WhatsAppInbox', 'resolveValidLeadId')) {
+        return WhatsAppInbox::resolveValidLeadId($db, $leadId, $conversationId);
+    }
+    $leadId = $leadId !== null ? trim($leadId) : '';
+    if ($leadId === '') {
+        return null;
+    }
+    try {
+        $st = $db->prepare('SELECT id FROM leads WHERE id = ? LIMIT 1');
+        $st->execute([$leadId]);
+        if ($st->fetchColumn()) {
+            return $leadId;
+        }
+    } catch (Throwable $e) {
+        return null;
+    }
+    if ($conversationId !== null && trim($conversationId) !== '') {
+        try {
+            $db->prepare('UPDATE wa_conversations SET lead_id = NULL WHERE id = ? AND lead_id = ?')
+                ->execute([trim($conversationId), $leadId]);
+        } catch (Throwable $e) {
+            // Best-effort; message insert must proceed with null lead_id.
+        }
+    }
+    return null;
+}
+
+/**
  * @deprecated Use commSendViaOrgProvider
  */
 function commSendViaProvider(PDO $db, array $config, string $phone, array $template, array $bodyParams = []): array
@@ -307,7 +348,7 @@ if ($action === 'orgs_overview' && $method === 'GET') {
 
 // ─── Test WhatsApp connection (Meta Cloud API) ───
 if (($action === 'test_whatsapp_connection' || $action === 'test_meta_connection') && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'marketing']);
     $orgId = commResolveOrgId($db, $tokenData, $input);
     if (!$orgId) {
         respond(['error' => 'Organization required'], 400);
@@ -315,9 +356,12 @@ if (($action === 'test_whatsapp_connection' || $action === 'test_meta_connection
     commAssertOrgAccess($tokenData, $orgId);
     try {
         $overrides = [];
-        foreach (['api_key', 'app_secret', 'provider', 'phone_number_id', 'waba_id', 'graph_api_version'] as $field) {
-            if (!empty($input[$field]) && trim((string) $input[$field]) !== '') {
-                $overrides[$field] = trim((string) $input[$field]);
+        // Only org admins may pass temporary credential overrides for testing.
+        if (commIsAdmin($tokenData)) {
+            foreach (['api_key', 'app_secret', 'provider', 'phone_number_id', 'waba_id', 'graph_api_version'] as $field) {
+                if (!empty($input[$field]) && trim((string) $input[$field]) !== '') {
+                    $overrides[$field] = trim((string) $input[$field]);
+                }
             }
         }
         $test = commTestWhatsappConnectionForOrg($db, $orgId, $overrides);
@@ -367,7 +411,7 @@ if ($action === 'complete_embedded_signup' && $method === 'POST') {
 
 // ─── Meta: sync approved templates from org WABA ───
 if ($action === 'sync_meta_templates' && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'marketing']);
     $orgId = commResolveOrgId($db, $tokenData, $input);
     if (!$orgId) {
         respond(['error' => 'Organization required'], 400);
@@ -694,7 +738,32 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
 
     $vars = $input['variables'] ?? [];
     if (!is_array($vars)) $vars = [];
-    $body = commRenderTemplate((string) $template['body'], $vars);
+    $vars = array_values(array_map(static fn ($v) => trim((string) $v), $vars));
+    // Meta (#131008) rejects empty body parameter text values.
+    $bodyText = (string) ($template['body'] ?? '');
+    $expected = 0;
+    if (preg_match_all('/\{\{(\d+)\}\}/', $bodyText, $m)) {
+        $expected = max(array_map('intval', $m[1]));
+    }
+    if ($expected > 0) {
+        while (count($vars) < $expected) {
+            $vars[] = '';
+        }
+        $vars = array_slice($vars, 0, $expected);
+        $missing = [];
+        foreach ($vars as $i => $v) {
+            if ($v === '') {
+                $missing[] = '{{' . ($i + 1) . '}}';
+            }
+        }
+        if ($missing) {
+            respond([
+                'error' => 'All template variables are required (Meta rejects empty values)',
+                'missing' => $missing,
+            ], 400);
+        }
+    }
+    $body = commRenderTemplate($bodyText, $vars);
     $orgId = (string) ($template['org_id'] ?? '');
     if ($orgId === '') {
         $orgId = (string) (commResolveOrgId($db, $tokenData, $input) ?? '');
@@ -736,8 +805,13 @@ if ($action === 'send_whatsapp' && $method === 'POST') {
     $send = commSendViaOrgProvider($db, $orgId, $phone, $template, $vars, $msgId);
     $status = $send['ok'] ? 'sent' : 'failed';
     $wamid = trim((string) ($send['provider_message_id'] ?? ''));
-    $leadId = $input['lead_id'] ?? ($conv['lead_id'] ?? null);
     $convId = $conv['id'] ?? null;
+    // Prefer request lead_id, then conversation — but never insert a deleted/missing lead FK.
+    $leadId = commResolveValidLeadId(
+        $db,
+        isset($input['lead_id']) ? (string) $input['lead_id'] : ($conv['lead_id'] ?? null),
+        $convId !== null ? (string) $convId : null,
+    );
     $now = date('Y-m-d H:i:s');
 
     try {
@@ -835,6 +909,24 @@ if ($action === 'send_whatsapp_reply' && $method === 'POST') {
     $msgId = generateUUID();
     $normalized = WhatsAppInbox::normalizePhone($phone);
     $conv = WhatsAppInbox::findOrCreateConversation($db, $orgId, $normalized, $input['recipient_name'] ?? null, null, null);
+    if ($conv) {
+        WhatsAppInbox::closeExpiredWindows($db);
+        // Refresh row after expiry sweep
+        $cRefresh = $db->prepare('SELECT * FROM wa_conversations WHERE id = ? LIMIT 1');
+        $cRefresh->execute([(string) $conv['id']]);
+        $fresh = $cRefresh->fetch(PDO::FETCH_ASSOC);
+        if (is_array($fresh)) {
+            $conv = $fresh;
+        }
+        if (!WhatsAppInbox::isWindowOpen($conv)) {
+            respond([
+                'error' => '24-hour messaging window is closed. Send an approved template instead.',
+                'window_open' => false,
+                'window_expires_at' => $conv['window_expires_at'] ?? null,
+                'conversation_id' => $conv['id'] ?? null,
+            ], 409);
+        }
+    }
     $role = commNormRole($tokenData);
     if ($conv && WhatsAppInbox::isFieldInboxRole($role)) {
         $can = WhatsAppInbox::userCanAccessConversation($db, $conv, $userId, $role);
@@ -855,8 +947,12 @@ if ($action === 'send_whatsapp_reply' && $method === 'POST') {
     $send = commSendTextViaOrgProvider($db, $orgId, $phone, $text);
     $status = $send['ok'] ? 'sent' : 'failed';
     $now = date('Y-m-d H:i:s');
-    $leadId = $conv['lead_id'] ?? ($input['lead_id'] ?? null);
     $convId = $conv['id'] ?? null;
+    $leadId = commResolveValidLeadId(
+        $db,
+        isset($input['lead_id']) ? (string) $input['lead_id'] : ($conv['lead_id'] ?? null),
+        $convId !== null ? (string) $convId : null,
+    );
     $wamid = trim((string) ($send['provider_message_id'] ?? ''));
 
     try {
@@ -971,6 +1067,7 @@ if ($action === 'messages' && $method === 'GET') {
     requireRole($tokenData, commMessagingRoles());
     require_once __DIR__ . '/lib/WhatsAppInbox.php';
     WhatsAppInbox::ensureTables($db);
+    WhatsAppInbox::closeExpiredWindows($db);
 
     $orgId = commResolveOrgId($db, $tokenData, $_GET);
     $limit = min(100, max(10, (int) ($_GET['limit'] ?? 50)));
@@ -1001,12 +1098,17 @@ if ($action === 'messages' && $method === 'GET') {
         $stmt->bindValue(1, $conversationId);
         $stmt->bindValue(2, $limit, PDO::PARAM_INT);
         $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         // Mark read for this user when opening thread
         try {
             $db->prepare('UPDATE wa_conversations SET unread_count = 0 WHERE id = ?')->execute([$conversationId]);
         } catch (Throwable $e) {
         }
-        respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC), 'conversation' => $conv]);
+        // Refresh conversation window flags after expiry sweep
+        $cStmt2 = $db->prepare('SELECT * FROM wa_conversations WHERE id = ? LIMIT 1');
+        $cStmt2->execute([$conversationId]);
+        $convFresh = $cStmt2->fetch(PDO::FETCH_ASSOC) ?: $conv;
+        respond(['data' => $rows, 'messages' => $rows, 'conversation' => $convFresh]);
     }
 
     if (commIsSuperAdmin($tokenData) && empty($_GET['org_id'])) {
@@ -1058,18 +1160,59 @@ if ($action === 'conversations' && $method === 'GET') {
     requireRole($tokenData, commMessagingRoles());
     require_once __DIR__ . '/lib/WhatsAppInbox.php';
     WhatsAppInbox::ensureTables($db);
+    WhatsAppInbox::closeExpiredWindows($db);
     $orgId = commResolveOrgId($db, $tokenData, $_GET);
     if (!$orgId) {
         respond(['error' => 'Organization required'], 400);
     }
-    $limit = min(100, max(10, (int) ($_GET['limit'] ?? 50)));
+    $limit = min(200, max(10, (int) ($_GET['limit'] ?? 50)));
+    $offset = max(0, (int) ($_GET['offset'] ?? 0));
+    $search = trim((string) ($_GET['search'] ?? ''));
     $role = commNormRole($tokenData);
-    $rows = WhatsAppInbox::listConversationsForUser($db, $orgId, $userId, $role, $limit);
+    $rows = WhatsAppInbox::listConversationsForUser($db, $orgId, $userId, $role, $limit + $offset);
+    if ($search !== '') {
+        $q = strtolower($search);
+        $rows = array_values(array_filter($rows, static function ($r) use ($q, $search) {
+            $name = strtolower((string) ($r['contact_name'] ?? ''));
+            $phone = (string) ($r['contact_phone'] ?? '');
+            $preview = strtolower((string) ($r['last_message_preview'] ?? ''));
+            return str_contains($name, $q) || str_contains($phone, $search) || str_contains($preview, $q);
+        }));
+    }
+    $total = count($rows);
+    if ($offset > 0 || $limit < $total) {
+        $rows = array_slice($rows, $offset, $limit);
+    }
     respond([
         'data' => $rows,
+        'conversations' => $rows,
+        'total' => $total,
         'can_assign' => commCanAssignWhatsappChats($tokenData),
         'scope' => WhatsAppInbox::isOrgWideInboxRole($role) ? 'org' : 'mine',
     ]);
+}
+
+// ─── Mark conversation read ───
+if ($action === 'mark_read' && $method === 'POST') {
+    requireRole($tokenData, commMessagingRoles());
+    require_once __DIR__ . '/lib/WhatsAppInbox.php';
+    WhatsAppInbox::ensureTables($db);
+    $conversationId = trim((string) ($input['conversation_id'] ?? ''));
+    if ($conversationId === '') {
+        respond(['error' => 'conversation_id required'], 400);
+    }
+    $cStmt = $db->prepare('SELECT * FROM wa_conversations WHERE id = ? LIMIT 1');
+    $cStmt->execute([$conversationId]);
+    $conv = $cStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$conv) {
+        respond(['error' => 'Conversation not found'], 404);
+    }
+    $role = commNormRole($tokenData);
+    if (!WhatsAppInbox::userCanAccessConversation($db, $conv, $userId, $role)) {
+        respond(['error' => 'Forbidden'], 403);
+    }
+    $db->prepare('UPDATE wa_conversations SET unread_count = 0 WHERE id = ?')->execute([$conversationId]);
+    respond(['success' => true, 'conversation_id' => $conversationId]);
 }
 
 // ─── Assignable teammates for chat assignment ───

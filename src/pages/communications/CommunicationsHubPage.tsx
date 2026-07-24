@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import DialerPad from "@/components/communications/DialerPad";
 import WhatsAppSetupHome from "@/components/communications/WhatsAppSetupHome";
 import WhatsAppSetupWizard from "@/components/communications/WhatsAppSetupWizard";
-import WhatsAppChatInbox from "@/components/communications/WhatsAppChatInbox";
+import WhatsAppInbox from "@/components/WhatsApp/WhatsAppInbox";
 import LogCallDialog from "@/components/sales/LogCallDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,6 +43,10 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   const [selectedNumberId, setSelectedNumberId] = useState<string>("");
   const [waPhone, setWaPhone] = useState("");
   const [waName, setWaName] = useState("");
+  const [waLeadId, setWaLeadId] = useState<string | null>(null);
+  const [waLeadPickerOpen, setWaLeadPickerOpen] = useState(false);
+  const [waLeadSearchDebounced, setWaLeadSearchDebounced] = useState("");
+  const waLeadPickerRef = useRef<HTMLDivElement>(null);
   const [waTemplateId, setWaTemplateId] = useState("");
   const [waVars, setWaVars] = useState("");
   const [setupWizardOpen, setSetupWizardOpen] = useState(false);
@@ -58,6 +62,25 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
     queryKey: ["comm", "contacts", contactSearch],
     queryFn: () => communicationsApi.dialerContacts(contactSearch),
   });
+  useEffect(() => {
+    const t = window.setTimeout(() => setWaLeadSearchDebounced(waName.trim()), 250);
+    return () => window.clearTimeout(t);
+  }, [waName]);
+  const { data: waLeadsRes, isFetching: waLeadsLoading } = useQuery({
+    queryKey: ["comm", "wa-lead-search", waLeadSearchDebounced],
+    queryFn: () => communicationsApi.dialerContacts(waLeadSearchDebounced),
+    enabled: waLeadPickerOpen && waLeadSearchDebounced.length >= 1,
+  });
+  useEffect(() => {
+    if (!waLeadPickerOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (waLeadPickerRef.current && !waLeadPickerRef.current.contains(e.target as Node)) {
+        setWaLeadPickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [waLeadPickerOpen]);
   const { data: templatesRes } = useQuery({
     queryKey: ["comm", "templates-approved"],
     queryFn: () => communicationsApi.templates({ status: "approved" }),
@@ -94,6 +117,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
   const orgNumbers = orgNumbersRes?.data ?? [];
   const team = Array.isArray(teamRes) ? teamRes : teamRes?.data ?? [];
   const contacts = contactsRes?.data ?? [];
+  const waLeadResults = waLeadsRes?.data ?? [];
   const templates = templatesRes?.data ?? [];
   const messages = messagesRes?.data ?? [];
 
@@ -128,7 +152,10 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
       toast({ title: "WhatsApp sent", description: `Message sent via ${waProvider}.` });
       setWaPhone("");
       setWaName("");
+      setWaLeadId(null);
       setWaVars("");
+      setWaLeadPickerOpen(false);
+      setSelectedContact(null);
       qc.invalidateQueries({ queryKey: ["comm", "messages"] });
       qc.invalidateQueries({ queryKey: ["comm", "conversations"] });
     },
@@ -147,7 +174,43 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
     setDialNumber(c.phone);
     setWaPhone(c.phone);
     setWaName(c.full_name);
+    setWaLeadId(c.id);
     setSelectedContact(c);
+  };
+
+  const handleWaNameChange = (value: string) => {
+    setWaName(value);
+    setWaLeadPickerOpen(true);
+    if (waLeadId && selectedContact) {
+      const same =
+        value.trim().toLowerCase() === (selectedContact.full_name || "").trim().toLowerCase();
+      if (!same) {
+        setWaLeadId(null);
+        setSelectedContact(null);
+      }
+    } else if (waLeadId) {
+      setWaLeadId(null);
+    }
+  };
+
+  const selectWaLead = (c: DialerContact) => {
+    setWaName(c.full_name || "");
+    setWaPhone(c.phone || "");
+    setWaLeadId(c.id);
+    setSelectedContact(c);
+    setWaLeadPickerOpen(false);
+  };
+
+  const handleWaPhoneChange = (value: string) => {
+    setWaPhone(value);
+    if (waLeadId && selectedContact) {
+      const same =
+        normalizePhone(value) === normalizePhone(selectedContact.phone || "");
+      if (!same) {
+        setWaLeadId(null);
+        setSelectedContact(null);
+      }
+    }
   };
 
   const tabTriggerClass = "flex-1 gap-1.5 data-[state=active]:shadow-sm text-xs sm:text-sm";
@@ -338,7 +401,15 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
             />
           ) : null}
 
-          <WhatsAppChatInbox connected={waConnected} />
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm text-muted-foreground">Full WhatsApp Web–style inbox</p>
+            <Button variant="outline" size="sm" asChild>
+              <Link to="/communications/whatsapp-inbox">Open fullscreen</Link>
+            </Button>
+          </div>
+          <div className="min-h-0 w-full overflow-hidden rounded-xl">
+            <WhatsAppInbox connected={waConnected} embedded />
+          </div>
 
           <details className={cn("rounded-xl border group", isOrgAdmin && !waConnected && "opacity-60")}>
             <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium flex items-center justify-between gap-2 [&::-webkit-details-marker]:hidden">
@@ -372,13 +443,68 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
                       )}
                     </div>
                   ) : null}
-                  <div className="space-y-1.5">
-                    <Label>Recipient phone</Label>
-                    <Input value={waPhone} onChange={(e) => setWaPhone(e.target.value)} placeholder="+91..." />
+                  <div className="space-y-1.5" ref={waLeadPickerRef}>
+                    <Label htmlFor="wa-name">Name (optional)</Label>
+                    <div className="relative">
+                      <Input
+                        id="wa-name"
+                        value={waName}
+                        onChange={(e) => handleWaNameChange(e.target.value)}
+                        onFocus={() => setWaLeadPickerOpen(true)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") setWaLeadPickerOpen(false);
+                        }}
+                        placeholder="Type to search leads…"
+                        role="combobox"
+                        aria-expanded={waLeadPickerOpen}
+                        aria-autocomplete="list"
+                        aria-controls="wa-lead-listbox"
+                        autoComplete="off"
+                      />
+                      {waLeadPickerOpen && waName.trim().length >= 1 ? (
+                        <ul
+                          id="wa-lead-listbox"
+                          role="listbox"
+                          className="absolute z-20 left-0 right-0 mt-1 max-h-52 overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md py-1"
+                        >
+                          {waLeadsLoading ? (
+                            <li className="px-3 py-2 text-xs text-muted-foreground">Searching…</li>
+                          ) : waLeadResults.length === 0 ? (
+                            <li className="px-3 py-2 text-xs text-muted-foreground">
+                              No leads found — name stays optional
+                            </li>
+                          ) : (
+                            waLeadResults.map((c) => (
+                              <li key={c.id} role="option" aria-selected={waLeadId === c.id}>
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    "w-full text-left px-3 py-2 text-sm hover:bg-accent",
+                                    waLeadId === c.id && "bg-accent",
+                                  )}
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => selectWaLead(c)}
+                                >
+                                  <span className="font-medium block truncate">{c.full_name}</span>
+                                  <span className="text-[11px] text-muted-foreground block truncate">
+                                    {[c.phone, c.email].filter(Boolean).join(" · ")}
+                                  </span>
+                                </button>
+                              </li>
+                            ))
+                          )}
+                        </ul>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="space-y-1.5">
-                    <Label>Name (optional)</Label>
-                    <Input value={waName} onChange={(e) => setWaName(e.target.value)} />
+                    <Label htmlFor="wa-phone">Recipient phone</Label>
+                    <Input
+                      id="wa-phone"
+                      value={waPhone}
+                      onChange={(e) => handleWaPhoneChange(e.target.value)}
+                      placeholder="+91..."
+                    />
                   </div>
                   <div className="space-y-1.5">
                     <Label>Approved template</Label>
@@ -404,11 +530,11 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
                     onClick={() =>
                       sendMutation.mutate({
                         recipient_phone: waPhone,
-                        recipient_name: waName || undefined,
+                        recipient_name: waName.trim() || undefined,
                         template_id: waTemplateId,
                         variables: waVars ? waVars.split(",").map((v) => v.trim()) : [],
                         virtual_number_id: activeNumber?.virtual_number_id,
-                        lead_id: selectedContact?.id,
+                        lead_id: waLeadId || undefined,
                       })
                     }
                   >

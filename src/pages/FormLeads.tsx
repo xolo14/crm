@@ -25,6 +25,11 @@ import * as perms from '@/lib/permissions';
 import { openProtectedUpload } from '@/lib/resumeHref';
 import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails';
 import { LeadContactBlock } from '@/components/leads/LeadContactBlock';
+import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
+import {
+  buildSourceSummaries,
+  filterLeadsBySourceBucket,
+} from '@/lib/leadSources';
 
 const MARKETING_RESUME_TYPES = [
   'application/pdf',
@@ -108,6 +113,10 @@ export default function FormLeads() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [enrollLead, setEnrollLead] = useState<any | null>(null);
+  const [leadForms, setLeadForms] = useState<{ slug: string; name: string }[]>([]);
+  const [sourceDialogKey, setSourceDialogKey] = useState<string | null>(null);
+  const [sourceDialogLabel, setSourceDialogLabel] = useState('');
+  const [sourceDialogStatus, setSourceDialogStatus] = useState('all');
 
   // Marketing add/import
   const isMarketing = role === 'marketing';
@@ -133,6 +142,16 @@ export default function FormLeads() {
   useEffect(() => {
     fetchData();
     if (formLeadsAssignmentRoster) fetchTeam();
+    api.forms.list()
+      .then((res) => {
+        const rows = Array.isArray(res) ? res : res?.data || [];
+        setLeadForms(
+          rows
+            .filter((f: { slug?: string; name?: string }) => f?.slug && f?.name)
+            .map((f: { slug: string; name: string }) => ({ slug: String(f.slug), name: String(f.name) })),
+        );
+      })
+      .catch(() => {});
   }, [role, user?.id, profile?.referral_code]);
 
   const fetchData = async () => {
@@ -243,6 +262,47 @@ export default function FormLeads() {
     }
     return result;
   }, [leads, employeeFilter, statusFilter, sourceFilter, search, profiles]);
+
+  const cardLeads = useMemo(() => {
+    let result = leads;
+    if (employeeFilter !== 'all') {
+      const prof = profiles.find((p) => p.user_id === employeeFilter);
+      if (prof?.referral_code) result = result.filter((l) => l.referred_by === prof.referral_code);
+    }
+    return result;
+  }, [leads, employeeFilter, profiles]);
+
+  const formLabels = useMemo(() => {
+    const labels: Record<string, string> = {};
+    leadForms.forEach((f) => {
+      labels[f.slug] = f.name;
+      labels[`form_${f.slug}`] = f.name;
+    });
+    return labels;
+  }, [leadForms]);
+
+  const sourceSummaries = useMemo(
+    () => buildSourceSummaries(cardLeads, { formLabels }),
+    [cardLeads, formLabels],
+  );
+
+  const sourceDialogLeads = useMemo(() => {
+    if (!sourceDialogKey) return [];
+    return filterLeadsBySourceBucket(cardLeads, sourceDialogKey);
+  }, [cardLeads, sourceDialogKey]);
+
+  const SOURCE_STATUS_CHIP_ORDER = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'];
+
+  const openSourceDialog = (key: string, label: string, status: string = 'all') => {
+    setSourceDialogKey(key);
+    setSourceDialogLabel(label);
+    setSourceDialogStatus(status);
+  };
+
+  const getLeadAssignedNames = (lead: any) => {
+    const name = getAssignedName(lead?.assigned_to);
+    return name ? [name] : [];
+  };
   const groupedTeamMembers = useMemo(() => {
     const groups: Record<string, any[]> = {};
     teamMembers.forEach((member) => {
@@ -263,14 +323,14 @@ export default function FormLeads() {
     return filtered.slice(start, start + pageSize);
   }, [filtered, currentPage, pageSize]);
 
-  // KPIs
+  // KPIs (respect employee filter via cardLeads)
   const totalLeads = leads.length;
-  const filteredTotal = filtered.length;
-  const newLeads = filtered.filter(l => l.status === 'new').length;
-  const inPipeline = filtered.filter(l => ['interested', 'demo_scheduled', 'demo_attended'].includes(l.status)).length;
-  const enrollLeads = filtered.filter(l => l.status === 'enrolled' || l.status === 'converted').length;
-  const lostLeads = filtered.filter(l => l.status === 'lost').length;
-  const unassignedCount = filtered.filter(l => !l.assigned_to).length;
+  const filteredTotal = cardLeads.length;
+  const newLeads = cardLeads.filter(l => l.status === 'new').length;
+  const inPipeline = cardLeads.filter(l => ['interested', 'demo_scheduled', 'demo_attended'].includes(l.status)).length;
+  const enrollLeads = cardLeads.filter(l => l.status === 'enrolled' || l.status === 'converted').length;
+  const lostLeads = cardLeads.filter(l => l.status === 'lost').length;
+  const unassignedCount = cardLeads.filter(l => !l.assigned_to).length;
   const totalUnassignedCount = leads.filter(l => !l.assigned_to).length;
   const convRate = filteredTotal > 0 ? Math.round((enrollLeads / filteredTotal) * 100) : 0;
 
@@ -615,12 +675,7 @@ export default function FormLeads() {
           { label: 'Enroll', value: enrollLeads, icon: GraduationCap, color: 'text-teal-700', bg: 'bg-teal-500/10', sub: `${convRate}% won` },
           { label: 'Lost', value: lostLeads, icon: XCircle, color: 'text-red-600', bg: 'bg-red-500/10', sub: 'Dropped' },
         ].map(c => (
-          <Card key={c.label} className="border-border/50 shadow-none hover:shadow-md transition-shadow cursor-pointer" onClick={() => {
-            if (c.label === 'New') setStatusFilter('new');
-            else if (c.label === 'Enroll') setStatusFilter('enrolled');
-            else if (c.label === 'Lost') setStatusFilter('lost');
-            else setStatusFilter('all');
-          }}>
+          <Card key={c.label} className="border-border/50 shadow-none">
             <CardContent className="pt-3 pb-2.5 px-3">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{c.label}</span>
@@ -633,322 +688,97 @@ export default function FormLeads() {
         ))}
       </div>
 
-      {/* Filters Row */}
-      <div className="flex flex-col sm:flex-row gap-2 mb-4">
-        <div className="relative flex-1 max-w-xs sm:max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search by name, email, phone..." value={search} onChange={(e: any) => setSearch(e.target.value)} className="pl-9 h-9" />
-        </div>
-        <div className="flex gap-2">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[140px] h-9"><Filter className="h-3.5 w-3.5 mr-1.5" /><SelectValue placeholder="Status" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Statuses</SelectItem>
-              {LEAD_STATUSES.map(s => <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Select value={sourceFilter} onValueChange={setSourceFilter}>
-            <SelectTrigger className="w-[140px] h-9"><SelectValue placeholder="Source" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Sources</SelectItem>
-              {Object.entries(SOURCE_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="mb-2">
+        <h2 className="text-sm font-semibold tracking-tight">Leads by form</h2>
+        <p className="text-xs text-muted-foreground">Each form has its own card. Open a card to view, filter, and assign leads.</p>
       </div>
-
-      {/* Active Filters */}
-      {(statusFilter !== 'all' || sourceFilter !== 'all' || search) && (
-        <div className="flex items-center gap-2 mb-3 flex-wrap">
-          <span className="text-xs text-muted-foreground">Filters:</span>
-          {statusFilter !== 'all' && <Badge variant="secondary" className="text-xs gap-1 cursor-pointer" onClick={() => setStatusFilter('all')}>Status: {formatLeadStatus(statusFilter)} <XCircle className="h-3 w-3" /></Badge>}
-          {sourceFilter !== 'all' && <Badge variant="secondary" className="text-xs gap-1 cursor-pointer" onClick={() => setSourceFilter('all')}>Source: {SOURCE_LABELS[sourceFilter]} <XCircle className="h-3 w-3" /></Badge>}
-          {search && <Badge variant="secondary" className="text-xs gap-1 cursor-pointer" onClick={() => setSearch('')}>Search: "{search}" <XCircle className="h-3 w-3" /></Badge>}
-          <button onClick={() => { setStatusFilter('all'); setSourceFilter('all'); setSearch(''); }} className="text-xs text-primary hover:underline">Clear all</button>
-        </div>
-      )}
-
-      {/* Bulk Actions */}
-      {selectedIds.size > 0 && (
-        <div className="flex items-center gap-2 mb-3 p-2.5 rounded-lg bg-primary/5 border border-primary/20">
-          <span className="text-sm font-medium text-primary">{selectedIds.size} selected</span>
-          <div className="h-4 w-px bg-border" />
-          {isManager && teamMembers.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild><Button size="sm" variant="outline" className="gap-1.5 h-7"><UserPlus className="h-3.5 w-3.5" />Assign</Button></DropdownMenuTrigger>
-              <DropdownMenuContent>
-                {Object.entries(groupedTeamMembers).map(([group, members], idx) => (
-                  <div key={group}>
-                    {idx > 0 && <DropdownMenuSeparator />}
-                    <DropdownMenuLabel>{group}</DropdownMenuLabel>
-                    {members.map((m: any) => <DropdownMenuItem key={m.id} onClick={() => handleBulkAssign(m.id)}>{m.full_name}</DropdownMenuItem>)}
-                  </div>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-          {hasBulkDelete && <Button size="sm" variant="destructive" className="h-7 gap-1" onClick={handleBulkDelete}><Trash2 className="h-3 w-3" />Delete</Button>}
-          <button onClick={() => setSelectedIds(new Set())} className="text-xs text-muted-foreground hover:text-foreground ml-auto">Deselect</button>
-        </div>
-      )}
-
-      {/* Results Count & Pagination Info */}
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-xs text-muted-foreground">{filtered.length} of {totalLeads} leads</p>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Per page:</span>
-          <Select value={String(pageSize)} onValueChange={v => { setPageSize(Number(v)); setCurrentPage(1); }}>
-            <SelectTrigger className="h-7 w-[70px] text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {[10, 25, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      {/* Table / Card View */}
-      {isMobile ? (
-        <div className="space-y-2">
-          {filtered.length === 0 ? (
-            <Card className="border-border/50 shadow-none"><CardContent className="py-12 text-center"><FileText className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" /><p className="text-sm text-muted-foreground">No form leads found</p><p className="text-xs text-muted-foreground mt-1">Try adjusting your filters</p></CardContent></Card>
-          ) : paginatedLeads.map((lead, i) => (
-            <Card key={lead.id} className="border-border/50 shadow-none hover:shadow-sm transition-shadow cursor-pointer" onClick={() => openDetail(lead)}>
-              <div className="p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-muted-foreground font-mono">#{i + 1}</span>
-                      <p className="font-medium text-sm truncate">{lead.name}</p>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">{lead.college || lead.company || '—'}</p>
-                    <div className="mt-1.5">
-                      <LeadContactBlock email={lead.email} phone={lead.phone} notes={lead.notes} variant="table" />
-                    </div>
-                    <p className="text-[10px] text-emerald-600 font-medium mt-1">Collected: {codeToName[lead.referred_by] || lead.referred_by}</p>
-                    {lead.assigned_to ? (
-                      <p className="text-[10px] text-primary font-medium">Assigned: {getAssignedName(lead.assigned_to)}</p>
-                    ) : (
-                      <p className="text-[10px] text-amber-600 font-medium">⚠ Unassigned</p>
-                    )}
-                    {lead.resume_path ? (
-                      <button
-                        type="button"
-                        className="inline-flex items-center gap-1 text-[10px] text-teal-600 font-medium mt-1 bg-transparent border-0 p-0 cursor-pointer"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void openProtectedUpload(lead.resume_path).catch(() => {});
-                        }}
-                      >
-                        <FileText className="h-3 w-3" /> Resume
-                      </button>
-                    ) : (
-                      <span className="text-[10px] text-muted-foreground mt-1 block">Resume —</span>
-                    )}
-                  </div>
-                  <div className="flex flex-col items-end gap-1.5 shrink-0">
-                    {canEditLead(lead) ? (
-                      <Select
-                        value={lead.status === 'converted' ? 'enrolled' : lead.status}
-                        onValueChange={(v: string) => {
-                          if (v) onLeadStatusSelect(lead, v);
-                        }}
-                      >
-                        <SelectTrigger className="h-6 w-auto border-0 p-0" onClick={(e) => e.stopPropagation()}>
-                          <Badge variant="outline" className={`${statusColors[statusBadgeKey(lead.status)]} capitalize text-[10px]`}>{formatLeadStatus(lead.status)}</Badge>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {LEAD_STATUSES.map(s => <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>)}
-                          {lead.status === 'considering' && <SelectItem value="considering" className="capitalize">Considering</SelectItem>}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Badge variant="outline" className={`${statusColors[statusBadgeKey(lead.status)]} capitalize text-[10px]`}>{formatLeadStatus(lead.status)}</Badge>
-                    )}
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-6 w-6" onClick={(e) => e.stopPropagation()}><MoreHorizontal className="h-3.5 w-3.5" /></Button></DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openDetail(lead); }}><Eye className="h-4 w-4 mr-2" /> View Details</DropdownMenuItem>
-                        {isManager && teamMembers.length > 0 && (
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setAssignLeadId(lead.id); setAssignOpen(true); }}><UserPlus className="h-4 w-4 mr-2" /> Assign</DropdownMenuItem>
-                        )}
-                        {isManager && lead.referred_by && codeToUserId[lead.referred_by] && (
-                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleAutoAllocate(lead.id); }} className="text-emerald-600"><UserPlus className="h-4 w-4 mr-2" /> Auto: {codeToName[lead.referred_by]}</DropdownMenuItem>
-                        )}
-                        {canDeleteLead() && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onClick={(e) => { e.stopPropagation(); handleDelete(lead.id); }}><Trash2 className="h-4 w-4 mr-2" /> Delete</DropdownMenuItem></>}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 mt-2">
-                  <Badge variant="secondary" className="text-[10px] capitalize">{SOURCE_LABELS[lead.source] || lead.source?.replace(/_/g, ' ')}</Badge>
-                  <span className="text-[10px] text-muted-foreground">{new Date(lead.created_at).toLocaleDateString()}</span>
-                </div>
-              </div>
-            </Card>
-          ))}
+      {sourceSummaries.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 rounded-lg border border-dashed border-border/60">
+          <FileText className="h-12 w-12 text-muted-foreground/20 mb-4" />
+          <p className="text-sm font-medium text-muted-foreground">No form leads yet</p>
         </div>
       ) : (
-        <Card className="border-border/50 shadow-none">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                {hasBulkDelete && <TableHead className="w-10"><Checkbox checked={allSelected ? true : someSelected ? 'indeterminate' : false} onCheckedChange={toggleSelectAll} /></TableHead>}
-                <TableHead className="w-10">#</TableHead>
-                <TableHead>Lead</TableHead>
-                <TableHead>Contact</TableHead>
-                <TableHead>Collected By</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Resume</TableHead>
-                {isManager && <TableHead>Assigned To</TableHead>}
-                <TableHead>Created</TableHead>
-                {isManager && <TableHead className="w-24">Action</TableHead>}
-                <TableHead className="w-10"></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filtered.length === 0 ? (
-                <TableRow><TableCell colSpan={isManager ? 12 : 10} className="text-center py-12">
-                  <FileText className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
-                  <p className="text-sm text-muted-foreground">No form leads found</p>
-                  <p className="text-xs text-muted-foreground mt-1">Try adjusting your filters</p>
-                </TableCell></TableRow>
-              ) : paginatedLeads.map((lead: any, index: number) => (
-                <TableRow key={lead.id} className={`cursor-pointer transition-colors ${selectedIds.has(lead.id) ? 'bg-primary/5' : 'hover:bg-muted/50'}`} onClick={() => openDetail(lead)}>
-                  {hasBulkDelete && <TableCell onClick={(e) => e.stopPropagation()}><Checkbox checked={selectedIds.has(lead.id)} onCheckedChange={() => toggleSelect(lead.id)} /></TableCell>}
-                  <TableCell className="text-muted-foreground text-xs font-mono">{(currentPage - 1) * pageSize + index + 1}</TableCell>
-                  <TableCell>
-                    <div><p className="font-medium text-sm">{lead.name}</p><p className="text-xs text-muted-foreground">{lead.college || lead.company || ''}</p></div>
-                  </TableCell>
-                  <TableCell>
-                    <LeadContactBlock email={lead.email} phone={lead.phone} notes={lead.notes} variant="table" />
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-sm font-medium text-emerald-600">{codeToName[lead.referred_by] || lead.referred_by}</span>
-                  </TableCell>
-                  <TableCell><Badge variant="secondary" className="text-xs capitalize">{SOURCE_LABELS[lead.source] || lead.source?.replace(/_/g, ' ')}</Badge></TableCell>
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    {canEditLead(lead) ? (
-                      <Select
-                        value={lead.status === 'converted' ? 'enrolled' : lead.status}
-                        onValueChange={(v: string) => onLeadStatusSelect(lead, v)}
-                      >
-                        <SelectTrigger className="h-7 w-auto border-0 p-0">
-                          <Badge variant="outline" className={`${statusColors[statusBadgeKey(lead.status)]} capitalize text-xs`}>{formatLeadStatus(lead.status)}</Badge>
-                        </SelectTrigger>
-                        <SelectContent>
-                          {LEAD_STATUSES.map(s => <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>)}
-                          {lead.status === 'considering' && <SelectItem value="considering" className="capitalize">Considering</SelectItem>}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Badge variant="outline" className={`${statusColors[statusBadgeKey(lead.status)]} capitalize text-xs`}>{formatLeadStatus(lead.status)}</Badge>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 mb-6">
+          {sourceSummaries.map((summary) => {
+            const statusChips = SOURCE_STATUS_CHIP_ORDER.filter((st) => (summary.byStatus[st] || 0) > 0);
+            const visibleChips = statusChips.slice(0, 4);
+            const hiddenChipCount = statusChips.length - visibleChips.length;
+            return (
+              <Card
+                key={summary.key}
+                className="border-border/50 shadow-none hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group"
+                onClick={() => openSourceDialog(summary.key, summary.label, 'all')}
+              >
+                <CardContent className="pt-4 pb-3 px-4">
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                        <FileText className="h-4 w-4 text-primary" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-sm truncate">{summary.label}</p>
+                        <p className="text-xs text-muted-foreground">{summary.total} lead{summary.total === 1 ? '' : 's'}</p>
+                      </div>
+                    </div>
+                    {summary.unassigned > 0 && (
+                      <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-200 bg-amber-500/10 shrink-0">
+                        {summary.unassigned} unassigned
+                      </Badge>
                     )}
-                  </TableCell>
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    {lead.resume_path ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="gap-1 h-7 text-xs text-teal-600 px-2"
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {visibleChips.map((status) => (
+                      <button
+                        key={status}
                         type="button"
-                        onClick={() => {
-                          void openProtectedUpload(lead.resume_path).catch(() => {});
+                        className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] capitalize transition-colors hover:ring-1 hover:ring-primary/40 min-h-8 ${statusColors[status] || 'bg-muted'}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openSourceDialog(summary.key, summary.label, status);
                         }}
                       >
-                          <FileText className="h-3 w-3.5" /> View
-                      </Button>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
+                        <span>{formatLeadStatus(status)}</span>
+                        <span className="font-semibold tabular-nums">{summary.byStatus[status]}</span>
+                      </button>
+                    ))}
+                    {hiddenChipCount > 0 && (
+                      <span className="inline-flex items-center rounded-md border border-border/60 px-2 py-1 text-[11px] text-muted-foreground">
+                        +{hiddenChipCount} more
+                      </span>
                     )}
-                  </TableCell>
-                  {isManager && (
-                    <TableCell>
-                      {lead.assigned_to ? (
-                        <span className="text-sm font-medium">{getAssignedName(lead.assigned_to)}</span>
-                      ) : (
-                        <span className="text-xs text-amber-600 font-medium">Unassigned</span>
-                      )}
-                    </TableCell>
-                  )}
-                  <TableCell className="text-sm text-muted-foreground">{new Date(lead.created_at).toLocaleDateString()}</TableCell>
-                  {isManager && (
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="outline" size="sm" className="gap-1 h-7 text-xs">
-                            <UserPlus className="h-3 w-3" />
-                            {lead.assigned_to ? 'Reassign' : 'Assign'}
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent>
-                          {lead.referred_by && codeToUserId[lead.referred_by] && (
-                            <DropdownMenuItem onClick={() => handleAutoAllocate(lead.id)} className="text-emerald-600 font-medium">
-                              ↺ Auto: {codeToName[lead.referred_by]}
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuSeparator />
-                          {Object.entries(groupedTeamMembers).map(([group, members], idx) => (
-                            <div key={group}>
-                              {idx > 0 && <DropdownMenuSeparator />}
-                              <DropdownMenuLabel>{group}</DropdownMenuLabel>
-                              {members.map((m: any) => (
-                                <DropdownMenuItem key={m.id} onClick={() => handleAssignDirect(lead.id, m.id)}>
-                                  {m.full_name}
-                                </DropdownMenuItem>
-                              ))}
-                            </div>
-                          ))}
-                          {teamMembers.length === 0 && <DropdownMenuItem disabled>No reps available</DropdownMenuItem>}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  )}
-                  <TableCell onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => openDetail(lead)}><Eye className="h-4 w-4 mr-2" /> View Details</DropdownMenuItem>
-                        {canDeleteLead() && <><DropdownMenuSeparator /><DropdownMenuItem className="text-destructive" onClick={() => handleDelete(lead.id)}><Trash2 className="h-4 w-4 mr-2" /> Delete</DropdownMenuItem></>}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
-      )}
-
-      {/* Pagination Controls */}
-      {filtered.length > pageSize && (
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-2 mt-4 px-1">
-          <p className="text-xs text-muted-foreground">
-            Showing {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, filtered.length)} of {filtered.length}
-          </p>
-          <div className="flex items-center gap-1">
-            <Button variant="outline" size="icon" className="h-8 w-8" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p - 1)}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            {Array.from({ length: Math.min(totalPages, isMobile ? 3 : 5) }, (_, i) => {
-              let page: number;
-              const maxPages = isMobile ? 3 : 5;
-              if (totalPages <= maxPages) page = i + 1;
-              else if (currentPage <= Math.ceil(maxPages / 2)) page = i + 1;
-              else if (currentPage >= totalPages - Math.floor(maxPages / 2)) page = totalPages - maxPages + 1 + i;
-              else page = currentPage - Math.floor(maxPages / 2) + i;
-              return (
-                <button key={page} onClick={() => setCurrentPage(page)} className={`h-8 w-8 rounded-md text-xs font-medium transition-colors ${currentPage === page ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'}`}>
-                  {page}
-                </button>
-              );
-            })}
-            <Button variant="outline" size="icon" className="h-8 w-8" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p + 1)}>
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
+
+      <SourceLeadsDialog
+        open={!!sourceDialogKey}
+        onOpenChange={(open) => { if (!open) setSourceDialogKey(null); }}
+        sourceKey={sourceDialogKey}
+        title={sourceDialogLabel}
+        initialStatus={sourceDialogStatus}
+        leads={sourceDialogLeads}
+        teamMembers={teamMembers}
+        isManager={isManager}
+        canBulkAssign={isManager || hasBulkDelete}
+        canBulkDelete={hasBulkDelete}
+        statusColors={statusColors}
+        getLeadAssignedNames={getLeadAssignedNames}
+        onOpenDetail={openDetail}
+        onOpenAssign={(leadId) => { setAssignLeadId(leadId); setAssignOpen(true); }}
+        onBulkAutoAssign={async () => { setBulkAssignOpen(true); }}
+        isAutoAssigning={bulkAssigning}
+        onBulkDelete={hasBulkDelete ? async (ids) => {
+          if (!confirm(`Delete ${ids.length} leads permanently?`)) return;
+          for (const id of ids) { try { await api.leads.delete(id); } catch { /* continue */ } }
+          fetchData();
+          toast({ title: `${ids.length} leads deleted` });
+          setSelectedIds(new Set());
+        } : undefined}
+      />
 
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-full sm:max-w-lg overflow-y-auto">

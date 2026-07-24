@@ -178,7 +178,10 @@ export interface CommWhatsappMessage {
   conversation_id?: string | null;
   sender_phone?: string | null;
   message_type?: string;
+  media_url?: string | null;
+  template_id?: string | null;
   meta_timestamp?: string | null;
+  provider_message_id?: string | null;
 }
 
 export interface WaConversation {
@@ -196,7 +199,10 @@ export interface WaConversation {
   assigned_by_name?: string | null;
   last_message_at?: string | null;
   last_message_preview?: string | null;
+  last_message?: string | null;
   unread_count?: number;
+  window_open?: number | boolean;
+  window_expires_at?: string | null;
 }
 
 export interface WaAssignableMember {

@@ -294,7 +294,9 @@ export function FormDetailDialog({
           {form.description ? (
             <div className="sm:col-span-2">
               <p className="text-xs text-muted-foreground">Description</p>
-              <p>{form.description}</p>
+              <p className="whitespace-pre-wrap text-sm">
+                {String(form.description).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || form.description}
+              </p>
             </div>
           ) : null}
           <div className="sm:col-span-2 flex flex-wrap gap-2 text-xs text-muted-foreground">

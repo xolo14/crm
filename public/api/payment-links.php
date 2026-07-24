@@ -99,12 +99,19 @@ function handlePaymentLinksWebhook(): void
         paymentLinksError('Webhook processing failed', 500);
     }
 
-    // Payment row is persisted before the receipt attempt; fail so Razorpay retries the receipt.
+    // Payment row is persisted before side-effects; fail so Razorpay retries receipt/enrollment.
     if (in_array($type, ['payment_link.paid', 'payment_link.partially_paid'], true)) {
         $receipt = is_array($result['receipt'] ?? null) ? $result['receipt'] : null;
-        if ($receipt !== null && empty($receipt['ok'])) {
+        if ($receipt !== null && empty($receipt['ok']) && empty($receipt['skipped'])) {
             error_log('[RAZORPAY WEBHOOK] receipt failed: ' . (string) ($receipt['error'] ?? 'unknown'));
             paymentLinksError('Receipt delivery failed', 500);
+        }
+        if ($type === 'payment_link.paid') {
+            $enroll = is_array($result['enrollment'] ?? null) ? $result['enrollment'] : null;
+            if ($enroll !== null && empty($enroll['ok']) && empty($enroll['skipped'])) {
+                error_log('[RAZORPAY WEBHOOK] enrollment failed: ' . (string) ($enroll['error'] ?? 'unknown'));
+                paymentLinksError('Enrollment failed', 500);
+            }
         }
     }
 

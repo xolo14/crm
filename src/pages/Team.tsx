@@ -747,7 +747,7 @@ export default function Team() {
                         ))}
                       </div>
                     ) : (
-                      <div className="overflow-x-auto">
+                      <div className="crm-table-scroll overflow-x-auto">
                       <Table className="table-fixed w-full min-w-[640px]">
                         <TableHeader>
                           <TableRow className="hover:bg-transparent">
