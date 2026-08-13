@@ -3,16 +3,15 @@ import { getApiBase } from "@/lib/apiBase";
 const API_BASE = getApiBase();
 
 function authHeaders(): HeadersInit {
-  const token = localStorage.getItem("auth_token");
   return {
     "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}/assessments.php${path}`, {
     ...init,
+    credentials: "include",
     headers: { ...authHeaders(), ...(init?.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
@@ -31,8 +30,11 @@ export type PeaklyyDomainKey =
 
 export type PeaklyySourceMode = "domain_bank" | "custom";
 
+export type PeaklyyResponseMode = "mcq" | "notepad" | "upload" | "notepad_upload";
+
 export interface PeaklyyCustomQuestionInput {
-  q_type?: "mcq";
+  q_type?: "mcq" | "task";
+  response_mode?: PeaklyyResponseMode;
   prompt: string;
   option_a?: string;
   option_b?: string;
@@ -40,6 +42,8 @@ export interface PeaklyyCustomQuestionInput {
   option_d?: string;
   correct_option?: "a" | "b" | "c" | "d";
   points?: number;
+  allow_notepad?: boolean;
+  allow_upload?: boolean;
 }
 
 export const assessmentsApi = {
@@ -73,15 +77,47 @@ export const assessmentsApi = {
     req<{ message: string }>("?action=update", { method: "POST", body: JSON.stringify(body) }),
   attempts: (assessmentId: string) =>
     req<{ data: PeaklyyAttemptRow[] }>(`?action=attempts&assessment_id=${encodeURIComponent(assessmentId)}`),
+  attemptDetail: (attemptId: string) =>
+    req<{
+      data: PeaklyyAttemptRow;
+      answers: PeaklyyAttemptAnswerDetail[];
+      mcq_answers?: PeaklyyAttemptAnswerDetail[];
+      task_answers?: PeaklyyAttemptAnswerDetail[];
+      timeline?: PeaklyyTimelineEvent[];
+      timeline_text?: string;
+    }>(`?action=attempt_detail&attempt_id=${encodeURIComponent(attemptId)}`),
+  downloadTasksZip: async (attemptId: string) => {
+    const res = await fetch(
+      `${API_BASE}/assessments.php?action=download_tasks_zip&attempt_id=${encodeURIComponent(attemptId)}`,
+      { credentials: "include" },
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error((data as { error?: string }).error || `Download failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^";]+)"?/i.exec(cd);
+    const filename = match?.[1] || `tasks-${attemptId}.zip`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
   publicGet: (slug: string, key?: string) => {
     const q = new URLSearchParams({ action: "public_get", slug });
-    if (key) q.set("key", key);
+    const headers: HeadersInit = { "Content-Type": "application/json" };
+    if (key) {
+      (headers as Record<string, string>)["X-Assessment-Api-Key"] = key;
+    }
     return req<{
       data: PeaklyyAssessmentPublic;
       domains: Record<string, string>;
       degrees: string[];
       instructions: string[];
-    }>(`?${q.toString()}`, { headers: { "Content-Type": "application/json" } });
+    }>(`?${q.toString()}`, { headers });
   },
   register: (body: {
     slug: string;
@@ -97,16 +133,18 @@ export const assessmentsApi = {
       body: JSON.stringify(body),
       headers: { "Content-Type": "application/json" },
     }),
-  start: (attempt_token: string) =>
+  start: (attempt_token: string, phase?: "mcq" | "task" | "single") =>
     req<{
       questions: PeaklyyQuestion[];
       duration_minutes: number;
-      ends_at: string;
+      ends_at: string | null;
       anti_cheat: boolean;
       domain_label: string;
+      phase?: string;
+      title?: string;
     }>("?action=start", {
       method: "POST",
-      body: JSON.stringify({ attempt_token }),
+      body: JSON.stringify({ attempt_token, ...(phase ? { phase } : {}) }),
       headers: { "Content-Type": "application/json" },
     }),
   violation: (attempt_token: string) =>
@@ -124,11 +162,48 @@ export const assessmentsApi = {
       unlock_at: string;
       redirect_url: string | null;
       attempt_token: string;
+      phase?: string;
+      next_phase?: string | null;
+      task_questions?: PeaklyyQuestion[];
+      tasks_submitted?: boolean;
+      message?: string;
     }>("?action=submit", {
       method: "POST",
       body: JSON.stringify({ attempt_token, answers }),
       headers: { "Content-Type": "application/json" },
     }),
+  saveAnswer: (
+    attempt_token: string,
+    body: { question_id: string; text?: string; option?: string },
+  ) =>
+    req<{ ok: boolean; question_id: string; saved: Record<string, unknown> }>("?action=save_answer", {
+      method: "POST",
+      body: JSON.stringify({ attempt_token, ...body }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  uploadAnswer: async (attempt_token: string, question_id: string, file: File, text?: string) => {
+    const fd = new FormData();
+    fd.append("attempt_token", attempt_token);
+    fd.append("question_id", question_id);
+    fd.append("file", file);
+    if (text != null) fd.append("text", text);
+    const res = await fetch(`${API_BASE}/assessments.php?action=upload_answer`, {
+      method: "POST",
+      credentials: "include",
+      body: fd,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error((data as { error?: string }).error || `Upload failed (${res.status})`);
+    }
+    return data as {
+      ok: boolean;
+      question_id: string;
+      file_path: string;
+      file_name: string;
+      saved: Record<string, unknown>;
+    };
+  },
   result: (attempt_token: string) =>
     req<{
       score: number;
@@ -168,6 +243,13 @@ export interface PeaklyyAssessment {
 
 export type PeaklyyAssessmentPublic = Omit<PeaklyyAssessment, "result_api_key">;
 
+export interface PeaklyyTimelineEvent {
+  at: string | null;
+  event: string;
+  label: string;
+  detail?: Record<string, unknown> | null;
+}
+
 export interface PeaklyyAttemptRow {
   id: string;
   full_name: string;
@@ -175,20 +257,48 @@ export interface PeaklyyAttemptRow {
   phone: string;
   domain_key: string;
   status: string;
+  attempt_phase?: string;
   score: number | null;
   stars: number | null;
   passed: number | null;
   time_taken_seconds: number | null;
+  started_at?: string | null;
   submitted_at: string | null;
+  mcq_submitted_at?: string | null;
   webhook_status: string | null;
+  webhook_sent_at?: string | null;
+  created_at?: string;
+  timeline?: PeaklyyTimelineEvent[];
+  timeline_text?: string;
+}
+
+export interface PeaklyyAttemptAnswerDetail {
+  question_id: string;
+  question_number?: number;
+  prompt: string;
+  q_type: string;
+  part?: string;
+  allow_notepad: boolean;
+  allow_upload: boolean;
+  answer_option: string | null;
+  text: string;
+  file_path: string;
+  file_name: string;
+  notepad_file_path?: string;
+  notepad_file_name?: string;
+  is_correct: number;
+  points_awarded: number;
 }
 
 export interface PeaklyyQuestion {
   id: string;
   domain_key: string;
   level_key: string;
-  q_type: "mcq";
+  q_type: "mcq" | "task";
   prompt: string;
   options?: Record<string, string> | null;
+  task_schema?: Record<string, unknown> | null;
+  allow_notepad?: boolean;
+  allow_upload?: boolean;
   points: number;
 }

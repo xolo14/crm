@@ -19,18 +19,16 @@ import type {
 const API_BASE = getApiBase();
 
 function getToken(): string | null {
-  return localStorage.getItem('hr_token') || localStorage.getItem('auth_token');
+  return null;
 }
 
 async function commRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> | undefined),
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+  const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers, credentials: 'include' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     let message = 'Request failed';

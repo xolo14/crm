@@ -497,12 +497,19 @@ class WhatsAppInbox
     ): ?string {
         self::ensureTables($db);
         $providerId = (string) ($msg['id'] ?? '');
-        if ($providerId !== '') {
-            $dup = $db->prepare('SELECT id FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
-            $dup->execute([$providerId]);
-            if ($dup->fetchColumn()) {
-                return null;
-            }
+        if ($providerId === '') {
+            // Meta almost always sends an id; without one we cannot dedupe retries.
+            // Fingerprint so duplicate deliveries do not inflate unread_count.
+            $fromTmp = (string) ($msg['from'] ?? '');
+            $typeTmp = (string) ($msg['type'] ?? 'text');
+            $bodyTmp = (string) ($msg['text']['body'] ?? '');
+            $tsTmp = (string) ($msg['timestamp'] ?? '');
+            $providerId = 'fp:' . substr(hash('sha256', $orgId . '|' . $fromTmp . '|' . $typeTmp . '|' . $bodyTmp . '|' . $tsTmp), 0, 40);
+        }
+        $dup = $db->prepare('SELECT id FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
+        $dup->execute([$providerId]);
+        if ($dup->fetchColumn()) {
+            return null;
         }
 
         $from = (string) ($msg['from'] ?? '');
@@ -551,7 +558,7 @@ class WhatsAppInbox
                 $type,
                 $mediaUrl,
                 'received',
-                $providerId !== '' ? $providerId : null,
+                $providerId,
                 $leadId,
                 'inbound',
                 $convId !== '' ? $convId : null,

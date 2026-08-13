@@ -1,15 +1,24 @@
 import { useMemo, useState } from "react";
 import { RefreshCw, User } from "lucide-react";
-import PaymentLinksPeriodTabs from "@/components/paymentLinks/PaymentLinksPeriodTabs";
 import type { PaymentRecordRow, TeamMemberLookup } from "@/utils/normalizePaymentLink";
 import {
   buildMemberPaymentSummaries,
+  mergeManualPaymentsIntoSummaries,
+  type ManualPaymentRow,
   type MemberPaymentSummary,
 } from "@/utils/normalizePaymentLink";
 import {
   filterLinksByPeriod,
+  PAYMENT_LINK_PERIODS,
   type PaymentLinkPeriod,
 } from "@/utils/paymentLinkPeriod";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export interface RecordsTableFilters {
   from: string;
@@ -27,6 +36,8 @@ interface Props {
   filters: RecordsTableFilters;
   onFilterChange: (filters: RecordsTableFilters) => void;
   onRefresh: () => void;
+  /** Approved manual payments counted in member totals. */
+  manualPayments?: ManualPaymentRow[];
 }
 
 const PAGE_SIZE = 20;
@@ -47,6 +58,7 @@ export default function PaymentRecordsTable({
   filters,
   onFilterChange,
   onRefresh,
+  manualPayments = [],
 }: Props) {
   const [page, setPage] = useState(1);
 
@@ -97,10 +109,32 @@ export default function PaymentRecordsTable({
     });
   }, [periodRecords, filters]);
 
-  const memberRows = useMemo(
-    () => buildMemberPaymentSummaries(filteredRecords),
-    [filteredRecords],
-  );
+  const memberRows = useMemo(() => {
+    const fromLinks = buildMemberPaymentSummaries(filteredRecords);
+    // Filter manuals by date range + member when set
+    const manualsInFilter = manualPayments.filter((m) => {
+      if (filters.memberId && String(m.submitted_by) !== filters.memberId) {
+        return false;
+      }
+      const day = (m.paid_at || m.created_at || "").slice(0, 10);
+      if (filters.from && day && day < filters.from) return false;
+      if (filters.to && day && day > filters.to) return false;
+      if (filters.search.trim()) {
+        const term = filters.search.trim().toLowerCase();
+        const hay = [
+          m.submitted_by_name,
+          m.submitted_by_email,
+          m.submitted_by_referral,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+    return mergeManualPaymentsIntoSummaries(fromLinks, manualsInFilter);
+  }, [filteredRecords, manualPayments, filters]);
 
   const totals = useMemo(() => {
     return memberRows.reduce(
@@ -138,7 +172,23 @@ export default function PaymentRecordsTable({
         <h2 className="text-base font-semibold text-gray-900">
           Team member summary
         </h2>
-        <PaymentLinksPeriodTabs value={period} onChange={onPeriodChange} />
+        <div className="w-full sm:w-56">
+          <Select
+            value={period}
+            onValueChange={(v) => onPeriodChange(v as PaymentLinkPeriod)}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select period" />
+            </SelectTrigger>
+            <SelectContent>
+              {PAYMENT_LINK_PERIODS.map((p) => (
+                <SelectItem key={p.value} value={p.value}>
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-4">

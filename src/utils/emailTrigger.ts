@@ -15,18 +15,15 @@ export const EMAIL_TRIGGER_STORAGE_KEY = "syncpedia_email_triggers";
 
 export async function sendPhaseEmail(payload: PhaseEmailPayload): Promise<boolean> {
   try {
-    const token = localStorage.getItem("auth_token");
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
     };
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
 
     const res = await fetch(`${API_BASE}/email.php?action=phase_update`, {
       method: "POST",
       cache: "no-store",
+      credentials: "include",
       headers,
       body: JSON.stringify({ payload }),
     });

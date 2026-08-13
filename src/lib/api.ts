@@ -1,7 +1,8 @@
 // API Configuration - uses relative /api path for production deployment
-// Auth tokens live in localStorage (XSS-accessible). CSP in public/.htaccess reduces injection risk;
-// HttpOnly cookie auth would be the stronger long-term fix.
+// Auth: HttpOnly cookie `syncpedia_session` (set by PHP on login). JWT is no longer
+// persisted in localStorage. credentials:'include' sends the cookie on same-origin API calls.
 import type { FresherMember } from '@/modules/fresherSalary/types';
+import { normalizeFresherPolicy, type FresherOrgPolicy } from '@/modules/fresherSalary/policy';
 import { AUTH_PORTAL, loginPathFromSessionPortal } from '@/lib/portalAuth';
 
 import { getApiBase } from '@/lib/apiBase';
@@ -22,15 +23,39 @@ export interface AuditLogEntry {
 }
 
 function getToken(): string | null {
-  return localStorage.getItem('auth_token');
+  // JWT is HttpOnly-only now. Never return a localStorage JWT (and scrub leftovers).
+  try {
+    if (localStorage.getItem('auth_token') || localStorage.getItem('hr_token')) {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('hr_token');
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function hasAuthSession(): boolean {
+  try {
+    return localStorage.getItem('auth_session') === '1' || !!localStorage.getItem('auth_user');
+  } catch {
+    return false;
+  }
 }
 
 function getHrToken(): string | null {
-  return localStorage.getItem('hr_token');
+  return getToken();
 }
 
-function setToken(token: string) {
-  localStorage.setItem('auth_token', token);
+function setToken(_token: string) {
+  // Intentionally do not store JWT in localStorage (XSS harvest vector).
+  try {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('hr_token');
+  } catch {
+    /* ignore */
+  }
+  localStorage.setItem('auth_session', '1');
 }
 
 function clearToken() {
@@ -39,6 +64,7 @@ function clearToken() {
   localStorage.removeItem('auth_org');
   localStorage.removeItem('hr_token');
   localStorage.removeItem('hr_user');
+  localStorage.removeItem('auth_session');
 }
 
 function getStoredUser() {
@@ -80,6 +106,7 @@ async function request(endpoint: string, options: RequestInit = {}) {
     res = await fetch(`${API_BASE}${endpoint}`, {
       ...options,
       headers,
+      credentials: 'include',
     });
   } catch (e) {
     throw new Error('Network error - unable to reach server');
@@ -185,16 +212,11 @@ async function request(endpoint: string, options: RequestInit = {}) {
   return data;
 }
 
-/** PDF/images with Bearer auth (JSON `request()` expects application/json). */
+/** PDF/images with cookie session (JSON `request()` expects application/json). */
 async function requestBlob(endpoint: string): Promise<Blob> {
-  const token = getToken();
-  const headers: Record<string, string> = {};
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${endpoint}`, { headers });
+    res = await fetch(`${API_BASE}${endpoint}`, { credentials: 'include' });
   } catch {
     throw new Error('Network error - unable to reach server');
   }
@@ -296,10 +318,16 @@ export const api = {
       if (data.avatar) body.set('avatar', data.avatar);
       return request('/auth.php?action=update_profile', { method: 'POST', body });
     },
-    logout: () => {
+    logout: async () => {
+      try {
+        await request('/auth.php?action=logout', { method: 'POST', body: '{}' });
+      } catch {
+        /* still clear local state */
+      }
       clearToken();
     },
     getToken,
+    hasSession: hasAuthSession,
     getStoredUser,
     getStoredOrg,
     setStoredOrg,
@@ -317,16 +345,18 @@ export const api = {
       }
       setToken(data.token);
       setStoredUser(data.user);
-      localStorage.setItem('hr_token', data.token);
       localStorage.setItem('hr_user', JSON.stringify(data.user));
       return data;
     },
-    logout: () => {
+    logout: async () => {
+      try {
+        await request('/auth.php?action=logout', { method: 'POST', body: '{}' });
+      } catch {
+        /* ignore */
+      }
       localStorage.removeItem('hr_token');
       localStorage.removeItem('hr_user');
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem('auth_user');
-      localStorage.removeItem('auth_org');
+      clearToken();
     },
     getToken: () => getHrToken() || getToken(),
     getStoredUser: () => {
@@ -355,14 +385,66 @@ export const api = {
 
   // Leads
   leads: {
-    list: (params?: { status?: string; search?: string; referred_by?: string; form_leads?: boolean }) => {
-      const q = new URLSearchParams();
-      if (params?.status) q.set('status', params.status);
-      if (params?.search) q.set('search', params.search);
-      if (params?.referred_by) q.set('referred_by', params.referred_by);
-      if (params?.form_leads) q.set('form_leads', '1');
-      const qs = q.toString();
-      return request(`/leads.php${qs ? '?' + qs : ''}`);
+    list: async (params?: {
+      status?: string;
+      search?: string;
+      referred_by?: string;
+      form_leads?: boolean;
+      limit?: number;
+      offset?: number;
+      /** When true (default), follow truncated pages until all visible leads are loaded. */
+      all?: boolean;
+    }) => {
+      const buildQs = (limit: number, offset: number) => {
+        const q = new URLSearchParams();
+        if (params?.status) q.set('status', params.status);
+        if (params?.search) q.set('search', params.search);
+        if (params?.referred_by) q.set('referred_by', params.referred_by);
+        if (params?.form_leads) q.set('form_leads', '1');
+        q.set('limit', String(limit));
+        if (offset > 0) q.set('offset', String(offset));
+        return q.toString();
+      };
+
+      const pageSize = Math.min(100000, Math.max(1, params?.limit ?? 100000));
+      const fetchAll = params?.all !== false && params?.offset == null;
+
+      if (!fetchAll) {
+        const offset = Math.max(0, params?.offset ?? 0);
+        return request(`/leads.php?${buildQs(pageSize, offset)}`);
+      }
+
+      const allRows: any[] = [];
+      let offset = 0;
+      let total = 0;
+      // Safety: at most 100k leads client-side (1×100k or chunked pages).
+      const maxPages = Math.max(1, Math.ceil(100000 / pageSize));
+      for (let page = 0; page < maxPages; page++) {
+        const data = await request(`/leads.php?${buildQs(pageSize, offset)}`);
+        const rows = Array.isArray(data?.data) ? data.data : [];
+        total = typeof data?.total === 'number' ? data.total : allRows.length + rows.length;
+        allRows.push(...rows);
+        offset += rows.length;
+        if (!data?.truncated || rows.length === 0 || offset >= total || allRows.length >= 100000) {
+          return {
+            ...data,
+            data: allRows.slice(0, 100000),
+            count: Math.min(allRows.length, 100000),
+            total,
+            truncated: false,
+            offset: 0,
+            limit: Math.min(allRows.length, 100000),
+          };
+        }
+      }
+      return {
+        data: allRows.slice(0, 100000),
+        count: Math.min(allRows.length, 100000),
+        total,
+        truncated: offset < total,
+        offset: 0,
+        limit: Math.min(allRows.length, 100000),
+      };
     },
     create: (data: any) => request('/leads.php', { method: 'POST', body: JSON.stringify(data) }),
     bulkCreate: (leads: any[], opts?: { org_id?: string }) =>
@@ -415,7 +497,12 @@ export const api = {
 
   // Activities
   activities: {
-    list: () => request('/activities.php'),
+    list: (params?: { lead_id?: string }) => {
+      const q = new URLSearchParams();
+      if (params?.lead_id) q.set('lead_id', params.lead_id);
+      const qs = q.toString();
+      return request(`/activities.php${qs ? `?${qs}` : ''}`);
+    },
     create: (data: any) => request('/activities.php', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) => request(`/activities.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/activities.php?id=${id}`, { method: 'DELETE' }),
@@ -468,6 +555,46 @@ export const api = {
     delete: (id: string) => request(`/payments.php?id=${id}`, { method: 'DELETE' }),
   },
 
+  // Manual payment submissions (Payment Records → Payments / Approvals)
+  manualPayments: {
+    list: (status: 'approved' | 'pending' | 'rejected' | 'all' = 'approved') =>
+      request(`/manual-payments.php?action=list&status=${encodeURIComponent(status)}`),
+    approvals: () => request('/manual-payments.php?action=approvals'),
+    create: async (fields: {
+      amount: number | string;
+      payment_method: string;
+      customer_name: string;
+      customer_email: string;
+      customer_phone: string;
+      paid_at: string;
+      proof: File;
+    }) => {
+      const fd = new FormData();
+      fd.append('amount', String(fields.amount));
+      fd.append('payment_method', fields.payment_method);
+      fd.append('customer_name', fields.customer_name);
+      fd.append('customer_email', fields.customer_email);
+      fd.append('customer_phone', fields.customer_phone);
+      fd.append('paid_at', fields.paid_at);
+      fd.append('proof', fields.proof);
+      return request('/manual-payments.php?action=create', { method: 'POST', body: fd });
+    },
+    approve: (id: string, review_notes?: string) =>
+      request(`/manual-payments.php?action=approve&id=${encodeURIComponent(id)}`, {
+        method: 'POST',
+        body: JSON.stringify({ review_notes: review_notes || '' }),
+      }),
+    reject: (id: string, review_notes?: string) =>
+      request(`/manual-payments.php?action=reject&id=${encodeURIComponent(id)}`, {
+        method: 'POST',
+        body: JSON.stringify({ review_notes: review_notes || '' }),
+      }),
+    delete: (id: string) =>
+      request(`/manual-payments.php?action=delete&id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+  },
+
   // Profiles & Dashboard
   profiles: {
     list: () => request('/profiles.php'),
@@ -487,6 +614,15 @@ export const api = {
     }) => request('/email-settings.php?action=setup', { method: 'PUT', body: JSON.stringify(data) }),
     testEmailAccount: (slot: number) =>
       request('/email-settings.php?action=test', { method: 'POST', body: JSON.stringify({ slot }) }),
+    razorpaySetup: () => request('/razorpay-settings.php'),
+    saveRazorpaySetup: (data: {
+      key_id: string;
+      key_secret?: string;
+      webhook_secret?: string;
+      mode?: string;
+    }) => request('/razorpay-settings.php?action=setup', { method: 'PUT', body: JSON.stringify(data) }),
+    clearRazorpaySetup: () =>
+      request('/razorpay-settings.php?action=clear', { method: 'POST', body: '{}' }),
   },
 
   // Daily Reports
@@ -662,8 +798,82 @@ export const api = {
       return request(`/lead-assignments.php?${q.toString()}`);
     },
     assign: (data: any) => request('/lead-assignments.php', { method: 'POST', body: JSON.stringify(data) }),
-    bulkAssign: (leadIds: string[], userId: string) => request('/lead-assignments.php?action=bulk', { method: 'POST', body: JSON.stringify({ lead_ids: leadIds, user_id: userId }) }),
+    /** Atomically replace assignees for one lead (multi-member). */
+    setAssignees: (leadId: string, userIds: string[]) =>
+      request('/lead-assignments.php?action=set', {
+        method: 'POST',
+        body: JSON.stringify({ lead_id: leadId, user_ids: userIds }),
+      }),
+    /** Assign many leads to one user, or the same multi-member set via userIds. */
+    bulkAssign: (leadIds: string[], userIdOrIds: string | string[]) =>
+      request('/lead-assignments.php?action=bulk', {
+        method: 'POST',
+        body: JSON.stringify(
+          Array.isArray(userIdOrIds)
+            ? { lead_ids: leadIds, user_ids: userIdOrIds }
+            : { lead_ids: leadIds, user_id: userIdOrIds },
+        ),
+      }),
     delete: (id: string) => request(`/lead-assignments.php?id=${id}`, { method: 'DELETE' }),
+  },
+
+  // Document forms (Certificates & Offer Letters forms — separate from lead_forms)
+  docForms: {
+    list: (formTypeOrOpts?: 'offer_letter' | 'certificate' | { formType?: 'offer_letter' | 'certificate'; scope?: 'assigned' }) => {
+      const opts =
+        typeof formTypeOrOpts === 'string'
+          ? { formType: formTypeOrOpts }
+          : formTypeOrOpts || {};
+      const q = new URLSearchParams({ action: 'list' });
+      if (opts.formType) q.set('form_type', opts.formType);
+      if (opts.scope) q.set('scope', opts.scope);
+      return request(`/doc-forms.php?${q.toString()}`);
+    },
+    get: (id: string) => request(`/doc-forms.php?action=get&id=${encodeURIComponent(id)}`),
+    create: (data: Record<string, unknown>) =>
+      request('/doc-forms.php?action=create', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Record<string, unknown>) =>
+      request(`/doc-forms.php?id=${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      request(`/doc-forms.php?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    assign: (data: { form_id: string; user_ids?: string[]; role_keys?: string[]; access?: unknown[] }) =>
+      request('/doc-forms.php?action=assign', { method: 'POST', body: JSON.stringify(data) }),
+    access: (formId: string) =>
+      request(`/doc-forms.php?action=access&form_id=${encodeURIComponent(formId)}`),
+    submissions: (formId: string) =>
+      request(`/doc-forms.php?action=submissions&form_id=${encodeURIComponent(formId)}`),
+    submit: (data: Record<string, unknown>) =>
+      request('/doc-forms.php?action=submit', { method: 'POST', body: JSON.stringify(data) }),
+    addManualRow: (data: {
+      form_id: string;
+      values?: Record<string, string>;
+      respondent_name?: string;
+      respondent_email?: string;
+    }) => request('/doc-forms.php?action=add_manual_row', { method: 'POST', body: JSON.stringify(data) }),
+    linkTemplate: (data: {
+      form_id: string;
+      template_id: string;
+      template_kind?: 'offer_letter' | 'certificate';
+      column_maps?: unknown[];
+    }) => request('/doc-forms.php?action=link_template', { method: 'POST', body: JSON.stringify(data) }),
+    saveColumnMaps: (formId: string, columnMaps: unknown[]) =>
+      request('/doc-forms.php?action=save_column_maps', {
+        method: 'POST',
+        body: JSON.stringify({ form_id: formId, column_maps: columnMaps }),
+      }),
+    updateSubmissionValues: (data: {
+      submission_id: string;
+      values: Record<string, string>;
+      respondent_name?: string;
+      respondent_email?: string;
+    }) =>
+      request('/doc-forms.php?action=update_submission_values', { method: 'POST', body: JSON.stringify(data) }),
+    issue: (data: Record<string, unknown>) =>
+      request('/doc-forms.php?action=issue', { method: 'POST', body: JSON.stringify(data) }),
+    issued: (kind?: 'offer_letter' | 'certificate') =>
+      request(`/doc-forms.php?action=issued${kind ? `&doc_kind=${kind}` : ''}`),
+    deleteSubmission: (id: string) =>
+      request(`/doc-forms.php?action=submission&id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
 
   // Form Management
@@ -688,6 +898,11 @@ export const api = {
       org_id?: string | null;
     }) => request(`/forms.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/forms.php?id=${id}`, { method: 'DELETE' }),
+    duplicate: (formId: string) =>
+      request('/forms.php?action=duplicate', {
+        method: 'POST',
+        body: JSON.stringify({ form_id: formId }),
+      }),
     assignments: (formId: string) => request(`/forms.php?action=assignments&form_id=${formId}`),
     assignMembers: (formId: string, memberIds: string[]) =>
       request('/forms.php?action=assign', { method: 'POST', body: JSON.stringify({ form_id: formId, member_ids: memberIds }) }),
@@ -872,20 +1087,59 @@ export const api = {
   },
 
   fresherSalary: {
-    list: async (): Promise<FresherMember[]> => {
+    list: async (): Promise<{ members: FresherMember[]; policy: FresherOrgPolicy }> => {
       const data = await request('/fresher-salary-tracker.php');
       const rows = data?.data;
-      return Array.isArray(rows) ? rows : [];
+      return {
+        members: Array.isArray(rows) ? rows : [],
+        policy: normalizeFresherPolicy(data?.policy),
+      };
     },
     create: (member: FresherMember) =>
       request('/fresher-salary-tracker.php', { method: 'POST', body: JSON.stringify({ member }) }),
-    update: (member: FresherMember) =>
+    update: (member: FresherMember, opts?: { manual?: boolean; override_phases?: string[] }) =>
       request(`/fresher-salary-tracker.php?id=${encodeURIComponent(member.id)}`, {
         method: 'PUT',
-        body: JSON.stringify({ member }),
+        body: JSON.stringify({
+          member,
+          manual: !!opts?.manual,
+          override_phases: opts?.override_phases,
+          manual_edit: !!opts?.manual,
+        }),
       }),
     remove: (id: string) => request(`/fresher-salary-tracker.php?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
     registerTraineeJoin: (body: { trainee_user_id: string; joining_date: string }) =>
       request('/fresher-salary-tracker.php?action=register_trainee_join', { method: 'POST', body: JSON.stringify(body) }),
+    getPolicy: async (): Promise<FresherOrgPolicy> => {
+      const data = await request('/fresher-salary-tracker.php?action=policy');
+      return normalizeFresherPolicy(data?.data);
+    },
+    savePolicy: (policy: FresherOrgPolicy) =>
+      request('/fresher-salary-tracker.php?action=policy', {
+        method: 'PUT',
+        body: JSON.stringify({ policy }),
+      }),
+    myProgress: async (): Promise<{
+      enrolled: boolean;
+      joining_date?: string;
+      phase_key?: string;
+      phase_label?: string;
+      window_start?: string | null;
+      window_end_exclusive?: string | null;
+      target_rupees?: number;
+      achieved_rupees?: number;
+      remaining_rupees?: number;
+      achievement_pct?: number;
+      salary_type?: string | null;
+      headline_status?: string | null;
+      tracker_phase?: string | null;
+      member_name?: string | null;
+      policy?: FresherOrgPolicy;
+      member?: FresherMember | null;
+    }> => {
+      const data = await request('/fresher-salary-tracker.php?action=my_progress');
+      const row = data?.data;
+      return row && typeof row === 'object' ? row : { enrolled: false };
+    },
   },
 };

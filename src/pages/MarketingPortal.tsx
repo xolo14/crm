@@ -25,6 +25,7 @@ import {
   mergeCampaignRecipients,
   type CampaignPickPerson,
 } from '@/components/marketing/CampaignRecipientPicker';
+import { sanitizeFormDescriptionHtml } from '@/components/forms/formDescriptionHtml';
 
 export default function MarketingPortal() {
   const { user } = useAuth();
@@ -548,7 +549,7 @@ export default function MarketingPortal() {
               <p className="text-sm font-semibold">{draftSubject || '(No subject)'}</p>
             </div>
             <div className="p-4 bg-white min-h-[200px]">
-              <div dangerouslySetInnerHTML={{ __html: draftBody || '<p style="color: #999;">No content yet</p>' }} />
+              <div dangerouslySetInnerHTML={{ __html: sanitizeFormDescriptionHtml(draftBody || '<p style="color: #999;">No content yet</p>') }} />
             </div>
           </div>
         </DialogContent>

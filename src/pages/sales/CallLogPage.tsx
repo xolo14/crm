@@ -78,7 +78,7 @@ function StatsGrid({ stats, periodTitle }: { stats: CallLogStats; periodTitle: s
         <StatCard value={stats.missed} label="Missed" icon={PhoneMissed} labelClass="text-red-500" />
         <StatCard value={stats.rejected} label="Rejected" icon={Ban} labelClass="text-red-500" />
         <StatCard value={stats.never_attended} label="Never Attended" icon={Scissors} labelClass="text-red-500" />
-        <StatCard value={stats.working_hours} label="Working Hours" icon={Hourglass} />
+        <StatCard value={stats.working_hours} label="Talk Time" icon={Hourglass} />
       </div>
     </div>
   );

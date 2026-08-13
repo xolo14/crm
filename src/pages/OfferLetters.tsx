@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, MouseEvent as ReactMouseEvent } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -7,15 +7,40 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { buildHtmlDocumentPdfBase64 } from '@/utils/offerLetterPdf';
+import { buildHtmlDocumentPdfBase64, buildMultiPagePrintableHtml, OFFER_PAGE_BREAK, splitOfferHtmlPages } from '@/utils/offerLetterPdf';
 import {
-  Plus, FileText, Send, Trash2, Edit, Eye, Upload, Download, Code, Type, Loader2, Mail, Copy, Image, GripVertical, Users, X, ChevronLeft, ChevronRight, Maximize2, Minimize2, FilePlus
+  DocumentTemplateEditor,
+  extractContentAreaHtml,
+  extractDocumentCss,
+  injectContentAreaHtml,
+} from '@/components/templates/DocumentTemplateEditor';
+import {
+  extractOfferBodyBox,
+  extractOfferTextBoxes,
+  injectOfferBodyBox,
+  injectOfferTextBoxesMarker,
+  DEFAULT_OFFER_BODY_BOX,
+  type OfferBodyBox,
+  type OfferTextBox,
+} from '@/components/templates/CanvasTextBoxFrame';
+import { PlaceholderPalette } from '@/components/templates/PlaceholderPalette';
+import { DocFormsWorkspace, DocIssuedPanel } from '@/modules/docForms/DocFormsHub';
+import { applyPlaceholders, extractPlaceholderKeys } from '@/modules/docForms/types';
+import {
+  downloadPlaceholderExcelTemplate,
+  mapSheetRowsToPlaceholders,
+  OFFER_BULK_SHEET_HEADERS,
+  OFFER_BULK_SHEET_SAMPLE,
+  parsePlaceholderSheetFile,
+} from '@/lib/placeholderSheetImport';
+import {
+  Plus, FileText, Send, Trash2, Edit, Eye, Upload, Download, Loader2, Mail, Copy, Image, Users, X, ChevronLeft, FilePlus, FileSpreadsheet, Variable, Lock, Unlock
 } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -28,6 +53,12 @@ interface OfferTemplate {
   created_by: string;
   created_at: string;
   updated_at: string;
+  mail_json?: {
+    mail_subject?: string;
+    mail_body?: string;
+    recipient_email_placeholder?: string;
+    pdf_filename_pattern?: string;
+  } | string | null;
 }
 
 interface SentLetter {
@@ -41,6 +72,42 @@ interface SentLetter {
   status: string;
   sent_by: string;
   sent_at: string;
+}
+
+type OfferMailConfig = {
+  mail_subject: string;
+  mail_body: string;
+  recipient_email_placeholder: string;
+  pdf_filename_pattern: string;
+};
+
+function parseOfferMailConfig(template: OfferTemplate | null | undefined): OfferMailConfig {
+  const fallback: OfferMailConfig = {
+    mail_subject: 'Offer Letter — {{candidate_name}}',
+    mail_body: '<p>Dear {{candidate_name}},</p><p>Please find your offer letter attached as a PDF.</p><p>Regards,<br>HR Team</p>',
+    recipient_email_placeholder: 'recipient_email',
+    pdf_filename_pattern: '{{candidate_name}}_OfferLetter.pdf',
+  };
+  if (!template?.mail_json) return fallback;
+  let raw: any = template.mail_json;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { raw = {}; }
+  }
+  if (!raw || typeof raw !== 'object') return fallback;
+  return {
+    mail_subject: String(raw.mail_subject || fallback.mail_subject),
+    mail_body: String(raw.mail_body || fallback.mail_body),
+    recipient_email_placeholder: String(raw.recipient_email_placeholder || fallback.recipient_email_placeholder),
+    pdf_filename_pattern: String(raw.pdf_filename_pattern || fallback.pdf_filename_pattern),
+  };
+}
+
+function withOfferFallbackValues(values: Record<string, string>): Record<string, string> {
+  return {
+    ...values,
+    date: values.date || format(new Date(), 'MMMM dd, yyyy'),
+    recipient_name: values.recipient_name || values.candidate_name || '',
+  };
 }
 
 // Simple offer letter template that uses a letterhead background image
@@ -72,9 +139,17 @@ const DEFAULT_TEMPLATE = `<!DOCTYPE html>
     object-position: top center;
   }
   .content-area {
-    position: relative;
+    position: absolute;
+    left: 13.3%;
+    top: 18.5%;
+    width: 73.4%;
+    min-height: 73%;
+    height: auto;
     z-index: 1;
-    padding: 55mm 28mm 25mm 28mm;
+    padding: 0;
+    margin: 0;
+    overflow: visible;
+    box-sizing: border-box;
   }
   .subject-line {
     text-align: center;
@@ -425,14 +500,6 @@ function wrapOfferEmailPlainBody(plainBody: string, form: typeof INITIAL_SEND_FO
 </html>`;
 }
 
-const PLACEHOLDERS = [
-  '{{candidate_name}}', '{{role_title}}', '{{company_name}}', '{{date}}',
-  '{{department}}', '{{start_date}}', '{{salary}}', '{{reporting_to}}',
-  '{{deadline}}', '{{sender_name}}', '{{sender_title}}', '{{sender_email}}',
-  '{{company_address}}', '{{company_website}}', '{{company_phone}}',
-  '{{ref_number}}', '{{work_location}}', '{{employment_type}}', '{{probation_period}}'
-];
-
 const INITIAL_SEND_FORM = {
   recipient_name: '', recipient_email: '', role_title: '', company_name: 'Syncpedia Technologies',
   department: '', start_date: '', salary: '', reporting_to: '',
@@ -449,10 +516,6 @@ export default function OfferLetters() {
   const isMobile = useIsMobile();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const letterheadInputRef = useRef<HTMLInputElement>(null);
-  const previewContainerRef = useRef<HTMLDivElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [resizeEdge, setResizeEdge] = useState<string | null>(null);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
 
   const [templates, setTemplates] = useState<OfferTemplate[]>([]);
   const [sentLetters, setSentLetters] = useState<SentLetter[]>([]);
@@ -460,9 +523,16 @@ export default function OfferLetters() {
   const [activeTab, setActiveTab] = useState('templates');
 
   const [showEditor, setShowEditor] = useState(false);
-  const [editorMode, setEditorMode] = useState<'visual' | 'html'>('visual');
   const [editingTemplate, setEditingTemplate] = useState<OfferTemplate | null>(null);
-  const [templateForm, setTemplateForm] = useState({ template_name: '', role_title: '', html_content: DEFAULT_TEMPLATE });
+  const [templateForm, setTemplateForm] = useState({
+    template_name: '',
+    role_title: '',
+    html_content: DEFAULT_TEMPLATE,
+    mail_subject: 'Offer Letter — {{candidate_name}}',
+    mail_body: '<p>Dear {{candidate_name}},</p><p>Please find your offer letter attached as a PDF.</p><p>Regards,<br>HR Team</p>',
+    recipient_email_placeholder: 'recipient_email',
+    pdf_filename_pattern: '{{candidate_name}}_OfferLetter.pdf',
+  });
   const [letterheadImage, setLetterheadImage] = useState<string>('');
   const [contentPadding, setContentPadding] = useState({ top: 55, right: 28, bottom: 25, left: 28 });
   const [saving, setSaving] = useState(false);
@@ -472,6 +542,12 @@ export default function OfferLetters() {
   const [currentPage, setCurrentPage] = useState(0);
   const [pageLetterheads, setPageLetterheads] = useState<string[]>(['']);
   const [pagePaddings, setPagePaddings] = useState<{ top: number; right: number; bottom: number; left: number }[]>([{ top: 55, right: 28, bottom: 25, left: 28 }]);
+  const [pageTextBoxes, setPageTextBoxes] = useState<OfferTextBox[][]>([[]]);
+  const [pageBodyBoxes, setPageBodyBoxes] = useState<OfferBodyBox[]>([{ ...DEFAULT_OFFER_BODY_BOX }]);
+  const [showPlaceholderPanel, setShowPlaceholderPanel] = useState(true);
+  /** Background + body margins fixed; text + free boxes still editable. */
+  const [layoutLocked, setLayoutLocked] = useState(true);
+  const bulkSheetInputRef = useRef<HTMLInputElement>(null);
 
   const [showPreview, setShowPreview] = useState(false);
   const [previewHtml, setPreviewHtml] = useState('');
@@ -489,6 +565,7 @@ export default function OfferLetters() {
     attachmentName: '',
   });
   const [sending, setSending] = useState(false);
+  const [sendExtraValues, setSendExtraValues] = useState<Record<string, string>>({});
 
   // Bulk generation state
   interface BulkCandidate {
@@ -514,17 +591,24 @@ export default function OfferLetters() {
   const [showBulk, setShowBulk] = useState(false);
   const [bulkTemplate, setBulkTemplate] = useState<OfferTemplate | null>(null);
   const [bulkCandidates, setBulkCandidates] = useState<BulkCandidate[]>([EMPTY_CANDIDATE()]);
+  const [bulkSelectedRowIds, setBulkSelectedRowIds] = useState<string[]>([]);
   const [bulkCompany, setBulkCompany] = useState({ company_name: 'Syncpedia Technologies', company_address: '', sender_name: '', sender_title: '', sender_email: '', company_website: '', company_phone: '' });
+  const [bulkExtraByRowId, setBulkExtraByRowId] = useState<Record<string, Record<string, string>>>({});
+  const [bulkFillField, setBulkFillField] = useState<string>('');
+  const [bulkFillValue, setBulkFillValue] = useState('');
   const [bulkGenerating, setBulkGenerating] = useState(false);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  const fetchData = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const [tRes, sRes] = await Promise.all([api.offerLetters.templates(), api.offerLetters.sent()]);
       setTemplates(((tRes as any).data || []) as OfferTemplate[]);
       setSentLetters(((sRes as any).data || []) as SentLetter[]);
-    } catch (err: any) { toast({ variant: 'destructive', title: 'Error loading data', description: err.message }); }
-    finally { setLoading(false); }
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Error loading data', description: err.message });
+    } finally {
+      if (!opts?.silent) setLoading(false);
+    }
   }, [toast]);
 
   useEffect(() => {
@@ -534,48 +618,85 @@ export default function OfferLetters() {
   /** Refresh sent letters when opening that tab so new sends appear without a full reload. */
   useEffect(() => {
     if (activeTab === 'sent') {
-      void fetchData();
+      void fetchData({ silent: true });
     }
   }, [activeTab, fetchData]);
 
-  const PAGE_SEPARATOR = '<!-- PAGE_BREAK -->';
+  const PAGE_SEPARATOR = OFFER_PAGE_BREAK;
 
-  const splitPages = (html: string): string[] => {
-    const parts = html.split(PAGE_SEPARATOR);
-    return parts.length > 0 ? parts : [html];
-  };
+  const splitPages = (html: string): string[] => splitOfferHtmlPages(html);
 
   const joinPages = (pgs: string[]): string => pgs.join(PAGE_SEPARATOR);
 
+  /** Keep edit canvas geometry identical to preview/PDF HTML. */
+  const normalizeOfferPages = (pgs: string[]) => {
+    const bodies = pgs.map((p) => extractOfferBodyBox(p));
+    const boxes = pgs.map((p) => extractOfferTextBoxes(p));
+    const normalized = pgs.map((p, i) =>
+      injectOfferTextBoxesMarker(injectOfferBodyBox(p, bodies[i]), boxes[i]),
+    );
+    return { normalized, bodies, boxes };
+  };
+
   const openNewTemplate = () => {
     setEditingTemplate(null);
-    setTemplateForm({ template_name: '', role_title: '', html_content: DEFAULT_TEMPLATE });
+    const { normalized, bodies, boxes } = normalizeOfferPages([DEFAULT_TEMPLATE]);
+    setTemplateForm({
+      template_name: '',
+      role_title: '',
+      html_content: joinPages(normalized),
+      mail_subject: 'Offer Letter — {{candidate_name}}',
+      mail_body: '<p>Dear {{candidate_name}},</p><p>Please find your offer letter attached as a PDF.</p><p>Regards,<br>HR Team</p>',
+      recipient_email_placeholder: 'recipient_email',
+      pdf_filename_pattern: '{{candidate_name}}_OfferLetter.pdf',
+    });
     setLetterheadImage('');
     setContentPadding({ top: 55, right: 28, bottom: 25, left: 28 });
-    setPages([DEFAULT_TEMPLATE]);
+    setPages(normalized);
     setCurrentPage(0);
     setPageLetterheads(['']);
     setPagePaddings([{ top: 55, right: 28, bottom: 25, left: 28 }]);
-    setEditorMode('visual');
+    setPageTextBoxes(boxes);
+    setPageBodyBoxes(bodies);
+    setLayoutLocked(false);
+    setShowPlaceholderPanel(true);
     setShowEditor(true);
   };
 
   const openEditTemplate = (t: OfferTemplate) => {
     setEditingTemplate(t);
-    setTemplateForm({ template_name: t.template_name, role_title: t.role_title, html_content: t.html_content });
+    let mail: any = {};
+    if (typeof t.mail_json === 'string') {
+      try { mail = JSON.parse(t.mail_json); } catch { mail = {}; }
+    } else if (t.mail_json && typeof t.mail_json === 'object') {
+      mail = t.mail_json;
+    }
     const pgs = splitPages(t.html_content);
-    setPages(pgs);
+    const { normalized, bodies, boxes } = normalizeOfferPages(pgs);
+    setTemplateForm({
+      template_name: t.template_name,
+      role_title: t.role_title,
+      html_content: joinPages(normalized),
+      mail_subject: mail.mail_subject || 'Offer Letter — {{candidate_name}}',
+      mail_body: mail.mail_body || '<p>Dear {{candidate_name}},</p><p>Please find your offer letter attached.</p>',
+      recipient_email_placeholder: mail.recipient_email_placeholder || 'recipient_email',
+      pdf_filename_pattern: mail.pdf_filename_pattern || '{{candidate_name}}_OfferLetter.pdf',
+    });
+    setPages(normalized);
     setCurrentPage(0);
-    const letterheads = pgs.map(p => {
+    const letterheads = normalized.map(p => {
       const match = p.match(/class="letterhead-bg"\s+src="([^"]+)"/);
       return match && match[1] !== '{{letterhead_url}}' ? match[1] : '';
     });
     setPageLetterheads(letterheads);
-    const paddings = pgs.map(p => extractPadding(p));
+    const paddings = normalized.map(p => extractPadding(p));
     setPagePaddings(paddings);
+    setPageTextBoxes(boxes);
+    setPageBodyBoxes(bodies);
     setLetterheadImage(letterheads[0] || '');
     setContentPadding(paddings[0]);
-    setEditorMode('visual');
+    setLayoutLocked(true);
+    setShowPlaceholderPanel(true);
     setShowEditor(true);
   };
 
@@ -593,7 +714,8 @@ export default function OfferLetters() {
   };
 
   const addPage = () => {
-    const newPage = DEFAULT_TEMPLATE;
+    const { normalized, bodies, boxes } = normalizeOfferPages([DEFAULT_TEMPLATE]);
+    const newPage = normalized[0];
     setPages(prev => {
       const next = [...prev, newPage];
       syncTemplatFromPages(next);
@@ -601,6 +723,8 @@ export default function OfferLetters() {
     });
     setPageLetterheads(prev => [...prev, '']);
     setPagePaddings(prev => [...prev, { top: 55, right: 28, bottom: 25, left: 28 }]);
+    setPageTextBoxes(prev => [...prev, boxes[0] || []]);
+    setPageBodyBoxes(prev => [...prev, bodies[0] || { ...DEFAULT_OFFER_BODY_BOX }]);
     setCurrentPage(pages.length);
     setLetterheadImage('');
     setContentPadding({ top: 55, right: 28, bottom: 25, left: 28 });
@@ -615,6 +739,8 @@ export default function OfferLetters() {
     });
     setPageLetterheads(prev => prev.filter((_, i) => i !== idx));
     setPagePaddings(prev => prev.filter((_, i) => i !== idx));
+    setPageTextBoxes(prev => prev.filter((_, i) => i !== idx));
+    setPageBodyBoxes(prev => prev.filter((_, i) => i !== idx));
     const newIdx = Math.min(currentPage, pages.length - 2);
     setCurrentPage(newIdx);
     setLetterheadImage(pageLetterheads[newIdx] || '');
@@ -696,6 +822,12 @@ export default function OfferLetters() {
     if (!templateForm.template_name || !templateForm.role_title) {
       toast({ variant: 'destructive', title: 'Name and role title are required' }); return;
     }
+    const mail_json = {
+      mail_subject: templateForm.mail_subject,
+      mail_body: templateForm.mail_body,
+      recipient_email_placeholder: templateForm.recipient_email_placeholder,
+      pdf_filename_pattern: templateForm.pdf_filename_pattern,
+    };
     setSaving(true);
     try {
       if (editingTemplate) {
@@ -703,6 +835,7 @@ export default function OfferLetters() {
           template_name: templateForm.template_name,
           role_title: templateForm.role_title,
           html_content: templateForm.html_content,
+          mail_json,
           status: 'active',
         });
         toast({ title: 'Template updated' });
@@ -711,6 +844,7 @@ export default function OfferLetters() {
           template_name: templateForm.template_name,
           role_title: templateForm.role_title,
           html_content: templateForm.html_content,
+          mail_json,
           status: 'active',
         });
         toast({ title: 'Template created' });
@@ -734,7 +868,8 @@ export default function OfferLetters() {
   };
 
   const openPreview = (html: string) => {
-    setPreviewHtml(html);
+    const { normalized } = normalizeOfferPages(splitPages(html));
+    setPreviewHtml(joinPages(normalized));
     setShowPreview(true);
   };
 
@@ -761,14 +896,8 @@ export default function OfferLetters() {
   };
 
   const buildPrintableHtml = (html: string): string => {
-    const pgs = splitPages(html);
-    if (pgs.length <= 1) return html;
-    return pgs.map((p, i) => {
-      if (i < pgs.length - 1) {
-        return p.replace('</body>', '<div style="page-break-after:always"></div></body>');
-      }
-      return p;
-    }).join('\n');
+    const { normalized } = normalizeOfferPages(splitPages(html));
+    return buildMultiPagePrintableHtml(joinPages(normalized));
   };
 
   const openSendDialog = (t: OfferTemplate) => {
@@ -782,38 +911,79 @@ export default function OfferLetters() {
       sender_email: 'hr@syncpedia.in',
       ref_number: refNum,
     });
+    setSendExtraValues({});
     setShowSend(true);
   };
 
-  const replacePlaceholders = (html: string) => {
-    return html
-      .replace(/\{\{candidate_name\}\}/g, sendForm.recipient_name || '{{candidate_name}}')
-      .replace(/\{\{role_title\}\}/g, sendForm.role_title || '{{role_title}}')
-      .replace(/\{\{company_name\}\}/g, sendForm.company_name || '{{company_name}}')
-      .replace(/\{\{date\}\}/g, format(new Date(), 'MMMM dd, yyyy'))
-      .replace(/\{\{department\}\}/g, sendForm.department || '{{department}}')
-      .replace(/\{\{start_date\}\}/g, sendForm.start_date || '{{start_date}}')
-      .replace(/\{\{salary\}\}/g, sendForm.salary || '{{salary}}')
-      .replace(/\{\{reporting_to\}\}/g, sendForm.reporting_to || '{{reporting_to}}')
-      .replace(/\{\{deadline\}\}/g, sendForm.deadline || '{{deadline}}')
-      .replace(/\{\{sender_name\}\}/g, sendForm.sender_name || '{{sender_name}}')
-      .replace(/\{\{sender_title\}\}/g, sendForm.sender_title || '{{sender_title}}')
-      .replace(/\{\{sender_email\}\}/g, sendForm.sender_email || '{{sender_email}}')
-      .replace(/\{\{company_address\}\}/g, sendForm.company_address || '{{company_address}}')
-      .replace(/\{\{company_website\}\}/g, sendForm.company_website || '{{company_website}}')
-      .replace(/\{\{company_phone\}\}/g, sendForm.company_phone || '{{company_phone}}')
-      .replace(/\{\{ref_number\}\}/g, sendForm.ref_number || '{{ref_number}}')
-      .replace(/\{\{work_location\}\}/g, sendForm.work_location || '{{work_location}}')
-      .replace(/\{\{employment_type\}\}/g, sendForm.employment_type || '{{employment_type}}')
-      .replace(/\{\{probation_period\}\}/g, sendForm.probation_period || '{{probation_period}}');
-  };
+  const offerSendValues = (): Record<string, string> =>
+    withOfferFallbackValues({
+      candidate_name: sendForm.recipient_name || '',
+      recipient_name: sendForm.recipient_name || '',
+      recipient_email: sendForm.recipient_email || '',
+      role_title: sendForm.role_title || '',
+      company_name: sendForm.company_name || '',
+      department: sendForm.department || '',
+      start_date: sendForm.start_date || '',
+      salary: sendForm.salary || '',
+      reporting_to: sendForm.reporting_to || '',
+      deadline: sendForm.deadline || '',
+      sender_name: sendForm.sender_name || '',
+      sender_title: sendForm.sender_title || '',
+      sender_email: sendForm.sender_email || '',
+      company_address: sendForm.company_address || '',
+      company_website: sendForm.company_website || '',
+      company_phone: sendForm.company_phone || '',
+      ref_number: sendForm.ref_number || '',
+      work_location: sendForm.work_location || '',
+      employment_type: sendForm.employment_type || '',
+      probation_period: sendForm.probation_period || '',
+      ...sendExtraValues,
+    });
+
+  const renderOfferPlaceholders = (text: string, values: Record<string, string>): string =>
+    applyPlaceholders(text, withOfferFallbackValues(values));
+
+  const replacePlaceholders = (html: string) => renderOfferPlaceholders(html, offerSendValues());
+
+  const dynamicOfferPlaceholderKeys = useMemo(() => {
+    if (!sendTemplate) return [] as string[];
+    const mail = parseOfferMailConfig(sendTemplate);
+    const keys = extractPlaceholderKeys(
+      sendTemplate.html_content || '',
+      mail.mail_subject || '',
+      mail.mail_body || '',
+      mail.pdf_filename_pattern || '',
+      mail.recipient_email_placeholder || '',
+    );
+    const baseKeys = new Set([
+      'candidate_name', 'recipient_name', 'recipient_email', 'role_title', 'company_name', 'department',
+      'start_date', 'salary', 'reporting_to', 'deadline', 'sender_name', 'sender_title', 'sender_email',
+      'company_address', 'company_website', 'company_phone', 'ref_number', 'work_location',
+      'employment_type', 'probation_period', 'date',
+    ]);
+    return keys.filter((k) => !baseKeys.has(k));
+  }, [sendTemplate]);
 
   const goToEmailCompose = () => {
     if (!sendForm.recipient_email?.trim() || !sendForm.recipient_name?.trim()) {
       toast({ variant: 'destructive', title: 'Recipient name and email required' });
       return;
     }
-    setEmailDraft(buildDefaultOfferEmailDraft(sendForm));
+    const mailCfg = parseOfferMailConfig(sendTemplate);
+    const values = offerSendValues();
+    const toFromTemplate = renderOfferPlaceholders(`{{${mailCfg.recipient_email_placeholder}}}`, values).trim();
+    const renderedSubject = renderOfferPlaceholders(mailCfg.mail_subject, values).trim();
+    const renderedBody = renderOfferPlaceholders(mailCfg.mail_body, values).trim();
+    const attachmentPattern = renderOfferPlaceholders(mailCfg.pdf_filename_pattern || '{{candidate_name}}_OfferLetter.pdf', values).trim();
+    const defaultDraft = buildDefaultOfferEmailDraft(sendForm);
+    setEmailDraft({
+      to: (toFromTemplate && !toFromTemplate.includes('{{')) ? toFromTemplate : (sendForm.recipient_email?.trim() || defaultDraft.to),
+      cc: '',
+      bcc: '',
+      subject: renderedSubject || defaultDraft.subject,
+      body: renderedBody || defaultDraft.body,
+      attachmentName: (attachmentPattern || defaultDraft.attachmentName).replace(/\s+/g, '_'),
+    });
     setSendTab('email');
   };
 
@@ -834,7 +1004,9 @@ export default function OfferLetters() {
         recipient_email: emailDraft.to.trim(),
         sender_email: sendForm.sender_email?.trim() || 'hr@syncpedia.in',
       };
-      const emailHtml = wrapOfferEmailPlainBody(emailDraft.body.trim(), formForEmail);
+      const draftBody = emailDraft.body.trim();
+      const looksHtml = /<\/?[a-z][\s\S]*>/i.test(draftBody);
+      const emailHtml = looksHtml ? draftBody : wrapOfferEmailPlainBody(draftBody, formForEmail);
 
       let pdfBase64 = '';
       try {
@@ -867,7 +1039,7 @@ export default function OfferLetters() {
             || 'The offer letter email was sent, but the sent record could not be saved. Do not resend.',
         });
         setShowSend(false);
-        fetchData();
+        void fetchData({ silent: true });
         return;
       }
 
@@ -876,14 +1048,72 @@ export default function OfferLetters() {
         description: `PDF emailed to ${emailDraft.to.trim()} from hr@syncpedia.in`,
       });
       setShowSend(false);
-      fetchData();
+      void fetchData({ silent: true });
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
     finally { setSending(false); }
   };
 
   const insertPlaceholder = (placeholder: string) => {
-    const updated = pages[currentPage] + placeholder;
-    updateCurrentPage(updated);
+    const token = ` ${placeholder} `;
+    try {
+      document.execCommand('styleWithCSS', false, 'true');
+      const ok = document.execCommand('insertText', false, token);
+      if (ok) {
+        // Force sync from the live contentEditable (onInput is not always reliable with execCommand)
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.isContentEditable) {
+          updateVisualContent(active.innerHTML);
+          return;
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+    const page = pages[currentPage] || '';
+    const inner = extractContentAreaHtml(page);
+    updateCurrentPage(injectContentAreaHtml(page, `${inner}${token}`));
+  };
+
+  const updateVisualContent = (innerHtml: string) => {
+    const page = pages[currentPage] || DEFAULT_TEMPLATE;
+    const withContent = injectContentAreaHtml(page, innerHtml);
+    const boxes = pageTextBoxes[currentPage] || [];
+    const body = pageBodyBoxes[currentPage] || DEFAULT_OFFER_BODY_BOX;
+    updateCurrentPage(injectOfferTextBoxesMarker(injectOfferBodyBox(withContent, body), boxes));
+  };
+
+  const updatePageTextBoxes = (boxes: OfferTextBox[]) => {
+    setPageTextBoxes((prev) => {
+      const next = [...prev];
+      while (next.length <= currentPage) next.push([]);
+      next[currentPage] = boxes;
+      return next;
+    });
+    setPages((prev) => {
+      const next = [...prev];
+      const page = next[currentPage] || DEFAULT_TEMPLATE;
+      const body = pageBodyBoxes[currentPage] || DEFAULT_OFFER_BODY_BOX;
+      next[currentPage] = injectOfferTextBoxesMarker(injectOfferBodyBox(page, body), boxes);
+      syncTemplatFromPages(next);
+      return next;
+    });
+  };
+
+  const updatePageBodyBox = (box: OfferBodyBox) => {
+    setPageBodyBoxes((prev) => {
+      const next = [...prev];
+      while (next.length <= currentPage) next.push({ ...DEFAULT_OFFER_BODY_BOX });
+      next[currentPage] = box;
+      return next;
+    });
+    setPages((prev) => {
+      const next = [...prev];
+      const page = next[currentPage] || DEFAULT_TEMPLATE;
+      const boxes = pageTextBoxes[currentPage] || [];
+      next[currentPage] = injectOfferTextBoxesMarker(injectOfferBodyBox(page, box), boxes);
+      syncTemplatFromPages(next);
+      return next;
+    });
   };
 
   const extractPadding = (html: string) => {
@@ -892,136 +1122,165 @@ export default function OfferLetters() {
     return { top: 55, right: 28, bottom: 25, left: 28 };
   };
 
-  const updateContentPadding = useCallback((newPadding: { top: number; right: number; bottom: number; left: number }) => {
-    setContentPadding(newPadding);
-    setPagePaddings(prev => { const n = [...prev]; n[currentPage] = newPadding; return n; });
-    setPages(prev => {
-      const next = [...prev];
-      next[currentPage] = next[currentPage].replace(
-        /\.content-area\s*\{([^}]*?)padding:\s*[\d.]+mm\s+[\d.]+mm\s+[\d.]+mm\s+[\d.]+mm/,
-        `.content-area {$1padding: ${newPadding.top}mm ${newPadding.right}mm ${newPadding.bottom}mm ${newPadding.left}mm`
-      );
-      syncTemplatFromPages(next);
-      return next;
-    });
-  }, [currentPage]);
-
-  // Draggable text box handlers
-  const handleDragStart = (e: ReactMouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-    setResizeEdge(null);
-    setDragStart({ x: e.clientX, y: e.clientY });
-  };
-
-  const handleResizeStart = (edge: string) => (e: ReactMouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    setResizeEdge(edge);
-    setDragStart({ x: e.clientX, y: e.clientY });
-  };
-
-  useEffect(() => {
-    if (!isDragging && !resizeEdge) return;
-    const container = previewContainerRef.current;
-    if (!container) return;
-
-    const a4WidthMm = 210;
-    const a4HeightMm = 297;
-    const iframe = container.querySelector('iframe');
-    if (!iframe) return;
-    const iframeRect = iframe.getBoundingClientRect();
-    const pxPerMmX = iframeRect.width / a4WidthMm;
-    const pxPerMmY = iframeRect.height / a4HeightMm;
-
-    const handleMouseMove = (ev: globalThis.MouseEvent) => {
-      const dx = ev.clientX - dragStart.x;
-      const dy = ev.clientY - dragStart.y;
-      setDragStart({ x: ev.clientX, y: ev.clientY });
-
-      const dxMm = dx / pxPerMmX;
-      const dyMm = dy / pxPerMmY;
-
-      setContentPadding(prev => {
-        let next = { ...prev };
-
-        if (isDragging) {
-          next.top = prev.top + dyMm;
-          next.bottom = prev.bottom - dyMm;
-          next.left = prev.left + dxMm;
-          next.right = prev.right - dxMm;
-        } else if (resizeEdge) {
-          if (resizeEdge.includes('t')) next.top = prev.top + dyMm;
-          if (resizeEdge.includes('b')) next.bottom = prev.bottom - dyMm;
-          if (resizeEdge.includes('l')) next.left = prev.left + dxMm;
-          if (resizeEdge.includes('r')) next.right = prev.right - dxMm;
-        }
-
-        const rounded = {
-          top: Math.round(Math.max(0, Math.min(200, next.top)) * 10) / 10,
-          right: Math.round(Math.max(0, Math.min(150, next.right)) * 10) / 10,
-          bottom: Math.round(Math.max(0, Math.min(200, next.bottom)) * 10) / 10,
-          left: Math.round(Math.max(0, Math.min(150, next.left)) * 10) / 10,
-        };
-
-        setPagePaddings(prev => { const n = [...prev]; n[currentPage] = rounded; return n; });
-        setPages(prev => {
-          const next = [...prev];
-          next[currentPage] = next[currentPage].replace(
-            /\.content-area\s*\{([^}]*?)padding:\s*[\d.]+mm\s+[\d.]+mm\s+[\d.]+mm\s+[\d.]+mm/,
-            `.content-area {$1padding: ${rounded.top}mm ${rounded.right}mm ${rounded.bottom}mm ${rounded.left}mm`
-          );
-          syncTemplatFromPages(next);
-          return next;
-        });
-        return rounded;
-      });
-    };
-
-    const handleMouseUp = () => {
-      setIsDragging(false);
-      setResizeEdge(null);
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging, resizeEdge, dragStart, currentPage]);
-
   const duplicateTemplate = (t: OfferTemplate) => {
     setEditingTemplate(null);
     const pgs = splitPages(t.html_content);
-    setTemplateForm({ template_name: `${t.template_name} (Copy)`, role_title: t.role_title, html_content: t.html_content });
-    setPages(pgs);
+    const { normalized, bodies, boxes } = normalizeOfferPages(pgs);
+    const mail = parseOfferMailConfig(t);
+    setTemplateForm({
+      template_name: `${t.template_name} (Copy)`,
+      role_title: t.role_title,
+      html_content: joinPages(normalized),
+      mail_subject: mail.mail_subject,
+      mail_body: mail.mail_body,
+      recipient_email_placeholder: mail.recipient_email_placeholder,
+      pdf_filename_pattern: mail.pdf_filename_pattern,
+    });
+    setPages(normalized);
     setCurrentPage(0);
-    const letterheads = pgs.map(p => {
+    const letterheads = normalized.map(p => {
       const match = p.match(/class="letterhead-bg"\s+src="([^"]+)"/);
       return match && match[1] !== '{{letterhead_url}}' ? match[1] : '';
     });
     setPageLetterheads(letterheads);
-    setPagePaddings(pgs.map(p => extractPadding(p)));
+    setPagePaddings(normalized.map(p => extractPadding(p)));
+    setPageTextBoxes(boxes);
+    setPageBodyBoxes(bodies);
     setLetterheadImage(letterheads[0] || '');
-    setContentPadding(extractPadding(pgs[0]));
-    setEditorMode('visual');
+    setContentPadding(extractPadding(normalized[0]));
+    setLayoutLocked(true);
+    setShowPlaceholderPanel(true);
     setShowEditor(true);
+    toast({
+      title: 'Duplicated',
+      description: 'Editing a copy — save to create a new template.',
+    });
   };
 
   const openBulkGenerate = (t: OfferTemplate) => {
     setBulkTemplate(t);
-    setBulkCandidates([EMPTY_CANDIDATE()]);
+    const first = EMPTY_CANDIDATE();
+    setBulkCandidates([first]);
+    setBulkSelectedRowIds([first.id]);
     setBulkCompany({ company_name: 'Syncpedia Technologies', company_address: '', sender_name: user?.full_name || '', sender_title: '', sender_email: '', company_website: '', company_phone: '' });
+    setBulkExtraByRowId({});
+    setBulkFillField('');
+    setBulkFillValue('');
     setShowBulk(true);
   };
 
-  const addBulkCandidate = () => setBulkCandidates(prev => [...prev, EMPTY_CANDIDATE()]);
-  const removeBulkCandidate = (id: string) => setBulkCandidates(prev => prev.filter(c => c.id !== id));
+  const addBulkCandidate = () => setBulkCandidates(prev => {
+    const next = [...prev, EMPTY_CANDIDATE()];
+    return next;
+  });
+  const removeBulkCandidate = (id: string) => {
+    setBulkCandidates(prev => prev.filter(c => c.id !== id));
+    setBulkSelectedRowIds(prev => prev.filter(x => x !== id));
+    setBulkExtraByRowId(prev => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
   const updateBulkCandidate = (id: string, field: string, value: string) => {
     setBulkCandidates(prev => prev.map(c => c.id === id ? { ...c, [field]: value } : c));
+  };
+  const setBulkExtraValue = (id: string, key: string, value: string) => {
+    setBulkExtraByRowId(prev => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || {}),
+        [key]: value,
+      },
+    }));
+  };
+  const toggleBulkRow = (id: string) => {
+    setBulkSelectedRowIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const handleBulkSheetImport = async (file: File) => {
+    try {
+      const dynamicKeys = bulkTemplate
+        ? extractPlaceholderKeys(
+            bulkTemplate.html_content || '',
+            parseOfferMailConfig(bulkTemplate).mail_subject || '',
+            parseOfferMailConfig(bulkTemplate).mail_body || '',
+            parseOfferMailConfig(bulkTemplate).pdf_filename_pattern || '',
+          ).filter((k) => !OFFER_BULK_SHEET_HEADERS.includes(k as any) && k !== 'date' && k !== 'ref_number')
+        : [];
+      const grid = await parsePlaceholderSheetFile(file);
+      const mapped = mapSheetRowsToPlaceholders(grid, {
+        allowedKeys: [...OFFER_BULK_SHEET_HEADERS, ...dynamicKeys],
+        requireKeys: ['candidate_name', 'recipient_email'],
+      });
+      if (mapped.errors.length && mapped.rows.length === 0) {
+        toast({ variant: 'destructive', title: 'Import failed', description: mapped.errors[0] });
+        return;
+      }
+      const next = mapped.rows.map((row) => {
+        const item = {
+          ...EMPTY_CANDIDATE(),
+          candidate_name: row.candidate_name || '',
+          recipient_email: row.recipient_email || '',
+          role_title: row.role_title || '',
+          department: row.department || '',
+          start_date: row.start_date || '',
+          salary: row.salary || '',
+          reporting_to: row.reporting_to || '',
+          work_location: row.work_location || '',
+          employment_type: row.employment_type || 'Full-Time',
+          probation_period: row.probation_period || '6 months',
+          deadline: row.deadline || '',
+        };
+        return item;
+      });
+      if (next.length === 0) {
+        toast({ variant: 'destructive', title: 'No valid rows', description: 'Need candidate_name and recipient_email columns.' });
+        return;
+      }
+      setBulkCandidates(next);
+      setBulkSelectedRowIds(next.map((r) => r.id));
+      const extrasById: Record<string, Record<string, string>> = {};
+      next.forEach((item, idx) => {
+        const row = mapped.rows[idx];
+        const extras: Record<string, string> = {};
+        Object.keys(row).forEach((k) => {
+          if (!OFFER_BULK_SHEET_HEADERS.includes(k as any) && row[k]) extras[k] = row[k];
+        });
+        if (Object.keys(extras).length > 0) extrasById[item.id] = extras;
+      });
+      setBulkExtraByRowId(extrasById);
+      toast({
+        title: `Imported ${next.length} row(s)`,
+        description: mapped.skipped ? `${mapped.skipped} row(s) skipped` : 'Matched to placeholders automatically',
+      });
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Import failed', description: err?.message || 'Could not read file' });
+    }
+  };
+
+  const downloadBulkSheetTemplate = async () => {
+    try {
+      const dynamicKeys = bulkTemplate
+        ? extractPlaceholderKeys(
+            bulkTemplate.html_content || '',
+            parseOfferMailConfig(bulkTemplate).mail_subject || '',
+            parseOfferMailConfig(bulkTemplate).mail_body || '',
+            parseOfferMailConfig(bulkTemplate).pdf_filename_pattern || '',
+          ).filter((k) => !OFFER_BULK_SHEET_HEADERS.includes(k as any) && k !== 'date' && k !== 'ref_number')
+        : [];
+      const headers = [...OFFER_BULK_SHEET_HEADERS, ...dynamicKeys];
+      const sampleBase = [...OFFER_BULK_SHEET_SAMPLE];
+      while (sampleBase.length < headers.length) sampleBase.push('');
+      await downloadPlaceholderExcelTemplate(
+        headers,
+        sampleBase,
+        'offer-letters-bulk-template.xlsx',
+        'Candidates',
+      );
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Download failed', description: err?.message || 'Could not create template' });
+    }
   };
 
   const generateBulkLetters = async () => {
@@ -1035,29 +1294,42 @@ export default function OfferLetters() {
     const failed: string[] = [];
     const sentUnrecorded: string[] = [];
     try {
+      const mailCfg = parseOfferMailConfig(bulkTemplate);
       for (const candidate of valid) {
         try {
           const refNum = `OL-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
-          const finalHtml = bulkTemplate.html_content
-            .replace(/\{\{candidate_name\}\}/g, candidate.candidate_name)
-            .replace(/\{\{role_title\}\}/g, candidate.role_title || bulkTemplate.role_title)
-            .replace(/\{\{company_name\}\}/g, bulkCompany.company_name)
-            .replace(/\{\{date\}\}/g, format(new Date(), 'MMMM dd, yyyy'))
-            .replace(/\{\{department\}\}/g, candidate.department)
-            .replace(/\{\{start_date\}\}/g, candidate.start_date)
-            .replace(/\{\{salary\}\}/g, candidate.salary)
-            .replace(/\{\{reporting_to\}\}/g, candidate.reporting_to)
-            .replace(/\{\{deadline\}\}/g, candidate.deadline)
-            .replace(/\{\{sender_name\}\}/g, bulkCompany.sender_name)
-            .replace(/\{\{sender_title\}\}/g, bulkCompany.sender_title)
-            .replace(/\{\{sender_email\}\}/g, bulkCompany.sender_email)
-            .replace(/\{\{company_address\}\}/g, bulkCompany.company_address)
-            .replace(/\{\{company_website\}\}/g, bulkCompany.company_website)
-            .replace(/\{\{company_phone\}\}/g, bulkCompany.company_phone)
-            .replace(/\{\{ref_number\}\}/g, refNum)
-            .replace(/\{\{work_location\}\}/g, candidate.work_location)
-            .replace(/\{\{employment_type\}\}/g, candidate.employment_type)
-            .replace(/\{\{probation_period\}\}/g, candidate.probation_period);
+          const values = withOfferFallbackValues({
+            candidate_name: candidate.candidate_name,
+            recipient_name: candidate.candidate_name,
+            recipient_email: candidate.recipient_email,
+            role_title: candidate.role_title || bulkTemplate.role_title,
+            department: candidate.department,
+            start_date: candidate.start_date,
+            salary: candidate.salary,
+            reporting_to: candidate.reporting_to,
+            deadline: candidate.deadline,
+            sender_name: bulkCompany.sender_name,
+            sender_title: bulkCompany.sender_title,
+            sender_email: bulkCompany.sender_email,
+            company_name: bulkCompany.company_name,
+            company_address: bulkCompany.company_address,
+            company_website: bulkCompany.company_website,
+            company_phone: bulkCompany.company_phone,
+            ref_number: refNum,
+            work_location: candidate.work_location,
+            employment_type: candidate.employment_type,
+            probation_period: candidate.probation_period,
+            ...(bulkExtraByRowId[candidate.id] || {}),
+          });
+          const finalHtml = renderOfferPlaceholders(bulkTemplate.html_content, values);
+          const renderedSubject = renderOfferPlaceholders(mailCfg.mail_subject, values).trim();
+          const renderedBody = renderOfferPlaceholders(mailCfg.mail_body, values).trim();
+          const recipientTokenKey = (mailCfg.recipient_email_placeholder || 'recipient_email').replace(/^\{\{|\}\}$/g, '');
+          const resolvedTo = values[recipientTokenKey] || candidate.recipient_email;
+          const attachmentName = renderOfferPlaceholders(
+            mailCfg.pdf_filename_pattern || '{{candidate_name}}_OfferLetter.pdf',
+            values,
+          ).trim().replace(/\s+/g, '_');
 
           let pdfBase64 = '';
           try {
@@ -1069,9 +1341,26 @@ export default function OfferLetters() {
           const sendResult = await api.offerLetters.send({
             template_id: bulkTemplate.id,
             recipient_name: candidate.candidate_name,
-            recipient_email: candidate.recipient_email,
+            recipient_email: resolvedTo,
             role_title: candidate.role_title || bulkTemplate.role_title,
             html_content: finalHtml,
+            email_subject: renderedSubject || `Offer Letter — ${candidate.role_title || bulkTemplate.role_title}`,
+            email_html: /<\/?[a-z][\s\S]*>/i.test(renderedBody)
+              ? renderedBody
+              : wrapOfferEmailPlainBody(renderedBody || buildDefaultOfferEmailPlainText({ ...sendForm, recipient_name: candidate.candidate_name }), {
+                  ...sendForm,
+                  recipient_name: candidate.candidate_name,
+                  recipient_email: resolvedTo,
+                  role_title: candidate.role_title || bulkTemplate.role_title,
+                  sender_name: bulkCompany.sender_name,
+                  sender_title: bulkCompany.sender_title,
+                  sender_email: bulkCompany.sender_email,
+                  company_name: bulkCompany.company_name,
+                  company_address: bulkCompany.company_address,
+                  company_website: bulkCompany.company_website,
+                  company_phone: bulkCompany.company_phone,
+                }),
+            attachment_name: attachmentName || `Offer_Letter_${candidate.candidate_name.replace(/\s+/g, '_')}.pdf`,
             status: 'sent',
             pdf_base64: pdfBase64,
           });
@@ -1080,8 +1369,11 @@ export default function OfferLetters() {
           } else {
             succeeded.push(candidate.candidate_name);
           }
-        } catch {
-          failed.push(candidate.candidate_name);
+        } catch (err: any) {
+          console.error('Bulk offer send failed', candidate.candidate_name, err);
+          failed.push(
+            `${candidate.candidate_name}${err?.message ? ` (${String(err.message).slice(0, 120)})` : ''}`,
+          );
         }
       }
       const total = valid.length;
@@ -1103,7 +1395,7 @@ export default function OfferLetters() {
         });
         if (succeeded.length + sentUnrecorded.length > 0) setShowBulk(false);
       }
-      fetchData();
+      void fetchData({ silent: true });
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
     finally { setBulkGenerating(false); }
   };
@@ -1112,6 +1404,87 @@ export default function OfferLetters() {
 
   // Full-screen editor view
   if (showEditor) {
+    const layoutTools = (
+      <div className="flex flex-col gap-1.5 w-full">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground px-1">Page</p>
+        <Button
+          variant={layoutLocked ? 'default' : 'outline'}
+          size="sm"
+          className="h-8 w-full justify-start text-xs gap-1.5"
+          onClick={() => setLayoutLocked((v) => !v)}
+          title={layoutLocked ? 'Unlock to move letter margins / change background' : 'Lock background and letter margins'}
+        >
+          {layoutLocked ? <Lock className="h-3.5 w-3.5" /> : <Unlock className="h-3.5 w-3.5" />}
+          {layoutLocked ? 'Layout locked' : 'Lock layout'}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 w-full justify-start text-xs gap-1.5"
+          disabled={layoutLocked}
+          onClick={() => letterheadInputRef.current?.click()}
+          title={layoutLocked ? 'Unlock layout to change background' : undefined}
+        >
+          <Image className="h-3.5 w-3.5" />{letterheadImage ? 'Change Background' : 'Background Image'}
+        </Button>
+        {letterheadImage ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 w-full justify-start text-xs gap-1.5 text-destructive hover:text-destructive"
+            disabled={layoutLocked}
+            onClick={removeLetterhead}
+          >
+            <Trash2 className="h-3.5 w-3.5" />Remove BG
+          </Button>
+        ) : null}
+        <input ref={letterheadInputRef} type="file" accept="image/*" onChange={handleLetterheadUpload} className="hidden" />
+        <Button variant="outline" size="sm" className="h-8 w-full justify-start text-xs gap-1.5" onClick={() => fileInputRef.current?.click()}>
+          <Upload className="h-3.5 w-3.5" />Import
+        </Button>
+        <Button variant="outline" size="sm" className="h-8 w-full justify-start text-xs gap-1.5" onClick={handleExportTemplate}>
+          <Download className="h-3.5 w-3.5" />Export
+        </Button>
+        <input ref={fileInputRef} type="file" accept=".html,.htm" onChange={handleImportFile} className="hidden" />
+        <Button
+          variant={showPlaceholderPanel ? 'default' : 'outline'}
+          size="sm"
+          className="h-8 w-full justify-start text-xs gap-1.5"
+          onClick={() => setShowPlaceholderPanel((v) => !v)}
+        >
+          <Variable className="h-3.5 w-3.5" />Placeholders
+        </Button>
+        <Button variant="outline" size="sm" className="h-8 w-full justify-start text-xs gap-1.5" onClick={addPage}>
+          <FilePlus className="h-3.5 w-3.5" />Add Page
+        </Button>
+        {pages.length > 1 ? (
+          <div className="flex flex-col gap-1 pt-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground px-1">Pages</p>
+            {pages.map((_, idx) => (
+              <div key={idx} className="flex items-center gap-1">
+                <Button
+                  variant={currentPage === idx ? 'default' : 'outline'}
+                  size="sm"
+                  className="h-7 flex-1 text-xs"
+                  onClick={() => switchPage(idx)}
+                >
+                  Page {idx + 1}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 w-7 px-0 text-destructive"
+                  onClick={(e) => { e.stopPropagation(); removePage(idx); }}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+
     return (
       <div className="fixed inset-0 z-50 bg-background flex flex-col overflow-hidden">
         {/* Top bar */}
@@ -1128,6 +1501,26 @@ export default function OfferLetters() {
           <div className="flex items-center gap-2">
             <Input className="h-8 text-xs w-48" value={templateForm.template_name} onChange={e => setTemplateForm(f => ({ ...f, template_name: e.target.value }))} placeholder="Template Name *" />
             <Input className="h-8 text-xs w-40" value={templateForm.role_title} onChange={e => setTemplateForm(f => ({ ...f, role_title: e.target.value }))} placeholder="Role Title *" />
+            {editingTemplate ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => {
+                  setEditingTemplate(null);
+                  setTemplateForm((f) => ({
+                    ...f,
+                    template_name: `${f.template_name || 'Template'} (Copy)`,
+                  }));
+                  toast({
+                    title: 'Duplicated',
+                    description: 'Editing a copy — Create will save a new template.',
+                  });
+                }}
+              >
+                <Copy className="h-3.5 w-3.5" /> Duplicate
+              </Button>
+            ) : null}
             <Button size="sm" onClick={saveTemplate} disabled={saving} className="gap-1.5">
               {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {editingTemplate ? 'Update' : 'Create'}
@@ -1135,134 +1528,70 @@ export default function OfferLetters() {
           </div>
         </div>
 
-        {/* Toolbar */}
-        <div className="flex flex-wrap items-center gap-2 px-4 py-1.5 border-b bg-muted/30 shrink-0">
-          <div className="flex gap-1">
-            <Button variant={editorMode === 'visual' ? 'default' : 'outline'} size="sm" className="h-7 text-xs gap-1" onClick={() => setEditorMode('visual')}><Type className="h-3 w-3" />Visual</Button>
-            <Button variant={editorMode === 'html' ? 'default' : 'outline'} size="sm" className="h-7 text-xs gap-1" onClick={() => setEditorMode('html')}><Code className="h-3 w-3" />HTML</Button>
-          </div>
-          <div className="h-5 w-px bg-border" />
-          <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => letterheadInputRef.current?.click()}>
-            <Image className="h-3 w-3" />{letterheadImage ? 'Change Letterhead' : 'Upload Letterhead'}
-          </Button>
-          {letterheadImage && (
-            <Button variant="outline" size="sm" className="h-7 text-xs gap-1 text-destructive hover:text-destructive" onClick={removeLetterhead}>
-              <Trash2 className="h-3 w-3" />Remove
-            </Button>
-          )}
-          <input ref={letterheadInputRef} type="file" accept="image/*" onChange={handleLetterheadUpload} className="hidden" />
-          <div className="h-5 w-px bg-border" />
-          <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => fileInputRef.current?.click()}><Upload className="h-3 w-3" />Import</Button>
-          <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={handleExportTemplate}><Download className="h-3 w-3" />Export</Button>
-          <input ref={fileInputRef} type="file" accept=".html,.htm" onChange={handleImportFile} className="hidden" />
-          <div className="h-5 w-px bg-border" />
-          <Select onValueChange={(v) => insertPlaceholder(v)}>
-            <SelectTrigger className="h-7 w-[160px] text-xs">
-              <SelectValue placeholder="Insert placeholder..." />
-            </SelectTrigger>
-            <SelectContent>
-              {PLACEHOLDERS.map(p => (
-                <SelectItem key={p} value={p} className="text-xs">{p}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div className="h-5 w-px bg-border" />
-          <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addPage}>
-            <FilePlus className="h-3 w-3" />Add Page
-          </Button>
-        </div>
-
-        {/* Page tabs */}
-        {pages.length > 1 && (
-          <div className="flex items-center gap-1 px-4 py-1 border-b bg-muted/10 shrink-0 overflow-x-auto">
-            {pages.map((_, idx) => (
-              <div key={idx} className="flex items-center">
-                <Button
-                  variant={currentPage === idx ? 'default' : 'outline'}
-                  size="sm"
-                  className="h-7 text-xs gap-1 rounded-r-none"
-                  onClick={() => switchPage(idx)}
-                >
-                  Page {idx + 1}
-                </Button>
-                {pages.length > 1 && (
-                  <Button
-                    variant={currentPage === idx ? 'default' : 'outline'}
-                    size="sm"
-                    className="h-7 text-xs px-1 rounded-l-none border-l-0 text-destructive hover:text-destructive"
-                    onClick={(e) => { e.stopPropagation(); removePage(idx); }}
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Editor content - fills remaining space */}
-        <div className="flex-1 overflow-hidden">
-          {editorMode === 'html' ? (
-            <Textarea
-              value={pages[currentPage] || ''}
-              onChange={e => updateCurrentPage(e.target.value)}
-              className="font-mono text-xs h-full w-full rounded-none border-0 resize-none"
-              placeholder="Paste your HTML template here..."
+        {/* Left tools + full-page canvas + placeholders */}
+        <div className="flex-1 overflow-hidden flex min-h-0">
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <DocumentTemplateEditor
+              key={`offer-page-${currentPage}-${editingTemplate?.id || 'new'}`}
+              editorKey={`offer-page-${currentPage}`}
+              value={extractContentAreaHtml(pages[currentPage] || DEFAULT_TEMPLATE)}
+              onChange={updateVisualContent}
+              backgroundImage={letterheadImage || undefined}
+              contentPadding={`${contentPadding.top}mm ${contentPadding.right}mm ${contentPadding.bottom}mm ${contentPadding.left}mm`}
+              placeholder="Click letter text to edit. Use Move text (blue bar) to drag it on the page. Add Text box for extra fields."
+              enableTextBoxes
+              textBoxes={pageTextBoxes[currentPage] || []}
+              onTextBoxesChange={updatePageTextBoxes}
+              bodyBox={pageBodyBoxes[currentPage] || DEFAULT_OFFER_BODY_BOX}
+              onBodyBoxChange={updatePageBodyBox}
+              layoutLocked={layoutLocked}
+              documentCss={extractDocumentCss(pages[currentPage] || DEFAULT_TEMPLATE)}
+              toolbarPlacement="left"
+              toolbarExtra={layoutTools}
             />
-          ) : (
-            <div className="h-full flex flex-col">
-              <div className="px-4 py-1.5 border-b bg-muted/30 shrink-0">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                    <GripVertical className="h-3.5 w-3.5" /> Drag to move · Edges to resize — Page {currentPage + 1} of {pages.length}
-                  </div>
-                  <div className="flex items-center gap-3 text-[10px] font-mono text-muted-foreground">
-                    <span>T:{contentPadding.top}mm</span>
-                    <span>R:{contentPadding.right}mm</span>
-                    <span>B:{contentPadding.bottom}mm</span>
-                    <span>L:{contentPadding.left}mm</span>
-                  </div>
+          </div>
+          {showPlaceholderPanel ? (
+            <aside className="w-[320px] shrink-0 border-l bg-background overflow-y-auto flex flex-col">
+              <PlaceholderPalette
+                className="border-0 rounded-none"
+                documentHtml={`${pages[currentPage] || ''}\n${templateForm.mail_subject || ''}\n${templateForm.mail_body || ''}\n${templateForm.pdf_filename_pattern || ''}`}
+                onInsert={insertPlaceholder}
+              />
+              <div className="p-3 space-y-2">
+                <p className="text-xs font-semibold">Email & PDF file</p>
+                <div>
+                  <Label className="text-[10px]">Mail subject</Label>
+                  <Input className="h-8 text-xs" value={templateForm.mail_subject} onChange={(e) => setTemplateForm((f) => ({ ...f, mail_subject: e.target.value }))} placeholder="Offer — {{candidate_name}}" />
                 </div>
-              </div>
-              <div
-                ref={previewContainerRef}
-                className="flex-1 overflow-auto flex justify-center p-4 bg-muted/20 relative"
-              >
-                <div className="relative" style={{ width: '210mm', minHeight: '297mm' }}>
-                  <iframe
-                    srcDoc={pages[currentPage] || ''}
-                    className="bg-white shadow-lg w-full h-full absolute inset-0"
-                    style={{ width: '210mm', minHeight: '297mm', border: 'none', pointerEvents: 'none' }}
-                    title="Template Preview"
-                    sandbox="allow-same-origin"
-                  />
-                  {/* Draggable + Resizable text box overlay */}
-                  <div
-                    className={`absolute border-2 border-dashed rounded transition-colors ${isDragging ? 'border-primary bg-primary/5' : resizeEdge ? 'border-primary bg-primary/5' : 'border-blue-400/60 bg-blue-50/10 hover:border-primary hover:bg-primary/5'}`}
-                    style={{
-                      top: `${(contentPadding.top / 297) * 100}%`,
-                      left: `${(contentPadding.left / 210) * 100}%`,
-                      right: `${(contentPadding.right / 210) * 100}%`,
-                      bottom: `${(contentPadding.bottom / 297) * 100}%`,
+                <div>
+                  <Label className="text-[10px]">Mail body (HTML)</Label>
+                  <Textarea
+                    ref={(el) => {
+                      if (!el) return;
+                      el.style.height = 'auto';
+                      el.style.height = `${Math.max(el.scrollHeight, 120)}px`;
                     }}
-                  >
-                    <div className="absolute inset-3 cursor-move" onMouseDown={handleDragStart} />
-                    <div className="absolute top-1 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-background/90 border rounded px-2 py-0.5 text-[10px] text-muted-foreground shadow-sm pointer-events-none select-none z-10">
-                      <GripVertical className="h-3 w-3" /> Drag to move · Edges to resize
-                    </div>
-                    <div className="absolute top-0 left-3 right-3 h-1.5 cursor-n-resize hover:bg-primary/20" onMouseDown={handleResizeStart('t')} />
-                    <div className="absolute bottom-0 left-3 right-3 h-1.5 cursor-s-resize hover:bg-primary/20" onMouseDown={handleResizeStart('b')} />
-                    <div className="absolute left-0 top-3 bottom-3 w-1.5 cursor-w-resize hover:bg-primary/20" onMouseDown={handleResizeStart('l')} />
-                    <div className="absolute right-0 top-3 bottom-3 w-1.5 cursor-e-resize hover:bg-primary/20" onMouseDown={handleResizeStart('r')} />
-                    <div className="absolute -top-1 -left-1 w-3 h-3 bg-primary border border-primary-foreground rounded-sm cursor-nw-resize z-10" onMouseDown={handleResizeStart('tl')} />
-                    <div className="absolute -top-1 -right-1 w-3 h-3 bg-primary border border-primary-foreground rounded-sm cursor-ne-resize z-10" onMouseDown={handleResizeStart('tr')} />
-                    <div className="absolute -bottom-1 -left-1 w-3 h-3 bg-primary border border-primary-foreground rounded-sm cursor-sw-resize z-10" onMouseDown={handleResizeStart('bl')} />
-                    <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-primary border border-primary-foreground rounded-sm cursor-se-resize z-10" onMouseDown={handleResizeStart('br')} />
-                  </div>
+                    className="text-xs min-h-[120px] resize-none overflow-hidden border-0 shadow-none focus-visible:ring-0 bg-muted/30 rounded-md px-2 py-2"
+                    value={templateForm.mail_body}
+                    onChange={(e) => {
+                      const el = e.currentTarget;
+                      el.style.height = 'auto';
+                      el.style.height = `${Math.max(el.scrollHeight, 120)}px`;
+                      setTemplateForm((f) => ({ ...f, mail_body: e.target.value }));
+                    }}
+                  />
+                </div>
+                <div>
+                  <Label className="text-[10px]">Recipient email placeholder</Label>
+                  <Input className="h-8 text-xs font-mono" value={templateForm.recipient_email_placeholder} onChange={(e) => setTemplateForm((f) => ({ ...f, recipient_email_placeholder: e.target.value }))} placeholder="recipient_email" />
+                </div>
+                <div>
+                  <Label className="text-[10px]">PDF file name pattern</Label>
+                  <Input className="h-8 text-xs font-mono" value={templateForm.pdf_filename_pattern} onChange={(e) => setTemplateForm((f) => ({ ...f, pdf_filename_pattern: e.target.value }))} placeholder="{{candidate_name}}_OfferLetter.pdf" />
                 </div>
               </div>
-            </div>
-          )}
+            </aside>
+          ) : null}
         </div>
       </div>
     );
@@ -1270,6 +1599,19 @@ export default function OfferLetters() {
 
   // Full-page bulk generate view
   if (showBulk && bulkTemplate) {
+    const bulkMailCfg = parseOfferMailConfig(bulkTemplate);
+    const bulkDynamicKeys = extractPlaceholderKeys(
+      bulkTemplate.html_content || '',
+      bulkMailCfg.mail_subject || '',
+      bulkMailCfg.mail_body || '',
+      bulkMailCfg.pdf_filename_pattern || '',
+      bulkMailCfg.recipient_email_placeholder || '',
+    ).filter((k) => ![
+      'candidate_name', 'recipient_name', 'recipient_email', 'role_title', 'department', 'start_date', 'salary',
+      'reporting_to', 'work_location', 'employment_type', 'probation_period', 'deadline', 'company_name',
+      'company_address', 'sender_name', 'sender_title', 'sender_email', 'company_website', 'company_phone',
+      'ref_number', 'date',
+    ].includes(k));
     const BULK_FIELDS = [
       { key: 'candidate_name', label: 'Name *', placeholder: 'John Doe' },
       { key: 'recipient_email', label: 'Email *', placeholder: 'john@example.com' },
@@ -1282,16 +1624,59 @@ export default function OfferLetters() {
       { key: 'employment_type', label: 'Emp. Type', placeholder: 'Full-Time' },
       { key: 'probation_period', label: 'Probation', placeholder: '6 months' },
       { key: 'deadline', label: 'Deadline', placeholder: 'Apr 20, 2026' },
+      ...bulkDynamicKeys.map((k) => ({
+        key: k,
+        label: `{{${k}}}`,
+        placeholder: `Value for ${k}`,
+      })),
     ];
+
+    const applyBulkFill = () => {
+      const key = bulkFillField.trim();
+      if (!key) return;
+      const targets = bulkSelectedRowIds.length ? new Set(bulkSelectedRowIds) : new Set(bulkCandidates.map((c) => c.id));
+      if ([
+        'candidate_name', 'recipient_email', 'role_title', 'department', 'start_date', 'salary',
+        'reporting_to', 'work_location', 'employment_type', 'probation_period', 'deadline',
+      ].includes(key)) {
+        setBulkCandidates(prev => prev.map((c) => (targets.has(c.id) ? ({ ...c, [key]: bulkFillValue }) : c)));
+      } else {
+        setBulkExtraByRowId(prev => {
+          const next = { ...prev };
+          for (const rowId of targets) {
+            next[rowId] = { ...(next[rowId] || {}), [key]: bulkFillValue };
+          }
+          return next;
+        });
+      }
+      toast({ title: 'Value applied', description: `Filled ${targets.size} row(s).` });
+    };
 
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold tracking-tight">Bulk Generate Offer Letters</h1>
-            <p className="text-xs text-muted-foreground">Template: <strong>{bulkTemplate.template_name}</strong> — Add multiple candidates below</p>
+            <p className="text-xs text-muted-foreground">Template: <strong>{bulkTemplate.template_name}</strong> — Import Excel or type rows. Columns map to {'{{placeholders}}'}.</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void downloadBulkSheetTemplate()}>
+              <Download className="h-3.5 w-3.5" /> Excel template
+            </Button>
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => bulkSheetInputRef.current?.click()}>
+              <FileSpreadsheet className="h-3.5 w-3.5" /> Import Excel
+            </Button>
+            <input
+              ref={bulkSheetInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void handleBulkSheetImport(f);
+                e.target.value = '';
+              }}
+            />
             <Button variant="outline" size="sm" onClick={() => setShowBulk(false)}>Cancel</Button>
             <Button size="sm" onClick={generateBulkLetters} disabled={bulkGenerating} className="gap-1.5">
               {bulkGenerating && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
@@ -1315,6 +1700,37 @@ export default function OfferLetters() {
 
         <Card>
           <CardHeader className="py-3 px-4">
+            <CardTitle className="text-sm">Fill selected rows</CardTitle>
+            <CardDescription className="text-xs">
+              Pick a column, type once, then apply to selected rows (Excel-like fill down).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 grid grid-cols-1 sm:grid-cols-[220px_1fr_auto] gap-2 items-end">
+            <div>
+              <Label className="text-[10px]">Column</Label>
+              <select
+                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                value={bulkFillField}
+                onChange={(e) => setBulkFillField(e.target.value)}
+              >
+                <option value="">Select column</option>
+                {BULK_FIELDS.map((f) => (
+                  <option key={f.key} value={f.key}>{f.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <Label className="text-[10px]">Value</Label>
+              <Input className="h-8 text-xs" value={bulkFillValue} onChange={(e) => setBulkFillValue(e.target.value)} />
+            </div>
+            <Button type="button" className="h-8 text-xs" variant="outline" onClick={applyBulkFill} disabled={!bulkFillField}>
+              Apply
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="py-3 px-4">
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm">Candidates ({bulkCandidates.length})</CardTitle>
               <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={addBulkCandidate}><Plus className="h-3 w-3" />Add Row</Button>
@@ -1325,6 +1741,12 @@ export default function OfferLetters() {
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b bg-muted/30">
+                    <th className="px-2 py-2 w-8">
+                      <Checkbox
+                        checked={bulkSelectedRowIds.length > 0 && bulkSelectedRowIds.length === bulkCandidates.length}
+                        onCheckedChange={(v) => setBulkSelectedRowIds(v === true ? bulkCandidates.map((c) => c.id) : [])}
+                      />
+                    </th>
                     <th className="px-2 py-2 text-left font-medium text-muted-foreground w-8">#</th>
                     {BULK_FIELDS.map(f => (
                       <th key={f.key} className="px-1 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">{f.label}</th>
@@ -1335,13 +1757,22 @@ export default function OfferLetters() {
                 <tbody>
                   {bulkCandidates.map((c, i) => (
                     <tr key={c.id} className="border-b hover:bg-muted/10">
+                      <td className="px-2 py-1">
+                        <Checkbox checked={bulkSelectedRowIds.includes(c.id)} onCheckedChange={() => toggleBulkRow(c.id)} />
+                      </td>
                       <td className="px-2 py-1 text-muted-foreground">{i + 1}</td>
                       {BULK_FIELDS.map(f => (
                         <td key={f.key} className="px-1 py-1">
                           <Input
                             className="h-7 text-xs min-w-[100px]"
-                            value={(c as any)[f.key]}
-                            onChange={e => updateBulkCandidate(c.id, f.key, e.target.value)}
+                            value={(() => {
+                              if (Object.prototype.hasOwnProperty.call(c, f.key)) return String((c as any)[f.key] ?? '');
+                              return String(bulkExtraByRowId[c.id]?.[f.key] ?? '');
+                            })()}
+                            onChange={e => {
+                              if (Object.prototype.hasOwnProperty.call(c, f.key)) updateBulkCandidate(c.id, f.key, e.target.value);
+                              else setBulkExtraValue(c.id, f.key, e.target.value);
+                            }}
                             placeholder={f.placeholder}
                           />
                         </td>
@@ -1379,8 +1810,18 @@ export default function OfferLetters() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">
           <TabsTrigger value="templates" className="gap-1.5"><FileText className="h-3.5 w-3.5" />Templates</TabsTrigger>
+          <TabsTrigger value="forms" className="gap-1.5"><Users className="h-3.5 w-3.5" />Forms</TabsTrigger>
           <TabsTrigger value="sent" className="gap-1.5"><Send className="h-3.5 w-3.5" />Sent Letters</TabsTrigger>
+          <TabsTrigger value="issued" className="gap-1.5"><Mail className="h-3.5 w-3.5" />Issued</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="forms">
+          <DocFormsWorkspace formType="offer_letter" />
+        </TabsContent>
+
+        <TabsContent value="issued">
+          <DocIssuedPanel docKind="offer_letter" />
+        </TabsContent>
 
         <TabsContent value="templates">
           {templates.length === 0 ? (
@@ -1409,7 +1850,7 @@ export default function OfferLetters() {
                     <div className="flex flex-wrap gap-1.5">
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => openPreview(t.html_content)}><Eye className="h-3 w-3" />Preview</Button>
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => openEditTemplate(t)}><Edit className="h-3 w-3" />Edit</Button>
-                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => duplicateTemplate(t)}><Copy className="h-3 w-3" />Clone</Button>
+                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => duplicateTemplate(t)}><Copy className="h-3 w-3" />Duplicate</Button>
                       <Button size="sm" className="h-7 text-xs gap-1" onClick={() => openSendDialog(t)}><Send className="h-3 w-3" />Send</Button>
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => openBulkGenerate(t)}><Users className="h-3 w-3" />Bulk</Button>
                       {canDeleteTemplates && (
@@ -1482,12 +1923,12 @@ export default function OfferLetters() {
         <DialogContent className="max-w-4xl max-h-[min(90dvh,calc(100dvh-2rem))]">
           <DialogHeader><DialogTitle>Template Preview (A4)</DialogTitle></DialogHeader>
           <div className="overflow-auto max-h-[70vh] flex flex-col items-center gap-6 p-4 bg-muted/30 rounded-lg">
-            {splitPages(previewHtml).map((pageHtml, idx) => (
+            {splitPages(previewHtml).map((pageHtml, idx, arr) => (
               <div key={idx} className="relative">
-                {splitPages(previewHtml).length > 1 && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-background border rounded px-2 py-0.5 text-[10px] text-muted-foreground z-10">Page {idx + 1}</div>
+                {arr.length > 1 && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-background border rounded px-2 py-0.5 text-[10px] text-muted-foreground z-10">Page {idx + 1} of {arr.length}</div>
                 )}
-                <iframe srcDoc={pageHtml} className="bg-white shadow-lg" style={{ width: '210mm', minHeight: '297mm', border: 'none' }} title={`Preview Page ${idx + 1}`} sandbox="allow-same-origin" />
+                <iframe srcDoc={pageHtml} className="bg-white shadow-lg" style={{ width: '210mm', height: '297mm', border: 'none', overflow: 'hidden' }} title={`Preview Page ${idx + 1}`} sandbox="allow-same-origin" />
               </div>
             ))}
           </div>
@@ -1546,6 +1987,28 @@ export default function OfferLetters() {
                     <div className="sm:col-span-2"><Label className="text-xs">Sender Email</Label><Input value={sendForm.sender_email} onChange={e => setSendForm(f => ({ ...f, sender_email: e.target.value }))} placeholder="hr@syncpedia.in" /></div>
                   </CardContent>
                 </Card>
+                {dynamicOfferPlaceholderKeys.length > 0 ? (
+                  <Card>
+                    <CardHeader className="py-3 px-4">
+                      <CardTitle className="text-sm">Additional template placeholders</CardTitle>
+                      <CardDescription className="text-xs">
+                        Auto-detected from {'{{...}}'} in letter/email template.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-3 px-4 pb-4">
+                      {dynamicOfferPlaceholderKeys.map((key) => (
+                        <div key={key}>
+                          <Label className="text-xs font-mono">{`{{${key}}}`}</Label>
+                          <Input
+                            value={sendExtraValues[key] || ''}
+                            onChange={(e) => setSendExtraValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                            placeholder={`Value for ${key}`}
+                          />
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                ) : null}
                 <div className="flex justify-end">
                   <Button onClick={() => setSendTab('letter')} className="gap-1.5">Next: Preview Letter <Eye className="h-3.5 w-3.5" /></Button>
                 </div>
@@ -1554,16 +2017,28 @@ export default function OfferLetters() {
 
             <TabsContent value="letter">
               <div className="space-y-4">
-                <div className="overflow-auto max-h-[55vh] flex justify-center p-4 bg-gray-100 rounded-lg">
-                  {sendTemplate && (
-                    <iframe
-                      srcDoc={replacePlaceholders(sendTemplate.html_content)}
-                      className="bg-white shadow-lg"
-                      style={{ width: '210mm', minHeight: '297mm', border: 'none' }}
-                      title="Offer Letter Preview"
-                      sandbox="allow-same-origin"
-                    />
-                  )}
+                <div className="overflow-auto max-h-[55vh] flex flex-col items-center gap-6 p-4 bg-gray-100 rounded-lg">
+                  {sendTemplate &&
+                    (() => {
+                      const filled = replacePlaceholders(sendTemplate.html_content);
+                      const { normalized } = normalizeOfferPages(splitPages(filled));
+                      return normalized.map((pageHtml, idx, arr) => (
+                      <div key={idx} className="relative shrink-0">
+                        {arr.length > 1 && (
+                          <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-background border rounded px-2 py-0.5 text-[10px] text-muted-foreground z-10">
+                            Page {idx + 1} of {arr.length}
+                          </div>
+                        )}
+                        <iframe
+                          srcDoc={pageHtml}
+                          className="bg-white shadow-lg"
+                          style={{ width: '210mm', height: '297mm', border: 'none', overflow: 'hidden' }}
+                          title={`Offer Letter Preview Page ${idx + 1}`}
+                          sandbox="allow-same-origin"
+                        />
+                      </div>
+                      ));
+                    })()}
                 </div>
                 <div className="flex justify-between">
                   <Button variant="outline" onClick={() => setSendTab('details')}>← Back</Button>
@@ -1627,7 +2102,7 @@ export default function OfferLetters() {
                       <div>
                         <Label className="text-xs">Body</Label>
                         <Textarea
-                          rows={12}
+                          rows={18}
                           value={emailDraft.body}
                           onChange={(e) => setEmailDraft((p) => ({ ...p, body: e.target.value }))}
                           className="mt-1 text-sm"

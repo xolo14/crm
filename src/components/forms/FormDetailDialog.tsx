@@ -68,7 +68,7 @@ type Props = {
   onCopyLink?: (url: string, label: string) => void;
 };
 
-const LEAD_STATUSES = ["new", "contacted", "interested", "demo_scheduled", "demo_attended", "enrolled", "lost"] as const;
+const LEAD_STATUSES = ["new", "contacted", "not_answered", "messaged", "interested", "demo_scheduled", "demo_attended", "enrolled", "lost"] as const;
 const HR_STATUSES = ["new", "contacted", "interested", "not_interested", "converted", "lost"] as const;
 
 function formatDate(value?: string | null): string {

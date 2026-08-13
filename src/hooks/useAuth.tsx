@@ -25,7 +25,7 @@ interface AuthUser {
 
   org_id?: string | null;
 
-  page_access?: { payments?: boolean; offer_letters?: boolean } | null;
+  page_access?: { payments?: boolean; offer_letters?: boolean; pages?: Record<string, boolean> } | null;
 
 }
 
@@ -125,20 +125,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function bootstrap() {
 
-      const token = api.auth.getToken();
-
+      const hasSession = api.auth.hasSession?.() ?? !!api.auth.getStoredUser();
       const stored = api.auth.getStoredUser();
-
       const storedOrg = api.auth.getStoredOrg();
 
-
-
-      if (!token) {
-
+      if (!hasSession) {
         if (!cancelled) setLoading(false);
-
         return;
-
       }
 
       // Hydrate from cache first — avoids blocking first paint on auth.me() (mobile FCP/LCP).

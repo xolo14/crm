@@ -12,6 +12,7 @@ import {
   type BuilderQuestion,
   type LegacyFormField,
 } from '@/components/forms/formBuilderTypes';
+import { isCompletePhoneFieldValue } from '@/components/forms/phoneCountries';
 import { DEFAULT_PUBLIC_FORM_BRAND, parseFormMetaJson, publicFormBrandFromMeta, type PublicFormBrand } from '@/components/forms/publicFormTypes';
 import { getApiBase } from '@/lib/apiBase';
 import { reportLeadFormConversion } from '@/lib/gtagConversion';
@@ -27,10 +28,20 @@ const SPECIALIZATIONS = [
 ];
 
 export default function Apply() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const ref = searchParams.get('ref') || '';
-  const apiKey = searchParams.get('api_key') || '';
   const formSlug = (searchParams.get('form') || '').trim().toLowerCase();
+  const [apiKey, setApiKey] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    const fromUrl = new URLSearchParams(window.location.search).get('api_key') || '';
+    if (fromUrl) return fromUrl;
+    const slug = (new URLSearchParams(window.location.search).get('form') || '').trim().toLowerCase();
+    try {
+      return sessionStorage.getItem(slug ? `form_api_key_${slug}` : 'form_api_key') || '';
+    } catch {
+      return '';
+    }
+  });
   const isDirectFormLink = formSlug.length > 0;
   const isCustomForm = isDirectFormLink;
   const { toast } = useToast();
@@ -54,6 +65,30 @@ export default function Apply() {
   useEffect(() => {
     void loadPublicAnalytics();
   }, []);
+
+  // Prefer X-Form-Api-Key via sessionStorage; strip ?api_key= from the URL (access-log leak).
+  useEffect(() => {
+    const fromUrl = searchParams.get('api_key') || '';
+    const storageKey = formSlug ? `form_api_key_${formSlug}` : 'form_api_key';
+    if (fromUrl) {
+      try {
+        sessionStorage.setItem(storageKey, fromUrl);
+      } catch {
+        /* ignore */
+      }
+      setApiKey(fromUrl);
+      const next = new URLSearchParams(searchParams);
+      next.delete('api_key');
+      setSearchParams(next, { replace: true });
+      return;
+    }
+    try {
+      const stored = sessionStorage.getItem(storageKey) || '';
+      if (stored) setApiKey(stored);
+    } catch {
+      /* ignore */
+    }
+  }, [searchParams, formSlug, setSearchParams]);
 
   const formSections = useMemo(() => {
     const parsed = builderQuestions ?? [];
@@ -139,6 +174,7 @@ export default function Apply() {
     if (q.type === 'file_upload') return !!formFiles[key];
     const v = (formValues[key] || '').trim();
     if (!v) return false;
+    if (q.type === 'phone_number') return isCompletePhoneFieldValue(v);
     if (q.type === 'checkboxes') {
       try {
         return (JSON.parse(v) as unknown[]).length > 0;
@@ -164,8 +200,21 @@ export default function Apply() {
         const q = effectiveQuestions[i];
         const key = questionFieldKey(q, i);
         if (q.required && !isQuestionAnswered(q, key)) {
-          toast({ title: `${q.title} is required`, variant: 'destructive' });
+          toast({
+            title:
+              q.type === 'phone_number'
+                ? `${q.title}: enter a valid 10-digit number`
+                : `${q.title} is required`,
+            variant: 'destructive',
+          });
           return;
+        }
+        if (q.type === 'phone_number') {
+          const raw = (formValues[key] || '').trim();
+          if (raw && !isCompletePhoneFieldValue(raw)) {
+            toast({ title: `${q.title}: enter a valid 10-digit number`, variant: 'destructive' });
+            return;
+          }
         }
       }
       const contact = resolveLeadContactFromFormValues(effectiveQuestions, formValues);

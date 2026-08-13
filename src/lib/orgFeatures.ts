@@ -98,11 +98,14 @@ export function isOrgFeatureEnabled(
 export function featureKeyForPath(pathname: string): string | null {
   const p = pathname.split("?")[0].replace(/\/+$/, "") || "/";
 
-  if (p === "/" || p.startsWith("/leads") || p.startsWith("/my-leads") || p.startsWith("/assigned-leads")
+  // Home dashboard is part of the Leads & Dashboard org module (not a separate org feature).
+  if (p === "/") return "leads";
+  if (p.startsWith("/leads") || p.startsWith("/my-leads") || p.startsWith("/assigned-leads")
     || p.startsWith("/my-referrals") || p.startsWith("/referral-analytics") || p.startsWith("/leads-management")) {
     return "leads";
   }
   if (p.startsWith("/form-management") || p.startsWith("/form-api-integrations")) return FEATURE_FORM_MANAGEMENT;
+  if (p.startsWith("/my-doc-forms") || p.startsWith("/doc-form")) return "my_doc_forms";
   if (p.startsWith("/students")) return "students";
   if (p.startsWith("/courses")) return "courses";
   if (p.startsWith("/batches")) return "batches";
@@ -117,10 +120,20 @@ export function featureKeyForPath(pathname: string): string | null {
   if (p.startsWith("/certificates")) return FEATURE_CERTIFICATES;
   if (p.startsWith("/offer-letters")) return FEATURE_OFFER_LETTERS;
   if (p.startsWith("/fresher-salary-tracker")) return FEATURE_FRESHER_SALARY;
+  if (p.startsWith("/team")) return "team";
+  if (p.startsWith("/settings")) return "settings";
+  if (p.startsWith("/trash")) return "trash";
 
   return null;
 }
 
+/** Keys that are not org_features rows — always on for the org; managers still need page grants. */
+const ORG_SHELL_FEATURES = new Set(["team", "settings", "trash", "my_doc_forms"]);
+
+/**
+ * Organisation-level route access (admin / org / manager all respect this first).
+ * Home `/` uses the "leads" org module (Leads & Dashboard).
+ */
 export function isPathAllowedByOrgFeatures(
   role: string | null,
   org: { slug?: string | null; features?: Record<string, boolean> | null } | null,
@@ -128,6 +141,7 @@ export function isPathAllowedByOrgFeatures(
 ): boolean {
   const key = featureKeyForPath(pathname);
   if (!key) return true;
+  if (ORG_SHELL_FEATURES.has(key)) return true;
   return isOrgFeatureEnabled(role, org, key);
 }
 

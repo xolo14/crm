@@ -61,7 +61,10 @@ export function DateRangeFilter({ value, onChange, className }: DateRangeFilterP
 
   const handleCustomSelect = (range: { from?: Date; to?: Date } | undefined) => {
     if (range) {
-      onChange({ from: range.from, to: range.to });
+      onChange({
+        from: range.from ? startOfDay(range.from) : undefined,
+        to: range.to ? endOfDay(range.to) : undefined,
+      });
     }
   };
 

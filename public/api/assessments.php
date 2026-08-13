@@ -61,6 +61,26 @@ function peaklyyEnsureTables(PDO $db): void
     } catch (Throwable $e) {
         // exists
     }
+    try {
+        $db->exec("ALTER TABLE peaklyy_attempts ADD COLUMN attempt_phase VARCHAR(20) NOT NULL DEFAULT 'mcq'");
+    } catch (Throwable $e) {
+    }
+    try {
+        $db->exec('ALTER TABLE peaklyy_attempts ADD COLUMN mcq_questions_json JSON NULL');
+    } catch (Throwable $e) {
+    }
+    try {
+        $db->exec('ALTER TABLE peaklyy_attempts ADD COLUMN task_questions_json JSON NULL');
+    } catch (Throwable $e) {
+    }
+    try {
+        $db->exec('ALTER TABLE peaklyy_attempts ADD COLUMN timeline_json JSON NULL');
+    } catch (Throwable $e) {
+    }
+    try {
+        $db->exec('ALTER TABLE peaklyy_attempts ADD COLUMN mcq_submitted_at DATETIME NULL');
+    } catch (Throwable $e) {
+    }
     $done = true;
 }
 
@@ -89,35 +109,78 @@ function peaklyyInsertCustomQuestions(PDO $db, string $assessmentId, array $ques
         if ($prompt === '') {
             continue;
         }
-        $type = 'mcq';
-        $options = $q['options'] ?? null;
+        $type = strtolower(trim((string) ($q['q_type'] ?? 'mcq')));
+        if (!in_array($type, ['mcq', 'task'], true)) {
+            $type = 'mcq';
+        }
+        $allowNotepad = !empty($q['allow_notepad']) || $type === 'task' || !empty($q['notepad']);
+        $allowUpload = !empty($q['allow_upload']) || !empty($q['upload']);
+        // Explicit response_mode from admin UI
+        $mode = strtolower(trim((string) ($q['response_mode'] ?? '')));
+        if ($mode === 'notepad') {
+            $type = 'task';
+            $allowNotepad = true;
+            $allowUpload = false;
+        } elseif ($mode === 'upload') {
+            $type = 'task';
+            $allowNotepad = false;
+            $allowUpload = true;
+        } elseif ($mode === 'notepad_upload') {
+            $type = 'task';
+            $allowNotepad = true;
+            $allowUpload = true;
+        } elseif ($mode === 'mcq') {
+            $type = 'mcq';
+        }
+        if ($type === 'task' && !$allowNotepad && !$allowUpload) {
+            $allowNotepad = true;
+        }
+
+        $options = null;
         $correct = null;
-        $schema = null;
-        if (!is_array($options)) {
-            $options = [
-                'a' => (string) ($q['option_a'] ?? ''),
-                'b' => (string) ($q['option_b'] ?? ''),
-                'c' => (string) ($q['option_c'] ?? ''),
-                'd' => (string) ($q['option_d'] ?? ''),
-            ];
+        $points = max(0, (int) ($q['points'] ?? ($type === 'task' ? 0 : 5)));
+        $schema = [
+            'allow_notepad' => (bool) $allowNotepad,
+            'allow_upload' => (bool) $allowUpload,
+        ];
+
+        if ($type === 'mcq') {
+            $options = $q['options'] ?? null;
+            if (!is_array($options)) {
+                $options = [
+                    'a' => (string) ($q['option_a'] ?? ''),
+                    'b' => (string) ($q['option_b'] ?? ''),
+                    'c' => (string) ($q['option_c'] ?? ''),
+                    'd' => (string) ($q['option_d'] ?? ''),
+                ];
+            }
+            $correct = strtolower(trim((string) ($q['correct_option'] ?? 'a')));
+            if (!in_array($correct, ['a', 'b', 'c', 'd'], true)) {
+                $correct = 'a';
+            }
+            if (trim((string) ($options['a'] ?? '')) === '' || trim((string) ($options['b'] ?? '')) === '') {
+                continue;
+            }
+            // MCQ can optionally allow an extra file upload
+            $schema['allow_notepad'] = false;
+            $schema['allow_upload'] = (bool) $allowUpload;
+            if ($points < 1) {
+                $points = 5;
+            }
+        } else {
+            $options = null;
+            $correct = null;
         }
-        $correct = strtolower(trim((string) ($q['correct_option'] ?? 'a')));
-        if (!in_array($correct, ['a', 'b', 'c', 'd'], true)) {
-            $correct = 'a';
-        }
-        // Skip incomplete MCQs
-        if (trim((string) ($options['a'] ?? '')) === '' || trim((string) ($options['b'] ?? '')) === '') {
-            continue;
-        }
+
         $ins->execute([
             generateUUID(),
             $assessmentId,
             $type,
             $prompt,
-            json_encode($options, JSON_UNESCAPED_UNICODE),
+            $options ? json_encode($options, JSON_UNESCAPED_UNICODE) : null,
             $correct,
-            null,
-            max(1, (int) ($q['points'] ?? 5)),
+            json_encode($schema, JSON_UNESCAPED_UNICODE),
+            $points,
             (int) ($q['sort_order'] ?? ($i + 1)),
         ]);
         $n++;
@@ -129,7 +192,7 @@ function peaklyyPickCustomQuestions(PDO $db, string $assessmentId, int $count): 
 {
     $stmt = $db->prepare(
         "SELECT * FROM peaklyy_assessment_questions
-         WHERE assessment_id = ? AND is_active = 1 AND q_type = 'mcq'
+         WHERE assessment_id = ? AND is_active = 1
          ORDER BY sort_order ASC"
     );
     $stmt->execute([$assessmentId]);
@@ -147,6 +210,31 @@ function peaklyyPickCustomQuestions(PDO $db, string $assessmentId, int $count): 
         return array_slice($all, 0, $count);
     }
     return $all;
+}
+
+/** Resolve notepad/upload flags for a public question. */
+function peaklyyQuestionResponseFlags(array $row, ?array $schema = null): array
+{
+    $qType = strtolower((string) ($row['q_type'] ?? 'mcq'));
+    if ($schema === null) {
+        $schema = $row['task_schema_json'] ?? null;
+        if (is_string($schema)) {
+            $schema = json_decode($schema, true);
+        }
+    }
+    if (!is_array($schema)) {
+        $schema = [];
+    }
+    $allowNotepad = array_key_exists('allow_notepad', $schema)
+        ? !empty($schema['allow_notepad'])
+        : ($qType === 'task');
+    $allowUpload = array_key_exists('allow_upload', $schema)
+        ? !empty($schema['allow_upload'])
+        : ($qType === 'task');
+    return [
+        'allow_notepad' => (bool) $allowNotepad,
+        'allow_upload' => (bool) $allowUpload,
+    ];
 }
 
 function peaklyyLoadScoringRows(PDO $db, array $ids): array
@@ -171,16 +259,50 @@ function peaklyyLoadScoringRows(PDO $db, array $ids): array
 
 function peaklyySeedBank(PDO $db): void
 {
-    $count = (int) $db->query('SELECT COUNT(*) FROM peaklyy_question_bank')->fetchColumn();
-    if ($count > 0) {
+    $defs = peaklyyQuestionDefinitions();
+    $expected = count($defs);
+    $activeCount = 0;
+    $newDomainCount = 0;
+    try {
+        $activeCount = (int) $db->query('SELECT COUNT(*) FROM peaklyy_question_bank WHERE is_active = 1')->fetchColumn();
+        $newDomainCount = (int) $db->query(
+            "SELECT COUNT(*) FROM peaklyy_question_bank WHERE domain_key = 'python' AND is_active = 1"
+        )->fetchColumn();
+    } catch (Throwable $e) {
         return;
     }
+    // Already on current bank (MCQs + tasks)
+    if ($activeCount === $expected && $newDomainCount > 0) {
+        return;
+    }
+
+    // Never hard-delete bank rows while attempts are open — in-flight scoring uses frozen IDs.
+    $openAttempts = 0;
+    try {
+        $openAttempts = (int) $db->query(
+            "SELECT COUNT(*) FROM peaklyy_attempts WHERE status IN ('registered','in_progress')"
+        )->fetchColumn();
+    } catch (Throwable $e) {
+        $openAttempts = 0;
+    }
+    if ($openAttempts > 0) {
+        error_log('[peaklyy] skip question bank reseed: ' . $openAttempts . ' open attempt(s)');
+        return;
+    }
+
+    // Soft-deactivate old rows, then insert the new bank (keeps historical IDs for submitted attempts).
+    try {
+        $db->exec('UPDATE peaklyy_question_bank SET is_active = 0');
+    } catch (Throwable $e) {
+        return;
+    }
+
     $ins = $db->prepare(
         'INSERT INTO peaklyy_question_bank
          (id, domain_key, level_key, q_type, prompt, options_json, correct_option, task_schema_json, points, sort_order, is_active)
          VALUES (?,?,?,?,?,?,?,?,?,?,1)'
     );
-    foreach (peaklyyQuestionDefinitions() as $q) {
+    foreach ($defs as $q) {
         $ins->execute([
             generateUUID(),
             $q['domain_key'],
@@ -193,6 +315,23 @@ function peaklyySeedBank(PDO $db): void
             (int) $q['points'],
             (int) $q['sort_order'],
         ]);
+    }
+}
+
+/** Domain-bank assessments: 25 MCQ + 5 tasks, untimed (duration 0). */
+function peaklyyNormalizeDomainAssessments(PDO $db): void
+{
+    try {
+        $db->exec(
+            "UPDATE peaklyy_assessments
+             SET duration_minutes = 0, question_count = 30
+             WHERE COALESCE(source_mode, 'domain_bank') = 'domain_bank'"
+        );
+    } catch (Throwable $e) {
+        try {
+            $db->exec('UPDATE peaklyy_assessments SET duration_minutes = 0, question_count = 30');
+        } catch (Throwable $e2) {
+        }
     }
 }
 
@@ -214,8 +353,154 @@ function peaklyyPublicBase(): string
 function peaklyyOpenUrl(string $slug, string $apiKey): string
 {
     $base = peaklyyPublicBase();
-    $path = '/assessment/' . rawurlencode($slug) . '?key=' . rawurlencode($apiKey);
+    // Fragment keeps the key out of access logs / Referer (SPA reads hash → sends X-Assessment-Api-Key).
+    $path = '/assessment/' . rawurlencode($slug) . ($apiKey !== '' ? ('#key=' . rawurlencode($apiKey)) : '');
     return $base !== '' ? ($base . $path) : $path;
+}
+
+/**
+ * Append a timeline event on an attempt (best-effort).
+ * @param array<string,mixed> $detail
+ */
+function peaklyyAppendTimeline(PDO $db, string $attemptId, string $event, string $label, array $detail = []): void
+{
+    try {
+        $stmt = $db->prepare('SELECT timeline_json FROM peaklyy_attempts WHERE id = ? LIMIT 1');
+        $stmt->execute([$attemptId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return;
+        }
+        $events = [];
+        if (!empty($row['timeline_json'])) {
+            $decoded = json_decode((string) $row['timeline_json'], true);
+            if (is_array($decoded)) {
+                $events = $decoded;
+            }
+        }
+        foreach ($events as $existing) {
+            if (is_array($existing) && ($existing['event'] ?? '') === $event) {
+                return; // keep first occurrence of each event type
+            }
+        }
+        $events[] = [
+            'at' => date('c'),
+            'event' => $event,
+            'label' => $label,
+            'detail' => $detail ?: null,
+        ];
+        $db->prepare('UPDATE peaklyy_attempts SET timeline_json = ? WHERE id = ?')->execute([
+            json_encode($events, JSON_UNESCAPED_UNICODE),
+            $attemptId,
+        ]);
+    } catch (Throwable $e) {
+        // column may not exist yet on older DBs
+    }
+}
+
+/**
+ * Build a display timeline from stored events + timestamp fallbacks.
+ * @return list<array{at:?string,event:string,label:string,detail?:mixed}>
+ */
+function peaklyyBuildAttemptTimeline(array $attempt): array
+{
+    $events = [];
+    if (!empty($attempt['timeline_json'])) {
+        $decoded = is_string($attempt['timeline_json'])
+            ? json_decode((string) $attempt['timeline_json'], true)
+            : $attempt['timeline_json'];
+        if (is_array($decoded)) {
+            foreach ($decoded as $e) {
+                if (!is_array($e)) {
+                    continue;
+                }
+                $events[] = [
+                    'at' => $e['at'] ?? null,
+                    'event' => (string) ($e['event'] ?? ''),
+                    'label' => (string) ($e['label'] ?? ($e['event'] ?? 'Event')),
+                    'detail' => $e['detail'] ?? null,
+                ];
+            }
+        }
+    }
+    if ($events) {
+        return $events;
+    }
+    // Legacy fallback from columns
+    $fallback = [];
+    if (!empty($attempt['created_at'])) {
+        $fallback[] = ['at' => $attempt['created_at'], 'event' => 'registered', 'label' => 'Registered', 'detail' => null];
+    }
+    if (!empty($attempt['started_at'])) {
+        $fallback[] = ['at' => $attempt['started_at'], 'event' => 'started', 'label' => 'Assessment started', 'detail' => null];
+    }
+    if (!empty($attempt['mcq_submitted_at'])) {
+        $fallback[] = [
+            'at' => $attempt['mcq_submitted_at'],
+            'event' => 'mcq_submitted',
+            'label' => 'Part 1 MCQ submitted',
+            'detail' => [
+                'score' => $attempt['score'] ?? null,
+                'stars' => $attempt['stars'] ?? null,
+                'passed' => $attempt['passed'] ?? null,
+            ],
+        ];
+    }
+    if (!empty($attempt['submitted_at']) && in_array(strtolower((string) ($attempt['attempt_phase'] ?? '')), ['done', 'task', ''], true)) {
+        $phase = strtolower((string) ($attempt['attempt_phase'] ?? ''));
+        if ($phase === 'done' || ($attempt['status'] ?? '') === 'submitted') {
+            $fallback[] = [
+                'at' => $attempt['submitted_at'],
+                'event' => 'completed',
+                'label' => $phase === 'done' || !empty($attempt['mcq_submitted_at'])
+                    ? 'Part 2 tasks submitted / completed'
+                    : 'Assessment submitted',
+                'detail' => null,
+            ];
+        }
+    }
+    if (!empty($attempt['webhook_sent_at'])) {
+        $fallback[] = [
+            'at' => $attempt['webhook_sent_at'],
+            'event' => 'webhook',
+            'label' => 'Results webhook sent',
+            'detail' => ['status' => $attempt['webhook_status'] ?? null],
+        ];
+    }
+    return $fallback;
+}
+
+function peaklyyTimelineToText(array $timeline): string
+{
+    $parts = [];
+    foreach ($timeline as $e) {
+        $at = (string) ($e['at'] ?? '');
+        $label = (string) ($e['label'] ?? $e['event'] ?? '');
+        $parts[] = trim($at . ' — ' . $label);
+    }
+    return implode(' | ', $parts);
+}
+
+/** Assessment API key from header only (never query/body — avoids access-log leakage). */
+function peaklyyRequestApiKey(): string
+{
+    $key = trim((string) ($_SERVER['HTTP_X_ASSESSMENT_API_KEY'] ?? ''));
+    if ($key !== '') {
+        return $key;
+    }
+    $key = trim((string) ($_SERVER['HTTP_X_PEAKLYY_API_KEY'] ?? ''));
+    if ($key !== '') {
+        return $key;
+    }
+    $key = trim((string) ($_SERVER['HTTP_X_API_KEY'] ?? ''));
+    if ($key !== '') {
+        return $key;
+    }
+    $auth = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    if (preg_match('/^\s*Bearer\s+(\S+)/i', $auth, $m)) {
+        return trim($m[1]);
+    }
+    return '';
 }
 
 function peaklyyLeadSourceKey(string $assessmentId): string
@@ -471,19 +756,40 @@ function peaklyyPublicQuestion(array $row): array
     if (is_string($options)) {
         $options = json_decode($options, true);
     }
+    $qType = strtolower((string) ($row['q_type'] ?? 'mcq'));
+    if (!in_array($qType, ['mcq', 'task'], true)) {
+        $qType = 'mcq';
+    }
+    $schema = $row['task_schema_json'] ?? null;
+    if (is_string($schema)) {
+        $schema = json_decode($schema, true);
+    }
+    if (!is_array($schema)) {
+        $schema = [];
+    }
+    $flags = peaklyyQuestionResponseFlags($row, $schema);
+    $schema['allow_notepad'] = $flags['allow_notepad'];
+    $schema['allow_upload'] = $flags['allow_upload'];
     return [
         'id' => $row['id'],
         'domain_key' => $row['domain_key'] ?? 'custom',
         'level_key' => $row['level_key'] ?? 'custom',
-        'q_type' => 'mcq',
+        'q_type' => $qType,
         'prompt' => $row['prompt'],
         'options' => is_array($options) ? $options : null,
-        'points' => (int) ($row['points'] ?? 5),
+        'task_schema' => $schema,
+        'allow_notepad' => $flags['allow_notepad'],
+        'allow_upload' => $flags['allow_upload'],
+        'points' => (int) ($row['points'] ?? ($qType === 'task' ? 0 : 5)),
     ];
 }
 
-function peaklyyPickQuestions(PDO $db, string $domain, int $count): array
+/**
+ * Domain MCQ attempt: 25 random MCQs (easy/medium/hard mix).
+ */
+function peaklyyPickMcqQuestions(PDO $db, string $domain, int $mcqCount = 25): array
 {
+    $mcqCount = max(1, $mcqCount);
     $stmt = $db->prepare(
         "SELECT * FROM peaklyy_question_bank
          WHERE domain_key = ? AND is_active = 1 AND q_type = 'mcq'
@@ -502,9 +808,9 @@ function peaklyyPickQuestions(PDO $db, string $domain, int $count): array
         }
         $byLevel[$lvl][] = $row;
     }
-    $targetEasy = (int) max(1, round($count * 0.4));
-    $targetMed = (int) max(1, round($count * 0.35));
-    $targetHard = max(1, $count - $targetEasy - $targetMed);
+    $targetEasy = (int) max(1, round($mcqCount * 0.4));
+    $targetMed = (int) max(1, round($mcqCount * 0.35));
+    $targetHard = max(1, $mcqCount - $targetEasy - $targetMed);
     $pick = static function (array $pool, int $n): array {
         if ($n <= 0 || !$pool) {
             return [];
@@ -517,29 +823,219 @@ function peaklyyPickQuestions(PDO $db, string $domain, int $count): array
         $pick($byLevel['medium'], $targetMed),
         $pick($byLevel['hard'], $targetHard)
     );
-    if (count($selected) < $count) {
+    if (count($selected) < $mcqCount) {
         $ids = array_column($selected, 'id');
         $rest = array_values(array_filter($all, static fn($r) => !in_array($r['id'], $ids, true)));
         shuffle($rest);
-        $selected = array_merge($selected, array_slice($rest, 0, $count - count($selected)));
+        $selected = array_merge($selected, array_slice($rest, 0, $mcqCount - count($selected)));
     }
     shuffle($selected);
-    return array_slice($selected, 0, $count);
+    return array_slice($selected, 0, $mcqCount);
 }
 
-function peaklyySendWebhook(array $assessment, array $attempt): array
+/**
+ * Domain practical tasks (5) — notepad + upload, manual grading.
+ */
+function peaklyyPickTaskQuestions(PDO $db, string $domain, int $taskLimit = 5): array
+{
+    $taskLimit = max(1, $taskLimit);
+    $taskStmt = $db->prepare(
+        "SELECT * FROM peaklyy_question_bank
+         WHERE domain_key = ? AND is_active = 1 AND q_type = 'task'
+         ORDER BY sort_order ASC
+         LIMIT " . (int) $taskLimit
+    );
+    $taskStmt->execute([$domain]);
+    return $taskStmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/** @deprecated Prefer peaklyyPickMcqQuestions + peaklyyPickTaskQuestions */
+function peaklyyPickQuestions(PDO $db, string $domain, int $count): array
+{
+    $taskLimit = 5;
+    $mcqCount = max(1, $count > $taskLimit ? ($count - $taskLimit) : $count);
+    return array_merge(
+        peaklyyPickMcqQuestions($db, $domain, $mcqCount),
+        peaklyyPickTaskQuestions($db, $domain, $taskLimit)
+    );
+}
+
+function peaklyyAssertSafeWebhookUrl(string $url): ?string
+{
+    $url = trim($url);
+    if ($url === '') {
+        return 'Webhook URL is empty';
+    }
+    if (!filter_var($url, FILTER_VALIDATE_URL)) {
+        return 'Webhook URL is invalid';
+    }
+    $parts = parse_url($url);
+    if (!is_array($parts)) {
+        return 'Webhook URL could not be parsed';
+    }
+    $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+    if ($scheme !== 'https') {
+        return 'Webhook URL must use HTTPS';
+    }
+    $host = strtolower((string) ($parts['host'] ?? ''));
+    if ($host === '' || $host === 'localhost' || str_ends_with($host, '.localhost') || $host === '127.0.0.1' || $host === '::1') {
+        return 'Webhook URL host is not allowed';
+    }
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            return 'Webhook URL must not target private or reserved IPs';
+        }
+    }
+    return null;
+}
+
+function peaklyyApiPublicBase(): string
+{
+    if (function_exists('peaklyyPublicBase')) {
+        return peaklyyPublicBase();
+    }
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? '';
+    return $host !== '' ? ($scheme . '://' . $host) : '';
+}
+
+/**
+ * Build score + MCQ summary + task notepad/uploads for partner API / webhook.
+ */
+function peaklyyCollectAttemptPartnerPayload(PDO $db, array $assessment, array $attempt): array
+{
+    $attemptId = (string) $attempt['id'];
+    $qById = [];
+    foreach (['mcq_questions_json', 'task_questions_json', 'questions_json'] as $col) {
+        if (empty($attempt[$col])) {
+            continue;
+        }
+        $decoded = json_decode((string) $attempt[$col], true);
+        if (!is_array($decoded)) {
+            continue;
+        }
+        foreach ($decoded as $q) {
+            $qid = (string) ($q['id'] ?? '');
+            if ($qid === '' || isset($qById[$qid])) {
+                continue;
+            }
+            $part = (($q['q_type'] ?? '') === 'task' || $col === 'task_questions_json') ? 'task' : 'mcq';
+            $q['_part'] = $part;
+            $qById[$qid] = $q;
+        }
+    }
+
+    $mcqAnswers = [];
+    $taskUploads = [];
+    $ansStmt = $db->prepare(
+        'SELECT question_id, answer_option, answer_json, is_correct, points_awarded
+         FROM peaklyy_attempt_answers WHERE attempt_id = ?'
+    );
+    $ansStmt->execute([$attemptId]);
+    $base = rtrim(peaklyyApiPublicBase(), '/');
+    $apiPath = $base !== '' ? ($base . '/api/assessments.php') : '/api/assessments.php';
+
+    foreach ($ansStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $qid = (string) $row['question_id'];
+        $pq = $qById[$qid] ?? null;
+        $part = $pq['_part'] ?? ((($pq['q_type'] ?? '') === 'task') ? 'task' : 'mcq');
+        $aj = $row['answer_json'] ?? null;
+        if (is_string($aj)) {
+            $aj = json_decode($aj, true);
+        }
+        if (!is_array($aj)) {
+            $aj = [];
+        }
+        $text = (string) ($aj['text'] ?? '');
+        $filePath = (string) ($aj['file_path'] ?? '');
+        $fileName = (string) ($aj['file_name'] ?? '');
+        if ($part === 'task' || ($pq['q_type'] ?? '') === 'task' || $filePath !== '' || ($text !== '' && empty($pq['options']))) {
+            $item = [
+                'question_id' => $qid,
+                'prompt' => (string) ($pq['prompt'] ?? ''),
+                'q_type' => (string) ($pq['q_type'] ?? 'task'),
+                'text' => $text,
+                'file_name' => $fileName,
+                'file_path' => $filePath,
+            ];
+            if ($filePath !== '') {
+                $item['download_url'] = $apiPath . '?action=partner_file&attempt_id=' . rawurlencode($attemptId)
+                    . '&question_id=' . rawurlencode($qid);
+                $item['download_header'] = 'X-Assessment-Api-Key: <your permanent API key>';
+            }
+            $taskUploads[] = $item;
+        } else {
+            $mcqAnswers[] = [
+                'question_id' => $qid,
+                'prompt' => (string) ($pq['prompt'] ?? ''),
+                'answer_option' => $row['answer_option'],
+                'is_correct' => (int) $row['is_correct'] === 1,
+                'points_awarded' => (int) $row['points_awarded'],
+            ];
+        }
+    }
+
+    $phase = strtolower((string) ($attempt['attempt_phase'] ?? ''));
+    $tasksDone = in_array($phase, ['done', 'task'], true) && ($attempt['status'] ?? '') === 'submitted'
+        || $phase === 'done'
+        || count($taskUploads) > 0 && ($attempt['status'] ?? '') === 'submitted';
+
+    return [
+        'assessment_id' => (string) ($assessment['id'] ?? ''),
+        'assessment_slug' => (string) ($assessment['slug'] ?? ''),
+        'attempt_id' => $attemptId,
+        'attempt_phase' => $phase ?: null,
+        'status' => (string) ($attempt['status'] ?? ''),
+        'candidate' => [
+            'full_name' => $attempt['full_name'] ?? '',
+            'email' => $attempt['email'] ?? '',
+            'phone' => $attempt['phone'] ?? '',
+            'domain_key' => $attempt['domain_key'] ?? '',
+            'domain_label' => peaklyyDomainCatalog()[$attempt['domain_key'] ?? ''] ?? ($attempt['domain_key'] ?? ''),
+            'degree_branch' => $attempt['degree_branch'] ?? null,
+            'college_name' => $attempt['college_name'] ?? null,
+        ],
+        'score' => [
+            'score' => (int) ($attempt['score'] ?? 0),
+            'stars' => (int) ($attempt['stars'] ?? 0),
+            'passed' => !empty($attempt['passed']),
+            'part' => 'mcq',
+            'time_taken_seconds' => (int) ($attempt['time_taken_seconds'] ?? 0),
+            'submitted_at' => $attempt['submitted_at'] ?? null,
+        ],
+        'mcq_answers' => $mcqAnswers,
+        'uploads' => $taskUploads,
+        'tasks' => $taskUploads,
+        'tasks_complete' => (bool) $tasksDone,
+        'fetch_hint' => 'GET assessments.php?action=partner_result&attempt_id=… with header X-Assessment-Api-Key (or Authorization: Bearer). Response includes score + uploads[]. Download files via partner_file with the same header.',
+    ];
+}
+
+/**
+ * @param array<string,mixed> $extra merged into webhook JSON
+ */
+function peaklyySendWebhook(array $assessment, array $attempt, string $event = 'peaklyy.assessment.passed', array $extra = [], bool $requirePassed = true): array
 {
     $url = trim((string) ($assessment['result_webhook_url'] ?? ''));
     $key = trim((string) ($assessment['result_api_key'] ?? ''));
-    if ($url === '' || empty($attempt['passed'])) {
+    if ($url === '') {
         return ['sent' => false, 'status' => 'skipped'];
     }
-    $payload = [
-        'event' => 'peaklyy.assessment.passed',
+    if ($requirePassed && empty($attempt['passed'])) {
+        return ['sent' => false, 'status' => 'skipped'];
+    }
+    $unsafe = peaklyyAssertSafeWebhookUrl($url);
+    if ($unsafe !== null) {
+        error_log('[peaklyy] webhook blocked: ' . $unsafe . ' url=' . $url);
+        return ['sent' => false, 'status' => 'blocked_ssrf', 'response' => $unsafe];
+    }
+    $payload = array_merge([
+        'event' => $event,
         'assessment_id' => $assessment['id'],
         'assessment_slug' => $assessment['slug'],
         'attempt_id' => $attempt['id'],
         'api_key' => $key,
+        'test_part' => $extra['test_part'] ?? 'mcq',
         'candidate' => [
             'full_name' => $attempt['full_name'],
             'email' => $attempt['email'],
@@ -555,26 +1051,30 @@ function peaklyySendWebhook(array $assessment, array $attempt): array
             'passed' => (bool) $attempt['passed'],
             'time_taken_seconds' => (int) ($attempt['time_taken_seconds'] ?? 0),
             'submitted_at' => $attempt['submitted_at'],
+            'part' => $extra['test_part'] ?? 'mcq',
         ],
         'redirect_hint' => true,
-    ];
+    ], $extra);
     // If URL looks like a page (no /api/ path), also support GET-style handoff via redirect
     $redirectWithResults = $url . (str_contains($url, '?') ? '&' : '?') . http_build_query([
         'peaklyy' => '1',
         'api_key' => $key,
         'score' => (int) $attempt['score'],
         'stars' => (int) $attempt['stars'],
-        'passed' => 1,
+        'passed' => !empty($attempt['passed']) ? 1 : 0,
+        'part' => $extra['test_part'] ?? 'mcq',
         'email' => $attempt['email'],
         'name' => $attempt['full_name'],
         'domain' => $attempt['domain_key'],
         'attempt_id' => $attempt['id'],
+        'uploads' => !empty($extra['uploads']) ? count((array) $extra['uploads']) : 0,
     ]);
     $ch = curl_init($url);
     $headers = ['Content-Type: application/json', 'Accept: application/json'];
     if ($key !== '') {
         $headers[] = 'Authorization: Bearer ' . $key;
         $headers[] = 'X-API-Key: ' . $key;
+        $headers[] = 'X-Assessment-Api-Key: ' . $key;
     }
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
@@ -582,6 +1082,8 @@ function peaklyySendWebhook(array $assessment, array $attempt): array
         CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 15,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_PROTOCOLS => defined('CURLPROTO_HTTPS') ? CURLPROTO_HTTPS : 2,
     ]);
     $body = curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -590,11 +1092,14 @@ function peaklyySendWebhook(array $assessment, array $attempt): array
     $jr = is_string($body) ? json_decode($body, true) : null;
     $finalRedirect = $redirectWithResults;
     if (is_array($jr) && !empty($jr['redirect_url'])) {
-        $finalRedirect = (string) $jr['redirect_url'];
+        $redir = trim((string) $jr['redirect_url']);
+        if (peaklyyAssertSafeWebhookUrl($redir) === null) {
+            $finalRedirect = $redir;
+        }
     }
     return [
-        'sent' => $code >= 200 && $code < 300 || $code === 0,
-        'status' => $code ? ('http_' . $code) : ('curl_' . $err),
+        'sent' => ($code >= 200 && $code < 300),
+        'status' => $code ? ('http_' . $code) : ('curl_' . ($err !== '' ? $err : 'failed')),
         'response' => is_string($body) ? mb_substr($body, 0, 2000) : '',
         'redirect_url' => $finalRedirect,
     ];
@@ -602,6 +1107,7 @@ function peaklyySendWebhook(array $assessment, array $attempt): array
 
 peaklyyEnsureTables($db);
 peaklyySeedBank($db);
+peaklyyNormalizeDomainAssessments($db);
 peaklyyEnsureApiKeys($db);
 
 // ── Meta (public) ──
@@ -650,15 +1156,26 @@ if ($action === 'create' && $method === 'POST') {
         $sourceMode = 'domain_bank';
     }
     $customQs = is_array($input['questions'] ?? null) ? $input['questions'] : [];
-    $duration = max(5, (int) ($input['duration_minutes'] ?? 15));
-    $qCount = max(1, min(50, (int) ($input['question_count'] ?? 15)));
+    $duration = max(0, (int) ($input['duration_minutes'] ?? 30));
+    $qCount = max(1, min(50, (int) ($input['question_count'] ?? 30)));
+    if ($sourceMode === 'domain_bank') {
+        $duration = 0;
+        $qCount = 30;
+    }
     if ($sourceMode === 'custom') {
         if (count($customQs) < 1) {
-            respond(['error' => 'Add at least one MCQ'], 400);
+            respond(['error' => 'Add at least one question'], 400);
         }
         $qCount = count($customQs);
+        $duration = max(5, $duration);
     }
     $webhook = trim((string) ($input['result_webhook_url'] ?? '')) ?: null;
+    if ($webhook !== null) {
+        $badHook = peaklyyAssertSafeWebhookUrl($webhook);
+        if ($badHook !== null) {
+            respond(['error' => $badHook], 400);
+        }
+    }
     try {
         $db->prepare(
             'INSERT INTO peaklyy_assessments
@@ -757,6 +1274,18 @@ if ($action === 'update' && $method === 'POST') {
         if (!array_key_exists($f, $input)) {
             continue;
         }
+        if ($f === 'result_webhook_url') {
+            $hook = trim((string) $input[$f]);
+            if ($hook !== '') {
+                $badHook = peaklyyAssertSafeWebhookUrl($hook);
+                if ($badHook !== null) {
+                    respond(['error' => $badHook], 400);
+                }
+            }
+            $sets[] = "$f = ?";
+            $params[] = $hook !== '' ? $hook : null;
+            continue;
+        }
         $sets[] = "$f = ?";
         $params[] = $input[$f];
     }
@@ -776,18 +1305,306 @@ if ($action === 'attempts' && $method === 'GET') {
         respond(['error' => 'assessment_id required'], 400);
     }
     $stmt = $db->prepare(
-        'SELECT id, full_name, email, phone, domain_key, degree_branch, college_name, status, score, stars, passed,
-                time_taken_seconds, violation_count, started_at, submitted_at, webhook_status, created_at
+        'SELECT id, full_name, email, phone, domain_key, degree_branch, college_name, status, attempt_phase,
+                score, stars, passed, time_taken_seconds, violation_count, started_at, submitted_at, mcq_submitted_at,
+                webhook_status, webhook_sent_at, timeline_json, created_at
          FROM peaklyy_attempts WHERE assessment_id = ? ORDER BY created_at DESC LIMIT 500'
     );
-    $stmt->execute([$aid]);
-    respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+    try {
+        $stmt->execute([$aid]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        $stmt = $db->prepare(
+            'SELECT id, full_name, email, phone, domain_key, degree_branch, college_name, status, attempt_phase,
+                    score, stars, passed, time_taken_seconds, violation_count, started_at, submitted_at, webhook_status, created_at
+             FROM peaklyy_attempts WHERE assessment_id = ? ORDER BY created_at DESC LIMIT 500'
+        );
+        try {
+            $stmt->execute([$aid]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e2) {
+            $stmt = $db->prepare(
+                'SELECT id, full_name, email, phone, domain_key, degree_branch, college_name, status, score, stars, passed,
+                        time_taken_seconds, violation_count, started_at, submitted_at, webhook_status, created_at
+                 FROM peaklyy_attempts WHERE assessment_id = ? ORDER BY created_at DESC LIMIT 500'
+            );
+            $stmt->execute([$aid]);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+    }
+    $out = [];
+    foreach ($rows as $r) {
+        $timeline = peaklyyBuildAttemptTimeline($r);
+        unset($r['timeline_json']);
+        $r['timeline'] = $timeline;
+        $r['timeline_text'] = peaklyyTimelineToText($timeline);
+        $out[] = $r;
+    }
+    respond(['data' => $out]);
+}
+
+if ($action === 'attempt_detail' && $method === 'GET') {
+    $token = verifyToken();
+    requireRole($token, ['super_admin']);
+    $attemptId = trim((string) ($_GET['attempt_id'] ?? ''));
+    if ($attemptId === '') {
+        respond(['error' => 'attempt_id required'], 400);
+    }
+    $stmt = $db->prepare(
+        'SELECT id, assessment_id, full_name, email, phone, domain_key, degree_branch, college_name, status,
+                score, stars, passed, time_taken_seconds, violation_count, started_at, submitted_at, mcq_submitted_at,
+                webhook_status, webhook_sent_at, questions_json, attempt_phase, mcq_questions_json, task_questions_json,
+                timeline_json, created_at
+         FROM peaklyy_attempts WHERE id = ? LIMIT 1'
+    );
+    try {
+        $stmt->execute([$attemptId]);
+        $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        $stmt = $db->prepare(
+            'SELECT id, assessment_id, full_name, email, phone, domain_key, degree_branch, college_name, status,
+                    score, stars, passed, time_taken_seconds, violation_count, started_at, submitted_at,
+                    webhook_status, questions_json, attempt_phase, mcq_questions_json, task_questions_json, created_at
+             FROM peaklyy_attempts WHERE id = ? LIMIT 1'
+        );
+        try {
+            $stmt->execute([$attemptId]);
+            $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $e2) {
+            $stmt = $db->prepare(
+                'SELECT id, assessment_id, full_name, email, phone, domain_key, degree_branch, college_name, status,
+                        score, stars, passed, time_taken_seconds, violation_count, started_at, submitted_at,
+                        webhook_status, questions_json, created_at
+                 FROM peaklyy_attempts WHERE id = ? LIMIT 1'
+            );
+            $stmt->execute([$attemptId]);
+            $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+        }
+    }
+    if (!$attempt) {
+        respond(['error' => 'Attempt not found'], 404);
+    }
+    $questions = [];
+    foreach (['mcq_questions_json', 'task_questions_json', 'questions_json'] as $col) {
+        if (empty($attempt[$col])) {
+            continue;
+        }
+        $decoded = json_decode((string) $attempt[$col], true);
+        if (!is_array($decoded)) {
+            continue;
+        }
+        foreach ($decoded as $q) {
+            $qid = (string) ($q['id'] ?? '');
+            if ($qid === '' || isset($questions[$qid])) {
+                continue;
+            }
+            $q['_part'] = ($q['q_type'] ?? '') === 'task' || $col === 'task_questions_json' ? 'task' : 'mcq';
+            $questions[$qid] = $q;
+        }
+    }
+    $qById = $questions;
+    $ansStmt = $db->prepare(
+        'SELECT question_id, answer_option, answer_json, is_correct, points_awarded
+         FROM peaklyy_attempt_answers WHERE attempt_id = ?'
+    );
+    $ansStmt->execute([$attemptId]);
+    $answersOut = [];
+    foreach ($ansStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $qid = (string) $row['question_id'];
+        $aj = $row['answer_json'] ?? null;
+        if (is_string($aj)) {
+            $aj = json_decode($aj, true);
+        }
+        if (!is_array($aj)) {
+            $aj = [];
+        }
+        $pq = $qById[$qid] ?? null;
+        $qNum = peaklyyQuestionNumberOnAttempt($attempt, $qid);
+        $answersOut[] = [
+            'question_id' => $qid,
+            'question_number' => $qNum,
+            'prompt' => $pq['prompt'] ?? '',
+            'q_type' => $pq['q_type'] ?? 'mcq',
+            'part' => $pq['_part'] ?? ((($pq['q_type'] ?? '') === 'task') ? 'task' : 'mcq'),
+            'allow_notepad' => !empty($pq['allow_notepad']),
+            'allow_upload' => !empty($pq['allow_upload']),
+            'answer_option' => $row['answer_option'],
+            'text' => (string) ($aj['text'] ?? ''),
+            'file_path' => (string) ($aj['file_path'] ?? ''),
+            'file_name' => (string) ($aj['file_name'] ?? ''),
+            'notepad_file_path' => (string) ($aj['notepad_file_path'] ?? ''),
+            'notepad_file_name' => (string) ($aj['notepad_file_name'] ?? ''),
+            'is_correct' => (int) $row['is_correct'],
+            'points_awarded' => (int) $row['points_awarded'],
+        ];
+    }
+    unset($attempt['questions_json'], $attempt['mcq_questions_json'], $attempt['task_questions_json']);
+    $timeline = peaklyyBuildAttemptTimeline($attempt);
+    unset($attempt['timeline_json']);
+    respond([
+        'data' => $attempt,
+        'answers' => $answersOut,
+        'mcq_answers' => array_values(array_filter($answersOut, static fn($a) => ($a['part'] ?? '') === 'mcq')),
+        'task_answers' => array_values(array_filter($answersOut, static fn($a) => ($a['part'] ?? '') === 'task')),
+        'timeline' => $timeline,
+        'timeline_text' => peaklyyTimelineToText($timeline),
+    ]);
+}
+
+// ── Admin: download all task files for one attempt as ZIP ──
+if ($action === 'download_tasks_zip' && $method === 'GET') {
+    $token = verifyToken();
+    requireRole($token, ['super_admin']);
+    $attemptId = trim((string) ($_GET['attempt_id'] ?? ''));
+    if ($attemptId === '') {
+        respond(['error' => 'attempt_id required'], 400);
+    }
+    if (!class_exists('ZipArchive')) {
+        respond(['error' => 'ZIP support is not available on this server'], 500);
+    }
+    $stmt = $db->prepare('SELECT * FROM peaklyy_attempts WHERE id = ? LIMIT 1');
+    $stmt->execute([$attemptId]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$attempt) {
+        respond(['error' => 'Attempt not found'], 404);
+    }
+
+    $qById = [];
+    foreach (['task_questions_json', 'questions_json', 'mcq_questions_json'] as $col) {
+        if (empty($attempt[$col])) {
+            continue;
+        }
+        $decoded = json_decode((string) $attempt[$col], true);
+        if (!is_array($decoded)) {
+            continue;
+        }
+        foreach ($decoded as $q) {
+            $qid = (string) ($q['id'] ?? '');
+            if ($qid === '' || isset($qById[$qid])) {
+                continue;
+            }
+            $qById[$qid] = $q;
+        }
+    }
+
+    $ansStmt = $db->prepare(
+        'SELECT question_id, answer_json FROM peaklyy_attempt_answers WHERE attempt_id = ?'
+    );
+    $ansStmt->execute([$attemptId]);
+    $candidateBase = peaklyySanitizeCandidateFileBase((string) ($attempt['full_name'] ?? 'Candidate'));
+    $tmpZip = tempnam(sys_get_temp_dir(), 'pkzip_');
+    if ($tmpZip === false) {
+        respond(['error' => 'Could not create temp file'], 500);
+    }
+    $zipPath = $tmpZip . '.zip';
+    @unlink($tmpZip);
+    $zip = new ZipArchive();
+    if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+        respond(['error' => 'Could not create ZIP'], 500);
+    }
+
+    $added = 0;
+    $usedNames = [];
+    $addNamed = static function (ZipArchive $zip, string $name, string $contents) use (&$added, &$usedNames): void {
+        $safe = preg_replace('/[^a-zA-Z0-9._-]/', '_', $name) ?: 'file.txt';
+        $final = $safe;
+        $i = 2;
+        while (isset($usedNames[$final])) {
+            $dot = strrpos($safe, '.');
+            if ($dot === false) {
+                $final = $safe . '_' . $i;
+            } else {
+                $final = substr($safe, 0, $dot) . '_' . $i . substr($safe, $dot);
+            }
+            $i++;
+        }
+        $usedNames[$final] = true;
+        $zip->addFromString($final, $contents);
+        $added++;
+    };
+    $addFile = static function (ZipArchive $zip, string $name, string $fsPath) use (&$added, &$usedNames): void {
+        if (!is_file($fsPath)) {
+            return;
+        }
+        $safe = preg_replace('/[^a-zA-Z0-9._-]/', '_', $name) ?: 'file.bin';
+        $final = $safe;
+        $i = 2;
+        while (isset($usedNames[$final])) {
+            $dot = strrpos($safe, '.');
+            if ($dot === false) {
+                $final = $safe . '_' . $i;
+            } else {
+                $final = substr($safe, 0, $dot) . '_' . $i . substr($safe, $dot);
+            }
+            $i++;
+        }
+        $usedNames[$final] = true;
+        $zip->addFile($fsPath, $final);
+        $added++;
+    };
+
+    foreach ($ansStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $qid = (string) $row['question_id'];
+        $pq = $qById[$qid] ?? null;
+        $aj = $row['answer_json'] ?? null;
+        if (is_string($aj)) {
+            $aj = json_decode($aj, true);
+        }
+        if (!is_array($aj)) {
+            $aj = [];
+        }
+        $part = (($pq['q_type'] ?? '') === 'task') ? 'task' : 'mcq';
+        $text = (string) ($aj['text'] ?? '');
+        $filePath = (string) ($aj['file_path'] ?? '');
+        $notepadPath = (string) ($aj['notepad_file_path'] ?? '');
+        $isTask = $part === 'task' || $filePath !== '' || $notepadPath !== '' || ($text !== '' && empty($pq['options']));
+        if (!$isTask) {
+            continue;
+        }
+        $qNum = peaklyyQuestionNumberOnAttempt($attempt, $qid);
+        $txtName = $candidateBase . '_Q' . $qNum . '.txt';
+
+        if ($notepadPath !== '') {
+            $fs = peaklyyResolveUploadFsPath($notepadPath);
+            if ($fs) {
+                $addFile($zip, (string) ($aj['notepad_file_name'] ?? $txtName), $fs);
+            } elseif ($text !== '') {
+                $addNamed($zip, $txtName, $text);
+            }
+        } elseif ($text !== '') {
+            $addNamed($zip, $txtName, $text);
+        }
+
+        if ($filePath !== '') {
+            $fs = peaklyyResolveUploadFsPath($filePath);
+            if ($fs) {
+                $orig = basename((string) ($aj['file_name'] ?? 'upload.bin'));
+                $orig = preg_replace('/[^a-zA-Z0-9._-]/', '_', $orig) ?: 'upload.bin';
+                $addFile($zip, $candidateBase . '_Q' . $qNum . '_' . $orig, $fs);
+            }
+        }
+    }
+
+    $zip->close();
+    if ($added === 0) {
+        @unlink($zipPath);
+        respond(['error' => 'No task files found for this attempt'], 404);
+    }
+
+    $zipFileName = $candidateBase . '_tasks.zip';
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="' . $zipFileName . '"');
+    header('Content-Length: ' . (string) filesize($zipPath));
+    header('Cache-Control: no-store');
+    readfile($zipPath);
+    @unlink($zipPath);
+    exit;
 }
 
 // ── Public: load assessment by slug ──
 if ($action === 'public_get' && $method === 'GET') {
     $slug = trim((string) ($_GET['slug'] ?? ''));
-    $key = trim((string) ($_GET['key'] ?? ''));
+    $key = peaklyyRequestApiKey();
     if ($slug === '') {
         respond(['error' => 'slug required'], 400);
     }
@@ -810,20 +1627,31 @@ if ($action === 'public_get' && $method === 'GET') {
         $row['source_mode'] = 'domain_bank';
     }
     $storedKey = trim((string) ($row['result_api_key'] ?? ''));
-    // If assessment has a permanent API key, require matching ?key= to open
-    if ($storedKey !== '' && !hash_equals($storedKey, $key)) {
-        respond(['error' => 'Invalid or missing assessment API key. Open via the permanent link with ?key='], 403);
+    if ($storedKey !== '' && ($key === '' || !hash_equals($storedKey, $key))) {
+        respond([
+            'error' => 'Invalid or missing assessment API key',
+            'hint' => 'Open the permanent link (#key=…) or send X-Assessment-Api-Key header. Query ?key= is no longer accepted.',
+        ], 403);
     }
     unset($row['result_api_key']);
     $passScore = max(1, (int) ($row['pass_score'] ?? 70));
-    $duration = max(1, (int) ($row['duration_minutes'] ?? 15));
+    $duration = max(0, (int) ($row['duration_minutes'] ?? 0));
     $qCount = max(1, (int) ($row['question_count'] ?? 15));
     $sourceMode = strtolower((string) ($row['source_mode'] ?? 'domain_bank'));
+    if ($sourceMode === 'domain_bank') {
+        $duration = 0;
+        $qCount = 30;
+        $row['duration_minutes'] = 0;
+        $row['question_count'] = 30;
+        $row['two_part'] = true;
+        $row['mcq_count'] = 25;
+        $row['task_count'] = 5;
+    }
     if ($sourceMode === 'custom') {
         try {
             $cntStmt = $db->prepare(
                 "SELECT COUNT(*) FROM peaklyy_assessment_questions
-                 WHERE assessment_id = ? AND is_active = 1 AND q_type = 'mcq'"
+                 WHERE assessment_id = ? AND is_active = 1"
             );
             $cntStmt->execute([(string) $row['id']]);
             $liveCount = (int) $cntStmt->fetchColumn();
@@ -845,20 +1673,34 @@ if ($action === 'public_get' && $method === 'GET') {
     $row['duration_minutes'] = $duration;
     $row['question_count'] = $qCount;
     $row['pass_score'] = $passScore;
+    $instructions = [];
+    if ($duration > 0) {
+        $instructions[] = 'Duration: ' . $duration . ' minutes';
+    } else {
+        $instructions[] = 'No time limit — submit when you finish';
+    }
+    if ($sourceMode === 'domain_bank') {
+        $instructions[] = 'Part 1 — MCQ test: 25 random questions (auto-scored; results sent to the partner website)';
+        $instructions[] = 'Part 2 — Task test: 5 practical tasks with notepad and/or file upload (manual grading)';
+    } else {
+        $instructions[] = $qCount . ' question' . ($qCount === 1 ? '' : 's');
+    }
+    $instructions = array_merge($instructions, [
+        'Full screen required once the test starts',
+        'No tab switching or leaving the page',
+        'Copy and paste is disabled (except in notepad answer fields)',
+        'Leaving or switching tabs auto-submits the current part',
+        !empty($row['once_per_candidate']) ? 'Test allowed only once per candidate' : 'Multiple attempts may be allowed',
+        'MCQ score ' . $passScore . '+ to pass (1★ at 70, 2★ at 80, 3★ at 90, 4★ at 100). Below ' . $passScore . ' = Not pass',
+        $sourceMode === 'domain_bank'
+            ? 'Task uploads and notepad answers are saved for reviewer grading (separate from MCQ score)'
+            : 'Answers are scored according to question type',
+    ]);
     respond([
         'data' => $row,
         'domains' => peaklyyDomainCatalog(),
         'degrees' => peaklyyDegreeOptions(),
-        'instructions' => [
-            'Duration: ' . $duration . ' minutes',
-            $qCount . ' MCQ question' . ($qCount === 1 ? '' : 's'),
-            'Full screen required once the test starts',
-            'No tab switching or leaving the page',
-            'Copy and paste is disabled',
-            'Leaving or switching tabs auto-submits the test',
-            !empty($row['once_per_candidate']) ? 'Test allowed only once per candidate' : 'Multiple attempts may be allowed',
-            'Score ' . $passScore . '+ to pass (1★ at 70, 2★ at 80, 3★ at 90, 4★ at 100). Below ' . $passScore . ' = Not pass',
-        ],
+        'instructions' => $instructions,
     ]);
 }
 
@@ -888,23 +1730,54 @@ if ($action === 'register' && $method === 'POST') {
         respond(['error' => 'Please select a valid domain'], 400);
     }
     if ((int) $assessment['once_per_candidate']) {
-        $chk = $db->prepare(
-            "SELECT id FROM peaklyy_attempts
-             WHERE assessment_id = ? AND email = ? AND domain_key = ? AND status IN ('submitted','in_progress','expired')
-             LIMIT 1"
-        );
-        $chk->execute([$assessment['id'], $email, $domain]);
-        if ($chk->fetch()) {
-            respond(['error' => 'You have already taken this assessment for this domain'], 409);
+        $lockName = 'pkly_once_' . md5((string) $assessment['id'] . '|' . strtolower($email) . '|' . $domain);
+        $gotLock = false;
+        try {
+            $lk = $db->prepare('SELECT GET_LOCK(?, 10)');
+            $lk->execute([$lockName]);
+            $gotLock = ((int) $lk->fetchColumn() === 1);
+        } catch (Throwable $e) {
+            $gotLock = false;
         }
+        try {
+            $chk = $db->prepare(
+                "SELECT id FROM peaklyy_attempts
+                 WHERE assessment_id = ? AND LOWER(TRIM(email)) = ? AND domain_key = ?
+                   AND status IN ('registered','submitted','in_progress','expired')
+                 LIMIT 1"
+            );
+            $chk->execute([$assessment['id'], strtolower($email), $domain]);
+            if ($chk->fetch()) {
+                respond(['error' => 'You have already taken this assessment for this domain'], 409);
+            }
+            $id = generateUUID();
+            $token = generateUUID();
+            $db->prepare(
+                'INSERT INTO peaklyy_attempts
+                 (id, assessment_id, public_token, full_name, email, phone, domain_key, degree_branch, college_name, status)
+                 VALUES (?,?,?,?,?,?,?,?,?,\'registered\')'
+            )->execute([$id, $assessment['id'], $token, $fullName, $email, $phone, $domain, $degree ?: null, $college ?: null]);
+        } finally {
+            if ($gotLock) {
+                try {
+                    $db->prepare('SELECT RELEASE_LOCK(?)')->execute([$lockName]);
+                } catch (Throwable $e) {
+                }
+            }
+        }
+    } else {
+        $id = generateUUID();
+        $token = generateUUID();
+        $db->prepare(
+            'INSERT INTO peaklyy_attempts
+             (id, assessment_id, public_token, full_name, email, phone, domain_key, degree_branch, college_name, status)
+             VALUES (?,?,?,?,?,?,?,?,?,\'registered\')'
+        )->execute([$id, $assessment['id'], $token, $fullName, $email, $phone, $domain, $degree ?: null, $college ?: null]);
     }
-    $id = generateUUID();
-    $token = generateUUID();
-    $db->prepare(
-        'INSERT INTO peaklyy_attempts
-         (id, assessment_id, public_token, full_name, email, phone, domain_key, degree_branch, college_name, status)
-         VALUES (?,?,?,?,?,?,?,?,?,\'registered\')'
-    )->execute([$id, $assessment['id'], $token, $fullName, $email, $phone, $domain, $degree ?: null, $college ?: null]);
+    peaklyyAppendTimeline($db, $id, 'registered', 'Registered', [
+        'domain_key' => $domain,
+        'email' => $email,
+    ]);
     $leadId = null;
     try {
         $leadId = peaklyyUpsertLeadFromRegister($db, $assessment, [
@@ -926,6 +1799,7 @@ if ($action === 'register' && $method === 'POST') {
 // ── Start test ──
 if ($action === 'start' && $method === 'POST') {
     $token = trim((string) ($input['attempt_token'] ?? ''));
+    $requestedPhase = strtolower(trim((string) ($input['phase'] ?? '')));
     if ($token === '') {
         respond(['error' => 'attempt_token required'], 400);
     }
@@ -941,50 +1815,156 @@ if ($action === 'start' && $method === 'POST') {
     if (in_array($attempt['status'], ['submitted', 'expired'], true)) {
         respond(['error' => 'Assessment already completed'], 409);
     }
-    $questions = [];
-    if (!empty($attempt['questions_json'])) {
-        $decoded = json_decode((string) $attempt['questions_json'], true);
-        if (is_array($decoded)) {
-            $questions = $decoded;
-        }
+    $mode = strtolower((string) ($attempt['source_mode'] ?? 'domain_bank'));
+    $phase = strtolower((string) ($attempt['attempt_phase'] ?? 'mcq'));
+    if ($phase === '' || $phase === 'done') {
+        $phase = 'mcq';
     }
-    if (!$questions) {
-        $mode = strtolower((string) ($attempt['source_mode'] ?? 'domain_bank'));
-        if ($mode === 'custom') {
-            // Always use every active custom MCQ (count must match what admin saved)
-            $picked = peaklyyPickCustomQuestions($db, (string) $attempt['assessment_id'], 0);
-            $live = count($picked);
-            if ($live > 0 && $live !== (int) $attempt['question_count']) {
-                $db->prepare('UPDATE peaklyy_assessments SET question_count = ? WHERE id = ?')
-                    ->execute([$live, $attempt['assessment_id']]);
+    // Client may request task phase after MCQ
+    if ($requestedPhase === 'task' && in_array($phase, ['task', 'mcq_done'], true)) {
+        $phase = 'task';
+    }
+
+    $questions = [];
+    if ($mode === 'domain_bank' && $phase === 'task') {
+        if (!empty($attempt['task_questions_json'])) {
+            $decoded = json_decode((string) $attempt['task_questions_json'], true);
+            if (is_array($decoded)) {
+                $questions = $decoded;
+            }
+        }
+        if (!$questions) {
+            $picked = peaklyyPickTaskQuestions($db, (string) $attempt['domain_key'], 5);
+            if (!$picked) {
+                respond(['error' => 'No practical tasks available for this domain'], 500);
+            }
+            $questions = array_map('peaklyyPublicQuestion', $picked);
+            try {
+                $db->prepare(
+                    'UPDATE peaklyy_attempts SET status = ?, attempt_phase = ?, started_at = COALESCE(started_at, NOW()),
+                     questions_json = ?, task_questions_json = ? WHERE id = ?'
+                )->execute([
+                    'in_progress',
+                    'task',
+                    json_encode($questions, JSON_UNESCAPED_UNICODE),
+                    json_encode($questions, JSON_UNESCAPED_UNICODE),
+                    $attempt['id'],
+                ]);
+            } catch (Throwable $e) {
+                $db->prepare(
+                    'UPDATE peaklyy_attempts SET status = ?, started_at = COALESCE(started_at, NOW()), questions_json = ? WHERE id = ?'
+                )->execute(['in_progress', json_encode($questions, JSON_UNESCAPED_UNICODE), $attempt['id']]);
             }
         } else {
-            $picked = peaklyyPickQuestions($db, $attempt['domain_key'], (int) $attempt['question_count']);
+            try {
+                $db->prepare(
+                    'UPDATE peaklyy_attempts SET status = ?, attempt_phase = ?, started_at = COALESCE(started_at, NOW()), questions_json = ? WHERE id = ?'
+                )->execute(['in_progress', 'task', json_encode($questions, JSON_UNESCAPED_UNICODE), $attempt['id']]);
+            } catch (Throwable $e) {
+                $db->prepare(
+                    'UPDATE peaklyy_attempts SET status = ?, started_at = COALESCE(started_at, NOW()), questions_json = ? WHERE id = ?'
+                )->execute(['in_progress', json_encode($questions, JSON_UNESCAPED_UNICODE), $attempt['id']]);
+            }
         }
-        if (!$picked) {
-            respond(['error' => $mode === 'custom' ? 'No custom questions on this assessment' : 'No questions available for this domain'], 500);
-        }
-        $questions = array_map('peaklyyPublicQuestion', $picked);
-        $db->prepare('UPDATE peaklyy_attempts SET status = ?, started_at = COALESCE(started_at, NOW()), questions_json = ? WHERE id = ?')
-            ->execute(['in_progress', json_encode($questions, JSON_UNESCAPED_UNICODE), $attempt['id']]);
+        $phase = 'task';
     } else {
-        $db->prepare('UPDATE peaklyy_attempts SET status = ?, started_at = COALESCE(started_at, NOW()) WHERE id = ?')
-            ->execute(['in_progress', $attempt['id']]);
+        // MCQ / custom single test
+        if (!empty($attempt['mcq_questions_json']) && $mode === 'domain_bank') {
+            $decoded = json_decode((string) $attempt['mcq_questions_json'], true);
+            if (is_array($decoded) && $decoded) {
+                $questions = $decoded;
+            }
+        }
+        if (!$questions && !empty($attempt['questions_json']) && $phase !== 'task') {
+            $decoded = json_decode((string) $attempt['questions_json'], true);
+            if (is_array($decoded)) {
+                // Legacy combined paper: keep as-is for custom; for domain prefer MCQ-only restart if mixed
+                $onlyMcq = true;
+                foreach ($decoded as $dq) {
+                    if (($dq['q_type'] ?? 'mcq') === 'task') {
+                        $onlyMcq = false;
+                        break;
+                    }
+                }
+                if ($mode !== 'domain_bank' || $onlyMcq) {
+                    $questions = $decoded;
+                }
+            }
+        }
+        if (!$questions) {
+            if ($mode === 'custom') {
+                $picked = peaklyyPickCustomQuestions($db, (string) $attempt['assessment_id'], 0);
+                $live = count($picked);
+                if ($live > 0 && $live !== (int) $attempt['question_count']) {
+                    $db->prepare('UPDATE peaklyy_assessments SET question_count = ? WHERE id = ?')
+                        ->execute([$live, $attempt['assessment_id']]);
+                }
+            } else {
+                $picked = peaklyyPickMcqQuestions($db, (string) $attempt['domain_key'], 25);
+            }
+            if (!$picked) {
+                respond(['error' => $mode === 'custom' ? 'No custom questions on this assessment' : 'No questions available for this domain'], 500);
+            }
+            $questions = array_map('peaklyyPublicQuestion', $picked);
+            try {
+                $db->prepare(
+                    'UPDATE peaklyy_attempts SET status = ?, attempt_phase = ?, started_at = COALESCE(started_at, NOW()),
+                     questions_json = ?, mcq_questions_json = ? WHERE id = ?'
+                )->execute([
+                    'in_progress',
+                    $mode === 'domain_bank' ? 'mcq' : 'single',
+                    json_encode($questions, JSON_UNESCAPED_UNICODE),
+                    $mode === 'domain_bank' ? json_encode($questions, JSON_UNESCAPED_UNICODE) : null,
+                    $attempt['id'],
+                ]);
+            } catch (Throwable $e) {
+                $db->prepare(
+                    'UPDATE peaklyy_attempts SET status = ?, started_at = COALESCE(started_at, NOW()), questions_json = ? WHERE id = ?'
+                )->execute(['in_progress', json_encode($questions, JSON_UNESCAPED_UNICODE), $attempt['id']]);
+            }
+            $phase = $mode === 'domain_bank' ? 'mcq' : 'single';
+        } else {
+            try {
+                $db->prepare(
+                    'UPDATE peaklyy_attempts SET status = ?, attempt_phase = COALESCE(attempt_phase, ?), started_at = COALESCE(started_at, NOW()) WHERE id = ?'
+                )->execute(['in_progress', $mode === 'domain_bank' ? 'mcq' : 'single', $attempt['id']]);
+            } catch (Throwable $e) {
+                $db->prepare('UPDATE peaklyy_attempts SET status = ?, started_at = COALESCE(started_at, NOW()) WHERE id = ?')
+                    ->execute(['in_progress', $attempt['id']]);
+            }
+            $phase = $mode === 'domain_bank' ? 'mcq' : (string) ($attempt['attempt_phase'] ?? 'single');
+        }
     }
+
     $started = $attempt['started_at'] ?: date('Y-m-d H:i:s');
-    $endsAt = date('c', strtotime($started) + ((int) $attempt['duration_minutes'] * 60));
+    $durationMinutes = (int) ($attempt['duration_minutes'] ?? 0);
+    $endsAt = $durationMinutes > 0
+        ? date('c', strtotime($started) + ($durationMinutes * 60))
+        : null;
     $domainLabel = peaklyyDomainCatalog()[$attempt['domain_key']] ?? $attempt['domain_key'];
     if (($attempt['domain_key'] ?? '') === 'custom') {
         $domainLabel = $attempt['title'] ?: 'Custom Assessment';
     }
+    if ($phase === 'task') {
+        peaklyyAppendTimeline($db, (string) $attempt['id'], 'task_started', 'Part 2 — practical tasks started');
+    } else {
+        peaklyyAppendTimeline(
+            $db,
+            (string) $attempt['id'],
+            $phase === 'single' ? 'started' : 'mcq_started',
+            $phase === 'single' ? 'Assessment started' : 'Part 1 — MCQ test started'
+        );
+    }
     respond([
         'attempt_id' => $attempt['id'],
-        'duration_minutes' => (int) $attempt['duration_minutes'],
+        'phase' => $phase === 'single' ? 'single' : $phase,
+        'duration_minutes' => $durationMinutes,
         'ends_at' => $endsAt,
         'anti_cheat' => (bool) (int) $attempt['anti_cheat'],
         'domain_key' => $attempt['domain_key'],
         'domain_label' => $domainLabel,
         'questions' => $questions,
+        'title' => $phase === 'task' ? 'Part 2 — Practical tasks' : ($phase === 'mcq' ? 'Part 1 — MCQ test' : ($attempt['title'] ?? 'Assessment')),
     ]);
 }
 
@@ -999,6 +1979,288 @@ if ($action === 'violation' && $method === 'POST') {
         respond(['violation_count' => (int) $row['violation_count'] + 1]);
     }
     respond(['ok' => true]);
+}
+
+/**
+ * Upsert a mid-attempt answer (text / option / file path) without final scoring.
+ */
+function peaklyyUpsertAttemptAnswer(PDO $db, string $attemptId, string $questionId, ?string $option, array $answerJson): array
+{
+    $existing = $db->prepare(
+        'SELECT id, answer_option, answer_json FROM peaklyy_attempt_answers WHERE attempt_id = ? AND question_id = ? LIMIT 1'
+    );
+    $existing->execute([$attemptId, $questionId]);
+    $row = $existing->fetch(PDO::FETCH_ASSOC);
+    $prev = [];
+    if ($row && !empty($row['answer_json'])) {
+        $decoded = is_string($row['answer_json']) ? json_decode($row['answer_json'], true) : $row['answer_json'];
+        if (is_array($decoded)) {
+            $prev = $decoded;
+        }
+    }
+    $merged = array_merge($prev, $answerJson);
+    // Keep prior file if new payload omitted it
+    if (empty($merged['file_path']) && !empty($prev['file_path'])) {
+        $merged['file_path'] = $prev['file_path'];
+        if (empty($merged['file_name']) && !empty($prev['file_name'])) {
+            $merged['file_name'] = $prev['file_name'];
+        }
+    }
+    if (empty($merged['notepad_file_path']) && !empty($prev['notepad_file_path'])) {
+        $merged['notepad_file_path'] = $prev['notepad_file_path'];
+        if (empty($merged['notepad_file_name']) && !empty($prev['notepad_file_name'])) {
+            $merged['notepad_file_name'] = $prev['notepad_file_name'];
+        }
+    }
+    $opt = $option;
+    if ($opt === null || $opt === '') {
+        $opt = $row['answer_option'] ?? null;
+    }
+    $aj = json_encode($merged, JSON_UNESCAPED_UNICODE);
+    if ($row) {
+        $db->prepare(
+            'UPDATE peaklyy_attempt_answers SET answer_option = ?, answer_json = ?, is_correct = 0, points_awarded = 0 WHERE id = ?'
+        )->execute([$opt, $aj, $row['id']]);
+    } else {
+        $db->prepare(
+            'INSERT INTO peaklyy_attempt_answers (id, attempt_id, question_id, answer_option, answer_json, is_correct, points_awarded)
+             VALUES (?,?,?,?,?,0,0)'
+        )->execute([generateUUID(), $attemptId, $questionId, $opt, $aj]);
+    }
+    return $merged;
+}
+
+function peaklyyFindQuestionOnAttempt(array $attempt, string $questionId): ?array
+{
+    $pools = [];
+    foreach (['questions_json', 'mcq_questions_json', 'task_questions_json'] as $col) {
+        if (empty($attempt[$col])) {
+            continue;
+        }
+        $decoded = json_decode((string) $attempt[$col], true);
+        if (is_array($decoded)) {
+            $pools[] = $decoded;
+        }
+    }
+    foreach ($pools as $questions) {
+        foreach ($questions as $q) {
+            if ((string) ($q['id'] ?? '') === $questionId) {
+                return $q;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * 1-based question number for filenames (prefer task list, else notepad-capable questions).
+ */
+function peaklyyQuestionNumberOnAttempt(array $attempt, string $questionId): int
+{
+    $lists = [];
+    if (!empty($attempt['task_questions_json'])) {
+        $decoded = json_decode((string) $attempt['task_questions_json'], true);
+        if (is_array($decoded) && $decoded) {
+            $lists[] = $decoded;
+        }
+    }
+    if (!empty($attempt['questions_json'])) {
+        $decoded = json_decode((string) $attempt['questions_json'], true);
+        if (is_array($decoded) && $decoded) {
+            $taskOnly = [];
+            $notepad = [];
+            foreach ($decoded as $q) {
+                if (!is_array($q)) {
+                    continue;
+                }
+                if (($q['q_type'] ?? '') === 'task') {
+                    $taskOnly[] = $q;
+                }
+                if (!empty($q['allow_notepad']) || ($q['q_type'] ?? '') === 'task') {
+                    $notepad[] = $q;
+                }
+            }
+            if ($taskOnly) {
+                $lists[] = $taskOnly;
+            }
+            if ($notepad) {
+                $lists[] = $notepad;
+            }
+            $lists[] = $decoded;
+        }
+    }
+    foreach ($lists as $list) {
+        foreach ($list as $i => $q) {
+            if ((string) ($q['id'] ?? '') === $questionId) {
+                return ((int) $i) + 1;
+            }
+        }
+    }
+    return 1;
+}
+
+/**
+ * Write/update notepad .txt for an answer and return path fields to merge into answer_json.
+ *
+ * @return array{notepad_file_path?:string,notepad_file_name?:string}
+ */
+function peaklyyPersistNotepadFile(array $attempt, string $questionId, string $text, array $prevAnswer = []): array
+{
+    $text = (string) $text;
+    if (trim($text) === '') {
+        return [];
+    }
+    $qNum = peaklyyQuestionNumberOnAttempt($attempt, $questionId);
+    $existing = !empty($prevAnswer['notepad_file_path']) ? (string) $prevAnswer['notepad_file_path'] : null;
+    $saved = savePeaklyyNotepadTextFile((string) ($attempt['full_name'] ?? 'Candidate'), $qNum, $text, $existing);
+    return [
+        'notepad_file_path' => $saved['path'],
+        'notepad_file_name' => $saved['file_name'],
+    ];
+}
+
+// ── Save notepad / MCQ answer mid-test ──
+if ($action === 'save_answer' && $method === 'POST') {
+    $token = trim((string) ($input['attempt_token'] ?? ''));
+    $questionId = trim((string) ($input['question_id'] ?? ''));
+    if ($token === '' || $questionId === '') {
+        respond(['error' => 'attempt_token and question_id required'], 400);
+    }
+    $stmt = $db->prepare('SELECT * FROM peaklyy_attempts WHERE public_token = ? LIMIT 1');
+    $stmt->execute([$token]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$attempt) {
+        respond(['error' => 'Attempt not found'], 404);
+    }
+    if (in_array($attempt['status'], ['submitted', 'expired'], true)) {
+        respond(['error' => 'Assessment already completed'], 409);
+    }
+    try {
+        $db->beginTransaction();
+        $lockStmt = $db->prepare('SELECT id, status FROM peaklyy_attempts WHERE id = ? FOR UPDATE');
+        $lockStmt->execute([(string) $attempt['id']]);
+        $locked = $lockStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$locked || in_array((string) ($locked['status'] ?? ''), ['submitted', 'expired'], true)) {
+            $db->rollBack();
+            respond(['error' => 'Assessment already completed'], 409);
+        }
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        respond(['error' => 'Could not save answer'], 500);
+    }
+    $pq = peaklyyFindQuestionOnAttempt($attempt, $questionId);
+    if (!$pq) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        respond(['error' => 'Question not on this attempt'], 400);
+    }
+    $flags = peaklyyQuestionResponseFlags($pq, is_array($pq['task_schema'] ?? null) ? $pq['task_schema'] : null);
+    $qType = strtolower((string) ($pq['q_type'] ?? 'mcq'));
+    $payload = [];
+    $opt = null;
+    if ($qType === 'mcq' && !empty($pq['options'])) {
+        $rawOpt = $input['option'] ?? $input['answer'] ?? null;
+        if (is_array($rawOpt)) {
+            $rawOpt = $rawOpt['option'] ?? '';
+        }
+        $opt = strtolower(trim((string) $rawOpt));
+        if ($opt !== '' && !in_array($opt, ['a', 'b', 'c', 'd'], true)) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            respond(['error' => 'Invalid option'], 400);
+        }
+    }
+    if ($flags['allow_notepad'] || $qType === 'task') {
+        $text = '';
+        if (isset($input['text'])) {
+            $text = trim((string) $input['text']);
+        } elseif (isset($input['answer']) && !is_array($input['answer'])) {
+            $text = trim((string) $input['answer']);
+        }
+        $payload['text'] = $text;
+        // Load prior answer for overwrite path
+        $prevStmt = $db->prepare(
+            'SELECT answer_json FROM peaklyy_attempt_answers WHERE attempt_id = ? AND question_id = ? LIMIT 1'
+        );
+        $prevStmt->execute([(string) $attempt['id'], $questionId]);
+        $prevRow = $prevStmt->fetch(PDO::FETCH_ASSOC);
+        $prevAj = [];
+        if ($prevRow && !empty($prevRow['answer_json'])) {
+            $decoded = is_string($prevRow['answer_json'])
+                ? json_decode((string) $prevRow['answer_json'], true)
+                : $prevRow['answer_json'];
+            if (is_array($decoded)) {
+                $prevAj = $decoded;
+            }
+        }
+        $payload = array_merge($payload, peaklyyPersistNotepadFile($attempt, $questionId, $text, $prevAj));
+    }
+    $merged = peaklyyUpsertAttemptAnswer($db, (string) $attempt['id'], $questionId, $opt !== '' ? $opt : null, $payload);
+    if ($db->inTransaction()) {
+        $db->commit();
+    }
+    respond([
+        'ok' => true,
+        'question_id' => $questionId,
+        'saved' => $merged,
+        'answer_option' => $opt !== '' ? $opt : null,
+        'notepad_file_path' => $merged['notepad_file_path'] ?? null,
+        'notepad_file_name' => $merged['notepad_file_name'] ?? null,
+    ]);
+}
+
+// ── Upload answer file mid-test ──
+if ($action === 'upload_answer' && $method === 'POST') {
+    $token = trim((string) ($_POST['attempt_token'] ?? $input['attempt_token'] ?? ''));
+    $questionId = trim((string) ($_POST['question_id'] ?? $input['question_id'] ?? ''));
+    if ($token === '' || $questionId === '') {
+        respond(['error' => 'attempt_token and question_id required'], 400);
+    }
+    $stmt = $db->prepare('SELECT * FROM peaklyy_attempts WHERE public_token = ? LIMIT 1');
+    $stmt->execute([$token]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$attempt) {
+        respond(['error' => 'Attempt not found'], 404);
+    }
+    if (in_array($attempt['status'], ['submitted', 'expired'], true)) {
+        respond(['error' => 'Assessment already completed'], 409);
+    }
+    $pq = peaklyyFindQuestionOnAttempt($attempt, $questionId);
+    if (!$pq) {
+        respond(['error' => 'Question not on this attempt'], 400);
+    }
+    $flags = peaklyyQuestionResponseFlags($pq, is_array($pq['task_schema'] ?? null) ? $pq['task_schema'] : null);
+    if (!$flags['allow_upload']) {
+        respond(['error' => 'File upload is not enabled for this question'], 400);
+    }
+    $file = $_FILES['file'] ?? $_FILES['answer_file'] ?? null;
+    $path = savePeaklyyAnswerUpload(is_array($file) ? $file : null);
+    $orig = is_array($file) ? basename((string) ($file['name'] ?? 'file')) : 'file';
+    $merged = peaklyyUpsertAttemptAnswer($db, (string) $attempt['id'], $questionId, null, [
+        'file_path' => $path,
+        'file_name' => $orig,
+    ]);
+    // Optional text in same multipart request — also materialize as .txt notepad file
+    if (isset($_POST['text'])) {
+        $text = trim((string) $_POST['text']);
+        $np = peaklyyPersistNotepadFile($attempt, $questionId, $text, is_array($merged) ? $merged : []);
+        $merged = peaklyyUpsertAttemptAnswer($db, (string) $attempt['id'], $questionId, null, array_merge([
+            'text' => $text,
+        ], $np));
+    }
+    respond([
+        'ok' => true,
+        'question_id' => $questionId,
+        'file_path' => $path,
+        'file_name' => $orig,
+        'notepad_file_path' => $merged['notepad_file_path'] ?? null,
+        'notepad_file_name' => $merged['notepad_file_name'] ?? null,
+        'saved' => $merged,
+    ]);
 }
 
 // ── Submit ──
@@ -1023,21 +2285,97 @@ if ($action === 'submit' && $method === 'POST') {
     if ($attempt['status'] === 'submitted') {
         respond(['error' => 'Already submitted', 'attempt_token' => $token], 409);
     }
+
+    // Serialize submit vs mid-test saves and prevent double-submit.
+    try {
+        $db->beginTransaction();
+        $lockStmt = $db->prepare('SELECT * FROM peaklyy_attempts WHERE id = ? FOR UPDATE');
+        $lockStmt->execute([(string) $attempt['id']]);
+        $locked = $lockStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$locked) {
+            $db->rollBack();
+            respond(['error' => 'Attempt not found'], 404);
+        }
+        if (($locked['status'] ?? '') === 'submitted') {
+            $db->rollBack();
+            respond(['error' => 'Already submitted', 'attempt_token' => $token], 409);
+        }
+        $attempt = $locked;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        respond(['error' => 'Could not lock attempt for submit'], 500);
+    }
+
     $aStmt = $db->prepare('SELECT * FROM peaklyy_assessments WHERE id = ? LIMIT 1');
     $aStmt->execute([$attempt['assessment_id']]);
     $assessment = $aStmt->fetch(PDO::FETCH_ASSOC);
+    $sourceMode = strtolower((string) ($assessment['source_mode'] ?? 'domain_bank'));
+    $phase = strtolower((string) ($attempt['attempt_phase'] ?? 'mcq'));
+    if ($phase === '' || $phase === 'single') {
+        $phase = $sourceMode === 'domain_bank' ? 'mcq' : 'single';
+    }
+
     $questions = json_decode((string) ($attempt['questions_json'] ?? '[]'), true) ?: [];
+    if ($phase === 'mcq' && !empty($attempt['mcq_questions_json'])) {
+        $mq = json_decode((string) $attempt['mcq_questions_json'], true);
+        if (is_array($mq) && $mq) {
+            $questions = $mq;
+        }
+    }
+    if ($phase === 'task' && !empty($attempt['task_questions_json'])) {
+        $tq = json_decode((string) $attempt['task_questions_json'], true);
+        if (is_array($tq) && $tq) {
+            $questions = $tq;
+        }
+    }
     $qMap = [];
     foreach ($questions as $q) {
         $qMap[$q['id']] = $q;
     }
-    // load scoring data from domain bank + custom assessment questions
     $ids = array_keys($qMap);
     $bank = peaklyyLoadScoringRows($db, $ids);
 
     $earned = 0;
     $max = 0;
-    $db->prepare('DELETE FROM peaklyy_attempt_answers WHERE attempt_id = ?')->execute([$attempt['id']]);
+    // Preserve mid-test saved answers for THIS phase's question IDs only
+    $priorFiles = [];
+    $phaseIds = $ids;
+    $priorStmt = $db->prepare('SELECT question_id, answer_option, answer_json, is_correct, points_awarded FROM peaklyy_attempt_answers WHERE attempt_id = ?');
+    $priorStmt->execute([$attempt['id']]);
+    $otherAnswers = [];
+    foreach ($priorStmt->fetchAll(PDO::FETCH_ASSOC) as $pr) {
+        $qid = (string) $pr['question_id'];
+        if (!in_array($qid, $phaseIds, true)) {
+            $otherAnswers[] = $pr;
+            continue;
+        }
+        $aj = $pr['answer_json'] ?? null;
+        if (is_string($aj)) {
+            $aj = json_decode($aj, true);
+        }
+        if (is_array($aj) && !empty($aj['file_path'])) {
+            $priorFiles[$qid] = [
+                'file_path' => (string) $aj['file_path'],
+                'file_name' => (string) ($aj['file_name'] ?? ''),
+                'text' => (string) ($aj['text'] ?? ''),
+                'notepad_file_path' => (string) ($aj['notepad_file_path'] ?? ''),
+                'notepad_file_name' => (string) ($aj['notepad_file_name'] ?? ''),
+            ];
+        } elseif (is_array($aj) && (isset($aj['text']) || !empty($aj['notepad_file_path']))) {
+            $priorFiles[$qid] = [
+                'text' => (string) ($aj['text'] ?? ''),
+                'notepad_file_path' => (string) ($aj['notepad_file_path'] ?? ''),
+                'notepad_file_name' => (string) ($aj['notepad_file_name'] ?? ''),
+            ];
+        }
+    }
+    if ($phaseIds) {
+        $in = implode(',', array_fill(0, count($phaseIds), '?'));
+        $del = $db->prepare("DELETE FROM peaklyy_attempt_answers WHERE attempt_id = ? AND question_id IN ($in)");
+        $del->execute(array_merge([$attempt['id']], $phaseIds));
+    }
     $ansIns = $db->prepare(
         'INSERT INTO peaklyy_attempt_answers (id, attempt_id, question_id, answer_option, answer_json, is_correct, points_awarded)
          VALUES (?,?,?,?,?,?,?)'
@@ -1046,51 +2384,374 @@ if ($action === 'submit' && $method === 'POST') {
     foreach ($questions as $pq) {
         $qid = $pq['id'];
         $bankRow = $bank[$qid] ?? null;
-        $points = (int) ($pq['points'] ?? ($bankRow['points'] ?? 5));
-        $max += $points;
+        $qType = strtolower((string) ($pq['q_type'] ?? ($bankRow['q_type'] ?? 'mcq')));
+        $schema = $pq['task_schema'] ?? null;
+        if (!is_array($schema) && !empty($bankRow['task_schema_json'])) {
+            $schema = is_string($bankRow['task_schema_json'])
+                ? json_decode($bankRow['task_schema_json'], true)
+                : $bankRow['task_schema_json'];
+        }
+        $flags = peaklyyQuestionResponseFlags(array_merge($pq, ['q_type' => $qType]), is_array($schema) ? $schema : null);
+        $points = (int) ($pq['points'] ?? ($bankRow['points'] ?? ($qType === 'task' ? 0 : 5)));
+        if ($points > 0) {
+            $max += $points;
+        }
         $raw = $answersIn[$qid] ?? null;
         $isCorrect = 0;
         $awarded = 0;
         $opt = null;
-        $aj = null;
-        if (($pq['q_type'] ?? 'mcq') === 'mcq' || !empty($pq['options']) || !empty($bankRow['options_json'])) {
+        $ajPayload = [];
+        $prior = $priorFiles[$qid] ?? [];
+
+        if ($qType === 'mcq' || (!empty($pq['options']) || !empty($bankRow['options_json']))) {
             $opt = strtolower(trim((string) (is_array($raw) ? ($raw['option'] ?? '') : $raw)));
+            if ($opt === '' && is_array($raw) && isset($raw['answer_option'])) {
+                $opt = strtolower(trim((string) $raw['answer_option']));
+            }
             $correct = strtolower((string) ($bankRow['correct_option'] ?? ''));
             if ($opt !== '' && $opt === $correct) {
                 $isCorrect = 1;
                 $awarded = $points;
             }
         }
+
+        if ($flags['allow_notepad'] || $qType === 'task') {
+            $text = '';
+            if (is_array($raw)) {
+                $text = trim((string) ($raw['text'] ?? $raw['answer'] ?? ''));
+            } elseif (is_string($raw) && ($qType === 'task' || $flags['allow_notepad'])) {
+                if ($qType === 'task' || !in_array(strtolower($raw), ['a', 'b', 'c', 'd'], true)) {
+                    $text = trim($raw);
+                }
+            }
+            if ($text === '' && !empty($prior['text'])) {
+                $text = (string) $prior['text'];
+            }
+            $ajPayload['text'] = $text;
+            if ($text !== '') {
+                $np = peaklyyPersistNotepadFile($attempt, (string) $qid, $text, $prior);
+                $ajPayload = array_merge($ajPayload, $np);
+            } elseif (!empty($prior['notepad_file_path'])) {
+                $ajPayload['notepad_file_path'] = (string) $prior['notepad_file_path'];
+                $ajPayload['notepad_file_name'] = (string) ($prior['notepad_file_name'] ?? '');
+            }
+        }
+
+        if ($flags['allow_upload']) {
+            $filePath = '';
+            $fileName = '';
+            if (is_array($raw)) {
+                $filePath = trim((string) ($raw['file_path'] ?? ''));
+                $fileName = trim((string) ($raw['file_name'] ?? ''));
+            }
+            if ($filePath === '' && !empty($prior['file_path'])) {
+                $filePath = (string) $prior['file_path'];
+                $fileName = (string) ($prior['file_name'] ?? '');
+            }
+            if ($filePath !== '') {
+                $ajPayload['file_path'] = $filePath;
+                $ajPayload['file_name'] = $fileName;
+            }
+        }
+
+        $aj = $ajPayload ? json_encode($ajPayload, JSON_UNESCAPED_UNICODE) : null;
         $earned += $awarded;
         $ansIns->execute([generateUUID(), $attempt['id'], $qid, $opt, $aj, $isCorrect, $awarded]);
     }
 
-    $score = $max > 0 ? (int) round(($earned / $max) * 100) : 0;
-    $stars = peaklyyStars($score);
-    $passScore = max(1, (int) ($assessment['pass_score'] ?? 70));
-    $passed = $score >= $passScore ? 1 : 0;
     $startedTs = $attempt['started_at'] ? strtotime($attempt['started_at']) : time();
     $taken = max(0, time() - $startedTs);
     $unlockAt = date('Y-m-d H:i:s', time() + 30 * 60);
+    $passScore = max(1, (int) ($assessment['pass_score'] ?? 70));
 
-    $db->prepare(
-        'UPDATE peaklyy_attempts SET status=?, score=?, stars=?, passed=?, time_taken_seconds=?, submitted_at=NOW(), unlock_at=? WHERE id=?'
-    )->execute(['submitted', $score, $stars, $passed, $taken, $unlockAt, $attempt['id']]);
+    $peaklyyCommitSubmit = static function () use ($db): void {
+        if ($db->inTransaction()) {
+            $db->commit();
+        }
+    };
+    $peaklyyRollbackSubmit = static function () use ($db): void {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+    };
 
+    // ── Task part: save answers, keep MCQ score, push score + uploads via API key webhook ──
+    if ($phase === 'task') {
+        try {
+            $upd = $db->prepare(
+                "UPDATE peaklyy_attempts SET status=?, attempt_phase=?, time_taken_seconds=?, submitted_at=NOW(), unlock_at=?
+                 WHERE id=? AND status <> 'submitted'"
+            );
+            $upd->execute(['submitted', 'done', $taken, $unlockAt, $attempt['id']]);
+            if ($upd->rowCount() < 1) {
+                $peaklyyRollbackSubmit();
+                respond(['error' => 'Already submitted', 'attempt_token' => $token], 409);
+            }
+        } catch (Throwable $e) {
+            try {
+                $upd = $db->prepare(
+                    "UPDATE peaklyy_attempts SET status=?, time_taken_seconds=?, submitted_at=NOW(), unlock_at=?
+                     WHERE id=? AND status <> 'submitted'"
+                );
+                $upd->execute(['submitted', $taken, $unlockAt, $attempt['id']]);
+                if ($upd->rowCount() < 1) {
+                    $peaklyyRollbackSubmit();
+                    respond(['error' => 'Already submitted', 'attempt_token' => $token], 409);
+                }
+            } catch (Throwable $e2) {
+                $peaklyyRollbackSubmit();
+                respond(['error' => 'Submit failed'], 500);
+            }
+        }
+        $peaklyyCommitSubmit();
+        $score = (int) ($attempt['score'] ?? 0);
+        $stars = (int) ($attempt['stars'] ?? 0);
+        $passed = (int) ($attempt['passed'] ?? 0);
+        $attempt['score'] = $score;
+        $attempt['stars'] = $stars;
+        $attempt['passed'] = $passed;
+        $attempt['time_taken_seconds'] = $taken;
+        $attempt['submitted_at'] = date('Y-m-d H:i:s');
+        $attempt['attempt_phase'] = 'done';
+        $attempt['status'] = 'submitted';
+
+        // Reload for export (includes newly saved task answers)
+        $fresh = $db->prepare('SELECT * FROM peaklyy_attempts WHERE id = ? LIMIT 1');
+        $fresh->execute([$attempt['id']]);
+        $attemptRow = $fresh->fetch(PDO::FETCH_ASSOC) ?: $attempt;
+        $partner = peaklyyCollectAttemptPartnerPayload($db, $assessment ?: [], $attemptRow);
+        $hook = peaklyySendWebhook(
+            $assessment,
+            $attemptRow,
+            'peaklyy.assessment.complete',
+            [
+                'test_part' => 'complete',
+                'score' => $partner['score'],
+                'uploads' => $partner['uploads'],
+                'tasks' => $partner['tasks'],
+                'mcq_answers_count' => count($partner['mcq_answers']),
+                'uploads_count' => count($partner['uploads']),
+                'partner_result_url' => rtrim(peaklyyApiPublicBase(), '/') . '/api/assessments.php?action=partner_result&attempt_id=' . rawurlencode((string) $attempt['id']),
+            ],
+            false // send even if MCQ not passed — partner still gets uploads
+        );
+        $db->prepare('UPDATE peaklyy_attempts SET webhook_sent_at=IF(?, NOW(), NULL), webhook_status=?, webhook_response=? WHERE id=?')
+            ->execute([$hook['sent'] ? 1 : 0, $hook['status'] ?? null, $hook['response'] ?? null, $attempt['id']]);
+
+        peaklyyAppendTimeline($db, (string) $attempt['id'], 'task_submitted', 'Part 2 tasks submitted', [
+            'uploads_count' => count($partner['uploads']),
+            'score' => $score,
+            'passed' => (bool) $passed,
+        ]);
+        if (!empty($hook['sent'])) {
+            peaklyyAppendTimeline($db, (string) $attempt['id'], 'webhook_complete', 'Score + uploads webhook sent', [
+                'status' => $hook['status'] ?? null,
+                'uploads_count' => count($partner['uploads']),
+            ]);
+        }
+
+        $redirect = null;
+        if ($passed) {
+            $redirect = $hook['redirect_url'] ?? null;
+            if (!$redirect && !empty($assessment['result_webhook_url'])) {
+                $redirect = $assessment['result_webhook_url'];
+            }
+        }
+
+        respond([
+            'phase' => 'task',
+            'next_phase' => null,
+            'score' => $score,
+            'stars' => $stars,
+            'passed' => (bool) $passed,
+            'time_taken_seconds' => $taken,
+            'unlock_at' => $unlockAt,
+            'redirect_url' => $passed ? $redirect : null,
+            'attempt_token' => $token,
+            'tasks_submitted' => true,
+            'uploads_count' => count($partner['uploads']),
+            'message' => 'Practical tasks submitted. Score and uploads are available via API key.',
+            'webhook' => ['sent' => !empty($hook['sent']), 'status' => $hook['status'] ?? null],
+        ]);
+    }
+
+    // ── MCQ / single part scoring ──
+    $score = $max > 0 ? (int) round(($earned / $max) * 100) : 0;
+    $stars = peaklyyStars($score);
+    $passed = $score >= $passScore ? 1 : 0;
     $attempt['score'] = $score;
     $attempt['stars'] = $stars;
     $attempt['passed'] = $passed;
     $attempt['time_taken_seconds'] = $taken;
     $attempt['submitted_at'] = date('Y-m-d H:i:s');
 
-    $hook = peaklyySendWebhook($assessment, $attempt);
+    $twoPart = $sourceMode === 'domain_bank' && $phase === 'mcq';
+    if ($twoPart) {
+        // Prepare task paper; keep status in_progress for part 2
+        $taskPicked = peaklyyPickTaskQuestions($db, (string) $attempt['domain_key'], 5);
+        $taskQuestions = array_map('peaklyyPublicQuestion', $taskPicked);
+        try {
+            $db->prepare(
+                "UPDATE peaklyy_attempts SET attempt_phase=?, score=?, stars=?, passed=?, time_taken_seconds=?,
+                 mcq_submitted_at=COALESCE(mcq_submitted_at, NOW()),
+                 mcq_questions_json=COALESCE(mcq_questions_json, questions_json),
+                 task_questions_json=?, questions_json=? WHERE id=?"
+            )->execute([
+                'task',
+                $score,
+                $stars,
+                $passed,
+                $taken,
+                json_encode($taskQuestions, JSON_UNESCAPED_UNICODE),
+                json_encode($taskQuestions, JSON_UNESCAPED_UNICODE),
+                $attempt['id'],
+            ]);
+        } catch (Throwable $e) {
+            try {
+                $db->prepare(
+                    "UPDATE peaklyy_attempts SET attempt_phase=?, score=?, stars=?, passed=?, time_taken_seconds=?,
+                     mcq_questions_json=COALESCE(mcq_questions_json, questions_json),
+                     task_questions_json=?, questions_json=? WHERE id=?"
+                )->execute([
+                    'task',
+                    $score,
+                    $stars,
+                    $passed,
+                    $taken,
+                    json_encode($taskQuestions, JSON_UNESCAPED_UNICODE),
+                    json_encode($taskQuestions, JSON_UNESCAPED_UNICODE),
+                    $attempt['id'],
+                ]);
+            } catch (Throwable $e2) {
+                // Last-resort schema: still advance phase so task paper is not scored as MCQ later.
+                $db->prepare(
+                    'UPDATE peaklyy_attempts SET score=?, stars=?, passed=?, time_taken_seconds=?, questions_json=? WHERE id=?'
+                )->execute([$score, $stars, $passed, $taken, json_encode($taskQuestions, JSON_UNESCAPED_UNICODE), $attempt['id']]);
+                try {
+                    $db->prepare("UPDATE peaklyy_attempts SET attempt_phase='task' WHERE id=?")->execute([$attempt['id']]);
+                } catch (Throwable $e3) {
+                    error_log('[peaklyy] could not set attempt_phase=task after MCQ: ' . $e3->getMessage());
+                }
+            }
+        }
+        $peaklyyCommitSubmit();
+        peaklyyAppendTimeline($db, (string) $attempt['id'], 'mcq_submitted', 'Part 1 MCQ submitted', [
+            'score' => $score,
+            'stars' => $stars,
+            'passed' => (bool) $passed,
+        ]);
+
+        $hook = peaklyySendWebhook($assessment, $attempt, 'peaklyy.assessment.mcq_passed', [
+            'test_part' => 'mcq',
+            'tasks_pending' => true,
+            'score' => [
+                'score' => $score,
+                'stars' => $stars,
+                'passed' => (bool) $passed,
+                'part' => 'mcq',
+            ],
+            'uploads' => [],
+            'partner_result_url' => rtrim(peaklyyApiPublicBase(), '/') . '/api/assessments.php?action=partner_result&attempt_id=' . rawurlencode((string) $attempt['id']),
+        ], true);
+        $db->prepare('UPDATE peaklyy_attempts SET webhook_sent_at=IF(?, NOW(), NULL), webhook_status=?, webhook_response=? WHERE id=?')
+            ->execute([$hook['sent'] ? 1 : 0, $hook['status'] ?? null, $hook['response'] ?? null, $attempt['id']]);
+
+        try {
+            peaklyyUpdateLeadOnSubmit($db, $assessment ?: [], $attempt, $score, $stars, (int) $passed);
+        } catch (Throwable $e) {
+            error_log('[peaklyy] lead update after MCQ submit failed: ' . $e->getMessage());
+        }
+
+        if (!empty($hook['sent'])) {
+            peaklyyAppendTimeline($db, (string) $attempt['id'], 'webhook_mcq', 'MCQ results webhook sent', [
+                'status' => $hook['status'] ?? null,
+            ]);
+        }
+
+        $redirect = null;
+        if ($passed) {
+            $redirect = $hook['redirect_url'] ?? null;
+            if (!$redirect && !empty($assessment['result_webhook_url'])) {
+                $redirect = $assessment['result_webhook_url'];
+            }
+        }
+
+        respond([
+            'phase' => 'mcq',
+            'next_phase' => 'task',
+            'score' => $score,
+            'stars' => $stars,
+            'passed' => (bool) $passed,
+            'time_taken_seconds' => $taken,
+            'unlock_at' => $unlockAt,
+            'redirect_url' => $passed ? $redirect : null,
+            'attempt_token' => $token,
+            'task_questions' => $taskQuestions,
+            'message' => 'MCQ test complete. Results posted to partner API. Continue to practical tasks (Part 2).',
+            'webhook' => ['sent' => !empty($hook['sent']), 'status' => $hook['status'] ?? null],
+        ]);
+    }
+
+    // Custom / single-part: fully submit
+    try {
+        $upd = $db->prepare(
+            "UPDATE peaklyy_attempts SET status=?, attempt_phase=?, score=?, stars=?, passed=?, time_taken_seconds=?, submitted_at=NOW(), unlock_at=?
+             WHERE id=? AND status <> 'submitted'"
+        );
+        $upd->execute(['submitted', 'done', $score, $stars, $passed, $taken, $unlockAt, $attempt['id']]);
+        if ($upd->rowCount() < 1) {
+            $peaklyyRollbackSubmit();
+            respond(['error' => 'Already submitted', 'attempt_token' => $token], 409);
+        }
+    } catch (Throwable $e) {
+        try {
+            $upd = $db->prepare(
+                "UPDATE peaklyy_attempts SET status=?, score=?, stars=?, passed=?, time_taken_seconds=?, submitted_at=NOW(), unlock_at=?
+                 WHERE id=? AND status <> 'submitted'"
+            );
+            $upd->execute(['submitted', $score, $stars, $passed, $taken, $unlockAt, $attempt['id']]);
+            if ($upd->rowCount() < 1) {
+                $peaklyyRollbackSubmit();
+                respond(['error' => 'Already submitted', 'attempt_token' => $token], 409);
+            }
+        } catch (Throwable $e2) {
+            $peaklyyRollbackSubmit();
+            respond(['error' => 'Submit failed'], 500);
+        }
+    }
+    $peaklyyCommitSubmit();
+
+    $freshSingle = $db->prepare('SELECT * FROM peaklyy_attempts WHERE id = ? LIMIT 1');
+    $freshSingle->execute([$attempt['id']]);
+    $attemptSingle = $freshSingle->fetch(PDO::FETCH_ASSOC) ?: $attempt;
+    $partnerSingle = peaklyyCollectAttemptPartnerPayload($db, $assessment ?: [], $attemptSingle);
+    $hook = peaklyySendWebhook($assessment, $attemptSingle, 'peaklyy.assessment.complete', [
+        'test_part' => 'single',
+        'score' => $partnerSingle['score'],
+        'uploads' => $partnerSingle['uploads'],
+        'tasks' => $partnerSingle['tasks'],
+        'uploads_count' => count($partnerSingle['uploads']),
+        'partner_result_url' => rtrim(peaklyyApiPublicBase(), '/') . '/api/assessments.php?action=partner_result&attempt_id=' . rawurlencode((string) $attempt['id']),
+    ], true);
     $db->prepare('UPDATE peaklyy_attempts SET webhook_sent_at=IF(?, NOW(), NULL), webhook_status=?, webhook_response=? WHERE id=?')
         ->execute([$hook['sent'] ? 1 : 0, $hook['status'] ?? null, $hook['response'] ?? null, $attempt['id']]);
 
     try {
         peaklyyUpdateLeadOnSubmit($db, $assessment ?: [], $attempt, $score, $stars, (int) $passed);
     } catch (Throwable $e) {
-        // ignore lead update failures
+        error_log('[peaklyy] lead update after submit failed: ' . $e->getMessage());
+    }
+
+    peaklyyAppendTimeline($db, (string) $attempt['id'], 'submitted', 'Assessment submitted', [
+        'score' => $score,
+        'stars' => $stars,
+        'passed' => (bool) $passed,
+        'uploads_count' => count($partnerSingle['uploads']),
+    ]);
+    if (!empty($hook['sent'])) {
+        peaklyyAppendTimeline($db, (string) $attempt['id'], 'webhook_complete', 'Results webhook sent', [
+            'status' => $hook['status'] ?? null,
+        ]);
     }
 
     $redirect = null;
@@ -1102,6 +2763,8 @@ if ($action === 'submit' && $method === 'POST') {
     }
 
     respond([
+        'phase' => 'single',
+        'next_phase' => null,
         'score' => $score,
         'stars' => $stars,
         'passed' => (bool) $passed,
@@ -1113,7 +2776,7 @@ if ($action === 'submit' && $method === 'POST') {
     ]);
 }
 
-// ── Result ──
+// ── Result (candidate token) ──
 if ($action === 'result' && $method === 'GET') {
     $token = trim((string) ($_GET['attempt_token'] ?? ''));
     $stmt = $db->prepare(
@@ -1149,6 +2812,179 @@ if ($action === 'result' && $method === 'GET') {
         'unlock_in_seconds' => $unlocked ? 0 : max(0, $unlockTs - time()),
         'redirect_url' => $redirect,
     ]);
+}
+
+/**
+ * Resolve assessment by permanent API key (partner).
+ */
+function peaklyyAssessmentByApiKey(PDO $db, string $key): ?array
+{
+    $key = trim($key);
+    if ($key === '') {
+        return null;
+    }
+    $stmt = $db->prepare('SELECT * FROM peaklyy_assessments WHERE result_api_key = ? LIMIT 1');
+    $stmt->execute([$key]);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $row ?: null;
+}
+
+// ── Partner: list recent attempts (score summary) with API key ──
+if ($action === 'partner_attempts' && $method === 'GET') {
+    $key = peaklyyRequestApiKey();
+    if ($key === '') {
+        respond(['error' => 'X-Assessment-Api-Key header required'], 401);
+    }
+    $assessment = peaklyyAssessmentByApiKey($db, $key);
+    if (!$assessment) {
+        respond(['error' => 'Invalid assessment API key'], 403);
+    }
+    $limit = max(1, min(200, (int) ($_GET['limit'] ?? 50)));
+    $stmt = $db->prepare(
+        'SELECT id, full_name, email, phone, domain_key, status, attempt_phase, score, stars, passed,
+                time_taken_seconds, submitted_at, created_at
+         FROM peaklyy_attempts WHERE assessment_id = ? ORDER BY created_at DESC LIMIT ' . (int) $limit
+    );
+    try {
+        $stmt->execute([$assessment['id']]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        $stmt = $db->prepare(
+            'SELECT id, full_name, email, phone, domain_key, status, score, stars, passed,
+                    time_taken_seconds, submitted_at, created_at
+             FROM peaklyy_attempts WHERE assessment_id = ? ORDER BY created_at DESC LIMIT ' . (int) $limit
+        );
+        $stmt->execute([$assessment['id']]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+    $base = rtrim(peaklyyApiPublicBase(), '/');
+    $out = [];
+    foreach ($rows as $r) {
+        $out[] = [
+            'attempt_id' => $r['id'],
+            'full_name' => $r['full_name'],
+            'email' => $r['email'],
+            'domain_key' => $r['domain_key'],
+            'status' => $r['status'],
+            'attempt_phase' => $r['attempt_phase'] ?? null,
+            'score' => isset($r['score']) ? (int) $r['score'] : null,
+            'stars' => isset($r['stars']) ? (int) $r['stars'] : null,
+            'passed' => isset($r['passed']) ? (bool) (int) $r['passed'] : null,
+            'submitted_at' => $r['submitted_at'] ?? null,
+            'partner_result_url' => ($base !== '' ? $base : '') . '/api/assessments.php?action=partner_result&attempt_id=' . rawurlencode((string) $r['id']),
+        ];
+    }
+    respond([
+        'ok' => true,
+        'assessment_id' => $assessment['id'],
+        'assessment_slug' => $assessment['slug'],
+        'data' => $out,
+    ]);
+}
+
+// ── Partner: fetch score + uploads with API key ──
+if ($action === 'partner_result' && $method === 'GET') {
+    $key = peaklyyRequestApiKey();
+    if ($key === '') {
+        respond(['error' => 'X-Assessment-Api-Key header required'], 401);
+    }
+    $assessment = peaklyyAssessmentByApiKey($db, $key);
+    if (!$assessment) {
+        respond(['error' => 'Invalid assessment API key'], 403);
+    }
+    $attemptId = trim((string) ($_GET['attempt_id'] ?? ''));
+    $email = strtolower(trim((string) ($_GET['email'] ?? '')));
+    $attempt = null;
+    if ($attemptId !== '') {
+        $stmt = $db->prepare('SELECT * FROM peaklyy_attempts WHERE id = ? AND assessment_id = ? LIMIT 1');
+        $stmt->execute([$attemptId, $assessment['id']]);
+        $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    } elseif ($email !== '') {
+        $stmt = $db->prepare(
+            'SELECT * FROM peaklyy_attempts WHERE assessment_id = ? AND email = ? ORDER BY created_at DESC LIMIT 1'
+        );
+        $stmt->execute([$assessment['id'], $email]);
+        $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    } else {
+        respond(['error' => 'attempt_id or email required'], 400);
+    }
+    if (!$attempt) {
+        respond(['error' => 'Attempt not found for this API key'], 404);
+    }
+    $payload = peaklyyCollectAttemptPartnerPayload($db, $assessment, $attempt);
+    respond([
+        'ok' => true,
+        'data' => $payload,
+        'score' => $payload['score'],
+        'uploads' => $payload['uploads'],
+        'tasks' => $payload['tasks'],
+    ]);
+}
+
+// ── Partner: download a task upload with API key ──
+if ($action === 'partner_file' && $method === 'GET') {
+    $key = peaklyyRequestApiKey();
+    if ($key === '') {
+        respond(['error' => 'X-Assessment-Api-Key header required'], 401);
+    }
+    $assessment = peaklyyAssessmentByApiKey($db, $key);
+    if (!$assessment) {
+        respond(['error' => 'Invalid assessment API key'], 403);
+    }
+    $attemptId = trim((string) ($_GET['attempt_id'] ?? ''));
+    $questionId = trim((string) ($_GET['question_id'] ?? ''));
+    if ($attemptId === '' || $questionId === '') {
+        respond(['error' => 'attempt_id and question_id required'], 400);
+    }
+    $stmt = $db->prepare('SELECT * FROM peaklyy_attempts WHERE id = ? AND assessment_id = ? LIMIT 1');
+    $stmt->execute([$attemptId, $assessment['id']]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$attempt) {
+        respond(['error' => 'Attempt not found'], 404);
+    }
+    $ans = $db->prepare(
+        'SELECT answer_json FROM peaklyy_attempt_answers WHERE attempt_id = ? AND question_id = ? LIMIT 1'
+    );
+    $ans->execute([$attemptId, $questionId]);
+    $row = $ans->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        respond(['error' => 'Answer not found'], 404);
+    }
+    $aj = $row['answer_json'] ?? null;
+    if (is_string($aj)) {
+        $aj = json_decode($aj, true);
+    }
+    $filePath = is_array($aj) ? trim((string) ($aj['file_path'] ?? '')) : '';
+    $fileName = is_array($aj) ? trim((string) ($aj['file_name'] ?? 'download')) : 'download';
+    if ($filePath === '' || strpos($filePath, '/uploads/assessment_answers/') !== 0 || strpos($filePath, '..') !== false) {
+        respond(['error' => 'No upload for this answer'], 404);
+    }
+    $candidates = [
+        dirname(__DIR__) . str_replace('/', DIRECTORY_SEPARATOR, $filePath),
+        __DIR__ . '/../uploads' . str_replace('/', DIRECTORY_SEPARATOR, substr($filePath, strlen('/uploads'))),
+    ];
+    $abs = null;
+    foreach ($candidates as $candidate) {
+        $resolved = realpath($candidate);
+        if ($resolved && is_file($resolved) && strpos(str_replace('\\', '/', $resolved), '/uploads/assessment_answers/') !== false) {
+            $abs = $resolved;
+            break;
+        }
+    }
+    if ($abs === null) {
+        respond(['error' => 'File not found on disk'], 404);
+    }
+    $mime = 'application/octet-stream';
+    if (class_exists('finfo')) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($abs) ?: $mime;
+    }
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . (string) filesize($abs));
+    header('Content-Disposition: attachment; filename="' . str_replace('"', '', $fileName ?: basename($abs)) . '"');
+    header('X-Content-Type-Options: nosniff');
+    readfile($abs);
+    exit;
 }
 
 respond(['error' => 'Unknown action'], 404);

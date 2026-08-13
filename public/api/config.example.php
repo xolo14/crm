@@ -13,7 +13,7 @@ define('DB_CHARSET', 'utf8mb4');
 // ── Auth ────────────────────────────────────────────────────────────────────
 define('JWT_SECRET', 'change-this-to-a-random-secret-key-at-least-32-chars');
 define('FRONTEND_URL', 'https://your-domain.com'); // REQUIRED in production — never use * (locks CORS to this origin)
-define('TOKEN_EXPIRY', 86400);
+define('TOKEN_EXPIRY', 28800); // 8 hours — shorter TTL reduces blast radius of stolen JWTs
 define('GOOGLE_CLIENT_ID', ''); // optional
 define('APP_DEBUG', false); // true only on local dev — hides server paths in API errors
 define('SIGNUP_ENABLED', false); // public self-registration (requires invite codes below)
@@ -43,6 +43,7 @@ define('SMTP_CREDENTIAL_KEY_V1', '');
 define('SMTP_ALLOW_MAIL_FALLBACK', false);
 
 // ── Razorpay (optional — payment links) ─────────────────────────────────────
+// Optional platform fallback. Prefer Settings → Razorpay Setup (per organization).
 define('RAZORPAY_KEY_ID', '');
 define('RAZORPAY_KEY_SECRET', '');
 define('RAZORPAY_WEBHOOK_SECRET', '');
@@ -51,8 +52,9 @@ define('CRM_PUBLIC_URL', ''); // leave empty to auto-detect from your domain
 // ── Website lead ingest (no CRM form required) ───────────────────────────────
 // Used by syncpedia.in / other sites: POST /api/lead-ingest.php with header X-Lead-Api-Key
 define('PUBLIC_LEAD_API_KEY', ''); // e.g. openssl rand -hex 24
-// Lock all ingest leads to one org (recommended in production — prevents cross-tenant injection):
-define('LEAD_INGEST_ORG_ID', ''); // organizations.id UUID
+// Lock all ingest leads to one org (REQUIRED in multi-tenant production — client org_id is rejected):
+define('LEAD_INGEST_ORG_ID', ''); // REQUIRED before enable: organizations.id UUID — POST returns 503 if empty
+// define('LEAD_INGEST_EXTRA_ORIGINS', 'https://syncpedia.in,https://www.syncpedia.in');
 // Optional comma-separated browser origins allowed to call lead-ingest from JS (server-side POST ignores CORS):
 define('LEAD_INGEST_EXTRA_ORIGINS', ''); // e.g. 'https://syncpedia.in,https://www.syncpedia.in'
 

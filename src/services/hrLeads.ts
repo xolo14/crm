@@ -12,7 +12,7 @@ import { getApiBase } from "@/lib/apiBase";
 const API_BASE = getApiBase();
 
 function getToken() {
-  return localStorage.getItem("auth_token") || localStorage.getItem("hr_token");
+  return null;
 }
 
 function toQuery(params: Record<string, any>) {
@@ -24,13 +24,11 @@ function toQuery(params: Record<string, any>) {
 }
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+  const res = await fetch(`${API_BASE}${url}`, { ...options, headers, credentials: "include" });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || "Request failed");
   return data;
@@ -42,10 +40,7 @@ const apiPut = <T>(path: string, body: any) => request<T>(path, { method: "PUT",
 const apiDelete = <T>(path: string, body: any) => request<T>(path, { method: "DELETE", body: JSON.stringify(body) });
 
 async function apiPostForm<T>(path: string, formData: FormData): Promise<T> {
-  const token = getToken();
-  const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body: formData, headers });
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body: formData, credentials: "include" });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || data?.message || "Request failed");
   return data;

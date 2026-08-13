@@ -6,6 +6,7 @@ import {
   Mail,
   Phone,
   Smartphone,
+  Trash2,
   X,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
@@ -19,6 +20,7 @@ interface Props {
   link: RazorpayPaymentLink;
   onClose: () => void;
   onCancel: (id: string) => void;
+  onDelete: (id: string) => void;
   onRemind: (id: string, medium: "sms" | "email") => void;
   onCopyShortUrl: (url: string) => void;
 }
@@ -62,6 +64,7 @@ export default function LinkDetailModal({
   link,
   onClose,
   onCancel,
+  onDelete,
   onRemind,
   onCopyShortUrl,
 }: Props) {
@@ -70,6 +73,7 @@ export default function LinkDetailModal({
   const [downloadingInvoice, setDownloadingInvoice] = useState(false);
   const badge = STATUS_BADGE[link.status] ?? STATUS_BADGE.created;
   const isPending = link.status === "created";
+  const isTerminal = link.status === "cancelled" || link.status === "expired";
   const isPartial = link.status === "partially_paid";
   const canEmailRemind =
     isPending ||
@@ -339,6 +343,16 @@ export default function LinkDetailModal({
             >
               <X size={14} />
               Cancel Link
+            </button>
+          )}
+          {isTerminal && (
+            <button
+              type="button"
+              onClick={() => onDelete(link.id)}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-red-200 bg-white text-sm font-medium text-red-600 hover:bg-red-50"
+            >
+              <Trash2 size={14} />
+              Delete Link
             </button>
           )}
         </div>

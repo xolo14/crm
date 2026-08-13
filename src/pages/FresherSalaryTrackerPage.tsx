@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Sheet, SheetContent } from "@/components/ui/sheet";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,23 +22,25 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { MONTHLY_TARGET } from "@/modules/fresherSalary/constants";
-import type { FresherPhase, FresherMember } from "@/modules/fresherSalary/types";
+import type { FresherMember } from "@/modules/fresherSalary/types";
+import { DEFAULT_FRESHER_POLICY, normalizeFresherPolicy, type FresherOrgPolicy } from "@/modules/fresherSalary/policy";
 import {
   AddMemberForm,
   MemberDetail,
-  RulesReferencePanel,
+  PolicySettingsTab,
+  SalaryFlowDiagram,
+  FresherSalaryTraineeView,
   roleDisplayLabel,
 } from "@/modules/fresherSalary/components";
 import type { FresherTeamPick } from "@/modules/fresherSalary/components";
 import { downloadMembersCsv } from "@/modules/fresherSalary/exportCsv";
 import { totalPipelineAchieved, estimateEarnings } from "@/modules/fresherSalary/logic";
 import { currentPhaseProgress } from "@/modules/fresherSalary/phaseProgress";
-import { nextPhaseLabel } from "@/modules/fresherSalary/uiTokens";
 import { useFresherSalaryStore } from "@/modules/fresherSalary/useFresherSalaryStore";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
+import { canEditFresherSalaryPolicy, canManageFresherSalaryRoster } from "@/lib/orgAccess";
 import {
   ChevronDown,
   Download,
@@ -45,7 +48,6 @@ import {
   Loader2,
   Mail,
   MoreVertical,
-  Pencil,
   Search,
   Target,
   Trash2,
@@ -111,16 +113,32 @@ function phaseStatusBadge(member: FresherMember): { label: string; className: st
 }
 
 export default function FresherSalaryTrackerPage() {
+  const { role: crmRole } = useAuth();
+  const canManageRoster = canManageFresherSalaryRoster(crmRole);
+
+  // Sales reps / managers get their own progress page (not the admin roster).
+  if (!canManageRoster) {
+    return <FresherSalaryTraineeView />;
+  }
+
+  return <FresherSalaryAdminTracker />;
+}
+
+function FresherSalaryAdminTracker() {
   const { toast } = useToast();
   const { user, role: crmRole, organization } = useAuth();
   const members = useFresherSalaryStore((s) => s.members);
   const hydrateMembers = useFresherSalaryStore((s) => s.hydrateMembers);
   const addMemberStore = useFresherSalaryStore((s) => s.addMember);
-  const advancePhaseStore = useFresherSalaryStore((s) => s.advancePhase);
   const removeMemberStore = useFresherSalaryStore((s) => s.removeMember);
-  const updatePhaseData = useFresherSalaryStore((s) => s.updatePhaseData);
   const fixedSalary = useFresherSalaryStore((s) => s.fixedSalaryEstimate);
   const setFixedSalary = useFresherSalaryStore((s) => s.setFixedSalaryEstimate);
+  const canEditPolicy = canEditFresherSalaryPolicy(crmRole);
+
+  const [policy, setPolicy] = useState<FresherOrgPolicy>(DEFAULT_FRESHER_POLICY);
+  const [policySaving, setPolicySaving] = useState(false);
+  const [mainTab, setMainTab] = useState<"tracker" | "policy">("tracker");
+  const [kpiMonthlyTarget, setKpiMonthlyTarget] = useState(DEFAULT_FRESHER_POLICY.monthly_full_target);
 
   const [name, setName] = useState("");
   const [memberRole, setMemberRole] = useState("Sales Executive");
@@ -131,16 +149,14 @@ export default function FresherSalaryTrackerPage() {
   const [subtitleExpanded, setSubtitleExpanded] = useState(false);
   const [rosterLoading, setRosterLoading] = useState(true);
   const lastPersistedMembersJson = useRef<string>("");
-  const [kpiMonthlyTarget, setKpiMonthlyTarget] = useState(MONTHLY_TARGET);
   const [kpiTargetHydrated, setKpiTargetHydrated] = useState(false);
   const [kpiTargetEditing, setKpiTargetEditing] = useState(false);
-  const [kpiDraft, setKpiDraft] = useState(String(MONTHLY_TARGET));
+  const [kpiDraft, setKpiDraft] = useState(String(DEFAULT_FRESHER_POLICY.monthly_full_target));
   const [kpiTargetFlash, setKpiTargetFlash] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const [addSubmitting, setAddSubmitting] = useState(false);
   const [pipelineBarPct, setPipelineBarPct] = useState(0);
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [confirmAdvanceId, setConfirmAdvanceId] = useState<string | null>(null);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [emailLogOpen, setEmailLogOpen] = useState(false);
   const [emailLogRecords, setEmailLogRecords] = useState<EmailTriggerRecord[]>(() => getEmailTriggerRecords());
@@ -190,14 +206,24 @@ export default function FresherSalaryTrackerPage() {
   const loadServerRoster = useCallback(async () => {
     setRosterLoading(true);
     try {
-      const list = await api.fresherSalary.list();
+      const { members: list, policy: pol } = await api.fresherSalary.list();
+      const normalizedPolicy = normalizeFresherPolicy(pol);
+      setPolicy(normalizedPolicy);
+      setFixedSalary(normalizedPolicy.fixed_salary_monthly);
+      setKpiMonthlyTarget(normalizedPolicy.monthly_full_target);
+      setKpiDraft(String(normalizedPolicy.monthly_full_target));
       const valid = (Array.isArray(list) ? list : []).filter(
         (m): m is FresherMember =>
           m != null &&
           typeof m === "object" &&
           typeof (m as FresherMember).id === "string" &&
           (m as FresherMember).id.length > 0,
-      );
+      ).map((m) => ({
+        ...m,
+        salaryTerms: m.salaryTerms
+          ? normalizeFresherPolicy(m.salaryTerms)
+          : m.salaryTerms,
+      }));
       hydrateMembers(valid);
       lastPersistedMembersJson.current = JSON.stringify(valid);
     } catch (e) {
@@ -209,7 +235,7 @@ export default function FresherSalaryTrackerPage() {
     } finally {
       setRosterLoading(false);
     }
-  }, [hydrateMembers, toast]);
+  }, [hydrateMembers, setFixedSalary, toast]);
 
   useEffect(() => {
     void loadServerRoster();
@@ -230,8 +256,8 @@ export default function FresherSalaryTrackerPage() {
 
   const subtitleFull = useMemo(
     () =>
-      `Fresher onboarding — 15-day training plus up to three 30-day evaluation months. Track eligibility against ₹${MONTHLY_TARGET.toLocaleString("en-IN")} monthly targets.`,
-    [],
+      `Fresher onboarding — ${policy.training_days}-day training plus evaluation months. Fixed ₹${policy.fixed_salary_monthly.toLocaleString("en-IN")} when the ${policy.monthly_gate_percent}% gate (₹${Math.round((policy.monthly_full_target * policy.monthly_gate_percent) / 100).toLocaleString("en-IN")}) is met. Phases advance by join date; sales sync from payment links.`,
+    [policy],
   );
 
   const filteredMembers = useMemo(() => {
@@ -322,13 +348,20 @@ export default function FresherSalaryTrackerPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rosterLoading]);
 
-  const addMemberSubmit = async () => {
+  const addMemberSubmit = async (salaryTerms: FresherOrgPolicy) => {
     const nameTrim = name.trim();
     if (!nameTrim) return;
     setAddSubmitting(true);
     try {
       const tid = traineeUserId.trim();
-      addMemberStore(nameTrim, memberRole, joiningDate, memberEmail.trim() || undefined, tid || undefined);
+      addMemberStore(
+        nameTrim,
+        memberRole,
+        joiningDate,
+        memberEmail.trim() || undefined,
+        tid || undefined,
+        salaryTerms,
+      );
       const created = useFresherSalaryStore.getState().members.at(-1);
       setName("");
       setTraineeUserId("");
@@ -402,7 +435,6 @@ export default function FresherSalaryTrackerPage() {
     }
   };
 
-  const advanceMember = members.find((m) => m.id === confirmAdvanceId) ?? null;
   const removeMember = members.find((m) => m.id === confirmRemoveId) ?? null;
 
   const glass = "rounded-xl border border-gray-200 bg-white shadow-sm";
@@ -410,12 +442,51 @@ export default function FresherSalaryTrackerPage() {
   const subtitleShort = subtitleFull.slice(0, 60);
   const showReadMore = subtitleFull.length > 60 && !subtitleExpanded;
 
+  const savePolicy = async (next: FresherOrgPolicy) => {
+    setPolicySaving(true);
+    try {
+      const normalized = normalizeFresherPolicy(next);
+      await api.fresherSalary.savePolicy(normalized);
+      setPolicy(normalized);
+      setFixedSalary(normalized.fixed_salary_monthly);
+      setKpiMonthlyTarget(normalized.monthly_full_target);
+      toast({ title: "Policy saved", description: "Org fresher salary and incentive rules updated." });
+      await loadServerRoster();
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "Could not save policy",
+        description: e instanceof Error ? e.message : "Save failed",
+      });
+    } finally {
+      setPolicySaving(false);
+    }
+  };
+
+  const saveManualOverrides = async (m: FresherMember) => {
+    try {
+      await api.fresherSalary.update(m, {
+        manual: true,
+        override_phases: ["training", "month1", "month2", "month3"],
+      });
+      lastPersistedMembersJson.current = JSON.stringify(useFresherSalaryStore.getState().members);
+      toast({ title: "Manual overrides saved", description: "Payment sync will skip overridden phases." });
+      await loadServerRoster();
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "Could not save overrides",
+        description: e instanceof Error ? e.message : "Save failed",
+      });
+    }
+  };
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="-mx-4 min-h-full bg-[#f9fafb] px-4 pb-10 pt-2 md:-mx-6 md:px-6 md:pt-4">
         <div className="mx-auto max-w-7xl space-y-6">
           {/* Page header */}
-          <div className="mb-6 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+          <div className="mb-2 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0 flex-1">
               <p className="mb-1 text-xs font-medium uppercase tracking-widest text-gray-400">Internal · HR &amp; Sales</p>
               <h1 className="text-2xl font-bold text-gray-900">Sales Salary Tracker</h1>
@@ -426,7 +497,9 @@ export default function FresherSalaryTrackerPage() {
                     Loading roster from server…
                   </>
                 ) : (
-                  <span className="text-emerald-900/80">Members are saved to the server for your organisation.</span>
+                  <span className="text-emerald-900/80">
+                    Phases auto-advance by join date · achieved sales sync from payment links.
+                  </span>
                 )}
               </p>
               <p className="mt-1 max-w-xl text-sm text-gray-500">
@@ -512,6 +585,19 @@ export default function FresherSalaryTrackerPage() {
             </div>
           </div>
 
+          <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as "tracker" | "policy")} className="space-y-6">
+            <TabsList className="bg-white border border-gray-200">
+              <TabsTrigger value="tracker">Tracker</TabsTrigger>
+              {canEditPolicy ? <TabsTrigger value="policy">Policy numbers</TabsTrigger> : null}
+            </TabsList>
+
+            <TabsContent value="policy" className="mt-0 space-y-4">
+              {canEditPolicy ? (
+                <PolicySettingsTab policy={policy} saving={policySaving} onSave={savePolicy} />
+              ) : null}
+            </TabsContent>
+
+            <TabsContent value="tracker" className="mt-0 space-y-6">
           {/* KPI row */}
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm transition-all duration-150 ease-out hover:-translate-y-px hover:shadow-md">
@@ -567,12 +653,13 @@ export default function FresherSalaryTrackerPage() {
             </div>
           </div>
 
-          <RulesReferencePanel />
+          <SalaryFlowDiagram policy={policy} />
 
           <AddMemberForm
             name={name}
             role={memberRole}
             joiningDate={joiningDate}
+            defaultPolicy={policy}
             picklist={fresherPicklist}
             picklistLoading={teamPicklistLoading}
             picklistEmptyHint={picklistEmptyHint}
@@ -585,7 +672,7 @@ export default function FresherSalaryTrackerPage() {
             }}
             onRoleChange={setMemberRole}
             onJoiningDateChange={setJoiningDate}
-            onSubmit={() => void addMemberSubmit()}
+            onSubmit={(terms) => void addMemberSubmit(terms)}
           />
 
           {/* Team table */}
@@ -641,7 +728,7 @@ export default function FresherSalaryTrackerPage() {
                   <tbody>
                     {filteredMembers.map((m, idx) => {
                       const cp = currentPhaseProgress(m);
-                      const est = estimateEarnings(m, fixedSalary);
+                      const est = estimateEarnings(m, fixedSalary, policy);
                       const badge = phaseStatusBadge(m);
                       const initials = memberInitials(m.name);
                       return (
@@ -693,27 +780,14 @@ export default function FresherSalaryTrackerPage() {
                                   <TooltipTrigger asChild>
                                     <button
                                       type="button"
-                                      title="View details"
+                                      title="View progress"
                                       className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
                                       onClick={() => setDetailId(m.id)}
                                     >
                                       <Eye className="h-[15px] w-[15px]" />
                                     </button>
                                   </TooltipTrigger>
-                                  <TooltipContent>View details</TooltipContent>
-                                </Tooltip>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <button
-                                      type="button"
-                                      title="Edit"
-                                      className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-                                      onClick={() => setDetailId(m.id)}
-                                    >
-                                      <Pencil className="h-[15px] w-[15px]" />
-                                    </button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>Edit</TooltipContent>
+                                  <TooltipContent>View progress</TooltipContent>
                                 </Tooltip>
                                 <Tooltip>
                                   <TooltipTrigger asChild>
@@ -736,8 +810,7 @@ export default function FresherSalaryTrackerPage() {
                                   </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
-                                  <DropdownMenuItem onClick={() => setDetailId(m.id)}>View details</DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => setDetailId(m.id)}>Edit</DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => setDetailId(m.id)}>View progress</DropdownMenuItem>
                                   <DropdownMenuItem
                                     className="text-destructive focus:text-destructive"
                                     onClick={() => setConfirmRemoveId(m.id)}
@@ -833,60 +906,8 @@ export default function FresherSalaryTrackerPage() {
               </div>
             )}
           </div>
-
-          <AlertDialog open={!!confirmAdvanceId} onOpenChange={(o) => !o && setConfirmAdvanceId(null)}>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Advance phase?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {advanceMember && (
-                    <>
-                      Move <strong>{advanceMember.name}</strong> from <strong>{advanceMember.currentPhase}</strong> to{" "}
-                      <strong>{nextPhaseLabel(advanceMember.currentPhase)}</strong>? This updates their salary track based on
-                      rules.
-                    </>
-                  )}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  className="bg-[#2ed573] font-semibold text-[#0f2318] hover:bg-[#26c968]"
-                  onClick={() => {
-                    void (async () => {
-                      if (!confirmAdvanceId) return;
-                      const res = advancePhaseStore(confirmAdvanceId);
-                      setConfirmAdvanceId(null);
-                      if ("reason" in res) {
-                        toast({
-                          variant: "destructive",
-                          title: "Cannot advance",
-                          description: res.reason,
-                        });
-                        return;
-                      }
-                      try {
-                        await api.fresherSalary.update(res.member);
-                        lastPersistedMembersJson.current = JSON.stringify(useFresherSalaryStore.getState().members);
-                        toast({
-                          title: "Phase advanced",
-                          description: `Now at ${formatPhaseToast(res.member.currentPhase)}.`,
-                        });
-                      } catch (e) {
-                        toast({
-                          variant: "destructive",
-                          title: "Phase updated locally only",
-                          description: e instanceof Error ? e.message : "Server save failed — retry from the sheet.",
-                        });
-                      }
-                    })();
-                  }}
-                >
-                  Confirm advance
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+            </TabsContent>
+          </Tabs>
 
           <AlertDialog open={!!confirmRemoveId} onOpenChange={(o) => !o && setConfirmRemoveId(null)}>
             <AlertDialogContent>
@@ -935,25 +956,22 @@ export default function FresherSalaryTrackerPage() {
             </AlertDialogContent>
           </AlertDialog>
 
-          <Sheet open={!!detail} onOpenChange={(o) => !o && setDetailId(null)}>
-            <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg">
+          <Dialog open={!!detail} onOpenChange={(o) => !o && setDetailId(null)}>
+            <DialogContent className="max-h-[92vh] w-[min(96vw,920px)] max-w-4xl overflow-hidden p-6">
               {detail && (
                 <MemberDetail
                   member={detail}
+                  policy={policy}
                   glass={glass}
-                  onRequestAdvance={() => setConfirmAdvanceId(detail.id)}
+                  canManualEdit={canEditPolicy}
                   onRequestRemove={() => setConfirmRemoveId(detail.id)}
+                  onManualSave={saveManualOverrides}
                 />
               )}
-            </SheetContent>
-          </Sheet>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
     </TooltipProvider>
   );
-}
-
-function formatPhaseToast(p: FresherPhase): string {
-  if (p === "completed") return "completed";
-  return p;
 }

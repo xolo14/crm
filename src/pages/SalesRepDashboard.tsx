@@ -7,11 +7,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { UserCheck, ClipboardList, Loader2, Phone, PhoneCall, Link as LinkIcon, Copy, ExternalLink } from 'lucide-react';
+import { UserCheck, ClipboardList, Loader2, Phone, PhoneCall, Link as LinkIcon, Copy, ExternalLink, Target } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useCallLogStats } from '@/hooks/useCallLogs';
 import LogCallDialog from '@/components/sales/LogCallDialog';
+import { isSameAppCalendarDay } from '@/lib/dateTime';
 
 const STATUS_LABELS: Record<string, string> = {
   new: 'New', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Demo Sched.', demo_attended: 'Demo Attend.',
@@ -25,6 +26,24 @@ const statusColors: Record<string, string> = {
 
 type AssignedLeadForm = { id: string; name: string; slug: string; is_active?: number | boolean | string };
 
+type FresherMyProgress = {
+  enrolled: boolean;
+  joining_date?: string;
+  phase_key?: string;
+  phase_label?: string;
+  window_start?: string | null;
+  window_end_exclusive?: string | null;
+  target_rupees?: number;
+  achieved_rupees?: number;
+  remaining_rupees?: number;
+  achievement_pct?: number;
+  salary_type?: string | null;
+  headline_status?: string | null;
+};
+
+const inr = (n: number) =>
+  `₹${Math.round(n).toLocaleString('en-IN')}`;
+
 export default function SalesRepDashboard() {
   const { profile, user } = useAuth();
   const navigate = useNavigate();
@@ -35,6 +54,7 @@ export default function SalesRepDashboard() {
   const [leads, setLeads] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [assignedForms, setAssignedForms] = useState<AssignedLeadForm[]>([]);
+  const [fresherProgress, setFresherProgress] = useState<FresherMyProgress | null>(null);
 
   const referralCode = profile?.referral_code || '';
   const { data: todayStats } = useCallLogStats('today');
@@ -45,10 +65,11 @@ export default function SalesRepDashboard() {
     if (!user) return;
     setLoading(true);
     try {
-      const [dashData, tasksData, formsRes] = await Promise.all([
+      const [dashData, tasksData, formsRes, fresherRes] = await Promise.all([
         api.profiles.dashboard(),
         api.tasks.list(),
         api.forms.list().catch(() => ({ data: [] as AssignedLeadForm[] })),
+        api.fresherSalary.myProgress().catch(() => ({ enrolled: false } as FresherMyProgress)),
       ]);
       setLeads(dashData.leads || []);
       const allTasks = Array.isArray(tasksData)
@@ -63,17 +84,29 @@ export default function SalesRepDashboard() {
       setAssignedForms(
         raw.filter((f: AssignedLeadForm) => f.is_active !== 0 && f.is_active !== false && f.is_active !== '0'),
       );
+      setFresherProgress(fresherRes?.enrolled ? fresherRes : null);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };
 
-  const assignedLeads = leads.filter(l => !l.referred_by);
-  const formLeads = leads.filter(l => l.referred_by && l.referred_by === referralCode);
-  const allMyLeads = [...assignedLeads, ...formLeads];
+  const uid = String(user?.id || '');
+  const assignedLeads = leads.filter((l) => String(l.assigned_to || '') === uid);
+  const formLeads = leads.filter(
+    (l) => !!referralCode && String(l.referred_by || '').trim() === referralCode,
+  );
+  const allMyLeadsMap = new Map<string, any>();
+  for (const l of [...assignedLeads, ...formLeads]) {
+    if (l?.id) allMyLeadsMap.set(String(l.id), l);
+  }
+  // Also include any other scoped leads from the API (legacy / creator) so Total isn't undercounted
+  for (const l of leads) {
+    if (l?.id && !allMyLeadsMap.has(String(l.id))) allMyLeadsMap.set(String(l.id), l);
+  }
+  const allMyLeads = Array.from(allMyLeadsMap.values());
 
   const totalLeads = allMyLeads.length;
   const converted = allMyLeads.filter(l => l.status === 'converted' || l.status === 'enrolled').length;
-  const todayFollowUps = allMyLeads.filter(l => l.next_follow_up && new Date(l.next_follow_up).toDateString() === new Date().toDateString());
+  const todayFollowUps = allMyLeads.filter((l) => isSameAppCalendarDay(l.next_follow_up));
 
   const leadsByStatus = useMemo(() => {
     const c: Record<string, number> = {};
@@ -141,6 +174,56 @@ export default function SalesRepDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Fresher salary phase target (from Fresher Salary Tracker enrollment) */}
+      {fresherProgress?.enrolled && (
+        <Card className="mb-4 border-border/50 shadow-none border-emerald-500/25 bg-emerald-500/[0.04]">
+          <CardHeader className="px-3 sm:px-4 pb-2 pt-4">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Target className="h-4 w-4 text-emerald-600" />
+              Your sales target
+              {fresherProgress.phase_label ? (
+                <Badge variant="outline" className="text-[10px] font-normal border-emerald-200 text-emerald-800 bg-emerald-500/10">
+                  {fresherProgress.phase_label}
+                </Badge>
+              ) : null}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground font-normal mt-1">
+              From Sales Salary Tracker
+              {fresherProgress.joining_date ? ` · joined ${fresherProgress.joining_date}` : ''}
+              {fresherProgress.window_start && fresherProgress.window_end_exclusive
+                ? ` · ${fresherProgress.window_start} → ${fresherProgress.window_end_exclusive}`
+                : ''}
+            </p>
+          </CardHeader>
+          <CardContent className="px-3 sm:px-4 pb-4">
+            <div className="grid grid-cols-3 gap-3 mb-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Target</p>
+                <p className="text-base sm:text-lg font-bold mt-0.5">{inr(fresherProgress.target_rupees || 0)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Achieved</p>
+                <p className="text-base sm:text-lg font-bold mt-0.5 text-emerald-700">{inr(fresherProgress.achieved_rupees || 0)}</p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Remaining</p>
+                <p className="text-base sm:text-lg font-bold mt-0.5">{inr(fresherProgress.remaining_rupees || 0)}</p>
+              </div>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-2 rounded-full bg-emerald-500 transition-[width] duration-500"
+                style={{ width: `${Math.min(100, Math.max(0, fresherProgress.achievement_pct || 0))}%` }}
+              />
+            </div>
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              {fresherProgress.achievement_pct ?? 0}% of phase target
+              {fresherProgress.headline_status ? ` · ${fresherProgress.headline_status}` : ''}
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Personalized apply links (Form Management assignments) — applies to all sales reps / execs / team leads on this dashboard */}
       <Card className="mb-4 border-border/50 shadow-none border-teal-500/20 bg-teal-500/[0.03]">

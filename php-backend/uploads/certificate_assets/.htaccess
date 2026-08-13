@@ -1,0 +1,10 @@
+# Certificate template backgrounds are shown in <img> / CSS in the builder.
+# Parent /uploads denies direct access; allow this folder for same-origin display.
+# Authenticated files.php remains the preferred path for private hosting setups.
+<IfModule mod_authz_core.c>
+  Require all granted
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order allow,deny
+  Allow from all
+</IfModule>

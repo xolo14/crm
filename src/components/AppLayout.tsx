@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
-  CreditCard, BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck
+  BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import syncpediaIcon from '@/assets/syncpedia-icon.webp';
@@ -18,8 +18,13 @@ import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/s
 import { NotificationBell } from '@/components/NotificationBell';
 import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from '@/lib/orgAccess';
 import { featureKeyForPath, isOrgFeatureEnabled } from '@/lib/orgFeatures';
+import { managerFeatureKeyForPath, managerHasPageAccess } from '@/lib/managerPageAccess';
 import { normalizeAppRole } from '@/lib/roleUtils';
-import { useToast } from '@/hooks/use-toast';
+import { useFresherSalaryAccess } from '@/hooks/useFresherSalaryAccess';
+import type { PageAccess } from '@/lib/orgAccess';
+
+/** Shell pages not stored in org_features — always on for admins; managers need page grants. */
+const ORG_SHELL_FEATURES = new Set(['team', 'settings', 'trash', 'my_doc_forms']);
 
 type AppRole = string;
 
@@ -50,16 +55,17 @@ function storedAppearance(): { compactMode: boolean; collapsedSidebar: boolean }
 }
 
 const navItems: NavItem[] = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance'] },
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'trainer', 'finance'] },
   { to: '/organizations', icon: Building2, label: 'Organizations', roles: ['super_admin'] },
   {
-    to: '/leads', icon: Users, label: 'Leads', roles: ['super_admin', 'admin', 'org', 'manager', 'marketing', 'hr'],
+    to: '/leads', icon: Users, label: 'Leads', roles: ['super_admin', 'admin', 'org', 'manager', 'marketing'],
     children: [
       { to: '/leads/form-leads', icon: FileText, label: 'Form Leads', roles: ['super_admin', 'admin', 'manager'] },
       { to: '/leads/hr-leads', icon: UserCheck, label: 'HR Leads', roles: ['super_admin', 'admin', 'org'] },
     ],
   },
   { to: '/form-management', icon: ClipboardList, label: 'Form Management', roles: ['super_admin', 'admin', 'org', 'marketing', 'manager'] },
+  { to: '/my-doc-forms', icon: ClipboardList, label: 'My Document Forms', roles: ['super_admin', 'admin', 'org', 'manager', 'hr', 'marketing', 'sales_representative'] },
   // Marketing home — only this Dashboard entry (not the main `/` CRM dashboard)
   { to: '/marketing/dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['marketing'] },
   { to: '/my-leads', icon: ClipboardList, label: 'My Leads', roles: ['marketing'] },
@@ -70,7 +76,6 @@ const navItems: NavItem[] = [
     roles: ['sales_representative'],
     children: [
       { to: '/my-leads', icon: ClipboardList, label: 'My Leads', roles: ['sales_representative'] },
-      { to: '/assigned-leads', icon: Users, label: 'Assigned Leads', roles: ['sales_representative'] },
     ],
   },
   {
@@ -105,9 +110,9 @@ const navItems: NavItem[] = [
     to: '/payments/records',
     icon: Receipt,
     label: 'Payment Records',
-    roles: ['super_admin', 'admin', 'manager'],
+    roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'finance', 'hr', 'marketing', 'trainer'],
   },
-  { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'trainer', 'finance', 'hr'],
+  { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'trainer', 'finance'],
     children: [
       { to: '/communications/whatsapp-inbox', icon: MessageSquare, label: 'WhatsApp Inbox', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing'] },
     ],
@@ -142,33 +147,34 @@ const navItems: NavItem[] = [
   },
   { to: '/marketing/form-leads', icon: FileText, label: 'Form Leads', roles: ['marketing'] },
   { to: '/marketing/imported-leads', icon: Users, label: 'Imported Leads', roles: ['marketing'] },
-  { to: '/assigned-leads', icon: ClipboardList, label: 'Assigned Leads', roles: ['marketing'] },
-  { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'admin', 'manager', 'hr'] },
+  { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'admin', 'manager'] },
   { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'admin', 'manager'] },
   { to: '/payslip', icon: Receipt, label: 'Payslip', roles: ['super_admin', 'admin', 'org'] },
   {
     to: '/team',
     icon: Users,
     label: 'Team',
-    roles: ['super_admin', 'admin', 'manager'],
+    roles: ['super_admin', 'admin', 'org', 'manager'],
   },
   {
     to: '/fresher-salary-tracker',
     icon: IndianRupee,
     label: 'Fresher Salary',
-    roles: ['super_admin', 'admin'],
+    roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative'],
   },
   { to: '/tasks', icon: CheckSquare, label: 'Tasks', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'marketing'] },
   { to: '/notifications', icon: Bell, label: 'Notifications', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance', 'marketing'] },
   { to: '/holidays', icon: CalendarDays, label: 'Holidays', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'marketing'] },
   { to: '/assessments', icon: ClipboardCheck, label: 'Assessments', roles: ['super_admin'] },
   { to: '/trash', icon: Trash2, label: 'Trash', roles: ['super_admin', 'admin', 'org', 'manager'] },
-  { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'hr', 'marketing', 'trainer', 'finance'] },
+  { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'trainer', 'finance'] },
 ];
 
-function SidebarNavItem({ item, collapsed, role, organization, pageAccess, currentPath, onNavigate, showNewBadge }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; pageAccess?: { payments?: boolean; offer_letters?: boolean } | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean }) {
+function SidebarNavItem({ item, collapsed, role, organization, pageAccess, currentPath, onNavigate, showNewBadge, fresherEnrolled }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; pageAccess?: PageAccess | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean; fresherEnrolled?: boolean }) {
   const hasChildren = item.children && item.children.length > 0;
-  const filteredChildren = hasChildren ? item.children!.filter(c => navItemAllowed(c, role as AppRole | null, organization, pageAccess)) : [];
+  const filteredChildren = hasChildren
+    ? item.children!.filter((c) => navItemAllowed(c, role as AppRole | null, organization, pageAccess, fresherEnrolled))
+    : [];
   const isActive = currentPath === item.to;
   const isChildActive = filteredChildren.some(c => currentPath === c.to);
   const open = isActive || isChildActive || currentPath.startsWith(item.to + '/');
@@ -259,22 +265,48 @@ function navItemAllowed(
   item: NavItem,
   role: AppRole | null,
   organization: { slug?: string | null; features?: Record<string, boolean> | null } | null,
-  pageAccess?: { payments?: boolean; offer_letters?: boolean } | null,
+  pageAccess?: PageAccess | null,
+  fresherEnrolled?: boolean,
 ): boolean {
   const normalized = normalizeAppRole(role);
   if (!normalized || !item.roles.includes(normalized)) return false;
   if (item.to === "/offer-letters") return canAccessOfferLetters(normalized, organization, pageAccess);
-  if (item.to === "/fresher-salary-tracker") return canAccessFresherSalary(normalized, organization);
-  if (item.to === "/certificates") return canAccessCertificates(normalized, organization);
+  if (item.to === "/fresher-salary-tracker") {
+    if (!canAccessFresherSalary(normalized, organization, pageAccess)) return false;
+    // Admins always; sales reps / managers only when added to the tracker
+    if (normalized === "sales_representative" || normalized === "manager") {
+      return !!fresherEnrolled;
+    }
+    return true;
+  }
+  if (item.to === "/certificates") return canAccessCertificates(normalized, organization, pageAccess);
   if (item.to === "/payslip") return canAccessPayslip(normalized, organization);
-  if (item.to === "/payments/records") return canAccessPaymentRecords(normalized);
-  if (item.to === "/payments") return canAccessPaymentsPage(normalized, pageAccess);
+  if (item.to === "/payments/records") {
+    if (!canAccessPaymentRecords(normalized, pageAccess)) return false;
+    return isOrgFeatureEnabled(normalized, organization, "payments");
+  }
+  if (item.to === "/payments") {
+    if (!canAccessPaymentsPage(normalized, pageAccess)) return false;
+    return isOrgFeatureEnabled(normalized, organization, "payments");
+  }
 
   const feat = featureKeyForPath(item.to);
-  if (feat && !isOrgFeatureEnabled(normalized, organization, feat)) return false;
+  const orgAllowed =
+    !feat ||
+    ORG_SHELL_FEATURES.has(feat) ||
+    isOrgFeatureEnabled(normalized, organization, feat);
+  if (!orgAllowed) return false;
+
+  // Managers only see pages the admin granted (page_access.pages).
+  if (normalized === "manager") {
+    const managerKey = managerFeatureKeyForPath(item.to);
+    if (managerKey && !managerHasPageAccess(pageAccess, managerKey)) return false;
+  }
 
   if (item.children) {
-    const visibleChildren = item.children.filter((c) => navItemAllowed(c, normalized, organization, pageAccess));
+    const visibleChildren = item.children.filter((c) =>
+      navItemAllowed(c, normalized, organization, pageAccess, fresherEnrolled),
+    );
     if (visibleChildren.length === 0 && item.children.length > 0) return false;
   }
 
@@ -293,14 +325,17 @@ function SidebarContent({
   collapsed: boolean;
   role: AppRole | null;
   organization: { slug?: string | null; features?: Record<string, boolean> | null } | null;
-  pageAccess?: { payments?: boolean; offer_letters?: boolean } | null;
+  pageAccess?: PageAccess | null;
   onSignOut: () => void;
   profile: SidebarProfile | null;
   onNavigate?: () => void;
 }) {
   const location = useLocation();
   const currentPath = location.pathname;
-  const filteredNav = navItems.filter((item) => navItemAllowed(item, role, organization, pageAccess));
+  const fresherAccess = useFresherSalaryAccess();
+  const filteredNav = navItems.filter((item) =>
+    navItemAllowed(item, role, organization, pageAccess, fresherAccess.enrolled),
+  );
   const [showNewBadge, setShowNewBadge] = React.useState<boolean>(
     !localStorage.getItem("cert_nav_seen")
   );
@@ -330,7 +365,7 @@ function SidebarContent({
 
       <nav className="flex-1 py-1 px-2 space-y-0.5 overflow-y-auto">
         {filteredNav.map(item => (
-          <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} />
+          <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} fresherEnrolled={fresherAccess.enrolled} />
         ))}
       </nav>
 
@@ -359,9 +394,8 @@ function SidebarContent({
 }
 
 export default function AppLayout({ children }: { children: ReactNode }) {
-  const { role, profile, signOut, organization, switchOrg, user } = useAuth();
-  const { toast } = useToast();
-  const pageAccess = (user as { page_access?: { payments?: boolean; offer_letters?: boolean } } | null)?.page_access ?? null;
+  const { role, profile, signOut, organization, user } = useAuth();
+  const pageAccess = (user as { page_access?: PageAccess } | null)?.page_access ?? null;
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(() => storedAppearance().collapsedSidebar);
@@ -389,16 +423,6 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       return;
     }
     navigate(AUTH_PORTAL.login);
-  };
-
-  const handleBackToMaster = async () => {
-    try {
-      await switchOrg(null);
-      navigate('/');
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Could not return to master view.';
-      toast({ variant: 'destructive', title: 'Switch failed', description: message });
-    }
   };
 
   return (

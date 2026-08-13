@@ -159,6 +159,7 @@ if ($method === 'POST') {
                 $db->prepare("UPDATE users SET full_name = ?, phone = ?, password_hash = ?, role = 'admin', is_active = 1 WHERE id = ?")
                     ->execute([$adminName, $adminPhone, $hash, $existing['id']]);
                 syncpediaStoreUserLoginPassword($db, (string) $existing['id'], $adminPassword);
+                syncpediaBumpUserTokenVersion($db, (string) $existing['id']);
                 try {
                     $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$existing['id'], $orgId]);
                 } catch (Exception $e) {
@@ -200,6 +201,7 @@ if ($method === 'POST') {
                 $db->prepare("UPDATE users SET email = ?, full_name = ?, phone = ?, password_hash = ?, role = 'admin', is_active = 1 WHERE id = ? AND org_id = ?")
                     ->execute([$adminEmail, $adminName, $adminPhone, $hash, $primaryAdminId, $orgId]);
                 syncpediaStoreUserLoginPassword($db, (string) $primaryAdminId, $adminPassword);
+                syncpediaBumpUserTokenVersion($db, (string) $primaryAdminId);
                 try {
                     $db->prepare("UPDATE organizations SET owner_id = ? WHERE id = ?")->execute([$primaryAdminId, $orgId]);
                 } catch (Exception $e) {
@@ -453,6 +455,18 @@ if ($method === 'PUT') {
             $bool = filter_var($enabled, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
             if ($bool === null) {
                 $bool = !empty($enabled);
+            }
+            // Update-first so older DBs without a unique (org_id, feature) key still persist correctly.
+            $upd = $db->prepare('UPDATE org_features SET enabled = ? WHERE org_id = ? AND feature = ?');
+            $upd->execute([$bool ? 1 : 0, $id, $feat]);
+            if ($upd->rowCount() > 0) {
+                continue;
+            }
+            $exists = $db->prepare('SELECT id FROM org_features WHERE org_id = ? AND feature = ? LIMIT 1');
+            $exists->execute([$id, $feat]);
+            if ($exists->fetchColumn()) {
+                // Row exists but MySQL reported 0 changed rows (same value) — already saved.
+                continue;
             }
             $upsert = syncpediaUpsertClause(
                 $db,

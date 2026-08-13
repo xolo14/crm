@@ -58,3 +58,46 @@ export function formatServerDate(value?: string | null): string {
     year: "numeric",
   });
 }
+
+/** Last N calendar days of lead counts (zeros included), chronological. */
+export function buildDailyLeadTrend(
+  leads: Array<{ created_at?: string | null }>,
+  days = 14,
+): Array<{ date: string; leads: number }> {
+  const counts = new Map<string, number>();
+  for (const l of leads) {
+    const d = parseServerDateTime(l.created_at);
+    if (!d) continue;
+    const key = d.toLocaleDateString("en-CA", { timeZone: APP_TIMEZONE });
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+
+  const out: Array<{ date: string; leads: number }> = [];
+  const now = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const key = day.toLocaleDateString("en-CA", { timeZone: APP_TIMEZONE });
+    const label = day.toLocaleDateString("en-IN", {
+      timeZone: APP_TIMEZONE,
+      month: "short",
+      day: "numeric",
+    });
+    out.push({ date: label, leads: counts.get(key) || 0 });
+  }
+  return out;
+}
+
+/** True if the server datetime falls on the same calendar day as `vs` in app timezone. */
+export function isSameAppCalendarDay(
+  value?: string | null,
+  vs: Date = new Date(),
+): boolean {
+  const d = parseServerDateTime(value);
+  if (!d) return false;
+  return (
+    d.toLocaleDateString("en-CA", { timeZone: APP_TIMEZONE }) ===
+    vs.toLocaleDateString("en-CA", { timeZone: APP_TIMEZONE })
+  );
+}
+
+

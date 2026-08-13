@@ -61,18 +61,32 @@ if ($method === 'PUT') {
     $input = getInput();
     $fields = [];
     $params = [];
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $canApprove = in_array($role, ['admin', 'super_admin'], true);
 
-    foreach (['name', 'date', 'type', 'notes', 'is_approved'] as $f) {
+    foreach (['name', 'date', 'type', 'notes'] as $f) {
         if (array_key_exists($f, $input)) {
             $fields[] = "$f = ?";
             $params[] = $input[$f];
         }
     }
 
-    if (!empty($input['is_approved']) && $input['is_approved']) {
-        $fields[] = 'approved_by = ?';
-        $params[] = $userId;
-        $fields[] = 'approved_at = NOW()';
+    // Never trust client is_approved / approved_by — only admin/super_admin may approve.
+    if (array_key_exists('is_approved', $input)) {
+        if (!$canApprove) {
+            respond(['error' => 'Only admin can approve holidays'], 403);
+        }
+        $approve = !empty($input['is_approved']);
+        $fields[] = 'is_approved = ?';
+        $params[] = $approve ? 1 : 0;
+        if ($approve) {
+            $fields[] = 'approved_by = ?';
+            $params[] = $userId;
+            $fields[] = 'approved_at = NOW()';
+        } else {
+            $fields[] = 'approved_by = NULL';
+            $fields[] = 'approved_at = NULL';
+        }
     }
 
     if (empty($fields)) {

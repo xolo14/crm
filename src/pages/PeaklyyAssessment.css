@@ -1,26 +1,35 @@
-/* Peaklyy assessment theme — matches Peaklyy login (brown / cream) */
+/* Peaklyy assessment — brand style: black / red / white (peaklyy.com) */
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Oswald:wght@500;600;700&display=swap");
+
 .pk-page {
-  --pk-brown: #3d2b1f;
-  --pk-brown-deep: #2a1e17;
-  --pk-brown-mid: #5c4030;
-  --pk-caramel: #8b5e34;
-  --pk-caramel-light: #a67c52;
-  --pk-cream: #faf7f2;
-  --pk-cream-2: #f3eee6;
-  --pk-ink: #1a1410;
-  --pk-muted: #6b5e54;
-  --pk-border: #e6dfd4;
-  --pk-radius: 1.25rem;
-  --pk-radius-sm: 0.9rem;
+  --pk-black: #050505;
+  --pk-black-2: #0c0c0c;
+  --pk-surface: #111111;
+  --pk-surface-2: #171717;
+  --pk-red: #e10600;
+  --pk-red-hot: #ff2a1f;
+  --pk-red-deep: #b00500;
+  --pk-white: #ffffff;
+  --pk-muted: #a3a3a3;
+  --pk-line: rgba(255, 255, 255, 0.12);
+  --pk-line-strong: rgba(255, 255, 255, 0.22);
+  --pk-radius: 0;
+  --pk-radius-sm: 0;
+  --pk-font: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --pk-display: "Oswald", "DM Sans", ui-sans-serif, sans-serif;
 
   min-height: 100dvh;
   display: flex;
   align-items: stretch;
   justify-content: center;
   padding: 0;
-  background: var(--pk-cream);
-  color: var(--pk-ink);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--pk-black);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  color: var(--pk-white);
+  font-family: var(--pk-font);
 }
 
 .pk-shell {
@@ -31,78 +40,111 @@
 }
 
 .pk-brand {
-  background: linear-gradient(165deg, var(--pk-brown-deep) 0%, var(--pk-brown) 55%, #4a3426 100%);
-  color: #fff;
+  background: var(--pk-black-2);
+  color: var(--pk-white);
   padding: 2rem 2.25rem;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 1.35rem;
+  border-right: 1px solid var(--pk-line);
+  position: relative;
+  overflow: hidden;
+}
+
+.pk-brand::before {
+  content: "";
+  position: absolute;
+  inset: 12% -20% auto auto;
+  width: 280px;
+  height: 280px;
+  border: 1px solid var(--pk-line);
+  transform: rotate(18deg);
+  pointer-events: none;
 }
 
 .pk-brand-logo {
   display: flex;
-  align-items: center;
-  gap: 0.65rem;
+  align-items: baseline;
+  gap: 0;
+  font-family: var(--pk-display);
   font-weight: 700;
-  font-size: 1.35rem;
-  letter-spacing: -0.02em;
+  font-size: clamp(2rem, 3.2vw, 2.75rem);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+}
+
+.pk-brand-peak {
+  color: var(--pk-white);
+}
+
+.pk-brand-lyy {
+  color: var(--pk-red);
 }
 
 .pk-brand-mark {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 999px;
-  border: 2px solid rgba(255, 255, 255, 0.55);
-  display: grid;
-  place-items: center;
-  font-size: 0.85rem;
-  font-weight: 800;
+  display: none;
 }
 
 .pk-badge {
   display: inline-flex;
   align-self: flex-start;
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.08);
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--pk-line-strong);
+  background: transparent;
+  font-family: var(--pk-display);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
+  position: relative;
+  z-index: 1;
 }
 
 .pk-brand h1 {
-  font-size: clamp(1.55rem, 2.4vw, 2.15rem);
-  font-weight: 750;
-  line-height: 1.2;
-  letter-spacing: -0.03em;
-  max-width: 18ch;
+  font-family: var(--pk-display);
+  font-size: clamp(1.45rem, 2.2vw, 2rem);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  max-width: 16ch;
+  position: relative;
+  z-index: 1;
 }
 
 .pk-brand p {
-  color: rgba(255, 255, 255, 0.78);
-  font-size: 0.95rem;
+  color: var(--pk-muted);
+  font-size: 0.92rem;
   line-height: 1.55;
-  max-width: 36ch;
+  max-width: 38ch;
+  position: relative;
+  z-index: 1;
 }
 
 .pk-feature {
   margin-top: auto;
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: var(--pk-radius-sm);
+  background: var(--pk-surface);
+  border: 1px solid var(--pk-line);
+  border-left: 3px solid var(--pk-red);
   padding: 1rem 1.1rem;
+  position: relative;
+  z-index: 1;
 }
 
 .pk-feature strong {
   display: block;
-  font-size: 0.95rem;
-  margin-bottom: 0.25rem;
+  font-family: var(--pk-display);
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
 }
 
 .pk-feature span {
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--pk-muted);
   font-size: 0.85rem;
   line-height: 1.45;
 }
@@ -112,26 +154,26 @@
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
-  background: var(--pk-cream);
+  background: transparent;
 }
 
 .pk-card {
-  background: #fff;
-  border-radius: calc(var(--pk-radius) + 0.25rem);
-  box-shadow: 0 18px 50px rgba(42, 30, 23, 0.08);
-  border: 1px solid rgba(61, 43, 31, 0.06);
+  background: var(--pk-surface);
+  border: 1px solid var(--pk-line-strong);
   width: 100%;
   max-width: 28rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
 }
 
 .pk-header {
-  background: linear-gradient(135deg, var(--pk-brown) 0%, var(--pk-caramel) 100%);
-  color: #fff;
-  font-weight: 700;
-  padding: 1.05rem 1.35rem;
-  font-size: 1.1rem;
-  border-radius: calc(var(--pk-radius) + 0.25rem) calc(var(--pk-radius) + 0.25rem) 0 0;
-  letter-spacing: -0.02em;
+  background: var(--pk-red);
+  color: var(--pk-white);
+  font-family: var(--pk-display);
+  font-weight: 600;
+  padding: 1rem 1.25rem;
+  font-size: 1.05rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .pk-card .pk-body {
@@ -142,35 +184,56 @@
 .pk-page textarea,
 .pk-page [data-slot="select-trigger"],
 .pk-page button[role="combobox"] {
-  border-radius: var(--pk-radius-sm) !important;
-  border-color: var(--pk-border) !important;
-  background: #fff !important;
+  border-radius: 0 !important;
+  border-color: var(--pk-line-strong) !important;
+  background: var(--pk-black-2) !important;
+  color: var(--pk-white) !important;
   min-height: 2.75rem;
 }
 
+.pk-page input::placeholder,
+.pk-page textarea::placeholder {
+  color: #6b6b6b !important;
+}
+
 .pk-page label {
-  color: var(--pk-ink);
-  font-size: 0.8rem;
-  font-weight: 600;
+  color: var(--pk-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .pk-btn {
-  background: linear-gradient(135deg, var(--pk-caramel) 0%, var(--pk-brown-mid) 100%) !important;
-  color: #fff !important;
-  border-radius: 999px !important;
-  font-weight: 650 !important;
+  background: var(--pk-red) !important;
+  color: var(--pk-white) !important;
+  border-radius: 0 !important;
+  font-family: var(--pk-display) !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase !important;
   min-height: 2.85rem;
-  box-shadow: 0 8px 20px rgba(139, 94, 52, 0.28);
+  box-shadow: none !important;
+  border: 1px solid var(--pk-red) !important;
 }
 .pk-btn:hover {
-  background: linear-gradient(135deg, var(--pk-caramel-light) 0%, var(--pk-caramel) 100%) !important;
-  filter: brightness(1.02);
+  background: var(--pk-red-hot) !important;
+  border-color: var(--pk-red-hot) !important;
+  filter: none;
 }
 
 .pk-btn-ghost {
-  background: var(--pk-cream-2) !important;
-  color: var(--pk-ink) !important;
-  border-radius: 999px !important;
+  background: transparent !important;
+  color: var(--pk-white) !important;
+  border: 1px solid var(--pk-line-strong) !important;
+  border-radius: 0 !important;
+  font-family: var(--pk-display) !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+}
+.pk-btn-ghost:hover {
+  border-color: var(--pk-white) !important;
+  background: rgba(255, 255, 255, 0.04) !important;
 }
 
 .pk-instr-list {
@@ -178,104 +241,110 @@
   padding: 0;
   margin: 0;
   display: grid;
-  gap: 0.75rem;
+  gap: 0.65rem;
 }
 
 .pk-instr-list li {
   display: flex;
   align-items: flex-start;
   gap: 0.7rem;
-  font-size: 0.92rem;
-  color: var(--pk-ink);
-  background: var(--pk-cream);
-  border: 1px solid var(--pk-border);
-  border-radius: var(--pk-radius-sm);
-  padding: 0.75rem 0.9rem;
+  font-size: 0.9rem;
+  color: var(--pk-white);
+  background: var(--pk-black-2);
+  border: 1px solid var(--pk-line);
+  padding: 0.8rem 0.9rem;
 }
 
 .pk-instr-list svg {
-  color: var(--pk-caramel);
+  color: var(--pk-red);
   margin-top: 0.15rem;
   flex-shrink: 0;
 }
 
 .pk-test {
-  background: #fff;
-  border-radius: calc(var(--pk-radius) + 0.15rem);
+  background: var(--pk-surface);
   overflow: hidden;
-  box-shadow: 0 18px 50px rgba(42, 30, 23, 0.08);
-  border: 1px solid rgba(61, 43, 31, 0.06);
+  border: 1px solid var(--pk-line-strong);
   width: 100%;
   max-width: 48rem;
   margin: 1.25rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
 }
 
 .pk-test-top {
-  background: linear-gradient(135deg, var(--pk-brown-deep), var(--pk-brown));
-  color: #fff;
+  background: var(--pk-black);
+  color: var(--pk-white);
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 0.95rem 1.25rem;
-  font-size: 0.95rem;
-  font-weight: 650;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: var(--pk-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--pk-line);
 }
 
 .pk-progress {
-  height: 5px;
-  background: var(--pk-cream-2);
+  height: 4px;
+  background: #2a2a2a;
 }
 .pk-progress > div {
   height: 100%;
-  background: linear-gradient(90deg, var(--pk-caramel-light), var(--pk-caramel));
+  background: var(--pk-red);
   transition: width 0.2s ease;
 }
 
 .pk-test-body {
   padding: 1.5rem 1.35rem 1.75rem;
-  background: var(--pk-cream);
+  background: var(--pk-surface);
 }
 
 .pk-subject {
+  font-family: var(--pk-display);
   font-size: 0.68rem;
-  letter-spacing: 0.1em;
-  color: var(--pk-muted);
-  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--pk-red);
+  font-weight: 600;
   margin-bottom: 0.5rem;
+  text-transform: uppercase;
 }
 
 .pk-q {
-  font-size: 1.2rem;
-  font-weight: 750;
-  color: var(--pk-ink);
-  line-height: 1.35;
-  letter-spacing: -0.02em;
+  font-family: var(--pk-display);
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--pk-white);
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .pk-option {
   width: 100%;
   text-align: left;
-  background: #fff;
-  border: 1px solid var(--pk-border);
-  border-radius: var(--pk-radius-sm);
+  background: var(--pk-black-2);
+  border: 1px solid var(--pk-line);
   padding: 0.9rem 1rem;
   display: flex;
   gap: 0.65rem;
   font-size: 0.95rem;
-  color: var(--pk-ink);
-  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+  color: var(--pk-white);
+  transition: border-color 0.15s, background 0.15s;
 }
 .pk-option:hover {
-  border-color: var(--pk-caramel);
+  border-color: var(--pk-red);
 }
 .pk-option-active {
-  border-color: var(--pk-caramel);
-  background: #f7efe6;
-  box-shadow: 0 0 0 3px rgba(139, 94, 52, 0.12);
+  border-color: var(--pk-red);
+  background: rgba(225, 6, 0, 0.12);
+  box-shadow: inset 3px 0 0 var(--pk-red);
 }
 .pk-opt-letter {
-  color: var(--pk-muted);
+  color: var(--pk-red);
   font-weight: 700;
+  font-family: var(--pk-display);
   min-width: 1.4rem;
 }
 
@@ -288,24 +357,27 @@
 .pk-grid-btn {
   width: 2.05rem;
   height: 2.05rem;
-  border-radius: 0.65rem;
-  background: #ebe4da;
+  border-radius: 0;
+  background: #2a2a2a;
   color: var(--pk-muted);
   font-size: 0.8rem;
   font-weight: 700;
+  border: 1px solid transparent;
 }
 .pk-grid-btn.active {
-  background: var(--pk-caramel);
+  background: var(--pk-red);
   color: #fff;
 }
 .pk-grid-btn.answered:not(.active) {
-  background: #d9c4a8;
-  color: var(--pk-brown-deep);
+  background: transparent;
+  border-color: var(--pk-red);
+  color: var(--pk-white);
 }
 
 .pk-result-stars {
-  color: var(--pk-caramel);
+  color: var(--pk-red);
   letter-spacing: 0.12em;
+  font-size: 1.35rem;
 }
 
 .pk-center-wrap {
@@ -315,7 +387,11 @@
   align-items: center;
   justify-content: center;
   padding: 1.25rem;
-  background: var(--pk-cream);
+  background-color: var(--pk-black);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
 }
 
 .pk-page-exam,
@@ -330,6 +406,61 @@
   width: 100%;
 }
 
+.pk-page .text-muted-foreground,
+.pk-page [style*="var(--pk-muted)"] {
+  color: var(--pk-muted) !important;
+}
+
+/* Select dropdowns over dark theme */
+.pk-page [role="listbox"],
+.pk-page [data-radix-select-content] {
+  background: var(--pk-surface) !important;
+  border-color: var(--pk-line-strong) !important;
+  color: var(--pk-white) !important;
+  border-radius: 0 !important;
+}
+
+.pk-social-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--pk-line);
+  border-bottom: 1px solid var(--pk-line);
+  position: relative;
+  z-index: 1;
+}
+
+.pk-social-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: var(--pk-red);
+  box-shadow: 0 0 0 4px rgba(225, 6, 0, 0.2);
+}
+
+.pk-social-label {
+  font-family: var(--pk-display);
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--pk-muted);
+}
+
+.pk-footer-strip {
+  margin-top: 1rem;
+  background: var(--pk-red);
+  color: var(--pk-white);
+  font-family: var(--pk-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 0.7rem 1rem;
+  text-align: center;
+  position: relative;
+  z-index: 1;
+}
+
 @media (max-width: 900px) {
   .pk-shell {
     grid-template-columns: 1fr;
@@ -337,9 +468,11 @@
   .pk-brand {
     padding: 1.35rem 1.25rem 1.1rem;
     gap: 0.85rem;
+    border-right: none;
+    border-bottom: 1px solid var(--pk-line);
   }
   .pk-brand h1 {
-    font-size: 1.45rem;
+    font-size: 1.35rem;
     max-width: none;
   }
   .pk-feature {
@@ -347,5 +480,8 @@
   }
   .pk-main {
     padding: 1rem 1rem 1.5rem;
+  }
+  .pk-footer-strip {
+    display: none;
   }
 }

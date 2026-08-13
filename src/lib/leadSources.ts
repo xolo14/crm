@@ -1,13 +1,19 @@
 /** Group CRM leads into source cards on the main Leads page. */
 
+import { parseServerDateTime } from '@/lib/dateTime';
+
 export const IMPORT_SET_PREFIX = 'import_set:';
 export const IMPORT_FILE_PREFIX = 'import_file:';
 export const PEAKLYY_SOURCE_PREFIX = 'peaklyy:';
 export const PEAKLYY_TITLE_PREFIX = 'peaklyy_title:';
 export const PEAKLYY_ATTEMPTS_PREFIX = 'peaklyy_attempts:';
 export const FORM_SOURCE_PREFIX = 'form_';
+/** Tag stamped on CRM "Add Lead" / Create Lead rows so they share one source card. */
+export const ADDED_LEAD_TAG = 'entry:manual';
+export const ADDED_LEADS_BUCKET = 'added_leads';
 
 export const LEAD_SOURCE_BUCKETS = [
+  'added_leads',
   'google_ads',
   'meta_ads',
   'youtube',
@@ -25,6 +31,7 @@ export const LEAD_SOURCE_BUCKETS = [
 export type LeadSourceBucket = (typeof LEAD_SOURCE_BUCKETS)[number];
 
 export const SOURCE_BUCKET_LABELS: Record<LeadSourceBucket, string> = {
+  added_leads: 'Added leads',
   google_ads: 'Google Ads',
   meta_ads: 'Meta Ads',
   youtube: 'YouTube',
@@ -117,11 +124,42 @@ export function formatImportSetLabel(tag: string, fileName?: string | null): str
   return 'Import';
 }
 
+/** CRM-created leads (Add Lead dialog) — one dedicated "Added leads" card. */
+export function isManuallyAddedLead(lead: {
+  source?: string | null;
+  notes?: string | null;
+  tags?: unknown;
+}): boolean {
+  if (isImportedLead(lead) || isPeaklyyLead(lead)) return false;
+  const tags = parseLeadTags(lead?.tags);
+  if (
+    tags.some((t) => {
+      const v = String(t).trim().toLowerCase();
+      return v === ADDED_LEAD_TAG || v === 'added_lead' || v === 'entry:manual';
+    })
+  ) {
+    return true;
+  }
+  const source = String(lead?.source || '').trim().toLowerCase();
+  if (source === 'manual' || source === 'added' || source === ADDED_LEADS_BUCKET) return true;
+  // Legacy Add Lead defaulted to source "other".
+  if (source === 'other' || source === '') return true;
+  return false;
+}
+
+export function isAddedSourceBucket(bucket: string | null | undefined): boolean {
+  return bucket === ADDED_LEADS_BUCKET;
+}
+
 /** Align with Form Leads page + normal_form / form_* campaign sources. */
 export function isFormLead(lead: {
   referred_by?: string | null;
   source?: string | null;
+  notes?: string | null;
+  tags?: unknown;
 }): boolean {
+  // Manual CRM adds are not form submissions (even if referred_by was auto-stamped).
+  if (isManuallyAddedLead(lead)) return false;
   if (lead?.referred_by) return true;
   const source = String(lead?.source || '').trim().toLowerCase();
   if (source === 'google_forms' || source === 'normal_form') return true;
@@ -154,6 +192,36 @@ export function isFormSourceBucket(bucket: string | null | undefined): boolean {
     return true;
   }
   return bucket.startsWith(FORM_SOURCE_PREFIX);
+}
+
+export type FormAssigneeOption = { id: string; full_name: string; role?: string };
+
+/**
+ * People assigned to a lead form in Form Management — used as Assign options
+ * for leads that belong to that form (source form_{slug}).
+ */
+export function resolveFormAssigneesForSourceKey(
+  sourceKey: string | null | undefined,
+  forms: Array<{ id: string; slug: string }>,
+  assignmentsByFormId: Record<string, Array<{ member_id?: string; full_name?: string | null }>>,
+): FormAssigneeOption[] {
+  if (!sourceKey || !String(sourceKey).startsWith(FORM_SOURCE_PREFIX)) return [];
+  const slug = String(sourceKey).slice(FORM_SOURCE_PREFIX.length);
+  if (!slug) return [];
+  const form = forms.find((f) => String(f.slug || '').toLowerCase() === slug.toLowerCase());
+  if (!form?.id) return [];
+  const rows = assignmentsByFormId[form.id] || [];
+  const byId = new Map<string, FormAssigneeOption>();
+  for (const row of rows) {
+    const id = String(row?.member_id || '').trim();
+    if (!id || byId.has(id)) continue;
+    byId.set(id, {
+      id,
+      full_name: String(row?.full_name || '').trim() || 'Team member',
+      role: 'form_assignee',
+    });
+  }
+  return Array.from(byId.values()).sort((a, b) => a.full_name.localeCompare(b.full_name));
 }
 
 export function formatFormSourceLabel(key: string, formLabels?: Record<string, string>): string {
@@ -222,10 +290,11 @@ export function getLeadSourceBucket(lead: {
 }): string {
   if (isImportedLead(lead)) return getImportSetTag(lead) || 'import';
   if (isPeaklyyLead(lead)) return getPeaklyySourceKey(lead);
+  if (isManuallyAddedLead(lead)) return ADDED_LEADS_BUCKET;
   if (isFormLead(lead)) return getFormSourceKey(lead);
 
   const source = String(lead?.source || '').trim().toLowerCase();
-  if (!source) return 'other';
+  if (!source) return ADDED_LEADS_BUCKET;
   if (KNOWN_DIRECT[source]) return KNOWN_DIRECT[source];
   return 'other';
 }
@@ -238,15 +307,23 @@ export type SourceSummary = {
   isImport?: boolean;
   isPeaklyy?: boolean;
   isForm?: boolean;
+  isAdded?: boolean;
   total: number;
   byStatus: SourceStatusCounts;
   unassigned: number;
+  /** Newest lead created_at in this card (ms). Used for uniform card ordering. */
+  latestCreatedAtMs?: number;
 };
 
 export function statusKey(status?: string | null): string {
   if (!status) return '';
   if (status === 'converted') return 'enrolled';
   return status;
+}
+
+function leadCreatedAtMs(lead: { created_at?: string | null }): number {
+  const d = parseServerDateTime(lead?.created_at);
+  return d ? d.getTime() : 0;
 }
 
 export function buildSourceSummaries(
@@ -262,6 +339,7 @@ export function buildSourceSummaries(
     isImport: boolean,
     isPeaklyy = false,
     isForm = false,
+    isAdded = false,
   ): SourceSummary => {
     let row = map.get(key);
     if (!row) {
@@ -271,9 +349,11 @@ export function buildSourceSummaries(
         isImport,
         isPeaklyy,
         isForm,
+        isAdded,
         total: 0,
         byStatus: {},
         unassigned: 0,
+        latestCreatedAtMs: 0,
       };
       map.set(key, row);
     }
@@ -286,6 +366,7 @@ export function buildSourceSummaries(
     const isImport = isImportSet || key === 'import';
     const isPeaklyy = key.startsWith(PEAKLYY_SOURCE_PREFIX) || key === 'peaklyy';
     const isForm = isFormSourceBucket(key);
+    const isAdded = isAddedSourceBucket(key);
     const label = isImportSet
       ? formatImportSetLabel(key, getImportFileName(lead))
       : isPeaklyy
@@ -293,7 +374,7 @@ export function buildSourceSummaries(
         : isForm
           ? formatFormSourceLabel(key, formLabels)
           : SOURCE_BUCKET_LABELS[key as LeadSourceBucket] || key;
-    const row = ensure(key, label, isImport, isPeaklyy, isForm);
+    const row = ensure(key, label, isImport, isPeaklyy, isForm, isAdded);
     if (isPeaklyy && row.label === 'Peaklyy Assessment') {
       row.label = getPeaklyyAssessmentTitle(lead);
     }
@@ -307,40 +388,20 @@ export function buildSourceSummaries(
     const sk = statusKey(lead?.status) || 'new';
     row.byStatus[sk] = (row.byStatus[sk] || 0) + 1;
     if (!lead?.assigned_to) row.unassigned += 1;
+    const createdMs = leadCreatedAtMs(lead);
+    if (createdMs > (row.latestCreatedAtMs || 0)) {
+      row.latestCreatedAtMs = createdMs;
+    }
   }
 
-  const importSets = [...map.values()]
-    .filter((r) => r.key.startsWith(IMPORT_SET_PREFIX))
-    .sort((a, b) => b.key.localeCompare(a.key));
-
-  const peaklyyCards = [...map.values()]
-    .filter((r) => r.key.startsWith(PEAKLYY_SOURCE_PREFIX) || r.key === 'peaklyy')
-    .sort((a, b) => a.label.localeCompare(b.label));
-
-  const formCards = [...map.values()]
-    .filter((r) => isFormSourceBucket(r.key))
-    .sort((a, b) => a.label.localeCompare(b.label));
-
-  const ordered: SourceSummary[] = [];
-  for (const key of LEAD_SOURCE_BUCKETS) {
-    if (key === 'import') {
-      ordered.push(...importSets);
-      const legacy = map.get('import');
-      if (legacy && legacy.total > 0) ordered.push(legacy);
-      continue;
-    }
-    if (key === 'peaklyy') {
-      ordered.push(...peaklyyCards);
-      continue;
-    }
-    if (key === 'form_leads') {
-      ordered.push(...formCards);
-      continue;
-    }
-    const row = map.get(key);
-    if (row && row.total > 0) ordered.push(row);
-  }
-  return ordered;
+  // All cards (forms, Peaklyy, imports, ads, etc.) share one order: newest lead first.
+  return [...map.values()]
+    .filter((r) => r.total > 0)
+    .sort((a, b) => {
+      const byDate = (b.latestCreatedAtMs || 0) - (a.latestCreatedAtMs || 0);
+      if (byDate !== 0) return byDate;
+      return a.label.localeCompare(b.label);
+    });
 }
 
 export function filterLeadsBySourceBucket(leads: any[], bucket: LeadSourceBucket | string): any[] {

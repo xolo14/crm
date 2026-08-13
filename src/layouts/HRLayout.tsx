@@ -46,6 +46,7 @@ function NavLinks({
         <NavLink
           key={item.to}
           to={item.to}
+          end
           onClick={() => onNavigate?.()}
           className={({ isActive }) =>
             cn(

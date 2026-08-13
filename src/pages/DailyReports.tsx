@@ -14,9 +14,14 @@ import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Plus, FileText, Phone, Users as UsersIcon, Calendar, Loader2, Eye, TrendingUp, XCircle } from 'lucide-react';
 import { useDailyReportsList } from '@/hooks/useDailyReportsList';
+import { APP_TIMEZONE } from '@/lib/dateTime';
+
+function todayISO(): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: APP_TIMEZONE });
+}
 
 const EMPTY_FORM = () => ({
-  report_date: new Date().toISOString().split('T')[0],
+  report_date: todayISO(),
   total_calls: 0,
   total_followups: 0,
   total_demos: 0,

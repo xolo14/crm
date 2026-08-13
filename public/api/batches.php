@@ -24,7 +24,11 @@ if ($method === 'GET') {
 
             SELECT b.*, c.name as course_name, c.price as course_price,
 
-            (SELECT COUNT(*) FROM students s WHERE s.batch_id = b.id) as enrolled
+            (SELECT COUNT(*) FROM students s
+             WHERE s.batch_id = b.id
+               AND s.lead_id IS NOT NULL AND TRIM(s.lead_id) <> ''
+               AND LOWER(TRIM(COALESCE(s.status, 'active'))) NOT IN ('dropped', 'inactive', 'deleted')
+            ) as enrolled
 
             FROM batches b
 
@@ -85,9 +89,9 @@ if ($method === 'POST') {
 
 
     $startDate = $input['start_date'] ?? null;
-
     $endDate = $input['end_date'] ?? null;
-
+    $startDate = batchParseScheduleDate($startDate !== null ? (string) $startDate : null)?->format('Y-m-d');
+    $endDate = batchParseScheduleDate($endDate !== null ? (string) $endDate : null)?->format('Y-m-d');
     $status = batchScheduleStatus($startDate, $endDate);
 
 
@@ -183,9 +187,15 @@ if ($method === 'PUT') {
 
 
     $startDate = array_key_exists('start_date', $input) ? $input['start_date'] : $existing['start_date'];
-
     $endDate = array_key_exists('end_date', $input) ? $input['end_date'] : $existing['end_date'];
-
+    $startDate = batchParseScheduleDate($startDate !== null ? (string) $startDate : null)?->format('Y-m-d');
+    $endDate = batchParseScheduleDate($endDate !== null ? (string) $endDate : null)?->format('Y-m-d');
+    if (array_key_exists('start_date', $input)) {
+        $input['start_date'] = $startDate;
+    }
+    if (array_key_exists('end_date', $input)) {
+        $input['end_date'] = $endDate;
+    }
     $input['status'] = batchScheduleStatus($startDate, $endDate);
 
 

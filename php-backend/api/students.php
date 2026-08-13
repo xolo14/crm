@@ -6,14 +6,27 @@ $db = (new Database())->getConnection();
 $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 
+function studentsMarkLinkedEnrolledLeadLost(PDO $db, array $studentRow): void
+{
+    $leadId = trim((string) ($studentRow['lead_id'] ?? ''));
+    if ($leadId === '') {
+        return;
+    }
+    $db->prepare(
+        "UPDATE leads SET status = 'lost', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND LOWER(TRIM(COALESCE(status, ''))) = 'enrolled'",
+    )->execute([$leadId]);
+}
+
 if ($method === 'GET') {
+    ensureStudentsEnrolledByColumn($db);
     $where = '1=1';
     $params = [];
 
     if (!empty($_GET['search'])) {
-        $where .= ' AND (s.name LIKE ? OR s.email LIKE ? OR s.phone LIKE ? OR l.college LIKE ? OR l.course_interest LIKE ? OR o.name LIKE ? OR l.name LIKE ? OR l2.college LIKE ? OR l2.course_interest LIKE ? OR l2.name LIKE ? OR c.name LIKE ? OR b.name LIKE ?)';
+        $where .= ' AND (s.name LIKE ? OR s.email LIKE ? OR s.phone LIKE ? OR l.college LIKE ? OR l.course_interest LIKE ? OR o.name LIKE ? OR l.name LIKE ? OR l2.college LIKE ? OR l2.course_interest LIKE ? OR l2.name LIKE ? OR c.name LIKE ? OR b.name LIKE ? OR eu.full_name LIKE ? OR au.full_name LIKE ? OR au2.full_name LIKE ?)';
         $s = '%' . $_GET['search'] . '%';
-        $params = array_merge($params, array_fill(0, 12, $s));
+        $params = array_merge($params, array_fill(0, 15, $s));
     }
 
     if (!empty($_GET['status']) && $_GET['status'] !== 'all') {
@@ -44,6 +57,9 @@ if ($method === 'GET') {
             COALESCE(l.phone, l2.phone) AS lead_phone,
             COALESCE(l.college, l2.college) AS lead_college,
             COALESCE(l.email, l2.email) AS lead_email,
+            COALESCE(l.assigned_to, l2.assigned_to) AS lead_assigned_to,
+            COALESCE(s.enrolled_by, l.assigned_to, l2.assigned_to) AS enrolled_by_id,
+            COALESCE(NULLIF(TRIM(eu.full_name), ''), NULLIF(TRIM(au.full_name), ''), NULLIF(TRIM(au2.full_name), '')) AS enrolled_by_name,
             o.name AS organization_name,
             o.slug AS organization_slug
         FROM students s
@@ -59,6 +75,9 @@ if ($method === 'GET') {
                 LIMIT 1
             )
         )
+        LEFT JOIN users eu ON eu.id = s.enrolled_by
+        LEFT JOIN users au ON au.id = l.assigned_to
+        LEFT JOIN users au2 ON au2.id = l2.assigned_to
         LEFT JOIN organizations o ON o.id = COALESCE(s.org_id, l.org_id, l2.org_id)
         LEFT JOIN courses c ON s.course_id = c.id
         LEFT JOIN batches b ON s.batch_id = b.id
@@ -85,24 +104,47 @@ if ($method === 'GET') {
 
 if ($method === 'POST') {
     requireRole($tokenData, ['admin', 'manager', 'super_admin', 'org']);
+    ensureStudentsEnrolledByColumn($db);
     $input = getInput();
     $id = generateUUID();
     $orgId = resolveCreatorOrgId($db, $tokenData);
+    $enrolledBy = trim((string) ($tokenData['user_id'] ?? ''));
+    if ($enrolledBy === '') {
+        $enrolledBy = null;
+    }
 
-    $stmt = $db->prepare("INSERT INTO students (id, name, email, phone, college, year_of_study, course_id, batch_id, org_id, status, enrollment_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    $stmt->execute([
-        $id,
-        $input['name'],
-        $input['email'],
-        $input['phone'] ?? null,
-        $input['college'] ?? null,
-        $input['year_of_study'] ?? null,
-        $input['course_id'] ?? null,
-        $input['batch_id'] ?? null,
-        $orgId,
-        $input['status'] ?? 'active',
-        $input['enrollment_date'] ?? date('Y-m-d'),
-    ]);
+    if ($enrolledBy !== null && syncpediaColumnExists($db, 'students', 'enrolled_by')) {
+        $stmt = $db->prepare("INSERT INTO students (id, name, email, phone, college, year_of_study, course_id, batch_id, org_id, status, enrollment_date, enrolled_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([
+            $id,
+            $input['name'],
+            $input['email'],
+            $input['phone'] ?? null,
+            $input['college'] ?? null,
+            $input['year_of_study'] ?? null,
+            $input['course_id'] ?? null,
+            $input['batch_id'] ?? null,
+            $orgId,
+            $input['status'] ?? 'active',
+            $input['enrollment_date'] ?? date('Y-m-d'),
+            $enrolledBy,
+        ]);
+    } else {
+        $stmt = $db->prepare("INSERT INTO students (id, name, email, phone, college, year_of_study, course_id, batch_id, org_id, status, enrollment_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([
+            $id,
+            $input['name'],
+            $input['email'],
+            $input['phone'] ?? null,
+            $input['college'] ?? null,
+            $input['year_of_study'] ?? null,
+            $input['course_id'] ?? null,
+            $input['batch_id'] ?? null,
+            $orgId,
+            $input['status'] ?? 'active',
+            $input['enrollment_date'] ?? date('Y-m-d'),
+        ]);
+    }
     respond(['id' => $id, 'message' => 'Student enrolled'], 201);
 }
 
@@ -134,16 +176,30 @@ if ($method === 'PUT') {
     }
     if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
 
-    $params[] = $id;
-    $stmt = $db->prepare("UPDATE students SET " . implode(', ', $fields) . " WHERE id = ?");
-    $stmt->execute($params);
+    $isDropped = array_key_exists('status', $input)
+        && strtolower(trim((string) $input['status'])) === 'dropped';
+    $db->beginTransaction();
+    try {
+        $params[] = $id;
+        $stmt = $db->prepare("UPDATE students SET " . implode(', ', $fields) . " WHERE id = ?");
+        $stmt->execute($params);
+        if ($isDropped) {
+            studentsMarkLinkedEnrolledLeadLost($db, $studentRow);
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        respond(['error' => 'Could not update student', 'detail' => $e->getMessage()], 500);
+    }
     respond(['message' => 'Student updated']);
 }
 
 if ($method === 'DELETE') {
-    requireRole($tokenData, ['admin', 'super_admin', 'org']);
-    $id = $_GET['id'] ?? '';
-    if (!$id) respond(['error' => 'ID required'], 400);
+    requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+    $id = trim((string) ($_GET['id'] ?? ''));
+    if ($id === '') respond(['error' => 'ID required'], 400);
 
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     $userId = (string) ($tokenData['user_id'] ?? '');
@@ -157,8 +213,27 @@ if ($method === 'DELETE') {
         respond(['error' => 'Forbidden'], 403);
     }
 
-    trashArchiveRow($db, 'student', 'students', $id, $tokenData);
-    $stmt = $db->prepare("DELETE FROM students WHERE id = ?");
-    $stmt->execute([$id]);
+    $db->beginTransaction();
+    try {
+        trashArchiveRow($db, 'student', 'students', $id, $tokenData);
+        studentsMarkLinkedEnrolledLeadLost($db, $studentRow);
+        // Clear dependents first (live DBs may lack ON DELETE CASCADE on payments).
+        try {
+            $db->prepare('DELETE FROM payments WHERE student_id = ?')->execute([$id]);
+        } catch (Throwable $ignored) {
+            /* payments table / column may differ on older schemas */
+        }
+        $stmt = $db->prepare('DELETE FROM students WHERE id = ?');
+        $stmt->execute([$id]);
+        if ($stmt->rowCount() < 1) {
+            throw new RuntimeException('Student row was not deleted');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        respond(['error' => 'Could not delete student', 'detail' => $e->getMessage()], 500);
+    }
     respond(['message' => 'Student deleted']);
 }

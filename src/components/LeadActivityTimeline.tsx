@@ -44,16 +44,17 @@ export function LeadActivityTimeline({ leadId, getProfileName }: Props) {
   const fetchActivities = async () => {
     setLoading(true);
     try {
-      const data = await api.activities.list();
+      const data = await api.activities.list({ lead_id: leadId });
       const all = Array.isArray(data) ? data : data.data || data.activities || [];
       setActivities(
         all
-          .filter((a: any) => (a.lead_id ?? null) === leadId)
+          .filter((a: any) => String(a.lead_id ?? '') === String(leadId))
           .sort((a: any, b: any) => {
             const tb = parseServerDateTime(b.occurred_at || b.created_at)?.getTime() ?? 0;
             const ta = parseServerDateTime(a.occurred_at || a.created_at)?.getTime() ?? 0;
             return tb - ta;
           })
+          .slice(0, 10)
       );
     } catch (err) {
       console.error('Failed to load activities:', err);

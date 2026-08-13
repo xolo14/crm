@@ -90,6 +90,7 @@ if ($action === 'delete_hr' && $method === 'DELETE') {
     if ($id === '') respond(['error' => 'id required'], 400);
     $stmt = $db->prepare("UPDATE users SET is_active = 0 WHERE id=? AND role='hr'");
     $stmt->execute([$id]);
+    syncpediaBumpUserTokenVersion($db, $id);
     respond(['message' => 'HR deactivated']);
 }
 
@@ -115,7 +116,10 @@ if ($action === 'hr_dashboard' && $method === 'GET') {
     }
 
     $q3 = $db->prepare("SELECT COUNT(*) c FROM tasks WHERE assigned_to=? AND status <> 'completed'"); $q3->execute([$userId]); $c = $q3->fetch();
-    $q4 = $db->prepare("SELECT COUNT(*) c FROM holidays WHERE date >= CURDATE()"); $q4->execute(); $d = $q4->fetch();
+    $orgHolidays = orgFilter($tokenData, '', $db);
+    $q4 = $db->prepare("SELECT COUNT(*) c FROM holidays WHERE date >= CURDATE() AND {$orgHolidays['where']}");
+    $q4->execute($orgHolidays['params']);
+    $d = $q4->fetch();
 
     $activity = [];
     try {
@@ -200,8 +204,11 @@ if ($action === 'assigned_leads' && $method === 'PUT') {
             respond(['error' => 'Add an email on the lead before enrolling'], 400);
         }
     }
-    $stmt = $db->prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND assigned_to = ?');
-    $stmt->execute([$status, $id, $userId]);
+    $stmt = $db->prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND assigned_to = ? AND status = ?');
+    $stmt->execute([$status, $id, $userId, $lead['status']]);
+    if ($stmt->rowCount() < 1) {
+        respond(['error' => 'Lead was updated by someone else — refresh and try again'], 409);
+    }
     if ($status === 'enrolled') {
         try {
             leadsTryAttachStudentForEnrollment($db, $tokenData, $id);
@@ -223,6 +230,11 @@ if ($action === 'assigned_leads' && $method === 'PUT') {
                 error_log('[hr] enroll status revert: ' . $revertErr->getMessage());
             }
             respond(['error' => 'Could not create student for enrollment — status reverted'], 500);
+        }
+    } else {
+        $prevNorm = leadsNormalizeStatus((string) ($lead['status'] ?? ''));
+        if ($prevNorm === 'enrolled' || $prevNorm === 'converted') {
+            leadsDropStudentForLead($db, $id);
         }
     }
     respond(['message' => 'Lead status updated']);
@@ -259,8 +271,9 @@ if ($action === 'notifications' && $method === 'GET') {
 
 if ($action === 'holidays' && $method === 'GET') {
     $year = $_GET['year'] ?? date('Y');
-    $stmt = $db->prepare("SELECT * FROM holidays WHERE YEAR(date)=? ORDER BY date ASC");
-    $stmt->execute([$year]);
+    $orgHolidays = orgFilter($tokenData, '', $db);
+    $stmt = $db->prepare("SELECT * FROM holidays WHERE YEAR(date)=? AND {$orgHolidays['where']} ORDER BY date ASC");
+    $stmt->execute(array_merge([$year], $orgHolidays['params']));
     respond(['data' => $stmt->fetchAll()]);
 }
 

@@ -1,17 +1,86 @@
 <?php
 /**
  * Razorpay Payment Links API (PHP cURL — no Node.js required).
- * Configure RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET in config.php.
+ * Prefer per-org credentials (Settings → Razorpay Setup); fall back to
+ * RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET / RAZORPAY_WEBHOOK_SECRET in config.php.
  */
+
+/** @var array{key_id?:string,key_secret?:string,webhook_secret?:string}|null */
+$GLOBALS['syncpedia_razorpay_active'] = $GLOBALS['syncpedia_razorpay_active'] ?? null;
+
+function razorpaySetActiveCredentials(?string $keyId, ?string $keySecret, ?string $webhookSecret = null): void
+{
+    $keyId = $keyId !== null ? trim($keyId) : '';
+    $keySecret = $keySecret !== null ? trim($keySecret) : '';
+    $webhookSecret = $webhookSecret !== null ? trim($webhookSecret) : '';
+    if ($keyId === '' || $keySecret === '') {
+        $GLOBALS['syncpedia_razorpay_active'] = null;
+        return;
+    }
+    $GLOBALS['syncpedia_razorpay_active'] = [
+        'key_id' => $keyId,
+        'key_secret' => $keySecret,
+        'webhook_secret' => $webhookSecret,
+    ];
+}
+
+function razorpayClearActiveCredentials(): void
+{
+    $GLOBALS['syncpedia_razorpay_active'] = null;
+}
+
+/**
+ * Load org credentials into request scope; fall back to platform config.
+ * @return bool true if some usable key pair is active
+ */
+function razorpayUseOrgOrPlatform(?PDO $db, ?string $orgId): bool
+{
+    razorpayClearActiveCredentials();
+    $orgId = $orgId !== null ? trim($orgId) : '';
+    if ($db && $orgId !== '' && function_exists('syncpediaLoadOrgRazorpayCredentials')) {
+        $creds = syncpediaLoadOrgRazorpayCredentials($db, $orgId);
+        if (is_array($creds) && ($creds['key_id'] ?? '') !== '' && ($creds['key_secret'] ?? '') !== '') {
+            razorpaySetActiveCredentials(
+                (string) $creds['key_id'],
+                (string) $creds['key_secret'],
+                (string) ($creds['webhook_secret'] ?? ''),
+            );
+            return true;
+        }
+    }
+    if (defined('RAZORPAY_KEY_ID') && defined('RAZORPAY_KEY_SECRET')) {
+        $id = trim((string) RAZORPAY_KEY_ID);
+        $secret = trim((string) RAZORPAY_KEY_SECRET);
+        if ($id !== '' && $secret !== '' && str_starts_with($id, 'rzp_')) {
+            $wh = defined('RAZORPAY_WEBHOOK_SECRET') ? trim((string) RAZORPAY_WEBHOOK_SECRET) : '';
+            razorpaySetActiveCredentials($id, $secret, $wh);
+            return true;
+        }
+    }
+    return false;
+}
+
+/** @return array{key_id:string,key_secret:string,webhook_secret:string} */
+function razorpayResolvedCredentials(): array
+{
+    $active = $GLOBALS['syncpedia_razorpay_active'] ?? null;
+    if (is_array($active) && !empty($active['key_id']) && !empty($active['key_secret'])) {
+        return [
+            'key_id' => (string) $active['key_id'],
+            'key_secret' => (string) $active['key_secret'],
+            'webhook_secret' => (string) ($active['webhook_secret'] ?? ''),
+        ];
+    }
+    $id = defined('RAZORPAY_KEY_ID') ? trim((string) RAZORPAY_KEY_ID) : '';
+    $secret = defined('RAZORPAY_KEY_SECRET') ? trim((string) RAZORPAY_KEY_SECRET) : '';
+    $wh = defined('RAZORPAY_WEBHOOK_SECRET') ? trim((string) RAZORPAY_WEBHOOK_SECRET) : '';
+    return ['key_id' => $id, 'key_secret' => $secret, 'webhook_secret' => $wh];
+}
 
 function razorpayKeysConfigured(): bool
 {
-    if (!defined('RAZORPAY_KEY_ID') || !defined('RAZORPAY_KEY_SECRET')) {
-        return false;
-    }
-    $id = trim((string) RAZORPAY_KEY_ID);
-    $secret = trim((string) RAZORPAY_KEY_SECRET);
-    return $id !== '' && $secret !== '' && str_starts_with($id, 'rzp_');
+    $c = razorpayResolvedCredentials();
+    return $c['key_id'] !== '' && $c['key_secret'] !== '' && str_starts_with($c['key_id'], 'rzp_');
 }
 
 function razorpayCallbackBase(): string
@@ -31,17 +100,18 @@ function razorpayApiRequest(string $method, string $path, ?array $body = null): 
 {
     if (!razorpayKeysConfigured()) {
         throw new RuntimeException(
-            'Razorpay keys not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in api/config.php',
+            'Razorpay keys not configured. Org admin: Settings → Razorpay Setup. Or set RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET in api/config.php',
         );
     }
 
+    $creds = razorpayResolvedCredentials();
     $url = 'https://api.razorpay.com/v1/' . ltrim($path, '/');
     $ch = curl_init($url);
     if ($ch === false) {
         throw new RuntimeException('Failed to initialize cURL');
     }
 
-    curl_setopt($ch, CURLOPT_USERPWD, trim((string) RAZORPAY_KEY_ID) . ':' . trim((string) RAZORPAY_KEY_SECRET));
+    curl_setopt($ch, CURLOPT_USERPWD, $creds['key_id'] . ':' . $creds['key_secret']);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 60);
     curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
@@ -216,15 +286,62 @@ function razorpayCreateStandardPaymentLink(array $input): array
     return razorpayApiRequest('POST', 'payment_links', $payload);
 }
 
-function razorpayVerifyWebhookSignature(string $rawBody, string $signature): bool
+function razorpayVerifyWebhookSignature(string $rawBody, string $signature, ?string $preferredSecret = null): bool
 {
-    if (!defined('RAZORPAY_WEBHOOK_SECRET') || RAZORPAY_WEBHOOK_SECRET === '') {
-        error_log('[RAZORPAY] Webhook secret not configured — rejecting');
-        return false;
-    }
     if ($signature === '') {
         return false;
     }
-    $expected = hash_hmac('sha256', $rawBody, RAZORPAY_WEBHOOK_SECRET);
-    return hash_equals($expected, $signature);
+    $candidates = [];
+    if ($preferredSecret !== null && trim($preferredSecret) !== '') {
+        $candidates[] = trim($preferredSecret);
+    }
+    $req = $GLOBALS['syncpedia_razorpay_active'] ?? $GLOBALS['syncpedia_razorpay_creds'] ?? null;
+    if (is_array($req) && !empty($req['webhook_secret'])) {
+        $candidates[] = trim((string) $req['webhook_secret']);
+    }
+    $resolved = function_exists('razorpayResolvedCredentials') ? razorpayResolvedCredentials() : null;
+    if (is_array($resolved) && !empty($resolved['webhook_secret'])) {
+        $candidates[] = trim((string) $resolved['webhook_secret']);
+    }
+    if (defined('RAZORPAY_WEBHOOK_SECRET') && trim((string) RAZORPAY_WEBHOOK_SECRET) !== '') {
+        $candidates[] = trim((string) RAZORPAY_WEBHOOK_SECRET);
+    }
+    $candidates = array_values(array_unique(array_filter($candidates)));
+    if ($candidates === []) {
+        error_log('[RAZORPAY] Webhook secret not configured — rejecting');
+        return false;
+    }
+    foreach ($candidates as $secret) {
+        $expected = hash_hmac('sha256', $rawBody, $secret);
+        if (hash_equals($expected, $signature)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** Resolve webhook secret for a payment_link id already known to CRM (org-scoped). */
+function razorpayWebhookSecretForPaymentLinkId(PDO $db, string $plinkId): ?string
+{
+    $plinkId = trim($plinkId);
+    if ($plinkId === '') {
+        return null;
+    }
+    if (!function_exists('paymentLinkFindByRazorpayId')) {
+        return null;
+    }
+    $row = paymentLinkFindByRazorpayId($plinkId);
+    if (!is_array($row)) {
+        return null;
+    }
+    $orgId = trim((string) ($row['org_id'] ?? ''));
+    if ($orgId === '' || !function_exists('syncpediaLoadOrgRazorpayCredentials')) {
+        return null;
+    }
+    $creds = syncpediaLoadOrgRazorpayCredentials($db, $orgId);
+    if (!is_array($creds)) {
+        return null;
+    }
+    $wh = trim((string) ($creds['webhook_secret'] ?? ''));
+    return $wh !== '' ? $wh : null;
 }

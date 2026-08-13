@@ -10,6 +10,7 @@ export type QuestionType =
   | "checkbox_grid"
   | "date"
   | "time"
+  | "phone_number"
   | "section_break";
 
 export interface BuilderQuestion {
@@ -56,7 +57,7 @@ function legacyFieldToQuestion(field: LegacyFormField, index: number): BuilderQu
   const typeMap: Record<string, QuestionType> = {
     text: "short_answer",
     email: "short_answer",
-    phone: "short_answer",
+    phone: "phone_number",
     number: "short_answer",
     textarea: "paragraph",
     select: "dropdown",
@@ -69,7 +70,12 @@ function legacyFieldToQuestion(field: LegacyFormField, index: number): BuilderQu
     description: field.placeholder || "",
     required: !!field.required,
     options: field.options || [],
-    validation,
+    validation:
+      field.type === "email" || key === "email"
+        ? { kind: "regex", value: "email" }
+        : field.type === "number"
+          ? { kind: "number" }
+          : validation,
   };
 }
 
@@ -122,6 +128,7 @@ export function isEmailQuestion(q: Pick<BuilderQuestion, "title" | "validation">
 
 export function questionFieldKey(q: BuilderQuestion, index: number): string {
   if (isEmailQuestion(q)) return "email";
+  if (q.type === "phone_number") return "phone";
   if (/full\s*name/i.test(q.title || "")) return "name";
   if (/phone|mobile|whatsapp/i.test(q.title || "")) return "phone";
   const fromTitle = q.title
@@ -145,7 +152,9 @@ export function resolveLeadContactFromFormValues(
     const val = (values[key] || "").trim();
     if (!name && /full\s*name|^name$/i.test(q.title || "")) name = val;
     if (!email && isEmailQuestion(q)) email = val;
-    if (!phone && /phone|mobile|whatsapp/i.test(q.title || "")) phone = val;
+    if (!phone && (q.type === "phone_number" || /phone|mobile|whatsapp/i.test(q.title || ""))) {
+      phone = val;
+    }
   });
   name = name || (values.name || values.full_name || "").trim();
   email = email || (values.email || "").trim();

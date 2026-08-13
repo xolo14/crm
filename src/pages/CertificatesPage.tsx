@@ -5,9 +5,11 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import {
   Award,
+  Bold,
   Copy,
   Download,
   FileDown,
+  Italic,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -15,6 +17,16 @@ import {
   Trash2,
   Archive,
   Send,
+  Type,
+  Image as ImageIcon,
+  FileSpreadsheet,
+  ChevronLeft,
+  Lock,
+  Unlock,
+  Variable,
+  Users,
+  FileText,
+  Minus,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -34,11 +46,125 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { TEMPLATE_FONT_FACES, TEMPLATE_FONT_SIZES, matchTemplateFontFace, matchTemplateFontSize } from "@/components/templates/DocumentTemplateEditor";
+import { CanvasTextBoxFrame, cycleTextBoxDivider, normalizeTextBoxDivider } from "@/components/templates/CanvasTextBoxFrame";
+import { DocFormsWorkspace, DocIssuedPanel } from "@/modules/docForms/DocFormsHub";
+import { applyPlaceholders, extractPlaceholderKeys } from "@/modules/docForms/types";
+import {
+  CERT_BULK_SHEET_HEADERS,
+  CERT_BULK_SHEET_SAMPLE,
+  downloadPlaceholderExcelTemplate,
+  mapSheetRowsToPlaceholders,
+  parsePlaceholderSheetFile,
+} from "@/lib/placeholderSheetImport";
+import { resolveUploadSrc } from "@/lib/resumeHref";
 
 type CertStatus = "active" | "draft" | "archived";
 type IssuedStatus = "issued" | "revoked" | "expired";
 type CertType = "CC" | "ACH" | "PRO" | "INT" | "WS";
 type LayoutStyle = "classic" | "dark-pro" | "elegant";
+
+/** Physical paper size for certificate output (preview + print/PDF). */
+type CertPageFormat =
+  | "a4-landscape"
+  | "a4-portrait"
+  | "letter-landscape"
+  | "letter-portrait"
+  | "a5-landscape"
+  | "a5-portrait"
+  | "square";
+
+type CertPageSpec = {
+  id: CertPageFormat;
+  label: string;
+  shortLabel: string;
+  widthMm: number;
+  heightMm: number;
+  /** CSS @page size value */
+  cssPageSize: string;
+  hint: string;
+};
+
+const CERT_PAGE_FORMATS: CertPageSpec[] = [
+  {
+    id: "a4-landscape",
+    label: "A4 Landscape",
+    shortLabel: "A4 ↔",
+    widthMm: 297,
+    heightMm: 210,
+    cssPageSize: "A4 landscape",
+    hint: "Most common certificate layout (29.7 × 21 cm)",
+  },
+  {
+    id: "a4-portrait",
+    label: "A4 Portrait",
+    shortLabel: "A4 ↕",
+    widthMm: 210,
+    heightMm: 297,
+    cssPageSize: "A4 portrait",
+    hint: "Tall certificates / award letters (21 × 29.7 cm)",
+  },
+  {
+    id: "letter-landscape",
+    label: "Letter Landscape",
+    shortLabel: "Letter ↔",
+    widthMm: 279.4,
+    heightMm: 215.9,
+    cssPageSize: "letter landscape",
+    hint: "US Letter sideways (11 × 8.5 in)",
+  },
+  {
+    id: "letter-portrait",
+    label: "Letter Portrait",
+    shortLabel: "Letter ↕",
+    widthMm: 215.9,
+    heightMm: 279.4,
+    cssPageSize: "letter portrait",
+    hint: "US Letter upright (8.5 × 11 in)",
+  },
+  {
+    id: "a5-landscape",
+    label: "A5 Landscape",
+    shortLabel: "A5 ↔",
+    widthMm: 210,
+    heightMm: 148,
+    cssPageSize: "A5 landscape",
+    hint: "Compact certificates / cards (21 × 14.8 cm)",
+  },
+  {
+    id: "a5-portrait",
+    label: "A5 Portrait",
+    shortLabel: "A5 ↕",
+    widthMm: 148,
+    heightMm: 210,
+    cssPageSize: "A5 portrait",
+    hint: "Small upright certificate (14.8 × 21 cm)",
+  },
+  {
+    id: "square",
+    label: "Square",
+    shortLabel: "□ Square",
+    widthMm: 210,
+    heightMm: 210,
+    cssPageSize: "210mm 210mm",
+    hint: "Square award / digital share format (21 × 21 cm)",
+  },
+];
+
+const DEFAULT_CERT_PAGE_FORMAT: CertPageFormat = "a4-landscape";
+
+function isCertPageFormat(value: unknown): value is CertPageFormat {
+  return CERT_PAGE_FORMATS.some((f) => f.id === value);
+}
+
+function resolveCertPageFormat(pageFormat?: unknown): CertPageFormat {
+  return isCertPageFormat(pageFormat) ? pageFormat : DEFAULT_CERT_PAGE_FORMAT;
+}
+
+function getCertPageSpec(format?: CertPageFormat | null | unknown): CertPageSpec {
+  const id = resolveCertPageFormat(format);
+  return CERT_PAGE_FORMATS.find((f) => f.id === id) || CERT_PAGE_FORMATS[0];
+}
 
 const CERT_TYPE_LABELS: Record<CertType, string> = {
   CC: "Course Certificate",
@@ -58,6 +184,8 @@ const CERT_TYPE_COLORS: Record<CertType, string> = {
 
 interface CertTemplateStyle {
   layout: LayoutStyle;
+  /** Physical page size + orientation for certificates. */
+  pageFormat?: CertPageFormat;
   bgColor: string;
   accentColor: string;
   bgImage?: string;
@@ -99,12 +227,15 @@ interface CertLayer {
   height: number;
   color?: string;
   fontSize?: number;
+  fontFamily?: string;
   fontWeight?: "normal" | "bold";
   fontStyle?: "normal" | "italic";
   align?: "left" | "center" | "right";
   opacity?: number;
   zIndex?: number;
   locked?: boolean;
+  /** Optional divider line on the layer box (off by default). */
+  divider?: "none" | "top" | "bottom";
 }
 
 interface CertTemplate {
@@ -138,15 +269,24 @@ interface VerifyPayload {
 
 const CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ALPHA = "abcdefghijklmnopqrstuvwxyz";
-const CERT_SEQ_KEY = "cert_alpha_seq_v1";
 const CERT_USED_IDS_KEY = "cert_used_ids_v1";
 const MAX_SIGNATURE_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
 const MAX_TEMPLATE_IMAGE_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB
 const MAX_BG_IMAGE_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB — uploaded via multipart, not JSON
-const A4_WIDTH_CM = 29.7;
-const A4_HEIGHT_CM = 21;
-const A4_ASPECT = A4_WIDTH_CM / A4_HEIGHT_CM;
 const IMPORT_EDITABLE_LAYER_TYPES: CertLayerType[] = ["company", "name", "domain", "date", "certID", "qr", "logo"];
+
+/** Merge-field layers bound at issue time (one of each recommended). */
+const TYPED_CERT_FIELD_TYPES: Array<{
+  type: Extract<CertLayerType, "company" | "name" | "domain" | "date" | "certID">;
+  label: string;
+  sample: string;
+}> = [
+  { type: "name", label: "Name", sample: "<<Name>>" },
+  { type: "domain", label: "Domain", sample: "<<Course>>" },
+  { type: "date", label: "Date", sample: "<<Date>>" },
+  { type: "company", label: "Company", sample: "Company Name" },
+  { type: "certID", label: "Cert ID", sample: "<<CertID>>" },
+];
 
 function certOrgPrefix(org: { slug?: string | null; name?: string | null } | null | undefined): string {
   const slug = String(org?.slug ?? "").trim().toLowerCase();
@@ -250,7 +390,7 @@ function buildDefaultImportLayers(ctx: CertOrgContext, certType: CertType = "CC"
       align: "left",
       opacity: 1,
       zIndex: 14,
-      locked: true,
+      locked: false,
     },
     {
       id: crypto.randomUUID(),
@@ -263,7 +403,7 @@ function buildDefaultImportLayers(ctx: CertOrgContext, certType: CertType = "CC"
       height: 11,
       opacity: 1,
       zIndex: 15,
-      locked: true,
+      locked: false,
     },
     {
       id: crypto.randomUUID(),
@@ -321,29 +461,16 @@ function sanitizeImportLayers(layers: CertLayer[], ctx: CertOrgContext, certType
 }
 
 function nextAlphaPair(): string {
-  let seq = 0;
-  try {
-    const raw = localStorage.getItem(CERT_SEQ_KEY);
-    seq = raw ? Number(raw) || 0 : 0;
-  } catch {
-    seq = 0;
-  }
-
-  const first = ALPHA[Math.floor(seq / 26) % 26];
-  const second = ALPHA[seq % 26];
-
-  try {
-    localStorage.setItem(CERT_SEQ_KEY, String(seq + 1));
-  } catch {
-    // no-op when storage is unavailable
-  }
-
-  return `${first}${second}`;
+  // Cryptographic random pair — do not use localStorage sequences (multi-tab collisions).
+  const bytes = new Uint8Array(2);
+  crypto.getRandomValues(bytes);
+  return `${ALPHA[bytes[0] % 26]}${ALPHA[bytes[1] % 26]}`;
 }
 
 function getUsedCertIds(): Set<string> {
+  // Soft client-side dedupe only; server sync_id uniqueness is the source of truth.
   try {
-    const raw = localStorage.getItem(CERT_USED_IDS_KEY);
+    const raw = sessionStorage.getItem(CERT_USED_IDS_KEY);
     if (!raw) return new Set<string>();
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return new Set<string>();
@@ -357,9 +484,8 @@ function reserveCertId(id: string) {
   try {
     const used = Array.from(getUsedCertIds());
     used.push(id);
-    // Keep only recent entries to avoid unbounded growth.
     const deduped = Array.from(new Set(used)).slice(-2000);
-    localStorage.setItem(CERT_USED_IDS_KEY, JSON.stringify(deduped));
+    sessionStorage.setItem(CERT_USED_IDS_KEY, JSON.stringify(deduped));
   } catch {
     // no-op when storage is unavailable
   }
@@ -369,10 +495,16 @@ function generateCertId(type: CertType = "CC", orgPrefix = "SYNC"): string {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const used = getUsedCertIds();
   const prefix = orgPrefix.trim().toUpperCase() || "ORG";
+  const chars = CHARS;
+  const pick = (count: number) => {
+    const bytes = new Uint8Array(count);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+  };
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const alphaHead = nextAlphaPair();
-    const randomTail = Array.from({ length: 3 }, () => CHARS[Math.floor(Math.random() * CHARS.length)]).join("");
+    const randomTail = pick(4);
     const suffix = `${alphaHead}${randomTail}`;
     const candidate = `${prefix}-${type}-${date}-${suffix}`;
     if (!used.has(candidate)) {
@@ -381,7 +513,7 @@ function generateCertId(type: CertType = "CC", orgPrefix = "SYNC"): string {
     }
   }
 
-  const fallback = `${prefix}-${type}-${date}-${Date.now().toString(36).slice(-6)}`;
+  const fallback = `${prefix}-${type}-${date}-${Date.now().toString(36)}-${pick(6)}`;
   reserveCertId(fallback);
   return fallback;
 }
@@ -430,7 +562,26 @@ function compactTemplateForVerify(template: CertTemplate): CertTemplate {
     fields: {
       ...template.fields,
       signatureImage: undefined,
+      watermarkImage: undefined,
+      logoLeftImage: undefined,
+      logoRightImage: undefined,
     },
+    layers: (template.layers || []).map((layer) => {
+      // Never embed binary/image payloads in the verify token (blows past QR limits).
+      if (
+        layer.type === "image" ||
+        layer.type === "logo" ||
+        layer.type === "signature" ||
+        layer.type === "qr"
+      ) {
+        return { ...layer, content: "" };
+      }
+      const c = String(layer.content || "");
+      if (c.startsWith("data:") || c.startsWith("blob:")) {
+        return { ...layer, content: "" };
+      }
+      return layer;
+    }),
   };
 }
 
@@ -456,13 +607,34 @@ function getVerifyURL(certID: string, token?: string): string {
   return `${origin}/verify/${encodeURIComponent(certID)}${qs}`;
 }
 
+/** Practical ceiling for QR (byte mode) + browser URL usability. */
+const QR_SAFE_URL_MAX_CHARS = 1200;
+
+/**
+ * Draft verify link. Embeds a compact template token only when it still fits QR/URL limits;
+ * otherwise falls back to the short cert-id URL (avoids qrcode.react RangeError "Data too long").
+ */
 function buildDraftVerifyUrl(template: CertTemplate, certId: string, overrides: Partial<CertTemplateFields> = {}): string {
-  const payload: VerifyPayload = {
-    certId,
-    template: compactTemplateForVerify(template),
-    overrides,
-  };
-  return getVerifyURL(certId, encodeVerifyPayload(payload));
+  const shortUrl = getVerifyURL(certId);
+  try {
+    const payload: VerifyPayload = {
+      certId,
+      template: compactTemplateForVerify(template),
+      overrides,
+    };
+    const full = getVerifyURL(certId, encodeVerifyPayload(payload));
+    if (full.length <= QR_SAFE_URL_MAX_CHARS) return full;
+  } catch {
+    /* ignore encode failures */
+  }
+  return shortUrl;
+}
+
+/** URL safe to pass into QRCodeSVG — never long enough to throw RangeError("Data too long"). */
+function qrSafeVerifyUrl(certID: string, verifyUrl?: string): string {
+  const shortUrl = getVerifyURL(certID);
+  const candidate = (verifyUrl && verifyUrl.trim()) || shortUrl;
+  return candidate.length <= QR_SAFE_URL_MAX_CHARS ? candidate : shortUrl;
 }
 
 function generateOpaqueVerifyToken(): string {
@@ -478,7 +650,7 @@ const templateSeeds: CertTemplate[] = [
     status: "active",
     createdAt: "2024-01-15",
     certType: "CC",
-    style: { layout: "classic", bgColor: "#ffffff", accentColor: "#1A6B3C" },
+    style: { layout: "classic", pageFormat: "a4-landscape", bgColor: "#ffffff", accentColor: "#1A6B3C" },
     fields: {
       title: "Certificate of Completion",
       recipientName: "John Doe",
@@ -495,7 +667,7 @@ const templateSeeds: CertTemplate[] = [
     status: "active",
     createdAt: "2024-02-10",
     certType: "PRO",
-    style: { layout: "dark-pro", bgColor: "#0f172a", accentColor: "#f59e0b" },
+    style: { layout: "dark-pro", pageFormat: "a4-landscape", bgColor: "#0f172a", accentColor: "#f59e0b" },
     fields: {
       title: "Professional Certification",
       recipientName: "Jane Smith",
@@ -512,7 +684,7 @@ const templateSeeds: CertTemplate[] = [
     status: "draft",
     createdAt: "2024-03-05",
     certType: "INT",
-    style: { layout: "elegant", bgColor: "#fefce8", accentColor: "#1e3a5f" },
+    style: { layout: "elegant", pageFormat: "a4-portrait", bgColor: "#fefce8", accentColor: "#1e3a5f" },
     fields: {
       title: "Internship Certificate",
       recipientName: "Alex Johnson",
@@ -561,8 +733,10 @@ function escapeXml(value: string): string {
 }
 
 function templateToSvg(template: CertTemplate): string {
-  const width = 2970;
-  const height = 2100;
+  const page = getCertPageSpec(template.style.pageFormat);
+  const width = Math.round(page.widthMm * 10);
+  const height = Math.round(page.heightMm * 10);
+  const cx = Math.round(width / 2);
   const f = template.fields;
   const bg = template.style.bgColor || "#ffffff";
   const accent = template.style.accentColor || "#1A6B3C";
@@ -573,16 +747,16 @@ function templateToSvg(template: CertTemplate): string {
   <rect width="${width}" height="${height}" fill="${escapeXml(bg)}"/>
   <rect x="0" y="0" width="${width}" height="16" fill="${escapeXml(accent)}"/>
   <text x="90" y="90" fill="${escapeXml(subtle)}" font-size="28" font-family="Arial" letter-spacing="4">${escapeXml((f.companyName || "").toUpperCase())}</text>
-  <text x="800" y="260" text-anchor="middle" fill="${escapeXml(text)}" font-size="74" font-weight="700" font-family="Arial">${escapeXml(f.title)}</text>
-  <text x="800" y="360" text-anchor="middle" fill="${escapeXml(subtle)}" font-size="34" font-family="Arial">This is to certify that</text>
-  <text x="800" y="460" text-anchor="middle" fill="${escapeXml(accent)}" font-size="72" font-weight="700" font-family="Arial">${escapeXml(f.recipientName)}</text>
-  <text x="800" y="560" text-anchor="middle" fill="${escapeXml(subtle)}" font-size="34" font-family="Arial">in recognition of successful completion of</text>
-  <text x="800" y="640" text-anchor="middle" fill="${escapeXml(text)}" font-size="56" font-weight="600" font-family="Arial">${escapeXml(f.domainName)}</text>
-  <text x="800" y="730" text-anchor="middle" fill="${escapeXml(subtle)}" font-size="34" font-family="Arial">${escapeXml(f.bodyText)}</text>
-  <line x1="90" y1="930" x2="640" y2="930" stroke="${escapeXml(text)}" stroke-opacity="0.35" stroke-width="2"/>
-  <text x="90" y="980" fill="${escapeXml(text)}" font-size="34" font-weight="700" font-family="Arial">${escapeXml(f.signatoryName)}</text>
-  <text x="90" y="1020" fill="${escapeXml(subtle)}" font-size="26" font-family="Arial">${escapeXml(f.signatoryTitle)}</text>
-  <rect x="1320" y="840" width="180" height="180" fill="none" stroke="${escapeXml(accent)}" stroke-width="6"/>
+  <text x="${cx}" y="260" text-anchor="middle" fill="${escapeXml(text)}" font-size="74" font-weight="700" font-family="Arial">${escapeXml(f.title)}</text>
+  <text x="${cx}" y="360" text-anchor="middle" fill="${escapeXml(subtle)}" font-size="34" font-family="Arial">This is to certify that</text>
+  <text x="${cx}" y="460" text-anchor="middle" fill="${escapeXml(accent)}" font-size="72" font-weight="700" font-family="Arial">${escapeXml(f.recipientName)}</text>
+  <text x="${cx}" y="560" text-anchor="middle" fill="${escapeXml(subtle)}" font-size="34" font-family="Arial">in recognition of successful completion of</text>
+  <text x="${cx}" y="640" text-anchor="middle" fill="${escapeXml(text)}" font-size="56" font-weight="600" font-family="Arial">${escapeXml(f.domainName)}</text>
+  <text x="${cx}" y="730" text-anchor="middle" fill="${escapeXml(subtle)}" font-size="34" font-family="Arial">${escapeXml(f.bodyText)}</text>
+  <line x1="90" y1="${height - 280}" x2="640" y2="${height - 280}" stroke="${escapeXml(text)}" stroke-opacity="0.35" stroke-width="2"/>
+  <text x="90" y="${height - 230}" fill="${escapeXml(text)}" font-size="34" font-weight="700" font-family="Arial">${escapeXml(f.signatoryName)}</text>
+  <text x="90" y="${height - 190}" fill="${escapeXml(subtle)}" font-size="26" font-family="Arial">${escapeXml(f.signatoryTitle)}</text>
+  <rect x="${width - 280}" y="${height - 360}" width="180" height="180" fill="none" stroke="${escapeXml(accent)}" stroke-width="6"/>
 </svg>`;
 }
 
@@ -639,6 +813,7 @@ function isCertTemplate(value: unknown): value is CertTemplate {
   if (!isCertType(value.certType)) return false;
   if (!isRecord(value.style)) return false;
   if (!isLayoutStyle(value.style.layout)) return false;
+  if (value.style.pageFormat !== undefined && !isCertPageFormat(value.style.pageFormat)) return false;
   if (typeof value.style.bgColor !== "string") return false;
   if (typeof value.style.accentColor !== "string") return false;
   if (value.style.bgImage !== undefined && typeof value.style.bgImage !== "string") return false;
@@ -674,6 +849,14 @@ function isCertTemplate(value: unknown): value is CertTemplate {
     if (layer.fontStyle !== undefined && layer.fontStyle !== "normal" && layer.fontStyle !== "italic") return false;
     if (layer.align !== undefined && layer.align !== "left" && layer.align !== "center" && layer.align !== "right") return false;
     if (layer.opacity !== undefined && typeof layer.opacity !== "number") return false;
+    if (
+      layer.divider !== undefined &&
+      layer.divider !== "none" &&
+      layer.divider !== "top" &&
+      layer.divider !== "bottom"
+    ) {
+      return false;
+    }
   }
   return true;
 }
@@ -709,7 +892,9 @@ function QRCodeWidget({
   showUrlText?: boolean;
   verifyUrl?: string;
 }) {
-  const url = verifyUrl || getVerifyURL(certID);
+  // Always clamp — qrcode.react throws RangeError("Data too long") during render if the
+  // payload exceeds QR capacity (common when draft verify URLs embed full templates).
+  const url = qrSafeVerifyUrl(certID, verifyUrl);
   return (
     <div className="flex flex-col items-center gap-1">
       <QRCodeSVG value={url} size={size} fgColor={fgColor} bgColor="transparent" />
@@ -729,10 +914,15 @@ function CertificatePreview({
   selectedLayerID,
   onLayerSelect,
   onLayerMove,
+  onLayerResize,
+  onLayerContentChange,
   recipientName,
   domainName,
   companyName,
   date,
+  layoutLocked = false,
+  bgImageOverride,
+  placeholderValues,
 }: {
   template: CertTemplate;
   overrides?: Partial<CertTemplateFields>;
@@ -744,10 +934,18 @@ function CertificatePreview({
   selectedLayerID?: string | null;
   onLayerSelect?: (id: string | null) => void;
   onLayerMove?: (id: string, x: number, y: number) => void;
+  onLayerResize?: (id: string, width: number, height: number) => void;
+  onLayerContentChange?: (id: string, content: string) => void;
   recipientName?: string;
   domainName?: string;
   companyName?: string;
   date?: string;
+  /** Background/chrome fixed; free text & image boxes stay movable. */
+  layoutLocked?: boolean;
+  /** Optional blob:/resolved URL for immediate preview after upload. */
+  bgImageOverride?: string;
+  /** Additional {{key}} placeholder values. */
+  placeholderValues?: Record<string, string>;
 }) {
   const fields: CertTemplateFields = { ...template.fields, ...(overrides || {}) };
   const resolvedCompanyName = companyName || fields.companyName || "";
@@ -755,40 +953,40 @@ function CertificatePreview({
   const layers = template.layers || [];
   const certIdLayer = layers.find((l) => l.type === "certID");
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{ id: string; dx: number; dy: number } | null>(null);
+  const editable = Boolean(onLayerMove || onLayerResize);
+  const pageSpec = getCertPageSpec(template.style.pageFormat);
+  const pageAspect = pageSpec.widthMm / pageSpec.heightMm;
 
-  const resolveLayerContent = (layer: CertLayer) => {
-    if (layer.type === "company") return resolvedCompanyName || layer.content;
-    if (layer.type === "name") return recipientName || layer.content;
-    if (layer.type === "domain") return domainName || layer.content;
-    if (layer.type === "date") return date || layer.content;
-    if (layer.type === "certID") return idForQr || layer.content;
-    return layer.content;
+  const isLayerPositionLocked = (layer: CertLayer) => {
+    if (layer.locked) return true;
+    if (!layoutLocked) return false;
+    // Free text/image boxes remain movable when layout is locked
+    return layer.type !== "text" && layer.type !== "image";
   };
 
-  useEffect(() => {
-    if (!onLayerMove) return;
-    const onMove = (e: MouseEvent) => {
-      if (!dragRef.current || !canvasRef.current) return;
-      const rect = canvasRef.current.getBoundingClientRect();
-      const xPct = ((e.clientX - rect.left - dragRef.current.dx) / rect.width) * 100;
-      const yPct = ((e.clientY - rect.top - dragRef.current.dy) / rect.height) * 100;
-      onLayerMove(dragRef.current.id, Math.max(0, Math.min(100, xPct)), Math.max(0, Math.min(100, yPct)));
-    };
-    const onUp = () => {
-      dragRef.current = null;
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, [onLayerMove]);
+  const resolveLayerContent = (layer: CertLayer) => {
+    let content = layer.content;
+    if (layer.type === "company") content = resolvedCompanyName || layer.content;
+    if (layer.type === "name") content = recipientName || layer.content;
+    if (layer.type === "domain") content = domainName || layer.content;
+    if (layer.type === "date") content = date || layer.content;
+    if (layer.type === "certID") content = idForQr || layer.content;
+    if (placeholderValues && Object.keys(placeholderValues).length > 0) {
+      content = applyPlaceholders(content, placeholderValues);
+    }
+    return content;
+  };
+
+  const bgImageSrc =
+    bgImageOverride ||
+    (template.style.bgImage ? resolveUploadSrc(template.style.bgImage) : "");
+  const overlayOpacity =
+    typeof template.style.bgOverlayOpacity === "number" ? template.style.bgOverlayOpacity : 0;
 
   const base = (
     <div
       ref={canvasRef}
+      data-canvas-root
       className={cn(
         "relative w-full overflow-hidden rounded-xl border",
         template.style.layout === "classic" && "bg-white text-slate-900 border-slate-200",
@@ -796,15 +994,20 @@ function CertificatePreview({
         template.style.layout === "elegant" && "bg-amber-50 text-slate-900 border-amber-200",
       )}
       style={{
-        aspectRatio: String(A4_ASPECT),
+        aspectRatio: String(pageAspect),
         width: "100%",
-        background: template.style.bgColor,
-        backgroundImage: template.style.bgImage ? `url(${template.style.bgImage})` : undefined,
-        backgroundSize: template.style.bgImage ? "cover" : undefined,
-        backgroundPosition: template.style.bgImage ? "center" : undefined,
+        backgroundColor: template.style.bgColor || "#ffffff",
       }}
       onClick={() => onLayerSelect?.(null)}
     >
+      {bgImageSrc ? (
+        <img
+          src={bgImageSrc}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover pointer-events-none select-none"
+          draggable={false}
+        />
+      ) : null}
       {template.style.bgPdf && renderPdfBackground && (
         <object
           data={`${template.style.bgPdf}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
@@ -819,34 +1022,17 @@ function CertificatePreview({
           />
         </object>
       )}
-      {template.style.bgImage && (
+      {bgImageSrc && overlayOpacity > 0 ? (
         <div
-          className="absolute inset-0 bg-white dark:bg-slate-900"
-          style={{ opacity: typeof template.style.bgOverlayOpacity === "number" ? template.style.bgOverlayOpacity : 0.55 }}
-        />
-      )}
-      {template.style.bgPdf && renderPdfBackground && (
-        <div
-          className="absolute inset-0 bg-white dark:bg-slate-900"
-          style={{ opacity: typeof template.style.bgOverlayOpacity === "number" ? template.style.bgOverlayOpacity : 0 }}
-        />
-      )}
-      {fields.watermarkImage ? (
-        <img
-          src={fields.watermarkImage}
-          alt="Watermark"
-          className="absolute inset-0 m-auto max-h-[70%] max-w-[70%] object-contain pointer-events-none opacity-20"
+          className="absolute inset-0 bg-white dark:bg-slate-900 pointer-events-none"
+          style={{ opacity: overlayOpacity }}
         />
       ) : null}
-      {fields.watermarkText ? (
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-          <p
-            className="text-4xl sm:text-6xl font-black uppercase tracking-[0.2em] text-slate-900/10 dark:text-white/10 select-none"
-            style={{ transform: "rotate(-20deg)" }}
-          >
-            {fields.watermarkText}
-          </p>
-        </div>
+      {template.style.bgPdf && renderPdfBackground && overlayOpacity > 0 ? (
+        <div
+          className="absolute inset-0 bg-white dark:bg-slate-900 pointer-events-none"
+          style={{ opacity: overlayOpacity }}
+        />
       ) : null}
       {/* Accent */}
       {template.style.layout === "classic" && (
@@ -863,16 +1049,14 @@ function CertificatePreview({
       <div className="h-full w-full p-8 sm:p-10 flex flex-col items-center justify-between">
         <div className="w-full">
           <div className="flex items-center justify-between">
-            {fields.logoLeftImage ? (
-              <img src={fields.logoLeftImage} alt="Left logo" className="h-10 max-w-[160px] object-contain" />
-            ) : resolvedCompanyName ? (
+            {resolvedCompanyName ? (
               <div className={cn("text-xs font-extrabold tracking-widest uppercase")} style={{ color: template.style.accentColor }}>
                 {resolvedCompanyName}
               </div>
             ) : (
               <div />
             )}
-            {fields.logoRightImage ? <img src={fields.logoRightImage} alt="Right logo" className="h-10 max-w-[160px] object-contain" /> : <div />}
+            <div />
           </div>
 
           <div className="mt-8 text-center">
@@ -933,32 +1117,19 @@ function CertificatePreview({
       {layers.sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0)).map((layer) => {
         if (layer.type === "qr") {
           return (
-            <div
+            <CanvasTextBoxFrame
               key={layer.id}
-              className="absolute"
-              style={{
-                left: "11%",
-                top: "84%",
-                width: `${layer.width}%`,
-                height: `${layer.height}%`,
-                opacity: layer.opacity ?? 1,
-                transform: "translate(-50%, -50%)",
-                outline: selectedLayerID === layer.id ? "2px dashed #2ed573" : "none",
-                cursor: layer.locked ? "default" : "move",
-                zIndex: layer.zIndex ?? 10,
-              }}
-              onMouseDown={(e) => {
-                if (layer.locked || !onLayerMove || !canvasRef.current) return;
-                e.stopPropagation();
-                const rect = canvasRef.current.getBoundingClientRect();
-                dragRef.current = { id: layer.id, dx: e.clientX - rect.left - (layer.x / 100) * rect.width, dy: e.clientY - rect.top - (layer.y / 100) * rect.height };
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                onLayerSelect?.(layer.id);
-              }}
+              geom={{ x: layer.x, y: layer.y, width: layer.width, height: layer.height }}
+              selected={selectedLayerID === layer.id}
+              locked={isLayerPositionLocked(layer)}
+              editable={editable}
+              centerOrigin
+              style={{ opacity: layer.opacity ?? 1, zIndex: layer.zIndex ?? 10 }}
+              onSelect={() => onLayerSelect?.(layer.id)}
+              onMove={(g) => onLayerMove?.(layer.id, g.x, g.y)}
+              onResize={(g) => onLayerResize?.(layer.id, g.width, g.height)}
             >
-              <div className="flex flex-col items-start gap-1">
+              <div className="flex h-full w-full flex-col items-start gap-1">
                 <QRCodeWidget certID={idForQr} size={96} verifyUrl={verifyUrl} />
                 <div
                   className="font-mono"
@@ -969,82 +1140,98 @@ function CertificatePreview({
                     fontStyle: certIdLayer?.fontStyle ?? "normal",
                     textAlign: certIdLayer?.align ?? "left",
                     opacity: certIdLayer?.opacity ?? 1,
-                    width: `${certIdLayer?.width ?? 20}%`,
                   }}
                 >
                   {idForQr}
                 </div>
               </div>
-            </div>
+            </CanvasTextBoxFrame>
           );
         }
         if (layer.type === "certID") return null;
         if (layer.type === "logo" || layer.type === "image" || (layer.type === "signature" && layer.content.startsWith("data:image"))) {
-          const isLogo = layer.type === "logo";
-          const logoAlign = layer.align === "right" ? "right" : "left";
           return (
-            <div
+            <CanvasTextBoxFrame
               key={layer.id}
-              className="absolute"
-              style={{
-                left: isLogo ? (logoAlign === "right" ? "88%" : "12%") : `${layer.x}%`,
-                top: isLogo ? "9%" : `${layer.y}%`,
-                width: `${layer.width}%`,
-                height: `${layer.height}%`,
-                opacity: layer.opacity ?? 1,
-                transform: "translate(-50%, -50%)",
-                outline: selectedLayerID === layer.id ? "2px dashed #2ed573" : "none",
-                cursor: "move",
-                zIndex: layer.zIndex ?? 10,
-              }}
-              onMouseDown={(e) => {
-                if (layer.locked || !onLayerMove || !canvasRef.current) return;
-                e.stopPropagation();
-                const rect = canvasRef.current.getBoundingClientRect();
-                dragRef.current = { id: layer.id, dx: e.clientX - rect.left - (layer.x / 100) * rect.width, dy: e.clientY - rect.top - (layer.y / 100) * rect.height };
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                onLayerSelect?.(layer.id);
-              }}
+              geom={{ x: layer.x, y: layer.y, width: layer.width, height: layer.height }}
+              selected={selectedLayerID === layer.id}
+              locked={isLayerPositionLocked(layer)}
+              editable={editable}
+              centerOrigin
+              style={{ opacity: layer.opacity ?? 1, zIndex: layer.zIndex ?? 10 }}
+              onSelect={() => onLayerSelect?.(layer.id)}
+              onMove={(g) => onLayerMove?.(layer.id, g.x, g.y)}
+              onResize={(g) => onLayerResize?.(layer.id, g.width, g.height)}
             >
-              {layer.content ? <img src={layer.content} alt={layer.label} className="w-full h-full object-contain pointer-events-none" /> : null}
-            </div>
+              {layer.content ? (
+                <img
+                  src={resolveUploadSrc(layer.content)}
+                  alt={layer.label}
+                  className="w-full h-full object-contain pointer-events-none"
+                />
+              ) : null}
+            </CanvasTextBoxFrame>
           );
         }
         return (
-          <div
+          <CanvasTextBoxFrame
             key={layer.id}
-            className="absolute whitespace-pre-wrap select-none"
+            geom={{ x: layer.x, y: layer.y, width: layer.width, height: layer.height }}
+            selected={selectedLayerID === layer.id}
+            locked={isLayerPositionLocked(layer)}
+            editable={editable}
+            centerOrigin
+            divider={normalizeTextBoxDivider(layer.divider)}
+            className="whitespace-pre-wrap"
             style={{
-              left: `${layer.x}%`,
-              top: `${layer.y}%`,
-              width: `${layer.width}%`,
-              minHeight: `${layer.height}%`,
               color: layer.color || "#111827",
               fontSize: `${layer.fontSize ?? 20}px`,
+              fontFamily: layer.fontFamily || 'Georgia, "Times New Roman", serif',
               fontWeight: layer.fontWeight ?? "normal",
               fontStyle: layer.fontStyle ?? "normal",
               opacity: layer.opacity ?? 1,
-              transform: "translate(-50%, -50%)",
               textAlign: layer.align ?? "center",
-              outline: selectedLayerID === layer.id ? "2px dashed #2ed573" : "none",
-              cursor: "move",
               zIndex: layer.zIndex ?? 10,
+              overflow: "hidden",
             }}
-            onMouseDown={(e) => {
-              if (layer.locked || !onLayerMove || !canvasRef.current) return;
-              e.stopPropagation();
-              const rect = canvasRef.current.getBoundingClientRect();
-              dragRef.current = { id: layer.id, dx: e.clientX - rect.left - (layer.x / 100) * rect.width, dy: e.clientY - rect.top - (layer.y / 100) * rect.height };
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onLayerSelect?.(layer.id);
+            onSelect={() => onLayerSelect?.(layer.id)}
+            onMove={(g) => onLayerMove?.(layer.id, g.x, g.y)}
+            onResize={(g) => {
+              onLayerResize?.(layer.id, g.width, g.height);
+              onLayerMove?.(layer.id, g.x, g.y);
             }}
           >
-            {resolveLayerContent(layer)}
-          </div>
+            <div
+              className="h-full w-full outline-none"
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                onLayerSelect?.(layer.id);
+                if (layer.type !== "text") return;
+                const el = e.currentTarget;
+                el.contentEditable = "true";
+                el.focus();
+                const range = document.createRange();
+                range.selectNodeContents(el);
+                const sel = window.getSelection();
+                sel?.removeAllRanges();
+                sel?.addRange(range);
+              }}
+              onBlur={(e) => {
+                const el = e.currentTarget;
+                if (el.contentEditable === "true") {
+                  el.contentEditable = "false";
+                  if (layer.type === "text") {
+                    onLayerContentChange?.(layer.id, el.innerText);
+                  }
+                }
+              }}
+              onMouseDown={(e) => {
+                if ((e.target as HTMLElement)?.isContentEditable) e.stopPropagation();
+              }}
+            >
+              {resolveLayerContent(layer)}
+            </div>
+          </CanvasTextBoxFrame>
         );
       })}
     </div>
@@ -1081,7 +1268,11 @@ function TemplateBuilderModal({
   const [selectedLayerID, setSelectedLayerID] = useState<string | null>(null);
   const [bgUploadError, setBgUploadError] = useState("");
   const [bgUploading, setBgUploading] = useState(false);
+  const [layoutLocked, setLayoutLocked] = useState(false);
+  /** Local blob URL for instant canvas preview after upload (server path may need files.php). */
+  const [bgLocalPreview, setBgLocalPreview] = useState<string>("");
   const bgFileInputRef = useRef<HTMLInputElement | null>(null);
+  const movableImageInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setDraft(initial);
@@ -1089,7 +1280,30 @@ function TemplateBuilderModal({
     setSelectedLayerID(null);
     setBgUploadError("");
     setBgUploading(false);
+    setLayoutLocked(false);
+    setBgLocalPreview((prev) => {
+      if (prev.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(prev);
+        } catch {
+          /* ignore */
+        }
+      }
+      return "";
+    });
   }, [initial, open]);
+
+  useEffect(() => {
+    return () => {
+      if (bgLocalPreview.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(bgLocalPreview);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+  }, [bgLocalPreview]);
 
   const verifyUrl = useMemo(() => buildDraftVerifyUrl(draft, draft.id), [draft]);
   const generatedVerifyLink = verifyUrl;
@@ -1142,7 +1356,25 @@ function TemplateBuilderModal({
     setBgUploading(true);
     try {
       const url = await api.certificates.uploadTemplateAsset(file, "background");
-      setStyle("bgImage", url);
+      const localPreview = URL.createObjectURL(file);
+      setBgLocalPreview((prev) => {
+        if (prev.startsWith("blob:")) {
+          try {
+            URL.revokeObjectURL(prev);
+          } catch {
+            /* ignore */
+          }
+        }
+        return localPreview;
+      });
+      setDraft((p) => ({
+        ...p,
+        style: {
+          ...p.style,
+          bgImage: url,
+          bgOverlayOpacity: 0,
+        },
+      }));
       toast({ title: "Background uploaded", description: file.name });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Upload failed";
@@ -1158,57 +1390,153 @@ function TemplateBuilderModal({
     }));
   };
   const editableLayers = useMemo(
-    () => (draft.layers || []).filter((layer) => IMPORT_EDITABLE_LAYER_TYPES.includes(layer.type)),
+    () =>
+      (draft.layers || []).filter((layer) =>
+        ["company", "name", "domain", "date", "certID", "text", "image", "logo", "signature"].includes(layer.type),
+      ),
     [draft.layers],
   );
+  const autoPlaceholderKeys = useMemo(
+    () =>
+      extractPlaceholderKeys(
+        ...(draft.layers || []).map((l) => String(l.content || "")),
+        String(draft.fields.bodyText || ""),
+        String(draft.fields.title || ""),
+      ),
+    [draft.layers, draft.fields.bodyText, draft.fields.title],
+  );
+
   const removeLayer = (layerId: string) => {
-    setDraft((p) => ({ ...p, layers: (p.layers || []).filter((layer) => layer.id !== layerId) }));
+    setDraft((p) => ({ ...p, layers: (p.layers || []).filter((l) => l.id !== layerId) }));
+    setSelectedLayerID((id) => (id === layerId ? null : id));
   };
+
   const addTextLayer = () => {
     const layer: CertLayer = {
       id: crypto.randomUUID(),
       type: "text",
-      label: "Custom Text",
-      content: "Edit this text",
-      x: 10,
-      y: 10,
-      width: 30,
+      label: "Text",
+      content: "Type here…",
+      x: 50,
+      y: 35,
+      width: 40,
       height: 8,
       color: "#111827",
-      fontSize: 14,
+      fontSize: 16,
+      fontFamily: 'Georgia, "Times New Roman", serif',
       fontWeight: "normal",
       fontStyle: "normal",
-      align: "left",
+      align: "center",
       opacity: 1,
       zIndex: (draft.layers || []).length + 10,
     };
     setDraft((p) => ({ ...p, layers: [...(p.layers || []), layer] }));
     setSelectedLayerID(layer.id);
+    setLayoutLocked(false);
   };
-  const addImageLayer = async () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/png,image/jpeg,image/jpg,image/webp";
-    input.onchange = async () => {
-      const f = input.files?.[0];
-      if (!f) return;
-      const data = await readFileAsDataUrl(f);
-      const layer: CertLayer = {
+
+  /** Add or focus a typed merge-field layer (name / domain / date / company / certID). */
+  const addTypedLayer = (type: (typeof TYPED_CERT_FIELD_TYPES)[number]["type"]) => {
+    const existing = (draft.layers || []).find((l) => l.type === type);
+    if (existing) {
+      setSelectedLayerID(existing.id);
+      setLayoutLocked(false);
+      toast({ title: "Selected", description: `${existing.label} — drag on the canvas to move.` });
+      return;
+    }
+    const meta = TYPED_CERT_FIELD_TYPES.find((t) => t.type === type)!;
+    const defaults = buildDefaultImportLayers(
+      { orgName: defaultCompanyName, orgPrefix, logoUrl: "" },
+      draft.certType,
+    );
+    const fromDefault = defaults.find((l) => l.type === type);
+    let layer: CertLayer;
+    if (fromDefault) {
+      layer = {
+        ...fromDefault,
         id: crypto.randomUUID(),
-        type: "image",
-        label: "Custom Image",
-        content: data,
-        x: 10,
-        y: 10,
-        width: 20,
-        height: 20,
+        content:
+          type === "company"
+            ? defaultCompanyName
+            : type === "certID"
+              ? sampleCertIdPattern(draft.certType, orgPrefix)
+              : meta.sample,
+        locked: false,
+      };
+    } else {
+      layer = {
+        id: crypto.randomUUID(),
+        type,
+        label: meta.label,
+        content: type === "company" ? defaultCompanyName : meta.sample,
+        x: 50,
+        y: 40,
+        width: 50,
+        height: 8,
+        fontSize: 20,
+        fontWeight: "bold",
+        color: "#1A6B3C",
+        align: "center",
         opacity: 1,
         zIndex: (draft.layers || []).length + 10,
+        locked: false,
       };
-      setDraft((p) => ({ ...p, layers: [...(p.layers || []), layer] }));
-      setSelectedLayerID(layer.id);
+    }
+    setDraft((p) => ({ ...p, layers: [...(p.layers || []), layer] }));
+    setSelectedLayerID(layer.id);
+    setLayoutLocked(false);
+    toast({ title: "Placeholder added", description: `${meta.label} fills automatically when you issue.` });
+  };
+
+  const ensureTypedLayers = () => {
+    const next = sanitizeImportLayers(draft.layers || [], {
+      orgName: defaultCompanyName,
+      orgPrefix,
+      logoUrl: (draft.layers || []).find((l) => l.type === "logo" || l.type === "image")?.content || "",
+    }, draft.certType).map((l) => ({ ...l, locked: false }));
+    const extras = (draft.layers || []).filter(
+      (l) => l.type === "text" || l.type === "image" || l.type === "signature",
+    );
+    setDraft((p) => ({ ...p, layers: [...next, ...extras] }));
+    setLayoutLocked(false);
+    toast({ title: "Placeholders ready", description: "Name, Domain, Date, Company, Cert ID, and QR are on the canvas — drag to place." });
+  };
+
+  const addImageLayer = async (file?: File) => {
+    const pick = async (): Promise<File | null> => {
+      if (file) return file;
+      return await new Promise((resolve) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "image/png,image/jpeg,image/jpg,image/webp";
+        input.onchange = () => resolve(input.files?.[0] || null);
+        input.click();
+      });
     };
-    input.click();
+    const f = await pick();
+    if (!f) return;
+    if (f.size > MAX_BG_IMAGE_UPLOAD_BYTES) {
+      toast({ variant: "destructive", title: "Image too large", description: "Image must be 50 MB or smaller." });
+      return;
+    }
+    const data = await readFileAsDataUrl(f);
+    const layer: CertLayer = {
+      id: crypto.randomUUID(),
+      type: "image",
+      label: "Image",
+      content: data,
+      x: 20,
+      y: 18,
+      width: 18,
+      height: 18,
+      opacity: 1,
+      zIndex: (draft.layers || []).length + 10,
+      locked: false,
+    };
+    setDraft((p) => ({ ...p, layers: [...(p.layers || []), layer] }));
+    setSelectedLayerID(layer.id);
+    setLayoutLocked(false);
+    toast({ title: "Image added", description: "Drag the image on the canvas to place it (logo, seal, etc.)." });
   };
 
   const exportJson = () => {
@@ -1223,16 +1551,16 @@ function TemplateBuilderModal({
     const target = previewRef.current;
     if (!target) return;
 
+    const page = getCertPageSpec(draft.style.pageFormat);
     const printStyle = document.createElement("style");
     const styleId = `cert-print-${crypto.randomUUID()}`;
     printStyle.id = styleId;
 
     // Hide everything except previewRef container during print.
-    // We also ensure the preview fills the page width.
     printStyle.textContent = `
 @media print {
   @page {
-    size: A4 landscape;
+    size: ${page.cssPageSize};
     margin: 0;
   }
   body * { visibility: hidden !important; }
@@ -1243,19 +1571,26 @@ function TemplateBuilderModal({
     padding: 0 !important;
     margin: 0 !important;
   }
+  #${styleId}-scope [data-canvas-root] {
+    width: ${page.widthMm}mm !important;
+    height: ${page.heightMm}mm !important;
+    max-width: none !important;
+    aspect-ratio: auto !important;
+    border-radius: 0 !important;
+  }
 }`;
     document.head.appendChild(printStyle);
 
     const wrapper = document.createElement("div");
     wrapper.id = `${styleId}-scope`;
     wrapper.style.background = "white";
-    wrapper.style.padding = "24px";
+    wrapper.style.padding = "0";
     wrapper.appendChild(target.cloneNode(true));
     document.body.appendChild(wrapper);
 
     try {
       window.print();
-      toast({ title: "Print dialog opened", description: "Choose “Save as PDF” to export." });
+      toast({ title: "Print dialog opened", description: `${page.label} — choose “Save as PDF”.` });
     } finally {
       wrapper.remove();
       printStyle.remove();
@@ -1297,20 +1632,42 @@ function TemplateBuilderModal({
     }
   };
 
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl max-h-[min(90dvh,100%)] overflow-y-auto p-0">
-        <DialogHeader className="px-6 pt-5 pb-3 border-b">
-          <div>
-            <DialogTitle className="text-base">Template Builder</DialogTitle>
-            <p className="text-xs text-muted-foreground">Live preview + export</p>
-          </div>
-        </DialogHeader>
+  if (!open) return null;
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-0">
-          {/* LEFT: Preview */}
-          <div className="p-6 bg-muted/15 border-b lg:border-b-0 lg:border-r">
-            <div className="flex items-center justify-between mb-3">
+  return (
+    <div className="fixed inset-0 z-50 bg-background flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b bg-background shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <Button variant="ghost" size="sm" className="gap-1 shrink-0" onClick={() => onOpenChange(false)}>
+            <ChevronLeft className="h-4 w-4" /> Back
+          </Button>
+          <div className="min-w-0">
+            <h1 className="text-sm font-bold truncate">Template Builder</h1>
+            <p className="text-[10px] text-muted-foreground truncate">
+              Full page · drag text boxes · corner resize · like Google Slides
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+          <Button variant="outline" size="sm" className="h-8 text-xs" onClick={saveDraft}>
+            Save Draft
+          </Button>
+          <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={generateCertificate}>
+            <Award className="h-3.5 w-3.5" />
+            Generate
+          </Button>
+          <Button size="sm" className="h-8 text-xs gap-1.5" onClick={saveAndActivate}>
+            <Send className="h-3.5 w-3.5" />
+            Save & Activate
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 h-full min-h-0">
+          {/* LEFT: Preview stays put — does not scroll with right panel */}
+          <div className="flex flex-col p-4 sm:p-6 bg-muted/15 border-b lg:border-b-0 lg:border-r max-h-[42vh] lg:max-h-none lg:h-full min-h-0 overflow-hidden">
+            <div className="flex items-center justify-between mb-3 shrink-0">
               <div className="flex items-center gap-2">
                 <Badge variant={statusBadgeVariant(draft.status)} className="text-[10px]">{draft.status}</Badge>
                 <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[draft.certType])}>
@@ -1329,7 +1686,150 @@ function TemplateBuilderModal({
               </div>
             </div>
 
-            <div ref={previewRef} className="max-w-[720px] mx-auto">
+            <div ref={previewRef} className="max-w-[960px] mx-auto w-full flex-1 min-h-0 overflow-y-auto lg:overflow-hidden">
+              {/* Word / Slides-style formatting ribbon for selected text layer */}
+              {(() => {
+                const selected = (draft.layers || []).find((l) => l.id === selectedLayerID);
+                const isText =
+                  selected &&
+                  ["text", "company", "name", "domain", "date", "certID"].includes(selected.type);
+                if (!selected || !isText) {
+                  return (
+                    <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border bg-muted/30 px-2 py-1.5 text-[11px] text-muted-foreground">
+                      <Type className="h-3.5 w-3.5" />
+                      {layoutLocked
+                        ? "Layout locked · unlock to move placeholders · free text/image still movable"
+                        : "Drag boxes to move · corners to resize · click Name/Domain/Text to add placeholders"}
+                      <Button
+                        type="button"
+                        variant={layoutLocked ? "default" : "outline"}
+                        size="sm"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => setLayoutLocked((v) => !v)}
+                      >
+                        {layoutLocked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                        {layoutLocked ? "Layout locked" : "Lock layout"}
+                      </Button>
+                      {TYPED_CERT_FIELD_TYPES.map((t) => (
+                        <Button
+                          key={t.type}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-xs gap-1"
+                          onClick={() => addTypedLayer(t.type)}
+                          title={`Typed merge field: ${t.type}`}
+                        >
+                          <Variable className="h-3 w-3" />
+                          {t.label}
+                        </Button>
+                      ))}
+                      <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
+                        <Plus className="h-3 w-3" /> Text box
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addImageLayer}>
+                        <ImageIcon className="h-3 w-3" />Image
+                      </Button>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="mb-2 flex flex-wrap items-center gap-1 rounded-md border bg-card px-2 py-1.5 shadow-sm">
+                    <Button
+                      type="button"
+                      variant={layoutLocked ? "default" : "outline"}
+                      size="sm"
+                      className="h-7 text-xs gap-1"
+                      onClick={() => setLayoutLocked((v) => !v)}
+                    >
+                      {layoutLocked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                      {layoutLocked ? "Locked" : "Lock"}
+                    </Button>
+                    <Select
+                      value={matchTemplateFontFace(selected.fontFamily)}
+                      onValueChange={(v) => setLayer(selected.id, { fontFamily: v })}
+                    >
+                      <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue placeholder="Font" /></SelectTrigger>
+                      <SelectContent>
+                        {TEMPLATE_FONT_FACES.map((f) => (
+                          <SelectItem key={f.label} value={f.value}>
+                            <span style={{ fontFamily: f.value }}>{f.label}</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={String(parseInt(matchTemplateFontSize(selected.fontSize ?? 20), 10))}
+                      onValueChange={(v) => setLayer(selected.id, { fontSize: Number(v) })}
+                    >
+                      <SelectTrigger className="h-8 w-[72px] text-xs"><SelectValue placeholder="Size" /></SelectTrigger>
+                      <SelectContent>
+                        {TEMPLATE_FONT_SIZES.map((s) => (
+                          <SelectItem key={s.value} value={String(parseInt(s.value, 10))}>{s.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type="button"
+                      variant={selected.fontWeight === "bold" ? "default" : "ghost"}
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => setLayer(selected.id, { fontWeight: selected.fontWeight === "bold" ? "normal" : "bold" })}
+                    >
+                      <Bold className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={selected.fontStyle === "italic" ? "default" : "ghost"}
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => setLayer(selected.id, { fontStyle: selected.fontStyle === "italic" ? "normal" : "italic" })}
+                    >
+                      <Italic className="h-3.5 w-3.5" />
+                    </Button>
+                    <Input
+                      type="color"
+                      className="h-8 w-10 p-1 cursor-pointer"
+                      value={selected.color || "#111827"}
+                      onChange={(e) => setLayer(selected.id, { color: e.target.value })}
+                      title="Text color"
+                    />
+                    <Select value={selected.align ?? "center"} onValueChange={(v) => setLayer(selected.id, { align: v as "left" | "center" | "right" })}>
+                      <SelectTrigger className="h-8 w-[100px] text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="left">Left</SelectItem>
+                        <SelectItem value="center">Center</SelectItem>
+                        <SelectItem value="right">Right</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type="button"
+                      variant={selected.divider && selected.divider !== "none" ? "default" : "outline"}
+                      size="sm"
+                      className="h-8 text-xs gap-1"
+                      title="Optional divider line on this text box (bottom → top → off)"
+                      onClick={() =>
+                        setLayer(selected.id, {
+                          divider: cycleTextBoxDivider(normalizeTextBoxDivider(selected.divider)),
+                        })
+                      }
+                    >
+                      <Minus className="h-3.5 w-3.5" />
+                      {selected.divider === "bottom"
+                        ? "Line: bottom"
+                        : selected.divider === "top"
+                          ? "Line: top"
+                          : "Add line"}
+                    </Button>
+                    <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
+                      <Plus className="h-3 w-3" />Text box
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addImageLayer}>
+                      <ImageIcon className="h-3 w-3" />Image
+                    </Button>
+                  </div>
+                );
+              })()}
               <CertificatePreview
                 template={draft}
                 overrides={previewOverrides}
@@ -1338,19 +1838,25 @@ function TemplateBuilderModal({
                 selectedLayerID={selectedLayerID}
                 onLayerSelect={setSelectedLayerID}
                 onLayerMove={(id, x, y) => setLayer(id, { x, y })}
+                onLayerResize={(id, width, height) => setLayer(id, { width, height })}
+                onLayerContentChange={(id, content) => {
+                  setLayer(id, { content });
+                }}
                 recipientName={draft.fields.recipientName}
                 domainName={draft.fields.domainName}
                 companyName={draft.fields.companyName || defaultCompanyName}
                 date={new Date().toISOString().slice(0, 10)}
+                layoutLocked={layoutLocked}
+                bgImageOverride={bgLocalPreview || undefined}
               />
             </div>
           </div>
 
-          {/* RIGHT: Form */}
-          <div className="p-6">
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="sm:col-span-2">
+          {/* RIGHT: Form — only this column scrolls */}
+          <div className="p-4 sm:p-6 h-auto lg:h-full min-h-0 overflow-y-auto overscroll-contain">
+            <div className="space-y-4 pb-8">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-3">
                   <Label className="text-xs">Template Name</Label>
                   <Input value={draft.name} onChange={(e) => setDraft((p) => ({ ...p, name: e.target.value }))} placeholder="Template Name" />
                 </div>
@@ -1379,30 +1885,169 @@ function TemplateBuilderModal({
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="mt-1 text-[11px] text-muted-foreground">Fixed output size: {A4_WIDTH_CM}cm x {A4_HEIGHT_CM}cm (A4 Landscape)</p>
                 </div>
 
                 <div>
-                  <Label className="text-xs">Layout</Label>
-                  <Select value={draft.style.layout} onValueChange={(v) => setStyle("layout", v as LayoutStyle)}>
+                  <Label className="text-xs">Page size</Label>
+                  <Select
+                    value={resolveCertPageFormat(draft.style.pageFormat)}
+                    disabled={layoutLocked}
+                    onValueChange={(v) => setStyle("pageFormat", v as CertPageFormat)}
+                  >
                     <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Select layout" />
+                      <SelectValue placeholder="Select page size" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="classic">classic</SelectItem>
-                      <SelectItem value="dark-pro">dark-pro</SelectItem>
-                      <SelectItem value="elegant">elegant</SelectItem>
+                      {CERT_PAGE_FORMATS.map((f) => (
+                        <SelectItem key={f.id} value={f.id}>
+                          {f.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
+                  {(() => {
+                    const page = getCertPageSpec(draft.style.pageFormat);
+                    return (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {page.widthMm} × {page.heightMm} mm · {page.hint}
+                      </p>
+                    );
+                  })()}
+                </div>
+
+                <div>
+                  <Label className="text-xs">Theme</Label>
+                  <Select
+                    value={draft.style.layout}
+                    disabled={layoutLocked}
+                    onValueChange={(v) => setStyle("layout", v as LayoutStyle)}
+                  >
+                    <SelectTrigger className="h-10">
+                      <SelectValue placeholder="Select theme" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="classic">Classic</SelectItem>
+                      <SelectItem value="dark-pro">Dark Pro</SelectItem>
+                      <SelectItem value="elegant">Elegant</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="mt-1 text-[11px] text-muted-foreground">Colors / accent style only</p>
                 </div>
               </div>
 
               <Card>
                 <CardHeader className="py-3 px-4">
                   <CardTitle className="text-sm">Style</CardTitle>
-                  <CardDescription className="text-xs">Background and accent colors</CardDescription>
+                  <CardDescription className="text-xs">
+                    {layoutLocked
+                      ? "Layout locked — unlock to change background / colors"
+                      : "Background and accent colors"}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="px-4 pb-4 space-y-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Button
+                      type="button"
+                      variant={layoutLocked ? "default" : "outline"}
+                      size="sm"
+                      className="h-7 text-xs gap-1"
+                      onClick={() => setLayoutLocked((v) => !v)}
+                    >
+                      {layoutLocked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                      {layoutLocked ? "Layout locked" : "Lock layout"}
+                    </Button>
+                  </div>
+
+                  {/* Background + movable image side by side */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="rounded-lg border p-3 space-y-2">
+                      <Label className="text-xs">Background image</Label>
+                      <p className="text-[10px] text-muted-foreground">
+                        Full-page backdrop (not movable).
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          ref={bgFileInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/jpg,image/webp"
+                          className="text-xs max-w-full file:mr-2 file:rounded file:border file:border-input file:bg-background file:px-2 file:py-1"
+                          disabled={bgUploading}
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) void handleBackgroundImageUpload(f);
+                            e.target.value = "";
+                          }}
+                        />
+                        {bgUploading ? <span className="text-xs text-muted-foreground">Uploading…</span> : null}
+                        {draft.style.bgImage ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 text-destructive hover:text-destructive"
+                            onClick={() => {
+                              setStyle("bgImage", undefined);
+                              setBgLocalPreview((prev) => {
+                                if (prev.startsWith("blob:")) {
+                                  try {
+                                    URL.revokeObjectURL(prev);
+                                  } catch {
+                                    /* ignore */
+                                  }
+                                }
+                                return "";
+                              });
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        ) : null}
+                      </div>
+                      {bgUploadError ? <p className="text-xs text-destructive">{bgUploadError}</p> : null}
+                      {draft.style.bgImage || bgLocalPreview ? (
+                        <img
+                          src={bgLocalPreview || resolveUploadSrc(draft.style.bgImage)}
+                          alt="Background preview"
+                          className="max-h-20 w-full rounded border object-contain bg-muted/20"
+                        />
+                      ) : null}
+                    </div>
+
+                    <div className="rounded-lg border p-3 space-y-2">
+                      <Label className="text-xs">Movable image</Label>
+                      <p className="text-[10px] text-muted-foreground">
+                        Logo, seal, signature — drag on the canvas.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          ref={movableImageInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/jpg,image/webp"
+                          className="hidden"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) void addImageLayer(f);
+                            e.target.value = "";
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8 text-xs gap-1"
+                          onClick={() => movableImageInputRef.current?.click()}
+                        >
+                          <ImageIcon className="h-3.5 w-3.5" />
+                          Upload image
+                        </Button>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        Add more images anytime — each becomes its own movable box.
+                      </p>
+                    </div>
+                  </div>
+
+                  <fieldset disabled={layoutLocked} className={cn(layoutLocked && "opacity-60")}>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <Label className="text-xs">Background</Label>
@@ -1434,49 +2079,12 @@ function TemplateBuilderModal({
                           min={0}
                           max={1}
                           step={0.05}
-                          value={draft.style.bgOverlayOpacity ?? 0.55}
+                          value={draft.style.bgOverlayOpacity ?? 0}
                           onChange={(e) => setStyle("bgOverlayOpacity", Number(e.target.value))}
                         />
-                      </div>
-                      <div className="mt-3">
-                        <Label className="text-xs">Background image</Label>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          Optional. Upload a JPG/PNG to use as the certificate background (covers the canvas). Max 50 MB.
+                        <p className="text-[10px] text-muted-foreground mt-1">
+                          0 = show photo fully. Raise only if text needs a lighter wash.
                         </p>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <input
-                            ref={bgFileInputRef}
-                            type="file"
-                            accept="image/png,image/jpeg,image/jpg,image/webp"
-                            className="text-xs file:mr-2 file:rounded file:border file:border-input file:bg-background file:px-2 file:py-1"
-                            disabled={bgUploading}
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (f) void handleBackgroundImageUpload(f);
-                              e.target.value = "";
-                            }}
-                          />
-                          {bgUploading ? <span className="text-xs text-muted-foreground">Uploading…</span> : null}
-                          {draft.style.bgImage ? (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 text-destructive hover:text-destructive"
-                              onClick={() => setStyle("bgImage", undefined)}
-                            >
-                              Remove
-                            </Button>
-                          ) : null}
-                        </div>
-                        {bgUploadError ? <p className="text-xs text-destructive mt-1.5">{bgUploadError}</p> : null}
-                        {draft.style.bgImage ? (
-                          <img
-                            src={draft.style.bgImage}
-                            alt="Background preview"
-                            className="mt-2 max-h-24 rounded border object-contain bg-muted/20"
-                          />
-                        ) : null}
                       </div>
                     </div>
 
@@ -1505,179 +2113,152 @@ function TemplateBuilderModal({
                       </div>
                     </div>
                   </div>
+                  </fieldset>
                 </CardContent>
               </Card>
 
               <Card>
                 <CardHeader className="py-3 px-4">
-                  <CardTitle className="text-sm">Editable Layers</CardTitle>
-                  <CardDescription className="text-xs">Company, Name, Domain, Date, QR, Certificate ID, and optional Logo are editable.</CardDescription>
+                  <CardTitle className="text-sm">Text & placeholders</CardTitle>
+                  <CardDescription className="text-xs">
+                    Add a box → drag on the canvas → edit text. Placeholders like Name fill when you issue.
+                  </CardDescription>
                 </CardHeader>
                 <CardContent className="px-4 pb-4 space-y-3">
-                  {editableLayers.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No editable import layers found.</p>
-                  ) : (
-                    <div className="space-y-3">
-                      {editableLayers.map((layer) => (
-                        <div
-                          key={layer.id}
-                          className={cn("rounded-lg border p-3 space-y-2 cursor-pointer", selectedLayerID === layer.id && "border-green-500 ring-1 ring-green-500")}
-                          onClick={() => setSelectedLayerID(layer.id)}
+                  <div className="flex flex-wrap gap-1.5">
+                    {TYPED_CERT_FIELD_TYPES.map((t) => {
+                      const present = (draft.layers || []).some((l) => l.type === t.type);
+                      return (
+                        <Button
+                          key={t.type}
+                          type="button"
+                          variant={present ? "secondary" : "outline"}
+                          size="sm"
+                          className="h-7 text-xs gap-1"
+                          onClick={() => addTypedLayer(t.type)}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <Input
-                              value={layer.label}
-                              onChange={(e) => setLayer(layer.id, { label: e.target.value })}
-                              className="h-8 text-xs"
-                            />
+                          <Variable className="h-3 w-3" />
+                          {t.label}
+                          {present ? " ✓" : ""}
+                        </Button>
+                      );
+                    })}
+                    <Button type="button" variant="default" size="sm" className="h-7 text-xs gap-1" onClick={addTextLayer}>
+                      <Plus className="h-3 w-3" /> Text box
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs gap-1"
+                      onClick={() => movableImageInputRef.current?.click()}
+                    >
+                      <ImageIcon className="h-3 w-3" /> Image
+                    </Button>
+                    <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={ensureTypedLayers}>
+                      Add all placeholders
+                    </Button>
+                  </div>
+                  {autoPlaceholderKeys.length > 0 ? (
+                    <div className="rounded-md border bg-muted/20 p-2">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                        Auto-detected {'{{...}}'} placeholders
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {autoPlaceholderKeys.map((k) => (
+                          <code key={k} className="rounded bg-background px-1.5 py-0.5 text-[10px]">{`{{${k}}}`}</code>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {editableLayers.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No text or images yet. Click <strong>Name</strong>, <strong>Domain</strong>, or <strong>Text box</strong> to start.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {editableLayers.map((layer) => {
+                        const isImage = layer.type === "image" || layer.type === "logo" || layer.type === "signature";
+                        const isPlaceholder = ["name", "domain", "date", "company", "certID"].includes(layer.type);
+                        return (
+                          <div
+                            key={layer.id}
+                            className={cn(
+                              "rounded-lg border p-3 space-y-2 cursor-pointer",
+                              selectedLayerID === layer.id && "border-primary ring-1 ring-primary",
+                            )}
+                            onClick={() => setSelectedLayerID(layer.id)}
+                          >
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className="text-[10px] shrink-0 capitalize">
+                                {isPlaceholder ? `Placeholder · ${layer.type}` : layer.type}
+                              </Badge>
+                              <Input
+                                value={layer.label}
+                                onChange={(e) => setLayer(layer.id, { label: e.target.value })}
+                                className="h-8 text-xs"
+                                placeholder="Label"
+                              />
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 shrink-0 text-destructive"
+                                title="Remove"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  removeLayer(layer.id);
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                            {selectedLayerID === layer.id && !isImage ? (
+                              <div className="space-y-2">
+                                <div>
+                                  <Label className="text-[11px]">
+                                    {isPlaceholder ? "Preview text (replaced when issuing)" : "Text"}
+                                  </Label>
+                                  <Textarea
+                                    rows={2}
+                                    value={layer.content || ""}
+                                    onChange={(e) => {
+                                      const value = e.target.value;
+                                      setLayer(layer.id, { content: value });
+                                      if (layer.type === "company") setField("companyName", value);
+                                      if (layer.type === "name") setField("recipientName", value);
+                                      if (layer.type === "domain") setField("domainName", value);
+                                    }}
+                                    placeholder={
+                                      isPlaceholder
+                                        ? `e.g. ${TYPED_CERT_FIELD_TYPES.find((t) => t.type === layer.type)?.sample || "<<value>>"}`
+                                        : "Type any text…"
+                                    }
+                                  />
+                                </div>
+                                <p className="text-[10px] text-muted-foreground">
+                                  Drag on the left canvas to move · use corner handles to resize · toolbar for font/size.
+                                </p>
+                              </div>
+                            ) : null}
+                            {selectedLayerID === layer.id && isImage ? (
+                              <div className="space-y-2">
+                                <p className="text-[10px] text-muted-foreground">
+                                  Drag on the canvas to move this image. Corner handles resize it.
+                                </p>
+                                {layer.content ? (
+                                  <img
+                                    src={resolveUploadSrc(layer.content)}
+                                    alt={layer.label}
+                                    className="h-14 object-contain rounded border bg-muted/10 p-1"
+                                  />
+                                ) : null}
+                              </div>
+                            ) : null}
                           </div>
-                          {selectedLayerID === layer.id && layer.type !== "qr" && layer.type !== "certID" ? <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                            <div>
-                              <Label className="text-[11px]">X (%)</Label>
-                              <Input type="number" value={layer.x} onChange={(e) => setLayer(layer.id, { x: Number(e.target.value) })} />
-                            </div>
-                            <div>
-                              <Label className="text-[11px]">Y (%)</Label>
-                              <Input type="number" value={layer.y} onChange={(e) => setLayer(layer.id, { y: Number(e.target.value) })} />
-                            </div>
-                            <div>
-                              <Label className="text-[11px]">Width (%)</Label>
-                              <Input type="number" value={layer.width} onChange={(e) => setLayer(layer.id, { width: Number(e.target.value) })} />
-                            </div>
-                            <div>
-                              <Label className="text-[11px]">Height (%)</Label>
-                              <Input type="number" value={layer.height} onChange={(e) => setLayer(layer.id, { height: Number(e.target.value) })} />
-                            </div>
-                            <div>
-                              <Label className="text-[11px]">Opacity</Label>
-                              <Input type="number" min={0} max={1} step={0.05} value={layer.opacity ?? 1} onChange={(e) => setLayer(layer.id, { opacity: Number(e.target.value) })} />
-                            </div>
-                          </div> : null}
-                          {selectedLayerID === layer.id && (layer.type === "name" || layer.type === "company" || layer.type === "domain" || layer.type === "date" || layer.type === "certID") ? (
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                              <div className="sm:col-span-3">
-                                <Label className="text-[11px]">Content</Label>
-                                <Textarea
-                                  rows={2}
-                                  value={layer.content || ""}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    setLayer(layer.id, { content: value });
-                                    if (layer.type === "company") setField("companyName", value);
-                                  }}
-                                />
-                              </div>
-                              <div>
-                                <Label className="text-[11px]">Color</Label>
-                                <Input value={layer.color || "#111827"} onChange={(e) => setLayer(layer.id, { color: e.target.value })} />
-                              </div>
-                              <div>
-                                <Label className="text-[11px]">Font Size</Label>
-                                <Input type="number" value={layer.fontSize ?? 20} onChange={(e) => setLayer(layer.id, { fontSize: Number(e.target.value) })} />
-                              </div>
-                              <div>
-                                <Label className="text-[11px]">Font Weight</Label>
-                                <Select value={layer.fontWeight ?? "normal"} onValueChange={(v) => setLayer(layer.id, { fontWeight: v as "normal" | "bold" })}>
-                                  <SelectTrigger><SelectValue /></SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="normal">Normal</SelectItem>
-                                    <SelectItem value="bold">Bold</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                              <div>
-                                <Label className="text-[11px]">Font Style</Label>
-                                <Select value={layer.fontStyle ?? "normal"} onValueChange={(v) => setLayer(layer.id, { fontStyle: v as "normal" | "italic" })}>
-                                  <SelectTrigger><SelectValue /></SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="normal">Normal</SelectItem>
-                                    <SelectItem value="italic">Italic</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                              <div>
-                                <Label className="text-[11px]">Align</Label>
-                                <Select value={layer.align ?? "center"} onValueChange={(v) => setLayer(layer.id, { align: v as "left" | "center" | "right" })}>
-                                  <SelectTrigger><SelectValue /></SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="left">Left</SelectItem>
-                                    <SelectItem value="center">Center</SelectItem>
-                                    <SelectItem value="right">Right</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            </div>
-                          ) : selectedLayerID === layer.id && layer.type === "qr" ? (
-                            <p className="text-xs text-muted-foreground">QR is fixed at bottom-left. Certificate ID is fixed directly below the QR.</p>
-                          ) : selectedLayerID === layer.id && layer.type === "logo" ? (
-                            <div className="space-y-2">
-                              <div className="grid grid-cols-2 gap-2">
-                                <div>
-                                  <Label className="text-[11px]">Width (%)</Label>
-                                  <Input type="number" value={layer.width} onChange={(e) => setLayer(layer.id, { width: Number(e.target.value) })} />
-                                </div>
-                                <div>
-                                  <Label className="text-[11px]">Height (%)</Label>
-                                  <Input type="number" value={layer.height} onChange={(e) => setLayer(layer.id, { height: Number(e.target.value) })} />
-                                </div>
-                              </div>
-                              <div>
-                                <Label className="text-[11px]">Logo Position</Label>
-                                <Select value={layer.align === "right" ? "right" : "left"} onValueChange={(v) => setLayer(layer.id, { align: v as "left" | "right" })}>
-                                  <SelectTrigger><SelectValue /></SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="left">Top Left</SelectItem>
-                                    <SelectItem value="right">Top Right</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                              <div className="flex gap-2">
-                                <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => {
-                                  const input = document.createElement("input");
-                                  input.type = "file";
-                                  input.accept = "image/png,image/jpeg,image/jpg,image/webp";
-                                  input.onchange = async () => {
-                                    const f = input.files?.[0];
-                                    if (!f) return;
-                                    const data = await readFileAsDataUrl(f);
-                                    setLayer(layer.id, { content: data });
-                                  };
-                                  input.click();
-                                }}>
-                                  Upload/Replace Logo
-                                </Button>
-                                <Button type="button" variant="ghost" size="sm" className="h-8 text-destructive hover:text-destructive" onClick={() => setLayer(layer.id, { content: "" })}>
-                                  Clear Logo
-                                </Button>
-                              </div>
-                              {layer.content ? <img src={layer.content} alt={layer.label} className="h-16 object-contain rounded border bg-muted/10 p-1" /> : null}
-                            </div>
-                          ) : selectedLayerID === layer.id ? (
-                            <div className="space-y-2">
-                              <div className="flex gap-2">
-                                <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => {
-                                  const input = document.createElement("input");
-                                  input.type = "file";
-                                  input.accept = "image/png,image/jpeg,image/jpg,image/webp";
-                                  input.onchange = async () => {
-                                    const f = input.files?.[0];
-                                    if (!f) return;
-                                    const data = await readFileAsDataUrl(f);
-                                    setLayer(layer.id, { content: data });
-                                  };
-                                  input.click();
-                                }}>
-                                  Replace Image
-                                </Button>
-                                <Button type="button" variant="ghost" size="sm" className="h-8 text-destructive hover:text-destructive" onClick={() => setLayer(layer.id, { content: "" })}>
-                                  Clear Image
-                                </Button>
-                              </div>
-                              {layer.content ? <img src={layer.content} alt={layer.label} className="h-16 object-contain rounded border bg-muted/10 p-1" /> : null}
-                            </div>
-                          ) : null}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
@@ -1685,173 +2266,35 @@ function TemplateBuilderModal({
 
               <Card>
                 <CardHeader className="py-3 px-4">
-                  <CardTitle className="text-sm">Fields</CardTitle>
+                  <CardTitle className="text-sm">Issue preview defaults</CardTitle>
                   <CardDescription className="text-xs">
-                    {(draft.layers || []).length > 0
-                      ? "This template uses editable layers. Edit field content in the Layers panel above."
-                      : "These populate the certificate preview"}
+                    Optional sample values for the canvas preview. Real values are filled when you issue.
                   </CardDescription>
                 </CardHeader>
-                {(draft.layers || []).length > 0 ? (
-                  <CardContent className="px-4 pb-4">
-                    <p className="text-xs text-muted-foreground">
-                      This template uses editable layers. Edit field content in the Layers panel above.
-                    </p>
-                  </CardContent>
-                ) : (
                 <CardContent className="px-4 pb-4 space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="sm:col-span-2">
                       <Label className="text-xs">Title</Label>
                       <Input value={draft.fields.title} onChange={(e) => setField("title", e.target.value)} />
                     </div>
-                    <div className="sm:col-span-2">
-                      <Label className="text-xs">Company Name</Label>
-                      <Input
-                        value={draft.fields.companyName || defaultCompanyName}
-                        onChange={(e) => setField("companyName", e.target.value)}
-                      />
-                    </div>
                     <div>
-                      <Label className="text-xs">Recipient Name</Label>
+                      <Label className="text-xs">Sample recipient name</Label>
                       <Input value={draft.fields.recipientName} onChange={(e) => setField("recipientName", e.target.value)} />
                     </div>
                     <div>
-                      <Label className="text-xs">Domain / Course</Label>
+                      <Label className="text-xs">Sample domain / course</Label>
                       <Input value={draft.fields.domainName} onChange={(e) => setField("domainName", e.target.value)} />
                     </div>
-                    <div className="sm:col-span-2">
-                      <Label className="text-xs">Body Text</Label>
-                      <Textarea value={draft.fields.bodyText} onChange={(e) => setField("bodyText", e.target.value)} rows={3} />
-                    </div>
                     <div>
-                      <Label className="text-xs">Signatory Name</Label>
+                      <Label className="text-xs">Signatory name</Label>
                       <Input value={draft.fields.signatoryName} onChange={(e) => setField("signatoryName", e.target.value)} />
                     </div>
                     <div>
-                      <Label className="text-xs">Signatory Title</Label>
+                      <Label className="text-xs">Signatory title</Label>
                       <Input value={draft.fields.signatoryTitle} onChange={(e) => setField("signatoryTitle", e.target.value)} />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <Label className="text-xs">Signature Image (optional)</Label>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-8"
-                          onClick={() => {
-                            const input = document.createElement("input");
-                            input.type = "file";
-                            input.accept = "image/png,image/jpeg,image/jpg,image/webp";
-                            input.onchange = async () => {
-                              const f = input.files?.[0];
-                              if (!f) return;
-                              if (f.size > MAX_SIGNATURE_UPLOAD_BYTES) {
-                                toast({
-                                  variant: "destructive",
-                                  title: "Image too large",
-                                  description: "Signature image must be 50 MB or smaller.",
-                                });
-                                return;
-                              }
-                              const data = await readFileAsDataUrl(f);
-                              setField("signatureImage", data);
-                            };
-                            input.click();
-                          }}
-                        >
-                          Import Signature
-                        </Button>
-                        {draft.fields.signatureImage ? (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 text-destructive hover:text-destructive"
-                            onClick={() => setField("signatureImage", "")}
-                          >
-                            Clear
-                          </Button>
-                        ) : null}
-                      </div>
-                      {draft.fields.signatureImage ? (
-                        <div className="mt-2 rounded-md border bg-muted/20 p-2">
-                          <img src={draft.fields.signatureImage} alt="Signature preview" className="h-10 max-w-[180px] object-contain" />
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="sm:col-span-2">
-                      <Label className="text-xs">Watermark Text (optional)</Label>
-                      <Input
-                        value={draft.fields.watermarkText || ""}
-                        onChange={(e) => setField("watermarkText", e.target.value)}
-                        placeholder="e.g. ORIGINAL / VERIFIED"
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <Label className="text-xs">Watermark Image (optional)</Label>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => {
-                          const input = document.createElement("input");
-                          input.type = "file";
-                          input.accept = "image/png,image/jpeg,image/jpg,image/webp";
-                          input.onchange = async () => {
-                            const f = input.files?.[0];
-                            if (!f) return;
-                            const data = await readFileAsDataUrl(f);
-                            setField("watermarkImage", data);
-                          };
-                          input.click();
-                        }}>
-                          Upload Watermark
-                        </Button>
-                        {draft.fields.watermarkImage ? <Button type="button" variant="ghost" size="sm" className="h-8 text-destructive hover:text-destructive" onClick={() => setField("watermarkImage", "")}>Clear</Button> : null}
-                      </div>
-                    </div>
-                    <div className="sm:col-span-2">
-                      <Label className="text-xs">Left Logo (optional)</Label>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => {
-                          const input = document.createElement("input");
-                          input.type = "file";
-                          input.accept = "image/png,image/jpeg,image/jpg,image/webp";
-                          input.onchange = async () => {
-                            const f = input.files?.[0];
-                            if (!f) return;
-                            const data = await readFileAsDataUrl(f);
-                            setField("logoLeftImage", data);
-                          };
-                          input.click();
-                        }}>
-                          Upload Left Logo
-                        </Button>
-                        {draft.fields.logoLeftImage ? <Button type="button" variant="ghost" size="sm" className="h-8 text-destructive hover:text-destructive" onClick={() => setField("logoLeftImage", "")}>Clear</Button> : null}
-                      </div>
-                    </div>
-                    <div className="sm:col-span-2">
-                      <Label className="text-xs">Right Logo (optional)</Label>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <Button type="button" variant="outline" size="sm" className="h-8" onClick={() => {
-                          const input = document.createElement("input");
-                          input.type = "file";
-                          input.accept = "image/png,image/jpeg,image/jpg,image/webp";
-                          input.onchange = async () => {
-                            const f = input.files?.[0];
-                            if (!f) return;
-                            const data = await readFileAsDataUrl(f);
-                            setField("logoRightImage", data);
-                          };
-                          input.click();
-                        }}>
-                          Upload Right Logo
-                        </Button>
-                        {draft.fields.logoRightImage ? <Button type="button" variant="ghost" size="sm" className="h-8 text-destructive hover:text-destructive" onClick={() => setField("logoRightImage", "")}>Clear</Button> : null}
-                      </div>
                     </div>
                   </div>
                 </CardContent>
-                )}
               </Card>
 
               <Card>
@@ -1879,27 +2322,8 @@ function TemplateBuilderModal({
             </div>
           </div>
         </div>
-
-        <DialogFooter className="px-6 py-4 border-t flex flex-col sm:flex-row gap-2 sm:justify-between">
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <div className="flex flex-col sm:flex-row gap-2 sm:justify-end">
-            <Button variant="outline" onClick={saveDraft}>
-              Save Draft
-            </Button>
-            <Button variant="outline" onClick={generateCertificate} className="gap-1.5">
-              <Award className="h-4 w-4" />
-              Generate
-            </Button>
-            <Button onClick={saveAndActivate} className="gap-1.5">
-              <Send className="h-4 w-4" />
-              Save & Activate
-            </Button>
-          </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </div>
   );
 }
 
@@ -1953,12 +2377,15 @@ function TemplateCard({
           </DropdownMenu>
         </div>
 
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
           <Badge variant={statusBadgeVariant(template.status)} className="text-[10px]">
             {template.status}
           </Badge>
           <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[template.certType])}>
             {template.certType} · {CERT_TYPE_LABELS[template.certType]}
+          </Badge>
+          <Badge variant="secondary" className="text-[10px]">
+            {getCertPageSpec(template.style.pageFormat).shortLabel}
           </Badge>
         </div>
       </CardHeader>
@@ -2046,57 +2473,6 @@ async function prepareCertTemplateForSave(template: CertTemplate): Promise<CertT
   return next;
 }
 
-async function createImageBitmapFromDataUrl(dataUrl: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height });
-    img.onerror = () => reject(new Error("Unable to read imported image dimensions."));
-    img.src = dataUrl;
-  });
-}
-
-async function extractTextLayersFromImage(dataUrl: string): Promise<CertLayer[]> {
-  // OCR is only needed for template import — load tesseract.js on demand
-  // instead of shipping it with the Certificates page chunk.
-  const { createWorker } = await import("tesseract.js");
-  const worker = await createWorker("eng");
-  try {
-    const { data } = await worker.recognize(dataUrl);
-    const dims = await createImageBitmapFromDataUrl(dataUrl);
-    const words = (
-      (data as { words?: Array<{ text?: string; bbox?: { x0: number; x1: number; y0: number; y1: number } }> }).words || []
-    ).filter((w) => String(w?.text || "").trim().length >= 2);
-    const lines: CertLayer[] = [];
-    for (const w of words.slice(0, 120)) {
-      const text = String(w.text || "").trim();
-      if (!text) continue;
-      const x = ((w.bbox.x0 + w.bbox.x1) / 2 / dims.width) * 100;
-      const y = ((w.bbox.y0 + w.bbox.y1) / 2 / dims.height) * 100;
-      const width = Math.max(6, Math.min(80, ((w.bbox.x1 - w.bbox.x0) / dims.width) * 100));
-      const height = Math.max(3, Math.min(20, ((w.bbox.y1 - w.bbox.y0) / dims.height) * 100));
-      lines.push({
-        id: crypto.randomUUID(),
-        type: "text",
-        label: `OCR: ${text.slice(0, 24)}`,
-        content: text,
-        x: Number(x.toFixed(2)),
-        y: Number(y.toFixed(2)),
-        width: Number(width.toFixed(2)),
-        height: Number(height.toFixed(2)),
-        fontSize: 14,
-        fontWeight: "normal",
-        fontStyle: "normal",
-        color: "#222222",
-        align: "left",
-        opacity: 1,
-      });
-    }
-    return lines;
-  } finally {
-    await worker.terminate();
-  }
-}
-
 type StudentRecipient = {
   id: string;
   name: string;
@@ -2135,8 +2511,12 @@ function IssueCertWizard({
   const [issueDate, setIssueDate] = useState(stableNowISODate());
   const [certIdsByRecipientId, setCertIdsByRecipientId] = useState<Record<string, string>>({});
   const [verifyTokensByRecipientId, setVerifyTokensByRecipientId] = useState<Record<string, string>>({});
+  const [courseByRecipientId, setCourseByRecipientId] = useState<Record<string, string>>({});
+  const [extraByRecipientId, setExtraByRecipientId] = useState<Record<string, Record<string, string>>>({});
+  const [extraGlobalValues, setExtraGlobalValues] = useState<Record<string, string>>({});
   const [students, setStudents] = useState<StudentRecipient[]>(fallbackStudents);
   const [loadingStudents, setLoadingStudents] = useState(false);
+  const sheetInputRef = useRef<HTMLInputElement | null>(null);
   const [isIssuing, setIsIssuing] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
@@ -2168,6 +2548,9 @@ function IssueCertWizard({
     setIssueDate(stableNowISODate());
     setCertIdsByRecipientId({});
     setVerifyTokensByRecipientId({});
+    setCourseByRecipientId({});
+    setExtraByRecipientId({});
+    setExtraGlobalValues({});
     setIsIssuing(false);
     setSendingEmail(false);
     setEmailSent(false);
@@ -2220,9 +2603,97 @@ function IssueCertWizard({
     () => students.filter((r) => selectedRecipientIds.includes(r.id)),
     [selectedRecipientIds, students],
   );
+  const dynamicTemplateKeys = useMemo(() => {
+    if (!selectedTemplate) return [] as string[];
+    const keys = extractPlaceholderKeys(
+      ...(selectedTemplate.layers || []).map((l) => String(l.content || "")),
+      String(selectedTemplate.fields.title || ""),
+      String(selectedTemplate.fields.bodyText || ""),
+    );
+    return keys.filter((k) => !["name", "domain", "date", "company", "certID", "recipient_name", "recipient_email", "course_name", "issue_date"].includes(k));
+  }, [selectedTemplate]);
 
   const toggleRecipient = (id: string) => {
     setSelectedRecipientIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+  const applyGlobalExtrasToSelected = () => {
+    if (selectedRecipientIds.length === 0 || dynamicTemplateKeys.length === 0) return;
+    setExtraByRecipientId((prev) => {
+      const next = { ...prev };
+      for (const rid of selectedRecipientIds) {
+        next[rid] = { ...(next[rid] || {}) };
+        for (const key of dynamicTemplateKeys) {
+          const v = extraGlobalValues[key];
+          if (v != null && String(v).trim() !== "") next[rid][key] = String(v);
+        }
+      }
+      return next;
+    });
+    toast({ title: "Applied", description: `Filled ${selectedRecipientIds.length} selected recipient(s).` });
+  };
+
+  const handleCertSheetImport = async (file: File) => {
+    try {
+      const grid = await parsePlaceholderSheetFile(file);
+      const allowedDynamic = dynamicTemplateKeys.length > 0 ? dynamicTemplateKeys : [];
+      const mapped = mapSheetRowsToPlaceholders(grid, {
+        allowedKeys: [...CERT_BULK_SHEET_HEADERS, "candidate_name", "email", "course_name", ...allowedDynamic],
+        requireKeys: ["recipient_name"],
+      });
+      // Also accept rows that only have candidate_name (alias fills recipient_name)
+      const rows =
+        mapped.rows.length > 0
+          ? mapped.rows
+          : mapSheetRowsToPlaceholders(grid, {
+              allowedKeys: [...CERT_BULK_SHEET_HEADERS, "candidate_name", "email", "course_name", ...allowedDynamic],
+            }).rows.filter((r) => r.recipient_name || r.candidate_name);
+
+      if (rows.length === 0) {
+        toast({
+          variant: "destructive",
+          title: "Import failed",
+          description: mapped.errors[0] || "Need a recipient_name (or name) column and at least one data row.",
+        });
+        return;
+      }
+
+      const imported: StudentRecipient[] = rows.map((row) => ({
+        id: `sheet-${crypto.randomUUID()}`,
+        name: row.recipient_name || row.candidate_name || "Recipient",
+        email: row.recipient_email || row.email || "",
+      }));
+      const courseMap: Record<string, string> = {};
+      const extraMap: Record<string, Record<string, string>> = {};
+      imported.forEach((s, i) => {
+        const course = rows[i].domain_name || rows[i].course_name || "";
+        if (course) courseMap[s.id] = course;
+        const extras: Record<string, string> = {};
+        Object.keys(rows[i]).forEach((k) => {
+          if (!["recipient_name", "candidate_name", "recipient_email", "email", "domain_name", "course_name", "issue_date", "company_name"].includes(k)) {
+            if (rows[i][k]) extras[k] = rows[i][k];
+          }
+        });
+        if (Object.keys(extras).length > 0) extraMap[s.id] = extras;
+      });
+      const dateFromSheet = rows.find((r) => r.issue_date)?.issue_date;
+      if (dateFromSheet) setIssueDate(dateFromSheet);
+      const firstCourse = Object.values(courseMap)[0];
+      if (firstCourse && !courseName.trim()) setCourseName(firstCourse);
+
+      setStudents((prev) => {
+        const keep = prev.filter((s) => !String(s.id).startsWith("sheet-"));
+        return [...imported, ...keep];
+      });
+      setSelectedRecipientIds(imported.map((s) => s.id));
+      setCourseByRecipientId((prev) => ({ ...prev, ...courseMap }));
+      setExtraByRecipientId((prev) => ({ ...prev, ...extraMap }));
+      toast({
+        title: `Imported ${imported.length} recipient(s)`,
+        description: "Matched Excel columns to certificate placeholders.",
+      });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Import failed", description: e?.message || "Could not read file" });
+    }
   };
 
   const goNext = () => {
@@ -2245,9 +2716,17 @@ function IssueCertWizard({
       }
       const nextIds: Record<string, string> = {};
       const nextTokens: Record<string, string> = {};
+      const seenIds = new Set<string>();
+      const seenTokens = new Set<string>();
       for (const r of selectedRecipients) {
-        nextIds[r.id] = generateCertId(selectedTemplate.certType, orgPrefix);
-        nextTokens[r.id] = generateOpaqueVerifyToken();
+        let certId = generateCertId(selectedTemplate.certType, orgPrefix);
+        while (seenIds.has(certId)) certId = generateCertId(selectedTemplate.certType, orgPrefix);
+        seenIds.add(certId);
+        let token = generateOpaqueVerifyToken();
+        while (seenTokens.has(token)) token = generateOpaqueVerifyToken();
+        seenTokens.add(token);
+        nextIds[r.id] = certId;
+        nextTokens[r.id] = token;
       }
       setCertIdsByRecipientId(nextIds);
       setVerifyTokensByRecipientId(nextTokens);
@@ -2261,56 +2740,84 @@ function IssueCertWizard({
   const confirm = async () => {
     if (!selectedTemplate) return;
     if (selectedRecipients.length === 0) return;
+    const seenIds = new Set<string>();
+    const seenTokens = new Set<string>();
+    const issuedByRecipientId: Record<string, IssuedCertificate> = {};
     const issuedList: IssuedCertificate[] = selectedRecipients.map((r) => {
-      const certId = certIdsByRecipientId[r.id] || generateCertId(selectedTemplate.certType, orgPrefix);
-      const verifyToken = verifyTokensByRecipientId[r.id] || generateOpaqueVerifyToken();
-      return {
+      let certId = certIdsByRecipientId[r.id] || generateCertId(selectedTemplate.certType, orgPrefix);
+      while (seenIds.has(certId)) certId = generateCertId(selectedTemplate.certType, orgPrefix);
+      seenIds.add(certId);
+      let verifyToken = verifyTokensByRecipientId[r.id] || generateOpaqueVerifyToken();
+      while (seenTokens.has(verifyToken)) verifyToken = generateOpaqueVerifyToken();
+      seenTokens.add(verifyToken);
+      const nextIssued: IssuedCertificate = {
         id: certId,
         templateId: selectedTemplate.id,
         templateName: selectedTemplate.name,
         recipientName: r.name,
-        courseName: courseName.trim() || selectedTemplate.fields.domainName || "Certificate",
+        courseName: (courseByRecipientId[r.id] || courseName).trim() || selectedTemplate.fields.domainName || "Certificate",
         certType: selectedTemplate.certType,
         issueDate,
         status: "issued",
         verifyToken,
       };
+      issuedByRecipientId[r.id] = nextIssued;
+      return nextIssued;
     });
     try {
       setIsIssuing(true);
       await onConfirm(issuedList);
+      const issueResults: Array<{ recipientId: string; res: any }> = [];
+      for (const recipient of selectedRecipients) {
+        const issued = issuedByRecipientId[recipient.id] || issuedList[0];
+        const res = await api.certificates.issue({
+          recipientId: recipient.id,
+          templateId: selectedTemplate.id,
+          syncId: issued.id,
+          recipientName: recipient.name,
+          recipientEmail: recipient.email,
+          courseName: (courseByRecipientId[recipient.id] || courseName).trim(),
+          issueDate,
+          verifyToken: issued.verifyToken,
+        });
+        issueResults.push({ recipientId: recipient.id, res });
+      }
       const primary = selectedRecipients[0];
       const primaryIssued = issuedList.find((i) => i.recipientName === primary.name) || issuedList[0];
-      const issueRes = await api.certificates.issue({
-        recipientId: primary.id,
-        templateId: selectedTemplate.id,
-        syncId: primaryIssued.id,
-        recipientName: primary.name,
-        recipientEmail: primary.email,
-        courseName: courseName.trim(),
-        issueDate,
-        verifyToken: primaryIssued.verifyToken,
-      });
+      const firstRes = issueResults[0]?.res || {};
       const payload = {
-        studentName: String(issueRes?.studentName || primary.name || "").trim(),
-        studentEmail: String(issueRes?.studentEmail || primary.email || "").trim(),
-        syncId: String(issueRes?.syncId || primaryIssued.id || "").trim(),
-        certificateId: String(issueRes?.certificateId || primaryIssued.id || "").trim(),
-        pdfUrl: String(issueRes?.pdfUrl || "").trim(),
+        studentName: String(firstRes?.studentName || primary.name || "").trim(),
+        studentEmail: String(firstRes?.studentEmail || primary.email || "").trim(),
+        syncId: String(firstRes?.syncId || primaryIssued.id || "").trim(),
+        certificateId: String(firstRes?.certificateId || primaryIssued.id || "").trim(),
+        pdfUrl: String(firstRes?.pdfUrl || "").trim(),
         templateId: selectedTemplate.id,
       };
-      const defaultSubject = `Your Certificate is Ready — ${payload.syncId}`;
-      const defaultBody = `Dear ${payload.studentName},
+      const primaryExtra = { ...extraGlobalValues, ...(extraByRecipientId[primary.id] || {}) };
+      const emailValues = {
+        ...primaryExtra,
+        recipient_name: payload.studentName,
+        candidate_name: payload.studentName,
+        recipient_email: payload.studentEmail,
+        sync_id: payload.syncId,
+        cert_id: payload.syncId,
+        certificate_id: payload.syncId,
+        course_name: (courseByRecipientId[primary.id] || courseName).trim(),
+        issue_date: issueDate,
+        date: issueDate,
+      };
+      const defaultSubject = applyPlaceholders(`Your Certificate is Ready — {{sync_id}}`, emailValues);
+      const defaultBody = applyPlaceholders(`Dear {{recipient_name}},
 
 We are pleased to inform you that your certificate has been successfully issued.
 
 Please find the attached certificate (PDF) for your reference. You can also
-verify your certificate anytime using your unique SYNC ID: ${payload.syncId}
+verify your certificate anytime using your unique SYNC ID: {{sync_id}}
 
 If you have any questions or need assistance, please do not hesitate to reach out.
 
 Warm regards,
-The Certifications Team`;
+The Certifications Team`, emailValues);
       setIssuePayload(payload);
       setEmailDraft({
         to: payload.studentEmail,
@@ -2375,6 +2882,8 @@ The Certifications Team`;
     setIssueDate(stableNowISODate());
     setCertIdsByRecipientId({});
     setVerifyTokensByRecipientId({});
+    setExtraByRecipientId({});
+    setExtraGlobalValues({});
     setIssuePayload(null);
     setEmailSent(false);
     setEmailDraft({ to: "", cc: "", bcc: "", subject: "", body: "", attachmentUrl: "", attachmentName: "" });
@@ -2398,8 +2907,46 @@ The Certifications Team`;
         {step === 1 && (
           <Card>
             <CardHeader className="py-3 px-4">
-              <CardTitle className="text-sm">Select students</CardTitle>
-              <CardDescription className="text-xs">Multi-select students for bulk issuing</CardDescription>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <CardTitle className="text-sm">Select students</CardTitle>
+                  <CardDescription className="text-xs">
+                    Pick students, or import Excel — columns map to placeholders (recipient_name, recipient_email, domain_name…)
+                  </CardDescription>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs gap-1"
+                    onClick={() =>
+                      void downloadPlaceholderExcelTemplate(
+                        [...CERT_BULK_SHEET_HEADERS],
+                        [...CERT_BULK_SHEET_SAMPLE],
+                        "certificates-bulk-template.xlsx",
+                        "Recipients",
+                      )
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Excel template
+                  </Button>
+                  <Button type="button" variant="default" size="sm" className="h-8 text-xs gap-1" onClick={() => sheetInputRef.current?.click()}>
+                    <FileSpreadsheet className="h-3.5 w-3.5" /> Import Excel
+                  </Button>
+                  <input
+                    ref={sheetInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void handleCertSheetImport(f);
+                      e.target.value = "";
+                    }}
+                  />
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="px-4 pb-4">
               <ScrollArea className="h-[320px] pr-3">
@@ -2493,6 +3040,28 @@ The Certifications Team`;
                   <Label className="text-xs">Issue date</Label>
                   <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
                 </div>
+                {dynamicTemplateKeys.length > 0 ? (
+                  <div className="sm:col-span-2 rounded-md border p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-xs">Additional template placeholders</Label>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={applyGlobalExtrasToSelected}>
+                        Fill selected recipients
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {dynamicTemplateKeys.map((k) => (
+                        <div key={k}>
+                          <Label className="text-[11px] font-mono">{`{{${k}}}`}</Label>
+                          <Input
+                            value={extraGlobalValues[k] || ""}
+                            onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, [k]: e.target.value }))}
+                            placeholder={`Value for ${k}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="pt-2">
                   <Label className="text-xs">Preview (selected template)</Label>
@@ -2504,6 +3073,7 @@ The Certifications Team`;
                         domainName={courseName || selectedTemplate.fields.domainName}
                         companyName={selectedTemplate.fields.companyName}
                         date={issueDate}
+                        placeholderValues={extraGlobalValues}
                         overrides={{ domainName: courseName || selectedTemplate.fields.domainName }}
                         renderPdfBackground
                       />
@@ -2533,6 +3103,7 @@ The Certifications Team`;
                       const id = certIdsByRecipientId[r.id] || generateCertId(selectedTemplate.certType, orgPrefix);
                       const token = verifyTokensByRecipientId[r.id] || "";
                       const verifyUrl = token ? getVerifyURL(id, token) : "";
+                      const mergedExtras = { ...extraGlobalValues, ...(extraByRecipientId[r.id] || {}) };
                       return (
                         <div key={r.id} className="rounded-xl border p-4 bg-background">
                           <div className="flex items-start justify-between gap-3">
@@ -2545,6 +3116,13 @@ The Certifications Team`;
                               <QRCodeWidget certID={id} size={72} fgColor={selectedTemplate.style.layout === "dark-pro" ? selectedTemplate.style.accentColor : "#1A6B3C"} verifyUrl={verifyUrl} />
                             </div>
                           </div>
+                          {Object.keys(mergedExtras).length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {Object.entries(mergedExtras).map(([k, v]) => (
+                                <code key={k} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{`{{${k}}}: ${v}`}</code>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                       );
                     })}
@@ -2614,7 +3192,7 @@ The Certifications Team`;
                     </div>
                     <div>
                       <Label className="text-xs">Body</Label>
-                      <Textarea rows={10} value={emailDraft.body} onChange={(e) => setEmailDraft((p) => ({ ...p, body: e.target.value }))} />
+                      <Textarea rows={18} value={emailDraft.body} onChange={(e) => setEmailDraft((p) => ({ ...p, body: e.target.value }))} />
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge variant="outline" className="text-[11px]">
@@ -2906,7 +3484,7 @@ function ImportModal({
           status: "draft",
           createdAt: stableNowISODate(),
           certType: "CC",
-          style: { layout: "classic", bgColor: "#ffffff", accentColor: "#1A6B3C", bgImage: imageData, bgPdf: pdfData },
+          style: { layout: "classic", pageFormat: "a4-landscape", bgColor: "#ffffff", accentColor: "#1A6B3C", bgImage: imageData, bgPdf: pdfData },
           fields: {
             title: "Certificate of Completion",
             companyName: certOrgContext.orgName,
@@ -3138,7 +3716,7 @@ export default function CertificatesPage() {
   const [templatesSyncError, setTemplatesSyncError] = useState<string | null>(null);
   const [issuedCerts, setIssuedCerts] = useState<IssuedCertificate[]>([]);
   const [loadingIssued, setLoadingIssued] = useState(false);
-  const [activeTab, setActiveTab] = useState<"templates" | "issued">("templates");
+  const [activeTab, setActiveTab] = useState<"templates" | "forms" | "issued" | "form_issued">("templates");
   const [showBuilder, setShowBuilder] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
@@ -3218,13 +3796,14 @@ export default function CertificatesPage() {
   }, [showWizard, fetchIssuedCertificates]);
 
   const openNewTemplate = () => {
+    const seedLayers = buildDefaultImportLayers(certOrgContext, "CC").map((l) => ({ ...l, locked: false }));
     const seed: CertTemplate = {
       id: generateCertId("CC", certOrgContext.orgPrefix),
       name: "New Template",
       status: "draft",
       createdAt: stableNowISODate(),
       certType: "CC",
-      style: { layout: "classic", bgColor: "#ffffff", accentColor: "#1A6B3C" },
+      style: { layout: "classic", pageFormat: "a4-landscape", bgColor: "#ffffff", accentColor: "#1A6B3C" },
       fields: {
         title: "Certificate of Completion",
         companyName: certOrgContext.orgName,
@@ -3235,9 +3814,8 @@ export default function CertificatesPage() {
         signatoryName: "Signatory Name",
         signatoryTitle: "Signatory Title",
       },
-      layers: [],
+      layers: seedLayers,
     };
-    setEditingTemplate(null);
     setEditingTemplate(seed);
     setShowBuilder(true);
   };
@@ -3354,10 +3932,24 @@ export default function CertificatesPage() {
           <TabsTrigger value="templates" className="gap-1.5">
             <Award className="h-3.5 w-3.5" /> Templates
           </TabsTrigger>
+          <TabsTrigger value="forms" className="gap-1.5">
+            <Users className="h-3.5 w-3.5" /> Forms
+          </TabsTrigger>
           <TabsTrigger value="issued" className="gap-1.5">
             <Send className="h-3.5 w-3.5" /> Issued
           </TabsTrigger>
+          <TabsTrigger value="form_issued" className="gap-1.5">
+            <FileText className="h-3.5 w-3.5" /> Form Issued
+          </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="forms" className="space-y-4">
+          <DocFormsWorkspace formType="certificate" />
+        </TabsContent>
+
+        <TabsContent value="form_issued" className="space-y-4">
+          <DocIssuedPanel docKind="certificate" />
+        </TabsContent>
 
         <TabsContent value="templates" className="space-y-4">
           {templatesSyncError ? (

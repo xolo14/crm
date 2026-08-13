@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS `leads` (
   `course_interest` VARCHAR(255) DEFAULT NULL,
   `referred_by` VARCHAR(100) DEFAULT NULL,
   `source` ENUM('google_ads','instagram','facebook','youtube','website','google_forms','whatsapp','referral','walkin','college_seminar','other') DEFAULT 'other',
-  `status` ENUM('new','contacted','qualified','interested','demo_scheduled','demo_attended','enrolled','lost') DEFAULT 'new',
+  `status` VARCHAR(40) NOT NULL DEFAULT 'new',
   `score` INT DEFAULT 0,
   `assigned_to` CHAR(36) DEFAULT NULL,
   `notes` TEXT DEFAULT NULL,
@@ -272,6 +272,7 @@ CREATE TABLE IF NOT EXISTS `lead_assignments` (
   `org_id` CHAR(36) DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_lead_assignments_lead_user` (`lead_id`, `user_id`),
   INDEX `idx_la_lead` (`lead_id`),
   INDEX `idx_la_user` (`user_id`),
   INDEX `idx_la_org` (`org_id`),
@@ -296,6 +297,7 @@ CREATE TABLE IF NOT EXISTS `students` (
   `lead_id` CHAR(36) DEFAULT NULL,
   `mentor_id` CHAR(36) DEFAULT NULL,
   `user_id` CHAR(36) DEFAULT NULL,
+  `enrolled_by` CHAR(36) DEFAULT NULL,
   `status` VARCHAR(20) DEFAULT 'active',
   `enrollment_date` DATE DEFAULT (CURRENT_DATE),
   `org_id` CHAR(36) DEFAULT NULL,
@@ -306,11 +308,13 @@ CREATE TABLE IF NOT EXISTS `students` (
   INDEX `idx_students_batch` (`batch_id`),
   INDEX `idx_students_status` (`status`),
   INDEX `idx_students_org` (`org_id`),
+  INDEX `idx_students_enrolled_by` (`enrolled_by`),
   FOREIGN KEY (`course_id`) REFERENCES `courses`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`batch_id`) REFERENCES `batches`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`mentor_id`) REFERENCES `users`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE SET NULL,
+  FOREIGN KEY (`enrolled_by`) REFERENCES `users`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`org_id`) REFERENCES `organizations`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1206,3 +1210,125 @@ CREATE TABLE IF NOT EXISTS `org_email_routes` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 COMMIT;
+-- Document Forms module: Certificates & Offer Letters forms (separate from lead_forms)
+-- Run on MySQL after deploy, or rely on doc-forms.php ensureSchema().
+
+CREATE TABLE IF NOT EXISTS `doc_forms` (
+  `id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) DEFAULT NULL,
+  `name` VARCHAR(255) NOT NULL,
+  `slug` VARCHAR(120) NOT NULL,
+  `description` TEXT DEFAULT NULL,
+  `form_type` VARCHAR(32) NOT NULL,
+  `fields_json` JSON DEFAULT NULL,
+  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+  `created_by` CHAR(36) DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_doc_forms_org_slug` (`org_id`, `slug`),
+  INDEX `idx_doc_forms_type` (`form_type`),
+  INDEX `idx_doc_forms_org` (`org_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `doc_form_access` (
+  `id` CHAR(36) NOT NULL,
+  `form_id` CHAR(36) NOT NULL,
+  `access_type` VARCHAR(16) NOT NULL,
+  `user_id` CHAR(36) DEFAULT NULL,
+  `role_key` VARCHAR(64) DEFAULT NULL,
+  `assigned_by` CHAR(36) DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_dfa_form` (`form_id`),
+  INDEX `idx_dfa_user` (`user_id`),
+  INDEX `idx_dfa_role` (`role_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `doc_form_template_links` (
+  `id` CHAR(36) NOT NULL,
+  `form_id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) DEFAULT NULL,
+  `template_kind` VARCHAR(32) NOT NULL,
+  `template_id` CHAR(36) NOT NULL,
+  `column_maps_json` JSON DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_dftl_form` (`form_id`),
+  INDEX `idx_dftl_template` (`template_kind`, `template_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `doc_form_submissions` (
+  `id` CHAR(36) NOT NULL,
+  `form_id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) DEFAULT NULL,
+  `submitted_by` CHAR(36) DEFAULT NULL,
+  `respondent_name` VARCHAR(255) DEFAULT NULL,
+  `respondent_email` VARCHAR(255) DEFAULT NULL,
+  `answers_json` JSON DEFAULT NULL,
+  `values_json` JSON DEFAULT NULL,
+  `status` VARCHAR(32) NOT NULL DEFAULT 'submitted',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_dfs_form` (`form_id`),
+  INDEX `idx_dfs_status` (`status`),
+  INDEX `idx_dfs_org` (`org_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `doc_issued_documents` (
+  `id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) DEFAULT NULL,
+  `doc_kind` VARCHAR(32) NOT NULL,
+  `form_id` CHAR(36) DEFAULT NULL,
+  `submission_id` CHAR(36) DEFAULT NULL,
+  `template_id` CHAR(36) DEFAULT NULL,
+  `recipient_name` VARCHAR(255) DEFAULT NULL,
+  `recipient_email` VARCHAR(255) DEFAULT NULL,
+  `subject` VARCHAR(500) DEFAULT NULL,
+  `pdf_path` VARCHAR(500) DEFAULT NULL,
+  `pdf_url` VARCHAR(500) DEFAULT NULL,
+  `status` VARCHAR(32) NOT NULL DEFAULT 'issued',
+  `issued_by` CHAR(36) DEFAULT NULL,
+  `issued_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `meta_json` JSON DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  INDEX `idx_did_kind` (`doc_kind`),
+  INDEX `idx_did_org` (`org_id`),
+  INDEX `idx_did_form` (`form_id`),
+  INDEX `idx_did_submission` (`submission_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Manual payments (proof + approval workflow for Payment Records)
+CREATE TABLE IF NOT EXISTS `manual_payments` (
+  `id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) DEFAULT NULL,
+  `submitted_by` CHAR(36) NOT NULL,
+  `amount` DECIMAL(12,2) NOT NULL,
+  `currency` VARCHAR(3) NOT NULL DEFAULT 'INR',
+  `payment_method` VARCHAR(80) DEFAULT NULL,
+  `customer_name` VARCHAR(200) DEFAULT NULL,
+  `customer_email` VARCHAR(255) DEFAULT NULL,
+  `customer_phone` VARCHAR(40) DEFAULT NULL,
+  `paid_at` DATE DEFAULT NULL,
+  `notes` TEXT DEFAULT NULL,
+  `proof_path` VARCHAR(500) DEFAULT NULL,
+  `status` ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+  `reviewed_by` CHAR(36) DEFAULT NULL,
+  `reviewed_at` DATETIME DEFAULT NULL,
+  `review_notes` TEXT DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_mp_org` (`org_id`),
+  INDEX `idx_mp_submitted` (`submitted_by`),
+  INDEX `idx_mp_status` (`status`),
+  INDEX `idx_mp_org_status` (`org_id`, `status`),
+  INDEX `idx_mp_paid_at` (`paid_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Optional mail config on offer templates (also ensured in PHP)
+ALTER TABLE `offer_letter_templates`
+  ADD COLUMN IF NOT EXISTS `mail_json` JSON DEFAULT NULL;
+

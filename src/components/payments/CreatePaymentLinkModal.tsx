@@ -160,7 +160,7 @@ export default function CreatePaymentLinkModal({
         ) as BatchOption[];
 
         const openBatches = batchList
-          .filter((b) => isOpenBatchSchedule(b.start_date, b.end_date))
+          .filter((b) => isOpenBatchSchedule(b.start_date, b.end_date, b.status))
           .map((b) => ({
             ...b,
             id: String(b.id),

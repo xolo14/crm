@@ -1,3 +1,5 @@
+import type { FresherOrgPolicy } from "./policy";
+
 export type FresherPhase = 'training' | 'month1' | 'month2' | 'month3' | 'completed';
 
 export type SalaryType = 'fixed' | 'performance' | 'target_based';
@@ -70,4 +72,9 @@ export interface FresherMember {
   month3: Month3Block;
   /** Latest computed headline from business rules. */
   headlineStatus: string;
+  /**
+   * Per-employee salary + incentive terms (snapshotted at add / editable).
+   * Falls back to org policy when missing.
+   */
+  salaryTerms?: FresherOrgPolicy | null;
 }

@@ -4,7 +4,8 @@
  *
  * POST /api/lead-ingest.php
  * Header: X-Lead-Api-Key: <PUBLIC_LEAD_API_KEY>
- * Body JSON: name, email?, phone?, source?, college?, course_interest?, notes?, org_id?, assigned_to?, ref?
+ * Body JSON: name, email?, phone?, source?, college?, course_interest?, notes?, assigned_to?, ref?
+ * (Client org_id is rejected — LEAD_INGEST_ORG_ID is required in config.)
  */
 require_once __DIR__ . '/helpers.php';
 
@@ -28,7 +29,7 @@ if ($method === 'GET') {
         'usage' => 'POST JSON with X-Lead-Api-Key header only. No CRM form required.',
         'required' => ['name'],
         'optional' => ['email', 'phone', 'source', 'college', 'year_of_study', 'course_interest', 'notes', 'company', 'assigned_to', 'ref'],
-        'note' => 'org_id is ignored when LEAD_INGEST_ORG_ID is set in api/config.php',
+        'note' => 'Client org_id is rejected. LEAD_INGEST_ORG_ID must be set in api/config.php (required for POST).',
     ]);
 }
 
@@ -63,12 +64,17 @@ ensureLeadsResumeColumn($db);
 ensureLeadsSourceColumnVarchar($db);
 
 $lockedOrgId = defined('LEAD_INGEST_ORG_ID') ? trim((string) LEAD_INGEST_ORG_ID) : '';
-if ($lockedOrgId !== '') {
-    $lockSt = $db->prepare('SELECT id FROM organizations WHERE id = ? AND is_active = 1 LIMIT 1');
-    $lockSt->execute([$lockedOrgId]);
-    if (!$lockSt->fetch(PDO::FETCH_ASSOC)) {
-        respond(['error' => 'LEAD_INGEST_ORG_ID is invalid in server config'], 503);
-    }
+if ($lockedOrgId === '') {
+    respond([
+        'error' => 'Lead ingest is locked until LEAD_INGEST_ORG_ID is set in api/config.php',
+        'hint' => 'Set LEAD_INGEST_ORG_ID to your organizations.id UUID so a leaked API key cannot inject leads into other tenants.',
+    ], 503);
+}
+
+$lockSt = $db->prepare('SELECT id FROM organizations WHERE id = ? AND is_active = 1 LIMIT 1');
+$lockSt->execute([$lockedOrgId]);
+if (!$lockSt->fetch(PDO::FETCH_ASSOC)) {
+    respond(['error' => 'LEAD_INGEST_ORG_ID is invalid in server config'], 503);
 }
 
 $name = trim((string) ($input['name'] ?? $input['full_name'] ?? ''));
@@ -94,22 +100,12 @@ if ($source === '') {
     $source = 'website';
 }
 
-if ($lockedOrgId !== '' && $orgIdIn !== '' && $orgIdIn !== $lockedOrgId) {
+if ($orgIdIn !== '' && $orgIdIn !== $lockedOrgId) {
     respond(['error' => 'org_id is fixed for this ingest endpoint'], 400);
 }
 
 $referredBy = $ref !== '' ? $ref : null;
-$orgId = $lockedOrgId !== '' ? $lockedOrgId : null;
-
-if ($lockedOrgId === '' && $orgIdIn !== '') {
-    $ost = $db->prepare('SELECT id FROM organizations WHERE id = ? AND is_active = 1 LIMIT 1');
-    $ost->execute([$orgIdIn]);
-    $orow = $ost->fetch(PDO::FETCH_ASSOC);
-    if (!$orow) {
-        respond(['error' => 'org_id not found'], 400);
-    }
-    $orgId = $orgIdIn;
-}
+$orgId = $lockedOrgId;
 
 if ($ref !== '') {
     $ust = $db->prepare('SELECT id, org_id, referral_code FROM users WHERE referral_code = ? AND is_active = 1 LIMIT 1');
@@ -117,7 +113,7 @@ if ($ref !== '') {
     $urow = $ust->fetch(PDO::FETCH_ASSOC);
     if ($urow && is_array($urow)) {
         $refOrg = trim((string) ($urow['org_id'] ?? ''));
-        if ($lockedOrgId !== '' && $refOrg !== '' && $refOrg !== $lockedOrgId) {
+        if ($refOrg !== '' && $refOrg !== $lockedOrgId) {
             respond(['error' => 'ref code does not belong to the configured ingest organization'], 400);
         }
         if ($assignedTo === '') {
@@ -127,58 +123,21 @@ if ($ref !== '') {
         if ($rc !== '') {
             $referredBy = $rc;
         }
-        if ($orgId === null && $refOrg !== '') {
-            $orgId = $refOrg;
-        }
     }
 }
 
 if ($assignedTo !== '') {
-    $ast = $db->prepare('SELECT id, org_id FROM users WHERE id = ? AND is_active = 1 LIMIT 1');
-    $ast->execute([$assignedTo]);
+    $ast = $db->prepare('SELECT id, org_id FROM users WHERE id = ? AND is_active = 1 AND org_id = ? LIMIT 1');
+    $ast->execute([$assignedTo, $lockedOrgId]);
     $arow = $ast->fetch(PDO::FETCH_ASSOC);
     if (!$arow) {
-        respond(['error' => 'assigned_to user not found'], 400);
-    }
-    $assigneeOrg = trim((string) ($arow['org_id'] ?? ''));
-    if ($orgId !== null && $assigneeOrg !== '' && $assigneeOrg !== $orgId) {
-        respond(['error' => 'assigned_to must belong to the target organization'], 400);
-    }
-    if ($orgId === null && $assigneeOrg !== '') {
-        $orgId = $assigneeOrg;
+        respond(['error' => 'assigned_to must be an active user in the configured ingest organization'], 400);
     }
 } else {
     $assignedTo = null;
 }
 
-// Default org = Syncpedia when none provided (website ingest into main tenant).
-if ($orgId === null) {
-    $acting = $assignedTo ?: '';
-    if ($acting === '') {
-        $sa = $db->query("SELECT id FROM users WHERE LOWER(TRIM(role)) IN ('super_admin','superadmin') AND is_active = 1 ORDER BY created_at ASC LIMIT 1");
-        $saRow = $sa ? $sa->fetch(PDO::FETCH_ASSOC) : false;
-        $acting = is_array($saRow) ? (string) ($saRow['id'] ?? '') : '';
-    }
-    if ($acting !== '') {
-        $orgId = syncpediaGetOrCreateOrgId($db, $acting);
-    } else {
-        $sid = $db->query("SELECT id FROM organizations WHERE LOWER(TRIM(slug)) = 'syncpedia' AND is_active = 1 LIMIT 1");
-        $srow = $sid ? $sid->fetch(PDO::FETCH_ASSOC) : false;
-        if (is_array($srow) && !empty($srow['id'])) {
-            $orgId = (string) $srow['id'];
-        }
-    }
-}
-
-if ($assignedTo !== null && $orgId !== null) {
-    $ast2 = $db->prepare('SELECT id FROM users WHERE id = ? AND org_id = ? AND is_active = 1 LIMIT 1');
-    $ast2->execute([$assignedTo, $orgId]);
-    if (!$ast2->fetch(PDO::FETCH_ASSOC)) {
-        respond(['error' => 'assigned_to must belong to the target organization'], 400);
-    }
-}
-
-$dup = leadsFindDuplicateInOrg($db, is_string($orgId) ? $orgId : null, $email, $phone);
+$dup = leadsFindDuplicateInOrg($db, $orgId, $email, $phone);
 if ($dup) {
     respond([
         'success' => true,

@@ -519,7 +519,9 @@ function paymentLinkProcessWebhookEvent(array $event): array
     $row = paymentLinkUpsertFromRazorpay($fullLink, $paymentEntity);
     if (!is_array($row)) {
         error_log('[payment_receipt] could not upsert payment link ' . $plinkId);
-        return [];
+        // Money-bearing webhooks must not ACK success without durable persistence —
+        // returning [] previously made the handler send HTTP 200 and Razorpay stopped retrying.
+        throw new RuntimeException('Failed to persist payment link ' . $plinkId);
     }
 
     if (in_array($type, ['payment_link.cancelled', 'payment_link.expired'], true)) {

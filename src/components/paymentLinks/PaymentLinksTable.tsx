@@ -6,6 +6,7 @@ import {
   FileText,
   Mail,
   RefreshCw,
+  Trash2,
   X,
 } from "lucide-react";
 import type {
@@ -40,6 +41,7 @@ interface Props {
   onFilterChange: (filters: TableFilters) => void;
   onViewDetail: (link: RazorpayPaymentLink) => void;
   onCancel: (id: string) => void;
+  onDelete: (id: string) => void;
   onEmail: (link: RazorpayPaymentLink) => void;
   onRefresh: () => void;
   onCopyShortUrl: (url: string) => void;
@@ -113,6 +115,7 @@ export default function PaymentLinksTable({
   onFilterChange,
   onViewDetail,
   onCancel,
+  onDelete,
   onEmail,
   onRefresh,
   onCopyShortUrl,
@@ -455,6 +458,16 @@ export default function PaymentLinksTable({
                               title="Cancel"
                             >
                               <X size={14} />
+                            </button>
+                          ) : null}
+                          {l.status === "cancelled" || l.status === "expired" ? (
+                            <button
+                              type="button"
+                              onClick={() => onDelete(l.id)}
+                              className="p-1.5 rounded-lg text-red-500 hover:bg-red-50"
+                              title="Delete"
+                            >
+                              <Trash2 size={14} />
                             </button>
                           ) : null}
                         </div>

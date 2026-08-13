@@ -47,6 +47,32 @@ function callLogsEnsureAttachmentColumn(PDO $db): void
     }
 }
 
+/** Preserve the lead pipeline status selected when a call is logged. */
+function ensureCallLogsPipelineStatusSnapshotColumn(PDO $db): void
+{
+    static $done = false;
+    if ($done || syncpediaSkipRuntimeDdl($db)) {
+        return;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'call_logs', 'pipeline_status_at_call')) {
+            $db->exec('ALTER TABLE call_logs ADD COLUMN pipeline_status_at_call VARCHAR(50) DEFAULT NULL');
+        }
+    } catch (Throwable $ignored) {
+    }
+    $done = true;
+}
+
+function callLogsHasPipelineStatusSnapshotColumn(PDO $db): bool
+{
+    ensureCallLogsPipelineStatusSnapshotColumn($db);
+    try {
+        return syncpediaColumnExists($db, 'call_logs', 'pipeline_status_at_call');
+    } catch (Throwable $ignored) {
+        return false;
+    }
+}
+
 function ensureCallLogsTable(PDO $db): void
 {
     static $done = false;
@@ -69,6 +95,7 @@ function ensureCallLogsTable(PDO $db): void
       client_name VARCHAR(255) DEFAULT NULL,
       notes TEXT DEFAULT NULL,
       attachment_path VARCHAR(500) DEFAULT NULL,
+      pipeline_status_at_call VARCHAR(50) DEFAULT NULL,
       call_date DATE NOT NULL,
       call_time TIME DEFAULT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -88,6 +115,7 @@ function ensureCallLogsTable(PDO $db): void
         // Table exists / FK ordering — ignore for idempotent deploys
     }
     callLogsEnsureAttachmentColumn($db);
+    ensureCallLogsPipelineStatusSnapshotColumn($db);
     $done = true;
 }
 
@@ -276,20 +304,17 @@ function callLogsSumDuration(PDO $db, string $whereSql, array $params, string $e
     return (int) ($row['s'] ?? 0);
 }
 
-/** Working hours: sum per-day (max-min) when 2+ timed calls that day */
+/**
+ * Working hours = sum of connected talk time (duration_seconds), not first-to-last wall span.
+ * Span-of-day inflated KPIs when agents logged sparse calls across morning/evening.
+ */
 function callLogsWorkingHoursSeconds(PDO $db, string $whereSql, array $params): ?int
 {
-    $sql = "SELECT COALESCE(SUM(day_sec), 0) AS wh FROM (
-      SELECT call_date,
-        CASE WHEN COUNT(*) >= 2 AND MIN(call_time) IS NOT NULL AND MAX(call_time) IS NOT NULL
-          THEN TIMESTAMPDIFF(SECOND,
-            MIN(TIMESTAMP(call_date, call_time)),
-            MAX(TIMESTAMP(call_date, call_time)))
-          ELSE 0 END AS day_sec
-      FROM call_logs cl
-      WHERE $whereSql AND cl.call_time IS NOT NULL
-      GROUP BY call_date
-    ) x";
+    $sql = "SELECT COALESCE(SUM(cl.duration_seconds), 0) AS wh
+            FROM call_logs cl
+            WHERE $whereSql
+              AND cl.call_status = 'connected'
+              AND COALESCE(cl.duration_seconds, 0) > 0";
     $st = $db->prepare($sql);
     $st->execute($params);
     $row = $st->fetch(PDO::FETCH_ASSOC);
@@ -313,14 +338,18 @@ if ($method === 'GET' && $action === 'daily_report_metrics') {
     $whereFull = "$scopeSql AND cl.call_date = ?";
     $params = array_merge($scopeParams, [$date]);
 
+    // Pipeline outcomes count DISTINCT leads (not call touches). Follow-ups stay call-based.
+    $pipelineStatus = callLogsHasPipelineStatusSnapshotColumn($db)
+        ? "LOWER(TRIM(COALESCE(cl.pipeline_status_at_call, l.status, '')))"
+        : "LOWER(TRIM(COALESCE(l.status, '')))";
     $sql = "
         SELECT
             COUNT(*) AS total_calls,
             COALESCE(SUM(CASE WHEN cl.call_type = 'missed' OR cl.call_status = 'never_attended' THEN 1 ELSE 0 END), 0) AS total_followups,
-            COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(l.status, ''))) IN ('demo_scheduled', 'demo_attended') THEN 1 ELSE 0 END), 0) AS total_demos,
-            COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(l.status, ''))) IN ('enrolled', 'converted') THEN 1 ELSE 0 END), 0) AS total_conversions,
-            COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(l.status, ''))) IN ('new', 'contacted') THEN 1 ELSE 0 END), 0) AS new_leads_contacted,
-            COALESCE(SUM(CASE WHEN LOWER(TRIM(COALESCE(l.status, ''))) = 'lost' THEN 1 ELSE 0 END), 0) AS total_lost
+            COUNT(DISTINCT CASE WHEN cl.lead_id IS NOT NULL AND $pipelineStatus IN ('demo_scheduled', 'demo_attended') THEN cl.lead_id END) AS total_demos,
+            COUNT(DISTINCT CASE WHEN cl.lead_id IS NOT NULL AND $pipelineStatus IN ('enrolled', 'converted') THEN cl.lead_id END) AS total_conversions,
+            COUNT(DISTINCT CASE WHEN cl.lead_id IS NOT NULL AND $pipelineStatus IN ('new', 'contacted') THEN cl.lead_id END) AS new_leads_contacted,
+            COUNT(DISTINCT CASE WHEN cl.lead_id IS NOT NULL AND $pipelineStatus = 'lost' THEN cl.lead_id END) AS total_lost
         FROM call_logs cl
         LEFT JOIN leads l ON l.id = cl.lead_id
         WHERE $whereFull
@@ -465,6 +494,7 @@ if ($method === 'POST' && $action === 'add_log') {
     }
 
     $db->beginTransaction();
+    $id = 0;
     try {
         // Serialize concurrent logs for the same lead (reduces double-insert races).
         if (is_string($leadId) && $leadId !== '') {
@@ -532,24 +562,28 @@ if ($method === 'POST' && $action === 'add_log') {
                 respond(['error' => 'Could not save call log', 'detail' => $em], 500);
             }
         }
+
+        $id = (int) $db->lastInsertId();
+
+        // Pipeline status must succeed in the same transaction as the call insert.
+        if ($leadStatusIn !== '') {
+            $err = leadsSyncPipelineStatusFromCallLog($db, $tokenData, $userId, $rawRole, (string) $leadId, $leadStatusIn);
+            if ($err !== null) {
+                $db->rollBack();
+                respond(['error' => $err], 400);
+            }
+            if (callLogsHasPipelineStatusSnapshotColumn($db)) {
+                $db->prepare('UPDATE call_logs SET pipeline_status_at_call = ? WHERE id = ?')
+                    ->execute([$leadStatusIn, $id]);
+            }
+        }
+
         $db->commit();
     } catch (Throwable $e) {
         if ($db->inTransaction()) {
             try { $db->rollBack(); } catch (Throwable $ignored) {}
         }
         respond(['error' => 'Could not save call log', 'detail' => $e->getMessage()], 500);
-    }
-    $id = (int) $db->lastInsertId();
-
-    if ($leadStatusIn !== '') {
-        $err = leadsSyncPipelineStatusFromCallLog($db, $tokenData, $userId, $rawRole, (string) $leadId, $leadStatusIn);
-        if ($err !== null) {
-            try {
-                $db->prepare('DELETE FROM call_logs WHERE id = ?')->execute([$id]);
-            } catch (Throwable $ignored) {
-            }
-            respond(['error' => $err], 400);
-        }
     }
 
     $q = $db->prepare('SELECT cl.*, u.full_name AS sales_rep_name, l.name AS lead_name, l.status AS lead_status FROM call_logs cl LEFT JOIN users u ON u.id = cl.sales_rep_id LEFT JOIN leads l ON l.id = cl.lead_id WHERE cl.id = ?');
@@ -827,17 +861,33 @@ if (($method === 'PUT' && $action === 'update_log') || ($method === 'POST' && $a
         respond(['error' => 'lead_status requires a linked lead'], 400);
     }
 
-    if ($fields) {
-        $params[] = $id;
-        $sql = 'UPDATE call_logs SET ' . implode(', ', $fields) . ' WHERE id = ?';
-        $db->prepare($sql)->execute($params);
-    }
-
-    if ($leadStatusIn !== '') {
-        $err = leadsSyncPipelineStatusFromCallLog($db, $tokenData, $userId, $rawRole, (string) $resLeadId, $leadStatusIn);
-        if ($err !== null) {
-            respond(['error' => $err], 400);
+    $statusCode = 500;
+    $db->beginTransaction();
+    try {
+        if ($fields) {
+            $params[] = $id;
+            $sql = 'UPDATE call_logs SET ' . implode(', ', $fields) . ' WHERE id = ?';
+            $db->prepare($sql)->execute($params);
         }
+
+        if ($leadStatusIn !== '') {
+            $err = leadsSyncPipelineStatusFromCallLog($db, $tokenData, $userId, $rawRole, (string) $resLeadId, $leadStatusIn);
+            if ($err !== null) {
+                $statusCode = 400;
+                throw new RuntimeException($err);
+            }
+            if (callLogsHasPipelineStatusSnapshotColumn($db)) {
+                $db->prepare('UPDATE call_logs SET pipeline_status_at_call = ? WHERE id = ?')
+                    ->execute([$leadStatusIn, $id]);
+            }
+        }
+
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        respond(['error' => $e->getMessage() ?: 'Could not update call log'], $statusCode);
     }
 
     respond(['success' => true, 'message' => 'Updated']);

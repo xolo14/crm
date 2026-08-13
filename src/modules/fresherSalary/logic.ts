@@ -8,6 +8,12 @@ import {
   DEFAULT_FIXED_SALARY,
 } from './constants';
 import { getPhaseDayProgress } from './phaseDays';
+import {
+  incentiveAmountForCollected,
+  monthlyGateAmount,
+  normalizeFresherPolicy,
+  type FresherOrgPolicy,
+} from './policy';
 import { calculateSalary, computeMonth2AggregateFromAchievements } from './salaryEngine';
 import type {
   FresherMember,
@@ -30,13 +36,27 @@ export function performanceSalaryAmount(
   return calculateSalary('month1', achieved, target, fixedBase);
 }
 
+function month2SplitTargets(monthlyFull: number): { first10: number; next15: number } {
+  const full = Math.max(0, Math.round(monthlyFull) || MONTHLY_TARGET);
+  return {
+    first10: Math.round(full * 0.5),
+    next15: Math.round(full * 0.5),
+  };
+}
+
 export function createNewMember(
   name: string,
   role: string,
   joiningDate: string,
   email?: string | null,
   traineeUserId?: string | null,
+  salaryTerms?: FresherOrgPolicy | null,
 ): FresherMember {
+  const terms = normalizeFresherPolicy(salaryTerms ?? undefined);
+  const monthly = terms.monthly_full_target || MONTHLY_TARGET;
+  const trainT = terms.training_target || TRAINING_TARGET;
+  const split = month2SplitTargets(monthly);
+
   const m: FresherMember = {
     id: crypto.randomUUID(),
     name: name.trim(),
@@ -48,16 +68,17 @@ export function createNewMember(
       : {}),
     currentPhase: 'training',
     salaryType: 'performance',
-    training: { achieved: 0, target: TRAINING_TARGET, isPaid: false, status: 'pending' },
-    month1: { achieved: 0, target: MONTHLY_TARGET, status: 'pending' },
+    training: { achieved: 0, target: trainT, isPaid: false, status: 'pending' },
+    month1: { achieved: 0, target: monthly, status: 'pending' },
     month2: {
-      first10Days: { achieved: 0, target: MONTH2_FIRST10_TARGET, status: 'pending' },
-      next15Days: { achieved: 0, target: MONTH2_NEXT15_TARGET, status: 'pending' },
+      first10Days: { achieved: 0, target: split.first10, status: 'pending' },
+      next15Days: { achieved: 0, target: split.next15, status: 'pending' },
       totalAchieved: 0,
       status: 'pending',
     },
-    month3: { achieved: 0, target: MONTHLY_TARGET, status: 'pending' },
+    month3: { achieved: 0, target: monthly, status: 'pending' },
     headlineStatus: '',
+    salaryTerms: terms,
   };
   return recomputeMember(m);
 }
@@ -95,29 +116,27 @@ function deriveHeadline(m: FresherMember): string {
   const phase = m.currentPhase;
   if (phase === 'training') {
     const t = m.training;
-    if (t.status === 'pending') return 'Training (15 days, unpaid) — enter achieved sales (target ₹30,000).';
-    if (t.status === 'passed') return 'Training target met — Fixed Salary Eligible — Month 1';
-    return 'Training target not met — Performance Based — Month 1';
+    if (t.status === 'pending') return 'Training — meet target for Fixed Month 1; miss → Target-based Month 1.';
+    if (t.status === 'passed') return 'Training target met — Fixed Salary for Month 1';
+    return 'Training target missed — Target Based (no fixed) for Month 1';
   }
   if (phase === 'month1') {
-    if (m.month1.status === 'pending') return 'Month 1 (30 days) — target ₹1,60,000. ≥50% (₹80,000) → fixed track for Month 2.';
-    if (m.month1.status === 'fixed_eligible') return 'Fixed Salary Eligible — Month 2';
-    return 'Performance Based — Month 2';
+    if (m.month1.status === 'pending') return 'Month 1 — meet gate for Fixed Month 2; miss → Target-based (even if currently fixed).';
+    if (m.month1.status === 'fixed_eligible') return 'Gate met — Fixed Salary for Month 2';
+    return 'Gate missed — Target Based (no fixed) for Month 2';
   }
   if (phase === 'month2') {
     const agg = m.month2.status;
-    if (agg === 'pending') return 'Month 2 — first 10 days ₹50k redemption; days 11–25 ₹80k chance; full month ≥₹80k → Month 3 fixed.';
-    if (agg === 'full_fixed') return '10-Day Redemption Passed — Full Month 2 Fixed Salary';
-    if (agg === 'target_based') return '15-Day Chance Passed — Target Based, Eligible for Month 3';
-    if (agg === 'fixed_eligible_month3') return 'Fixed Salary Eligible — Month 3';
-    return 'Disqualified from Fixed Track — Performance Based';
+    if (agg === 'pending') return 'Month 2 — meet gate for Fixed Month 3; miss → Target-based.';
+    if (agg === 'full_fixed' || agg === 'fixed_eligible_month3') return 'Gate met — Fixed Salary for Month 3';
+    if (agg === 'target_based') return 'Gate missed — Target Based for Month 3';
+    return 'Month 2 — below gate → Target Based next';
   }
   if (phase === 'month3') {
     const a = m.month3.achieved;
-    if (a <= 0) return 'Month 3 — final month (target ₹1,60,000).';
-    if (a >= MONTHLY_TARGET) return 'Confirmed — Full Salary + Incentives';
-    if (a >= MONTH3_SEVENTY_PCT) return 'Probation Extended — Target Review';
-    return 'Performance Based — Review Required';
+    if (a <= 0) return 'Month 3 — meet gate for Fixed next month; miss → Target-based.';
+    if (a >= MONTHLY_HALF) return 'Gate met — Fixed Salary for next month';
+    return 'Gate missed — Target Based for next month';
   }
   return 'Onboarding journey completed.';
 }
@@ -291,14 +310,23 @@ export function advancePhase(m: FresherMember): FresherMember {
   });
 }
 
-export function estimateEarnings(m: FresherMember, fixedBase: number = DEFAULT_FIXED_SALARY): {
+export function estimateEarnings(
+  m: FresherMember,
+  fixedBase: number = DEFAULT_FIXED_SALARY,
+  orgPolicy?: FresherOrgPolicy | null,
+): {
   training: number;
   month1: number;
   month2: number;
   month3: number;
+  incentive: number;
   total: number;
 } {
-  const fb = fixedBase;
+  const terms = normalizeFresherPolicy(m.salaryTerms ?? orgPolicy ?? undefined);
+  const fb = Number(m.salaryTerms?.fixed_salary_monthly) > 0
+    ? Number(m.salaryTerms!.fixed_salary_monthly)
+    : fixedBase || terms.fixed_salary_monthly || DEFAULT_FIXED_SALARY;
+  const monthlyTarget = terms.monthly_full_target || MONTHLY_TARGET;
   const training = 0;
 
   const phaseOrder = (p: FresherMember['currentPhase']) =>
@@ -309,23 +337,42 @@ export function estimateEarnings(m: FresherMember, fixedBase: number = DEFAULT_F
     month1 =
       m.training.status === 'passed'
         ? fb
-        : performanceSalaryAmount(m.month1.achieved, MONTHLY_TARGET, fb);
+        : performanceSalaryAmount(m.month1.achieved, monthlyTarget, fb);
   }
 
   let month2 = 0;
   if (phaseOrder(m.currentPhase) >= 2 && (m.month2.totalAchieved > 0 || m.month2.first10Days.achieved > 0)) {
     if (m.month2.status === 'full_fixed') month2 = fb;
     else if (m.month2.status === 'target_based')
-      month2 = performanceSalaryAmount(m.month2.totalAchieved, MONTHLY_TARGET, fb);
+      month2 = performanceSalaryAmount(m.month2.totalAchieved, monthlyTarget, fb);
     else if (m.month2.status === 'fixed_eligible_month3') month2 = fb;
-    else month2 = performanceSalaryAmount(m.month2.totalAchieved, MONTHLY_TARGET, fb);
+    else month2 = performanceSalaryAmount(m.month2.totalAchieved, monthlyTarget, fb);
   }
 
   let month3 = 0;
+  let incentive = 0;
   if (phaseOrder(m.currentPhase) >= 3 && m.month3.achieved > 0) {
-    if (m.month3.status === 'confirmed') month3 = Math.round(fb * 1.15 * 100) / 100;
-    else if (m.month3.status === 'probation') month3 = fb;
-    else month3 = performanceSalaryAmount(m.month3.achieved, MONTHLY_TARGET, fb);
+    if (m.month3.status === 'confirmed') {
+      month3 = fb;
+      incentive = incentiveAmountForCollected(terms, m.month3.achieved);
+    } else if (m.month3.status === 'probation') month3 = fb;
+    else month3 = performanceSalaryAmount(m.month3.achieved, monthlyTarget, fb);
+  }
+
+  // Also accrue incentive on any month where gate was met and sales recorded (current month collected).
+  const gate = monthlyGateAmount(terms);
+  if (incentive <= 0 && phaseOrder(m.currentPhase) >= 1) {
+    const currentCollected =
+      m.currentPhase === 'month1'
+        ? m.month1.achieved
+        : m.currentPhase === 'month2'
+          ? m.month2.totalAchieved
+          : m.currentPhase === 'month3' || m.currentPhase === 'completed'
+            ? m.month3.achieved
+            : 0;
+    if (currentCollected > gate) {
+      incentive = incentiveAmountForCollected(terms, currentCollected);
+    }
   }
 
   return {
@@ -333,7 +380,8 @@ export function estimateEarnings(m: FresherMember, fixedBase: number = DEFAULT_F
     month1,
     month2,
     month3,
-    total: training + month1 + month2 + month3,
+    incentive,
+    total: training + month1 + month2 + month3 + incentive,
   };
 }
 

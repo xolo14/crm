@@ -143,8 +143,6 @@ function formsBuildListScope(PDO $db, array $tokenData): array {
     $tenantOrgId = formsEffectiveTenantOrgId($db, $tokenData);
     $params = [];
     $where = "NOT (lf.slug IN ('normal', 'default') AND lf.org_id IS NULL)";
-    $orgSlug = formsResolveOrgSlug($db, $tenantOrgId);
-    $isSyncpediaOrg = ($orgSlug === 'syncpedia');
     if ($role === 'super_admin') {
         // Master panel: all orgs. Switched-org context: that tenant only.
         if (!tenantIsMasterView($tokenData)) {
@@ -154,46 +152,24 @@ function formsBuildListScope(PDO $db, array $tokenData): array {
                 $params[] = $switchOrg;
             }
         }
-    } elseif ($role === 'admin') {
-        if ($isSyncpediaOrg && $tenantOrgId) {
-            // Syncpedia org admin: super_admin-created forms owned by Syncpedia org only.
-            $where .= " AND lf.org_id = ? AND EXISTS (
-                SELECT 1 FROM users su
-                WHERE su.id = lf.created_by AND LOWER(TRIM(su.role)) = 'super_admin'
-            )";
-            $params[] = $tenantOrgId;
-        } elseif ($tenantOrgId) {
-            // Groot / Nivon / other tenant admins: only forms assigned to their org.
+    } elseif ($role === 'admin' || $role === 'org') {
+        // Org admins see all forms in their organization (including forms they create).
+        if ($tenantOrgId) {
             $where .= ' AND lf.org_id = ?';
             $params[] = $tenantOrgId;
         } else {
             $where .= ' AND 1=0';
         }
-    } elseif ($role === 'marketing') {
-        // Marketing manages their own forms (including inactive) so they can reactivate/delete.
-        $where .= ' AND (';
-        if ($isSyncpediaOrg) {
-            $where .= 'lf.created_by = ?';
-            $params[] = $userId;
-        } elseif ($tenantOrgId) {
-            $where .= 'lf.org_id = ?';
-            $params[] = $tenantOrgId;
-        } else {
-            $where .= '1=0';
-        }
-        $where .= ')';
-    } elseif ($role === 'org' || $role === 'manager') {
-        if ($tenantOrgId) {
-            $where .= ' AND lf.is_active = 1 AND lf.org_id = ?';
-            $params[] = $tenantOrgId;
-        } else {
-            $where .= ' AND 1=0';
-        }
     } else {
-        $where .= ' AND lf.is_active = 1 AND EXISTS (
-            SELECT 1 FROM lead_form_assignments lfa
-            WHERE lfa.form_id = lf.id AND lfa.member_id = ?
+        // Manager / marketing / other: only forms they created or that are assigned to them.
+        $where .= ' AND (
+            lf.created_by = ?
+            OR EXISTS (
+                SELECT 1 FROM lead_form_assignments lfa
+                WHERE lfa.form_id = lf.id AND lfa.member_id = ?
+            )
         )';
+        $params[] = $userId;
         $params[] = $userId;
         if ($tenantOrgId) {
             $where .= ' AND lf.org_id = ?';
@@ -241,6 +217,37 @@ function formsGetAccessibleFormDetail(PDO $db, string $formId, array $tokenData)
     $st->execute($params);
     $row = $st->fetch(PDO::FETCH_ASSOC);
     return is_array($row) ? $row : null;
+}
+
+/**
+ * Same visibility as Form Management list, without submission-count / JSON SQL.
+ * Used by lightweight endpoints (assignments) so a missing hr_leads column cannot 500.
+ */
+function formsCallerCanAccessForm(PDO $db, string $formId, array $tokenData): bool {
+    $formId = trim($formId);
+    if ($formId === '') {
+        return false;
+    }
+    try {
+        $scope = formsBuildListScope($db, $tokenData);
+        $params = array_merge($scope['params'], [$formId]);
+        $st = $db->prepare(
+            'SELECT 1 FROM lead_forms lf WHERE ' . $scope['where'] . ' AND lf.id = ? LIMIT 1'
+        );
+        $st->execute($params);
+        if ($st->fetchColumn()) {
+            return true;
+        }
+        // Admins/managers: also allow any form in their tenant org (Leads page roster).
+        $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+        if (in_array($role, ['super_admin', 'admin', 'org', 'manager'], true)) {
+            return formsGetScopedForm($db, $formId, $tokenData) !== null;
+        }
+        return false;
+    } catch (Throwable $e) {
+        error_log('[formsCallerCanAccessForm] ' . $e->getMessage());
+        return false;
+    }
 }
 
 /** Match submission rows to the form org (same rule as formsSubmissionCountSelectSql). */
@@ -349,25 +356,41 @@ if ($method === 'GET') {
     $action = $_GET['action'] ?? '';
 
     if ($action === 'assignments') {
-        $formId = $_GET['form_id'] ?? '';
-        if (!$formId) respond(['error' => 'form_id required'], 400);
+        try {
+            ensureLeadFormsTables($db);
+            ensureLeadFormAssignmentsTable($db);
 
-        if (!formsGetAccessibleFormDetail($db, $formId, $tokenData)) {
-            respond(['error' => 'Form not found'], 404);
+            $formId = trim((string) ($_GET['form_id'] ?? ''));
+            if ($formId === '') {
+                respond(['error' => 'form_id required'], 400);
+            }
+
+            if (!formsCallerCanAccessForm($db, $formId, $tokenData)) {
+                respond(['error' => 'Form not found'], 404);
+            }
+
+            $sql = "
+                SELECT lfa.id, lfa.form_id, lfa.member_id, lfa.created_at,
+                       u.full_name, u.email, u.referral_code
+                FROM lead_form_assignments lfa
+                LEFT JOIN users u ON u.id = lfa.member_id
+                WHERE lfa.form_id = ?
+                ORDER BY COALESCE(u.full_name, u.email, '') ASC
+            ";
+            $stmt = $db->prepare($sql);
+            $stmt->execute([$formId]);
+            respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
+        } catch (Throwable $e) {
+            error_log('[forms assignments] ' . $e->getMessage());
+            $payload = [
+                'error' => 'Failed to load form assignments',
+                'data' => [],
+            ];
+            if (defined('APP_DEBUG') && APP_DEBUG) {
+                $payload['detail'] = $e->getMessage();
+            }
+            respond($payload, 500);
         }
-
-        $sql = "
-            SELECT lfa.id, lfa.form_id, lfa.member_id, lfa.created_at,
-                   u.full_name, u.email, u.referral_code
-            FROM lead_form_assignments lfa
-            INNER JOIN lead_forms lf ON lf.id = lfa.form_id
-            INNER JOIN users u ON u.id = lfa.member_id
-            WHERE lfa.form_id = ?
-            ORDER BY u.full_name ASC
-        ";
-        $stmt = $db->prepare($sql);
-        $stmt->execute([$formId]);
-        respond(['data' => $stmt->fetchAll()]);
     }
 
     if ($action === 'external_api') {
@@ -572,23 +595,41 @@ if ($method === 'POST') {
         $memberIds = $input['member_ids'] ?? [];
         if (!$formId || !is_array($memberIds)) respond(['error' => 'form_id and member_ids are required'], 400);
 
+        $callerUserId = trim((string) ($tokenData['user_id'] ?? ''));
         $isManagerAssign = $role === 'manager';
         $managerVisibleIds = $isManagerAssign ? hierarchyGetVisibleUserIds($db, $tokenData) : [];
+        // Managers assign only their downline (never themselves).
+        if ($isManagerAssign) {
+            $managerVisibleIds = array_values(array_filter(
+                $managerVisibleIds,
+                static fn($id) => is_string($id) && $id !== '' && $id !== $callerUserId,
+            ));
+        }
 
         $chkParams = [$formId];
-        $orgClause = '';
         if ($role !== 'super_admin') {
-            // Managers may assign members on forms they can already see (own org / assigned).
             $accessible = formsGetAccessibleFormDetail($db, $formId, $tokenData);
             if (!$accessible) {
                 respond(['error' => 'Form not found'], 404);
             }
-            $formRow = ['id' => $accessible['id'], 'slug' => $accessible['slug'] ?? '', 'org_id' => $accessible['org_id'] ?? null];
+            // Managers may assign only on forms they created.
+            if ($isManagerAssign) {
+                $createdBy = trim((string) ($accessible['created_by'] ?? ''));
+                if ($createdBy === '' || $createdBy !== $callerUserId) {
+                    respond(['error' => 'Managers can only assign members on forms they created'], 403);
+                }
+            }
+            $formRow = [
+                'id' => $accessible['id'],
+                'slug' => $accessible['slug'] ?? '',
+                'org_id' => $accessible['org_id'] ?? null,
+                'created_by' => $accessible['created_by'] ?? null,
+            ];
         } else {
-            $chk = $db->prepare("SELECT id, slug, org_id FROM lead_forms WHERE id = ? LIMIT 1");
-        $chk->execute($chkParams);
-        $formRow = $chk->fetch();
-        if (!$formRow) respond(['error' => 'Form not found'], 404);
+            $chk = $db->prepare("SELECT id, slug, org_id, created_by FROM lead_forms WHERE id = ? LIMIT 1");
+            $chk->execute($chkParams);
+            $formRow = $chk->fetch();
+            if (!$formRow) respond(['error' => 'Form not found'], 404);
         }
 
         $cleanMemberIds = [];
@@ -721,6 +762,111 @@ if ($method === 'POST') {
                 'integration_url' => '/apply?form=' . rawurlencode((string) ($row['slug'] ?? '')),
             ],
         ]);
+    }
+
+    if ($action === 'duplicate') {
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager']);
+        $formId = trim((string) ($input['form_id'] ?? $input['id'] ?? ''));
+        if ($formId === '') {
+            respond(['error' => 'form_id required'], 400);
+        }
+        $source = formsGetAccessibleFormDetail($db, $formId, $tokenData);
+        if (!$source) {
+            respond(['error' => 'Form not found'], 404);
+        }
+        $srcSlug = strtolower(trim((string) ($source['slug'] ?? '')));
+        if (in_array($srcSlug, ['normal', 'default'], true) && trim((string) ($source['org_id'] ?? '')) === '') {
+            respond(['error' => 'System forms cannot be duplicated'], 400);
+        }
+
+        $baseName = trim((string) ($source['name'] ?? 'Form'));
+        if ($baseName === '') {
+            $baseName = 'Form';
+        }
+        $name = $baseName . ' (Copy)';
+        if (function_exists('mb_strlen') ? mb_strlen($name) > 180 : strlen($name) > 180) {
+            $name = (function_exists('mb_substr') ? mb_substr($baseName, 0, 160) : substr($baseName, 0, 160)) . ' (Copy)';
+        }
+
+        $baseSlug = strtolower(preg_replace('/[^a-z0-9\-]+/', '-', (string) ($source['slug'] ?? 'form')));
+        $baseSlug = trim($baseSlug, '-');
+        if ($baseSlug === '') {
+            $baseSlug = 'form';
+        }
+        $baseSlug = $baseSlug . '-copy';
+
+        $writeOrgId = resolveWriteOrgId($db, $tokenData);
+        $sourceOrg = trim((string) ($source['org_id'] ?? ''));
+        if ($role === 'super_admin') {
+            $writeOrgId = $sourceOrg !== '' ? $sourceOrg : $writeOrgId;
+        } elseif ($sourceOrg !== '' && $writeOrgId && $sourceOrg !== (string) $writeOrgId) {
+            respond(['error' => 'Forbidden'], 403);
+        } elseif ($sourceOrg !== '') {
+            $writeOrgId = $sourceOrg;
+        }
+
+        $slug = $baseSlug;
+        $try = 0;
+        while ($try < 12) {
+            $candidate = $try === 0 ? $baseSlug : ($baseSlug . '-' . substr(str_replace('-', '', generateUUID()), 0, 8));
+            if ($writeOrgId) {
+                $chk = $db->prepare('SELECT id FROM lead_forms WHERE slug = ? AND org_id = ? LIMIT 1');
+                $chk->execute([$candidate, $writeOrgId]);
+            } else {
+                $chk = $db->prepare("SELECT id FROM lead_forms WHERE slug = ? AND (org_id IS NULL OR TRIM(org_id) = '') LIMIT 1");
+                $chk->execute([$candidate]);
+            }
+            if (!$chk->fetch(PDO::FETCH_ASSOC)) {
+                $slug = $candidate;
+                break;
+            }
+            $try++;
+        }
+        if ($try >= 12) {
+            $slug = $baseSlug . '-' . substr(str_replace('-', '', generateUUID()), 0, 12);
+        }
+
+        $fieldsJson = $source['fields_json'] ?? [];
+        if (is_string($fieldsJson) && $fieldsJson !== '') {
+            $decoded = json_decode($fieldsJson, true);
+            $fieldsJson = is_array($decoded) ? $decoded : [];
+        }
+        if (!is_array($fieldsJson)) {
+            $fieldsJson = [];
+        }
+
+        $meta = formsParseMetaJson($source['meta_json'] ?? null);
+        unset($meta['external_api_key_hash'], $meta['external_api_key_last_rotated_at']);
+        $meta['external_api_enabled'] = false;
+
+        $newId = generateUUID();
+        $isActive = (int) (!empty($source['is_active']) ? 1 : 0);
+        $stmt = $db->prepare(
+            'INSERT INTO lead_forms (id, name, slug, description, fields_json, meta_json, is_active, created_by, org_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        try {
+            $stmt->execute([
+                $newId,
+                $name,
+                $slug,
+                $source['description'] ?? null,
+                json_encode($fieldsJson),
+                json_encode($meta),
+                $isActive,
+                $tokenData['user_id'] ?? null,
+                $writeOrgId ?: null,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[forms] duplicate: ' . $e->getMessage());
+            respond(['error' => 'Could not duplicate form'], 500);
+        }
+        respond([
+            'message' => 'Form duplicated',
+            'id' => $newId,
+            'slug' => $slug,
+            'name' => $name,
+        ], 201);
     }
 
     $name = trim($input['name'] ?? '');

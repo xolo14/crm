@@ -244,13 +244,8 @@ class WhatsAppWebhookHandler
                         $tplName,
                     ]);
             } else {
-                $db->prepare('UPDATE whatsapp_message_templates SET status = ?, rejection_reason = ? WHERE provider_template_id = ? OR name = ?')
-                    ->execute([
-                        $newStatus,
-                        $event === 'REJECTED' ? ($value['reason'] ?? 'Rejected by Meta') : null,
-                        $tplName,
-                        $tplName,
-                    ]);
+                // Fail closed: never update templates across tenants by bare name/id.
+                error_log('[wa_webhook] template status skipped — org unresolved for template ' . $tplName);
             }
         } catch (Throwable $e) {
             error_log('[wa_webhook] template status: ' . $e->getMessage());

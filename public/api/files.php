@@ -31,7 +31,11 @@ $allowedPrefixes = [
     '/uploads/resumes/',
     '/uploads/call_recordings/',
     '/uploads/form_attachments/',
+    '/uploads/form_leads/',
     '/uploads/hr_resumes/',
+    '/uploads/assessment_answers/',
+    '/uploads/certificate_assets/',
+    '/uploads/payment_proofs/',
 ];
 $okPrefix = false;
 foreach ($allowedPrefixes as $prefix) {
@@ -72,7 +76,25 @@ if ($abs === null) {
 $userId = (string) ($tokenData['user_id'] ?? '');
 $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 
-if (strpos($rawPath, '/uploads/call_recordings/') === 0) {
+if (strpos($rawPath, '/uploads/assessment_answers/') === 0) {
+    if ($role !== 'super_admin') {
+        respond(['error' => 'Forbidden'], 403);
+    }
+    $found = false;
+    try {
+        $st = $db->prepare(
+            "SELECT id FROM peaklyy_attempt_answers
+             WHERE answer_json LIKE ? LIMIT 1"
+        );
+        $st->execute(['%' . $rawPath . '%']);
+        $found = (bool) $st->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        $found = false;
+    }
+    if (!$found) {
+        respond(['error' => 'File not found'], 404);
+    }
+} elseif (strpos($rawPath, '/uploads/call_recordings/') === 0) {
     $st = $db->prepare('SELECT * FROM call_logs WHERE attachment_path = ? LIMIT 1');
     $st->execute([$rawPath]);
     $log = $st->fetch(PDO::FETCH_ASSOC);
@@ -92,14 +114,57 @@ if (strpos($rawPath, '/uploads/call_recordings/') === 0) {
             }
         }
     }
+} elseif (strpos($rawPath, '/uploads/payment_proofs/') === 0) {
+    $st = $db->prepare('SELECT * FROM manual_payments WHERE proof_path = ? LIMIT 1');
+    $st->execute([$rawPath]);
+    $mp = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$mp) {
+        respond(['error' => 'File not found'], 404);
+    }
+    if ($role !== 'super_admin') {
+        $submitter = (string) ($mp['submitted_by'] ?? '');
+        $mpOrg = trim((string) ($mp['org_id'] ?? ''));
+        $callerOrg = resolveCreatorOrgId($db, $tokenData);
+        if ($submitter === $userId) {
+            // owner ok
+        } elseif (in_array($role, ['admin', 'org'], true)) {
+            if ($callerOrg === null || $callerOrg === '' || ($mpOrg !== '' && $mpOrg !== $callerOrg)) {
+                respond(['error' => 'Forbidden'], 403);
+            }
+        } elseif ($role === 'manager') {
+            $visible = hierarchyGetVisibleUserIds($db, $tokenData);
+            if (!in_array($submitter, $visible, true)) {
+                respond(['error' => 'Forbidden'], 403);
+            }
+            if ($callerOrg === null || $callerOrg === '' || ($mpOrg !== '' && $mpOrg !== $callerOrg)) {
+                respond(['error' => 'Forbidden'], 403);
+            }
+        } else {
+            respond(['error' => 'Forbidden'], 403);
+        }
+    }
 } elseif (
     strpos($rawPath, '/uploads/resumes/') === 0
     || strpos($rawPath, '/uploads/form_attachments/') === 0
+    || strpos($rawPath, '/uploads/form_leads/') === 0
     || strpos($rawPath, '/uploads/hr_resumes/') === 0
 ) {
+    // Always require a DB ownership row — never allow path-only downloads (IDOR / cross-tenant).
     $st = $db->prepare('SELECT * FROM leads WHERE resume_path = ? LIMIT 1');
     $st->execute([$rawPath]);
     $lead = $st->fetch(PDO::FETCH_ASSOC);
+
+    $hrLead = null;
+    if (!$lead) {
+        try {
+            $hst = $db->prepare('SELECT * FROM hr_leads WHERE resume_path = ? LIMIT 1');
+            $hst->execute([$rawPath]);
+            $hrLead = $hst->fetch(PDO::FETCH_ASSOC) ?: null;
+        } catch (Throwable $e) {
+            $hrLead = null;
+        }
+    }
+
     if ($lead) {
         if ($role !== 'super_admin' && !userCanUpdateLeadForCallLog($db, $tokenData, $userId, $role, $lead)) {
             $scope = tenantLeadsScopeSql($db, $tokenData, 'l');
@@ -109,8 +174,28 @@ if (strpos($rawPath, '/uploads/call_recordings/') === 0) {
                 respond(['error' => 'Forbidden'], 403);
             }
         }
-    } elseif (!in_array($role, ['super_admin', 'admin', 'org'], true)) {
-        respond(['error' => 'Forbidden'], 403);
+    } elseif ($hrLead) {
+        if ($role !== 'super_admin') {
+            $hrOrg = trim((string) ($hrLead['org_id'] ?? ''));
+            $callerOrg = resolveCreatorOrgId($db, $tokenData);
+            $hrOwner = trim((string) ($hrLead['hr_id'] ?? $hrLead['assigned_to'] ?? ''));
+            if ($role === 'hr') {
+                if ($hrOwner !== '' && $hrOwner !== $userId) {
+                    respond(['error' => 'Forbidden'], 403);
+                }
+                if ($callerOrg === null || $callerOrg === '' || ($hrOrg !== '' && $hrOrg !== $callerOrg)) {
+                    respond(['error' => 'Forbidden'], 403);
+                }
+            } elseif (in_array($role, ['admin', 'org', 'manager'], true)) {
+                if ($callerOrg === null || $callerOrg === '' || $hrOrg !== $callerOrg) {
+                    respond(['error' => 'Forbidden'], 403);
+                }
+            } else {
+                respond(['error' => 'Forbidden'], 403);
+            }
+        }
+    } else {
+        respond(['error' => 'File not found'], 404);
     }
 }
 
@@ -121,11 +206,10 @@ if (function_exists('mime_content_type')) {
         $mime = $detected;
     }
 }
-$basename = basename($abs);
+
 header('Content-Type: ' . $mime);
 header('Content-Length: ' . (string) filesize($abs));
-header('Content-Disposition: inline; filename="' . str_replace('"', '', $basename) . '"');
 header('X-Content-Type-Options: nosniff');
-header('Cache-Control: private, no-store');
+header('Content-Disposition: inline; filename="' . basename($abs) . '"');
 readfile($abs);
 exit;

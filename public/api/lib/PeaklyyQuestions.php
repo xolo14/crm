@@ -1,15 +1,29 @@
 <?php
 /**
- * Peaklyy domain question bank — MCQs + structured auto-validated tasks (no free code).
+ * Peaklyy shortlisting question bank — 10 domains × (30 MCQs + 5 practical tasks).
+ * MCQ source: Peaklyy_Shortlisting_Questions.docx + AnswerKey.
+ * Tasks source: Peaklyy_Question_Paper.md
+ * Bank version: shortlisting_10x30_tasks_v1
+ * Per attempt: 25 random MCQs + 5 domain tasks (untimed).
  */
+function peaklyyQuestionBankVersion(): string
+{
+    return 'shortlisting_10x30_tasks_v1';
+}
+
 function peaklyyDomainCatalog(): array
 {
     return [
-        'web_dev' => 'Web Development / IT',
-        'uiux' => 'UI/UX Design',
-        'content' => 'Content Writing',
+        'python' => 'IT & Development - Python',
+        'javascript' => 'IT & Development - JavaScript',
+        'html_css' => 'IT & Development - HTML & CSS',
+        'ui_design' => 'Design & Creation - UI Design',
+        'writing_translation' => 'Writing & Translation',
+        'business_finance' => 'Business & Finance',
         'digital_marketing' => 'Digital Marketing',
+        'data_analytics' => 'Data Analytics',
         'video_animation' => 'Video & Animation',
+        'photography' => 'Photography',
     ];
 }
 
@@ -32,263 +46,403 @@ function peaklyyQuestionDefinitions(): array
 {
     $q = [];
 
-    // ── Domain 1 Web Dev ──
-    $q[] = ['web_dev', 'easy', 'mcq', 'What does HTML stand for?', ['a' => 'Hyper Trainer Marking Language', 'b' => 'Hyper Text Markup Language', 'c' => 'High Text Machine Language', 'd' => 'Hyper Text Making Language'], 'b', null, 5];
-    $q[] = ['web_dev', 'easy', 'mcq', 'Which tag is used to create a hyperlink?', ['a' => '<link>', 'b' => '<href>', 'c' => '<a>', 'd' => '<hyper>'], 'c', null, 5];
-    $q[] = ['web_dev', 'easy', 'mcq', 'Which attribute gives an HTML element a unique identifier?', ['a' => 'class', 'b' => 'name', 'c' => 'id', 'd' => 'key'], 'c', null, 5];
-    $q[] = ['web_dev', 'easy', 'mcq', 'What is CSS used for?', ['a' => 'Adding interactivity', 'b' => 'Styling and designing a webpage', 'c' => 'Storing data', 'd' => 'Creating database tables'], 'b', null, 5];
-    $q[] = ['web_dev', 'easy', 'mcq', 'What is the full form of IP in "IP Address"?', ['a' => 'Internal Protocol', 'b' => 'Internet Protocol', 'c' => 'Information Protocol', 'd' => 'Interface Protocol'], 'b', null, 5];
-    $q[] = ['web_dev', 'easy', 'task', 'Describe a basic webpage (structured — no code). Fill each part.', null, null, [
-        'fields' => [
-            ['key' => 'heading', 'label' => 'Page heading (what users see at top)', 'min' => 2],
-            ['key' => 'paragraph', 'label' => 'One paragraph of page content', 'min' => 15],
-            ['key' => 'image_desc', 'label' => 'What image would appear (describe subject/file)', 'min' => 5],
-        ],
-        'keywords_any' => [],
-    ], 5];
+    // ── IT & Development - Python ──
+    $q[] = ['python', 'easy', 'mcq', 'What is the output of: print([1,2,3] * 2)', ['a' => '[1,2,3,1,2,3]', 'b' => '[2,4,6]', 'c' => 'Error', 'd' => '[1,2,3]*2'], 'a', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'What does the following return? bool(\'False\')', ['a' => 'True', 'b' => 'False', 'c' => 'Error', 'd' => 'None'], 'a', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'What is the output of: print(0.1 + 0.2 == 0.3)', ['a' => 'True', 'b' => 'False', 'c' => 'Error', 'd' => 'None'], 'b', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'What will `def f(a, b=[]): b.append(a); return b` return on the second call `f(2)` after `f(1)`?', ['a' => '[2]', 'b' => '[1,2]', 'c' => '[1]', 'd' => 'Error'], 'b', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'What is the output of `print(type(1/2))`?', ['a' => 'int', 'b' => 'float', 'c' => 'double', 'd' => 'Error'], 'b', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'Which keyword is used to create a generator in Python?', ['a' => 'return', 'b' => 'yield', 'c' => 'gen', 'd' => 'generate'], 'b', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'What does `*args` in a function definition allow?', ['a' => 'Fixed number of keyword arguments', 'b' => 'Variable number of positional arguments', 'c' => 'Only one argument', 'd' => 'Variable number of keyword arguments'], 'b', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'What is the output of: print(id([]) == id([]))', ['a' => 'True', 'b' => 'False', 'c' => 'Error', 'd' => 'Depends on Python version'], 'b', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'What does the GIL (Global Interpreter Lock) primarily restrict in CPython?', ['a' => 'Memory allocation', 'b' => 'True parallel execution of threads on multiple cores', 'c' => 'Import statements', 'd' => 'Exception handling'], 'b', null, 1];
+    $q[] = ['python', 'easy', 'mcq', 'What is the result of `list(range(5))[::-1]`?', ['a' => '[0,1,2,3,4]', 'b' => '[4,3,2,1,0]', 'c' => '[5,4,3,2,1]', 'd' => 'Error'], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'Which of these correctly creates a shallow copy of a list `a`?', ['a' => 'b = a', 'b' => 'b = a[:]', 'c' => 'b = a.deep()', 'd' => 'b = &a'], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'What is the output of: print(\'abc\'[1:100])', ['a' => 'Error', 'b' => '\'bc\'', 'c' => '\'\'', 'd' => '\'abc\''], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'What does `@staticmethod` decorator do?', ['a' => 'Binds method to instance', 'b' => 'Binds method to class only, no self/cls needed', 'c' => 'Makes method private', 'd' => 'Makes method abstract'], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'What is the output of: print(2 ** 3 ** 2)', ['a' => '64', 'b' => '512', 'c' => 'Error', 'd' => '36'], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'Which data structure would you use for O(1) average time complexity lookups?', ['a' => 'List', 'b' => 'Tuple', 'c' => 'Dictionary', 'd' => 'Set of tuples'], 'c', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'What does the `with` statement primarily manage?', ['a' => 'Loops', 'b' => 'Context/resource management (e.g. file handles)', 'c' => 'Exception raising', 'd' => 'Type casting'], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'What is the output of: print([x for x in range(10) if x % 2 == 0])', ['a' => '[1,3,5,7,9]', 'b' => '[0,2,4,6,8]', 'c' => 'Error', 'd' => '[0,1,2,...,9]'], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'What happens when you compare `None == False`?', ['a' => 'True', 'b' => 'False', 'c' => 'Error', 'd' => 'None'], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'What is a Python decorator fundamentally?', ['a' => 'A class', 'b' => 'A function that takes a function and returns a modified function', 'c' => 'A loop construct', 'd' => 'A type of variable'], 'b', null, 1];
+    $q[] = ['python', 'medium', 'mcq', 'What is the output of: print(sorted([3,1,2], reverse=True))', ['a' => '[1,2,3]', 'b' => '[3,2,1]', 'c' => 'Error', 'd' => '[3,1,2]'], 'b', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'Which of these is immutable in Python?', ['a' => 'list', 'b' => 'dict', 'c' => 'tuple', 'd' => 'set'], 'c', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'What does `__init__.py` do in a folder?', ['a' => 'Runs unit tests', 'b' => 'Marks the directory as a Python package', 'c' => 'Encrypts the module', 'd' => 'Nothing, it\'s optional metadata only'], 'b', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'What is the output of: print(3 == 3.0)', ['a' => 'True', 'b' => 'False', 'c' => 'Error', 'd' => 'None'], 'a', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'What does `functools.lru_cache` do?', ['a' => 'Clears memory', 'b' => 'Caches function results to speed up repeated calls', 'c' => 'Limits recursion depth', 'd' => 'Deletes unused variables'], 'b', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'What\'s the output of: a = [1,2,3]; b = a; b.append(4); print(a)', ['a' => '[1,2,3]', 'b' => '[1,2,3,4]', 'c' => 'Error', 'd' => '[4]'], 'b', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'What is the correct way to handle multiple exceptions in one except block?', ['a' => 'except (TypeError, ValueError):', 'b' => 'except TypeError, ValueError:', 'c' => 'except [TypeError, ValueError]:', 'd' => 'except TypeError or ValueError:'], 'a', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'What is the output of: print(len({1:1, 2:2, 1:3}))', ['a' => '3', 'b' => '2', 'c' => '1', 'd' => 'Error'], 'b', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'Which method removes and returns the last item of a list?', ['a' => 'remove()', 'b' => 'pop()', 'c' => 'delete()', 'd' => 'discard()'], 'b', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'What is the purpose of `__slots__` in a class?', ['a' => 'Adds more attributes dynamically', 'b' => 'Restricts instance attributes and saves memory', 'c' => 'Makes the class abstract', 'd' => 'Enables multiple inheritance'], 'b', null, 1];
+    $q[] = ['python', 'hard', 'mcq', 'What is the output of: print(\'Peaklyy\'.upper().replace(\'Y\', \'X\'))', ['a' => 'PEAKLLXX', 'b' => 'PEAKLLXY', 'c' => 'peaklyy', 'd' => 'Error'], 'a', null, 1];
 
-    $q[] = ['web_dev', 'medium', 'mcq', 'Which HTML tag is used to create a form?', ['a' => '<input>', 'b' => '<form>', 'c' => '<field>', 'd' => '<data>'], 'b', null, 5];
-    $q[] = ['web_dev', 'medium', 'mcq', 'What is the difference between GET and POST methods?', ['a' => 'GET sends data in the URL, POST sends data in the request body', 'b' => 'GET is more secure than POST', 'c' => 'POST cannot send form data', 'd' => 'There is no difference'], 'a', null, 5];
-    $q[] = ['web_dev', 'medium', 'mcq', 'Which input type is correct for an email field?', ['a' => 'type="text"', 'b' => 'type="mail"', 'c' => 'type="email"', 'd' => 'type="string"'], 'c', null, 5];
-    $q[] = ['web_dev', 'medium', 'mcq', 'What is the purpose of the "required" attribute in a form field?', ['a' => 'It hides the field', 'b' => 'It prevents form submission unless the field is filled', 'c' => 'It changes the field\'s color', 'd' => 'It disables the field'], 'b', null, 5];
-    $q[] = ['web_dev', 'medium', 'mcq', 'What is the difference between front-end and back-end development?', ['a' => 'Front-end deals with server/database, back-end deals with UI', 'b' => 'Front-end deals with UI/what users see, back-end deals with server/database logic', 'c' => 'They\'re the same', 'd' => 'Front-end only uses Python'], 'b', null, 5];
-    $q[] = ['web_dev', 'medium', 'task', 'Plan a contact form (structured — no code).', null, null, [
-        'fields' => [
-            ['key' => 'name_field', 'label' => 'Name field: label + input type', 'min' => 4],
-            ['key' => 'email_field', 'label' => 'Email field: label + input type', 'min' => 4],
-            ['key' => 'message_field', 'label' => 'Message field: label + input type', 'min' => 4],
-            ['key' => 'submit', 'label' => 'Submit button label', 'min' => 3],
-        ],
-        'keywords_any' => ['email', 'name', 'submit', 'message'],
-    ], 5];
+    // ── IT & Development - JavaScript ──
+    $q[] = ['javascript', 'easy', 'mcq', 'What is the output of: console.log(typeof NaN)', ['a' => '\'NaN\'', 'b' => '\'number\'', 'c' => '\'undefined\'', 'd' => '\'object\''], 'b', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'What is the output of: console.log(1 == \'1\')', ['a' => 'true', 'b' => 'false', 'c' => 'Error', 'd' => 'undefined'], 'a', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'What is the output of: console.log(1 === \'1\')', ['a' => 'true', 'b' => 'false', 'c' => 'Error', 'd' => 'undefined'], 'b', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'What does `hoisting` mean in JavaScript?', ['a' => 'Variables and function declarations are moved to the top of their scope during compilation', 'b' => 'Variables are deleted after use', 'c' => 'Functions execute in reverse order', 'd' => 'Errors are hidden'], 'a', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'What is the output of: console.log([] + [])', ['a' => '\'[object Object]\'', 'b' => '\'\'', 'c' => '0', 'd' => 'undefined'], 'b', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'What is a closure in JavaScript?', ['a' => 'A loop that never ends', 'b' => 'A function that retains access to its outer scope\'s variables even after the outer function has returned', 'c' => 'A syntax error', 'd' => 'A way to close a browser tab'], 'b', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'What is the output of: console.log(typeof undefined)', ['a' => '\'undefined\'', 'b' => '\'null\'', 'c' => '\'object\'', 'd' => 'undefined'], 'a', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'In the event loop, which runs first after the call stack is empty?', ['a' => 'setTimeout callback', 'b' => 'Promise microtask', 'c' => 'Neither, they run simultaneously', 'd' => 'It\'s random'], 'b', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'What does `this` refer to inside a regular (non-arrow) function called as `obj.method()`?', ['a' => 'The global object always', 'b' => 'obj', 'c' => 'undefined always', 'd' => 'The function itself'], 'b', null, 1];
+    $q[] = ['javascript', 'easy', 'mcq', 'What does an arrow function do differently with `this`?', ['a' => 'Creates its own new `this`', 'b' => 'Inherits `this` lexically from the enclosing scope', 'c' => 'Sets `this` to null', 'd' => 'Sets `this` to window always'], 'b', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What is the output of: console.log(0.1 + 0.2 === 0.3)', ['a' => 'true', 'b' => 'false', 'c' => 'Error', 'd' => 'NaN'], 'b', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What does `let` provide that `var` does not?', ['a' => 'Global scope', 'b' => 'Block scope', 'c' => 'Hoisting', 'd' => 'Type safety'], 'b', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What is the output of: console.log([1,2,3].map(x => x * 2))', ['a' => '[1,2,3]', 'b' => '[2,4,6]', 'c' => '6', 'd' => 'Error'], 'b', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What does `Array.prototype.reduce()` do?', ['a' => 'Filters an array', 'b' => 'Reduces array size by removing duplicates', 'c' => 'Executes a reducer function to accumulate a single result', 'd' => 'Sorts an array'], 'c', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What is the output of: console.log(typeof function(){})', ['a' => '\'function\'', 'b' => '\'object\'', 'c' => '\'undefined\'', 'd' => '\'method\''], 'a', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What is the purpose of `Promise.all()`?', ['a' => 'Runs promises one after another', 'b' => 'Waits for all promises to resolve, or rejects if any fails', 'c' => 'Cancels all promises', 'd' => 'Retries failed promises'], 'b', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What does `use strict` do?', ['a' => 'Slows down code execution', 'b' => 'Enables stricter parsing and error handling in JS', 'c' => 'Enables new ES6 syntax only', 'd' => 'Disables console logging'], 'b', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What is the output of: console.log(\'5\' - 2)', ['a' => '\'52\'', 'b' => '3', 'c' => 'NaN', 'd' => 'Error'], 'b', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What is the output of: console.log(\'5\' + 2)', ['a' => '7', 'b' => '\'52\'', 'c' => 'NaN', 'd' => 'Error'], 'b', null, 1];
+    $q[] = ['javascript', 'medium', 'mcq', 'What does the spread operator `...` do when used on an array?', ['a' => 'Deletes elements', 'b' => 'Expands array elements individually', 'c' => 'Reverses the array', 'd' => 'Sorts the array'], 'b', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What is a JavaScript Symbol primarily used for?', ['a' => 'String formatting', 'b' => 'Creating unique, non-colliding property keys', 'c' => 'Mathematical operations', 'd' => 'DOM manipulation'], 'b', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What is the output of: console.log([1,2,3].length)', ['a' => '2', 'b' => '3', 'c' => 'Error', 'd' => 'undefined'], 'b', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What does `null == undefined` evaluate to?', ['a' => 'true', 'b' => 'false', 'c' => 'Error', 'd' => 'undefined'], 'a', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What does `null === undefined` evaluate to?', ['a' => 'true', 'b' => 'false', 'c' => 'Error', 'd' => 'undefined'], 'b', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What is event bubbling in the DOM?', ['a' => 'Events execute in random order', 'b' => 'An event triggers on the target element, then propagates up through its ancestors', 'c' => 'Events are cancelled automatically', 'd' => 'Multiple events fire simultaneously'], 'b', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What does `Array.isArray([])` return?', ['a' => 'true', 'b' => 'false', 'c' => 'undefined', 'd' => 'Error'], 'a', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What is the purpose of `async/await`?', ['a' => 'Makes code run faster', 'b' => 'Provides a cleaner, synchronous-looking syntax for handling Promises', 'c' => 'Replaces all loops', 'd' => 'Disables error handling'], 'b', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What does `debounce` typically do in JS event handling?', ['a' => 'Fires a function immediately on every call', 'b' => 'Delays function execution until after a pause in calls', 'c' => 'Doubles the execution speed', 'd' => 'Cancels all future events permanently'], 'b', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What is the output of: console.log(typeof [])', ['a' => '\'array\'', 'b' => '\'object\'', 'c' => '\'list\'', 'd' => '\'undefined\''], 'b', null, 1];
+    $q[] = ['javascript', 'hard', 'mcq', 'What does `JSON.stringify(undefined)` return?', ['a' => '\'undefined\'', 'b' => 'undefined (the value, not a string)', 'c' => '\'null\'', 'd' => 'Error'], 'b', null, 1];
 
-    $q[] = ['web_dev', 'hard', 'mcq', 'What is the difference between a compiler and an interpreter?', ['a' => 'Compiler translates line-by-line, interpreter translates all at once', 'b' => 'Compiler translates the entire code at once, interpreter translates line-by-line', 'c' => 'Both do the same thing', 'd' => 'Interpreters are used only for HTML'], 'b', null, 5];
-    $q[] = ['web_dev', 'hard', 'mcq', 'What does client-side validation mean, as opposed to server-side validation?', ['a' => 'Validation done in the browser before data is sent to the server', 'b' => 'Validation done only after payment', 'c' => 'Validation that only checks passwords', 'd' => 'Validation that happens on the server only'], 'a', null, 5];
-    $q[] = ['web_dev', 'hard', 'task', 'Design a registration form plan (structured — no code).', null, null, [
-        'fields' => [
-            ['key' => 'fields_list', 'label' => 'List fields: Full Name, Email, Password, Confirm Password, Phone', 'min' => 20],
-            ['key' => 'input_types', 'label' => 'Correct input types you would use (email, password, tel…)', 'min' => 10],
-            ['key' => 'validation', 'label' => 'Validation rules (empty fields + password match)', 'min' => 15],
-            ['key' => 'error_msg', 'label' => 'Example error message when validation fails', 'min' => 8],
-            ['key' => 'domain_dropdown', 'label' => 'Domain of Interest dropdown options (required)', 'min' => 10],
-        ],
-        'keywords_any' => ['password', 'email', 'phone', 'domain'],
-    ], 10];
+    // ── IT & Development - HTML & CSS ──
+    $q[] = ['html_css', 'easy', 'mcq', 'What does `box-sizing: border-box;` do?', ['a' => 'Adds a visible border to every box', 'b' => 'Includes padding and border within the element\'s total width/height', 'c' => 'Removes all box styling', 'd' => 'Disables the box model entirely'], 'b', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'Which selector has higher specificity: `#id` or `.class`?', ['a' => '.class', 'b' => '#id', 'c' => 'They are equal', 'd' => 'Depends on order in the CSS file'], 'b', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'What is the correct CSS specificity order from lowest to highest?', ['a' => 'ID > Class > Element', 'b' => 'Element > Class > ID', 'c' => 'Class > ID > Element', 'd' => 'They are all equal'], 'b', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'What does `position: sticky` do?', ['a' => 'Always fixed to viewport', 'b' => 'Toggles between relative and fixed based on scroll position within its container', 'c' => 'Same as absolute', 'd' => 'Removes the element from flow entirely'], 'b', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'Which property creates a new stacking context?', ['a' => 'color', 'b' => 'z-index (with a positioned element)', 'c' => 'font-size', 'd' => 'text-align'], 'b', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'What is the default value of `position` for an HTML element?', ['a' => 'relative', 'b' => 'absolute', 'c' => 'static', 'd' => 'fixed'], 'c', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'In Flexbox, what does `justify-content` control?', ['a' => 'Alignment along the cross axis', 'b' => 'Alignment along the main axis', 'c' => 'Font alignment only', 'd' => 'Border alignment'], 'b', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'In CSS Grid, what does `grid-template-areas` allow you to do?', ['a' => 'Define animation keyframes', 'b' => 'Name and visually lay out grid regions', 'c' => 'Set font sizes', 'd' => 'Create media queries'], 'b', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'What does the `!important` rule do?', ['a' => 'Deletes conflicting rules', 'b' => 'Overrides normal specificity rules for that declaration', 'c' => 'Improves page load speed', 'd' => 'Adds a comment'], 'b', null, 1];
+    $q[] = ['html_css', 'easy', 'mcq', 'Which HTML5 tag is semantically correct for the main navigation menu?', ['a' => '<div>', 'b' => '<nav>', 'c' => '<menu-main>', 'd' => '<header-nav>'], 'b', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'What does `<meta name=\'viewport\' content=\'width=device-width, initial-scale=1\'>` do?', ['a' => 'Sets a fixed desktop-only width', 'b' => 'Enables responsive scaling on mobile devices', 'c' => 'Blocks zooming permanently', 'd' => 'Loads a specific stylesheet'], 'b', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'What is the purpose of a CSS `clearfix`?', ['a' => 'Removes all margins', 'b' => 'Forces a container to contain its floated children', 'c' => 'Clears the cache', 'd' => 'Deletes unused CSS'], 'b', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'What does `display: none` do compared to `visibility: hidden`?', ['a' => 'Both hide the element but keep its space; no difference', 'b' => 'display:none removes it from layout flow, visibility:hidden keeps its space', 'c' => 'visibility:hidden removes it from the DOM entirely', 'd' => 'display:none only hides text'], 'b', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'Which unit is relative to the root element\'s font-size?', ['a' => 'em', 'b' => 'rem', 'c' => 'vh', 'd' => '%'], 'b', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'What does `vw` unit represent?', ['a' => '1% of the viewport width', 'b' => '1 pixel', 'c' => '1% of the element\'s width', 'd' => '1% of viewport height'], 'a', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'What is the purpose of the `alt` attribute on an `<img>` tag?', ['a' => 'Sets image alignment', 'b' => 'Provides alternative text for accessibility and when image fails to load', 'c' => 'Sets image animation', 'd' => 'Compresses the image'], 'b', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'Which CSS property is used to create space between flex/grid items?', ['a' => 'spacing', 'b' => 'gap', 'c' => 'margin-between', 'd' => 'item-gap'], 'b', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'What does `::before` pseudo-element do?', ['a' => 'Selects the first child element', 'b' => 'Inserts generated content before an element\'s actual content', 'c' => 'Applies styles before page load', 'd' => 'Selects the previous sibling'], 'b', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'What\'s the correct way to apply a CSS variable defined as `--main-color: blue;`?', ['a' => 'color: var(--main-color);', 'b' => 'color: --main-color;', 'c' => 'color: $main-color;', 'd' => 'color: main-color;'], 'a', null, 1];
+    $q[] = ['html_css', 'medium', 'mcq', 'Which of these correctly targets only direct children in CSS?', ['a' => '.parent .child', 'b' => '.parent > .child', 'c' => '.parent + .child', 'd' => '.parent ~ .child'], 'b', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'What does `overflow: hidden` do?', ['a' => 'Deletes overflow content permanently', 'b' => 'Clips content that exceeds the element\'s box, hiding it visually', 'c' => 'Adds a scrollbar always', 'd' => 'Increases box size to fit content'], 'b', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'In responsive design, what is \'mobile-first\' approach?', ['a' => 'Designing for desktop then scaling down', 'b' => 'Writing base CSS for mobile, then using min-width media queries to scale up', 'c' => 'Only supporting mobile devices', 'd' => 'Using fixed pixel widths only'], 'b', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'What does the `<!DOCTYPE html>` declaration do?', ['a' => 'Links a CSS file', 'b' => 'Tells the browser to render the page in standards mode as HTML5', 'c' => 'Creates a comment', 'd' => 'Imports JavaScript'], 'b', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'Which attribute makes an HTML form input mandatory before submission?', ['a' => 'mandatory', 'b' => 'required', 'c' => 'validate', 'd' => 'must-fill'], 'b', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'What does `z-index` require to actually take effect?', ['a' => 'Nothing, it always works', 'b' => 'The element must have a position value other than static', 'c' => 'The element must be inside a flex container', 'd' => 'The element must have a fixed width'], 'b', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'What does CSS `inheritance` mean?', ['a' => 'Child elements automatically get certain parent property values like color/font unless overridden', 'b' => 'All elements share the same class', 'c' => 'Styles are copied from other websites', 'd' => 'Elements inherit JavaScript events'], 'a', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'Which CSS layout is best suited for two-dimensional (row AND column) layouts?', ['a' => 'Flexbox', 'b' => 'CSS Grid', 'c' => 'Float', 'd' => 'Table'], 'b', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'What does `srcset` attribute in `<img>` allow?', ['a' => 'Multiple image sources for different screen resolutions/sizes', 'b' => 'Setting a fallback font', 'c' => 'Adding CSS animations to images', 'd' => 'Compressing images automatically'], 'a', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'What does the CSS cascade order prioritize when specificity is equal?', ['a' => 'Alphabetical order of selectors', 'b' => 'The last declared rule in the source order wins', 'c' => 'The shortest selector wins', 'd' => 'Inline styles never apply'], 'b', null, 1];
+    $q[] = ['html_css', 'hard', 'mcq', 'Which ARIA attribute would you add to improve accessibility of a custom button div?', ['a' => 'aria-role', 'b' => 'role=\'button\' and tabindex=\'0\'', 'c' => 'aria-hidden=\'true\'', 'd' => 'alt=\'button\''], 'b', null, 1];
 
-    // ── Domain 2 UI/UX ──
-    $q[] = ['uiux', 'easy', 'mcq', 'What does UI stand for?', ['a' => 'User Interaction', 'b' => 'User Interface', 'c' => 'Universal Interface', 'd' => 'User Instruction'], 'b', null, 5];
-    $q[] = ['uiux', 'easy', 'mcq', 'What does UX stand for?', ['a' => 'User Experience', 'b' => 'User Extension', 'c' => 'User Exchange', 'd' => 'Universal Experience'], 'a', null, 5];
-    $q[] = ['uiux', 'easy', 'mcq', 'Which of these is a popular UI design tool?', ['a' => 'Figma', 'b' => 'MySQL', 'c' => 'Postman', 'd' => 'GitHub'], 'a', null, 5];
-    $q[] = ['uiux', 'easy', 'mcq', 'What is a "wireframe"?', ['a' => 'A final polished design with colors and images', 'b' => 'A basic skeletal layout showing structure without visual details', 'c' => 'A type of font', 'd' => 'A coding language'], 'b', null, 5];
-    $q[] = ['uiux', 'easy', 'task', 'Name 3 UI elements on a login screen.', null, null, [
-        'fields' => [
-            ['key' => 'el1', 'label' => 'UI element 1', 'min' => 3],
-            ['key' => 'el2', 'label' => 'UI element 2', 'min' => 3],
-            ['key' => 'el3', 'label' => 'UI element 3', 'min' => 3],
-        ],
-        'keywords_any' => ['button', 'input', 'logo', 'password', 'email', 'field', 'link', 'checkbox'],
-    ], 5];
+    // ── Design & Creation - UI Design ──
+    $q[] = ['ui_design', 'easy', 'mcq', 'What is the minimum WCAG AA contrast ratio for normal body text?', ['a' => '2:1', 'b' => '3:1', 'c' => '4.5:1', 'd' => '7:1'], 'c', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'What is the difference between a wireframe and a prototype?', ['a' => 'No difference, same thing', 'b' => 'A wireframe is a low-fidelity structural layout; a prototype is an interactive simulation of the final product', 'c' => 'A prototype is always in black and white', 'd' => 'A wireframe includes final colors and fonts'], 'b', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'In Figma, what shortcut creates a new Frame?', ['a' => 'Ctrl/Cmd + F', 'b' => 'A', 'c' => 'Shift + A', 'd' => 'F'], 'b', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'What does \'affordance\' mean in UI design?', ['a' => 'The cost of a design tool', 'b' => 'A visual cue suggesting how an element should be used (e.g. a button looks clickable)', 'c' => 'The number of screens in a flow', 'd' => 'A type of font pairing'], 'b', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'Which Gestalt principle explains why closely grouped items are perceived as related?', ['a' => 'Similarity', 'b' => 'Proximity', 'c' => 'Closure', 'd' => 'Continuity'], 'b', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'What is the standard base unit commonly used in spacing systems (the \'8pt grid\')?', ['a' => '5px', 'b' => '8px', 'c' => '10px', 'd' => '16px'], 'b', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'What is a \'design system\'?', ['a' => 'A single app screen design', 'b' => 'A reusable collection of components, patterns and guidelines used across a product', 'c' => 'A color palette only', 'd' => 'A prototyping software'], 'b', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'What does \'F-pattern\' refer to in UI/UX?', ['a' => 'A grid layout type', 'b' => 'A common eye-scanning pattern users follow when reading web content', 'c' => 'A font pairing rule', 'd' => 'A type of button shape'], 'b', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'In Figma, what does \'Auto Layout\' primarily help with?', ['a' => 'Adding animations', 'b' => 'Creating responsive, self-adjusting frames that resize based on content', 'c' => 'Exporting to PDF', 'd' => 'Managing color styles only'], 'b', null, 1];
+    $q[] = ['ui_design', 'easy', 'mcq', 'What is the purpose of a usability heuristic evaluation (Nielsen\'s heuristics)?', ['a' => 'To test server load speed', 'b' => 'To evaluate an interface against established usability principles', 'c' => 'To check for spelling errors', 'd' => 'To measure app file size'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'What file format is best for exporting a scalable icon that won\'t lose quality when resized?', ['a' => 'JPEG', 'b' => 'SVG', 'c' => 'BMP', 'd' => 'GIF'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'What does \'information architecture\' refer to?', ['a' => 'Choosing fonts', 'b' => 'Organizing and structuring content so users can find things intuitively', 'c' => 'Writing backend code', 'd' => 'Selecting brand colors'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'What is a \'persona\' in UX design?', ['a' => 'A real user interview transcript', 'b' => 'A fictional archetype representing a segment of target users, built from research', 'c' => 'A login screen design', 'd' => 'A type of animation'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'Which of these is a common mistake that reduces accessibility for colorblind users?', ['a' => 'Using icons alongside color coding', 'b' => 'Relying on color alone to convey information (e.g. red/green only)', 'c' => 'Using high contrast text', 'd' => 'Using large tap targets'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'What does \'micro-interaction\' mean in UI design?', ['a' => 'A small animated bug', 'b' => 'A small, functional animation providing feedback for a single user action (e.g. a heart icon \'liking\')', 'c' => 'A minor layout error', 'd' => 'A hidden menu item'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'In typography, what is \'kerning\'?', ['a' => 'The vertical spacing between lines of text', 'b' => 'The horizontal spacing adjustment between individual character pairs', 'c' => 'The font weight', 'd' => 'The font family name'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'What is \'leading\' in typography?', ['a' => 'Letter spacing', 'b' => 'The vertical space between lines of text (line height)', 'c' => 'Font boldness', 'd' => 'The primary heading font'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'What is the primary goal of \'card sorting\' as a UX research method?', ['a' => 'Testing app performance', 'b' => 'Understanding how users mentally categorize and group content', 'c' => 'Choosing brand colors', 'd' => 'Writing copy for cards'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'What does \'mobile-first design\' prioritize?', ['a' => 'Designing only for mobile forever', 'b' => 'Designing for the smallest screen first, then scaling up to larger screens', 'c' => 'Ignoring desktop entirely', 'd' => 'Using only native mobile fonts'], 'b', null, 1];
+    $q[] = ['ui_design', 'medium', 'mcq', 'Which of these best describes \'dark mode\' design considerations?', ['a' => 'Simply inverting all colors', 'b' => 'Careful contrast, reduced pure black/white, and adjusted elevation/shadow cues for readability', 'c' => 'Removing all icons', 'd' => 'Using only grayscale'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'What is the purpose of an onboarding flow in an app?', ['a' => 'To collect payment upfront', 'b' => 'To help first-time users understand the product\'s value and how to use it', 'c' => 'To show ads', 'd' => 'To log out inactive users'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'What does \'A/B testing\' in design typically compare?', ['a' => 'Two different servers', 'b' => 'Two design variants to see which performs better against a metric', 'c' => 'Two different fonts only', 'd' => 'App vs website version'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'What does \'white space\' (negative space) do in a layout?', ['a' => 'Wastes screen real estate', 'b' => 'Improves readability, focus, and visual hierarchy by giving elements room to breathe', 'c' => 'Is always a design flaw', 'd' => 'Is only used in print design'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'Which color scheme uses colors opposite each other on the color wheel?', ['a' => 'Analogous', 'b' => 'Complementary', 'c' => 'Monochromatic', 'd' => 'Triadic'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'What is a \'component variant\' in Figma used for?', ['a' => 'Storing font files', 'b' => 'Grouping different states/styles of the same component (e.g. button: default, hover, disabled)', 'c' => 'Exporting videos', 'd' => 'Creating new color palettes'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'What does \'consistency\' as a usability heuristic mean?', ['a' => 'Every screen should look completely different', 'b' => 'Similar elements and actions should look and behave the same way throughout the product', 'c' => 'Only one font should ever be used', 'd' => 'Buttons should change color randomly'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'What is the purpose of icon consistency across an app?', ['a' => 'To reduce file size only', 'b' => 'To help users quickly recognize and predict function without relearning symbols', 'c' => 'To match competitor apps exactly', 'd' => 'It has no real purpose'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'What does \'responsive design\' mean?', ['a' => 'A design that only works on one screen size', 'b' => 'A design that adapts its layout fluidly across different screen sizes and devices', 'c' => 'A fast-loading website', 'd' => 'A design with animations only'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'What is the difference between UX and UI design?', ['a' => 'They are exactly the same thing', 'b' => 'UX focuses on overall user experience/flow/logic; UI focuses on visual/interactive surface design', 'c' => 'UI is for mobile, UX is for web only', 'd' => 'UX is coding, UI is testing'], 'b', null, 1];
+    $q[] = ['ui_design', 'hard', 'mcq', 'In a typical design handoff to developers, what does \'redlining/spec\' refer to?', ['a' => 'Marking design errors in red ink only', 'b' => 'Annotating exact spacing, sizing, and style values for developers to implement', 'c' => 'Deleting unused screens', 'd' => 'A legal contract document'], 'b', null, 1];
 
-    $q[] = ['uiux', 'medium', 'mcq', 'What is "visual hierarchy"?', ['a' => 'Arranging elements randomly', 'b' => 'Arranging elements to show their order of importance', 'c' => 'Using only one font size', 'd' => 'Removing all headings'], 'b', null, 5];
-    $q[] = ['uiux', 'medium', 'mcq', 'What is the purpose of a "call-to-action" (CTA) button?', ['a' => 'To decorate the page', 'b' => 'To prompt the user to take a specific action', 'c' => 'To close the app', 'd' => 'To show error messages'], 'b', null, 5];
-    $q[] = ['uiux', 'medium', 'mcq', 'What is "contrast" used for in design?', ['a' => 'To make text harder to read', 'b' => 'To create visual distinction and improve readability/accessibility', 'c' => 'To match all colors exactly', 'd' => 'To remove color'], 'b', null, 5];
-    $q[] = ['uiux', 'medium', 'task', 'List essential UI elements for a good login/registration page (min 6).', null, null, [
-        'fields' => [
-            ['key' => 'list', 'label' => 'List at least 6 UI elements (comma or line separated)', 'min' => 30],
-        ],
-        'min_items' => 6,
-    ], 5];
-    $q[] = ['uiux', 'medium', 'task', 'Critique: registration form has 15 mandatory fields including Mother\'s maiden name. Problems + fixes.', null, null, [
-        'fields' => [
-            ['key' => 'problems', 'label' => 'UX problems you see', 'min' => 20],
-            ['key' => 'fixes', 'label' => 'How you would fix them', 'min' => 20],
-        ],
-        'keywords_any' => ['field', 'mandatory', 'drop', 'friction', 'long', 'privacy', 'optional', 'step'],
-    ], 5];
+    // ── Writing & Translation ──
+    $q[] = ['writing_translation', 'easy', 'mcq', 'What is the main difference between \'translation\' and \'localization\'?', ['a' => 'They are identical processes', 'b' => 'Translation converts words; localization also adapts cultural references, currency, idioms, and tone for the target audience', 'c' => 'Localization only applies to software', 'd' => 'Translation is always more expensive'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'What is \'transcreation\'?', ['a' => 'Literal word-for-word translation', 'b' => 'Creative adaptation of content to preserve tone/intent/emotional impact in another language, rather than literal translation', 'c' => 'Translating only technical documents', 'd' => 'A type of spell-checking tool'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'Choose the grammatically correct sentence.', ['a' => 'Neither of the students have submitted their work.', 'b' => 'Neither of the students has submitted their work.', 'c' => 'Neither of the students has submit their work.', 'd' => 'Neither of the students having submitted work.'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'What does \'active voice\' emphasize compared to \'passive voice\'?', ['a' => 'The passive subject acts', 'b' => 'The subject performs the action directly (e.g. \'The team completed the project\' vs \'The project was completed by the team\')', 'c' => 'There is no real difference', 'd' => 'Active voice is always grammatically incorrect'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'What is a \'false friend\' in translation?', ['a' => 'A synonym in the same language', 'b' => 'A word that looks/sounds similar in two languages but has a different meaning', 'c' => 'A grammar rule exception', 'd' => 'A type of punctuation mark'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'What is the purpose of \'back-translation\' in quality checks?', ['a' => 'To translate backwards letter by letter', 'b' => 'To translate the translated text back to the source language to verify accuracy', 'c' => 'To reverse the reading order of a document', 'd' => 'To edit only headlines'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'What does a CAT (Computer-Assisted Translation) tool primarily help with?', ['a' => 'Automatically writing entire articles with no human input', 'b' => 'Managing translation memory, glossaries, and consistency across large projects', 'c' => 'Generating memes', 'd' => 'Grammar-only spellcheck'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'Which sentence uses correct subject-verb agreement?', ['a' => 'The list of items are on the table.', 'b' => 'The list of items is on the table.', 'c' => 'The list of items were on the table.', 'd' => 'The list of items being on the table.'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'What is \'AIDA\' in copywriting?', ['a' => 'A grammar checking tool', 'b' => 'A framework: Attention, Interest, Desire, Action', 'c' => 'A translation software', 'd' => 'A font family'], 'b', null, 1];
+    $q[] = ['writing_translation', 'easy', 'mcq', 'What is the main purpose of a style guide (e.g. AP or Chicago style)?', ['a' => 'To limit creativity entirely', 'b' => 'To ensure consistency in tone, grammar, punctuation, and formatting across content', 'c' => 'To translate documents automatically', 'd' => 'To count words only'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'Identify the correctly punctuated sentence.', ['a' => 'Its a great day, isnt it?', 'b' => 'It\'s a great day, isn\'t it?', 'c' => 'Its\' a great day, isnt\' it?', 'd' => 'It is a great day, isn,t it?'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'What is the difference between \'proofreading\' and \'editing\'?', ['a' => 'They are the same task', 'b' => 'Editing improves structure/clarity/flow; proofreading is a final check for surface errors like typos and punctuation', 'c' => 'Proofreading happens before writing', 'd' => 'Editing only checks spelling'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'What does \'target audience\' mean in content writing?', ['a' => 'The writer\'s personal preference', 'b' => 'The specific group of readers the content is created for, shaping tone and vocabulary', 'c' => 'Search engines only', 'd' => 'The publishing platform'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'Which is an example of a strong, action-driven CTA (call to action)?', ['a' => 'Information about our services', 'b' => 'Get Started Free Today', 'c' => 'This is a website', 'd' => 'Our company was founded in 2020'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'What is \'code-switching\' in bilingual writing (e.g. Telugu-English)?', ['a' => 'A programming term unrelated to language', 'b' => 'Alternating between two languages/dialects within a conversation or piece of content', 'c' => 'Using only one language strictly', 'd' => 'A translation software feature'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'Choose the correctly spelled word pair usage: \'Their/There/They\'re\'', ['a' => 'Their going to the market.', 'b' => 'They\'re going to the market.', 'c' => 'There going to the market.', 'd' => 'Theyre going to the market.'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'What does \'SEO writing\' primarily aim to balance?', ['a' => 'Keyword stuffing regardless of readability', 'b' => 'Search engine visibility (keywords, structure) with natural, readable content for humans', 'c' => 'Only grammar correctness', 'd' => 'Only visual formatting'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'What is a \'glossary\' in translation project management used for?', ['a' => 'Storing project invoices', 'b' => 'Maintaining consistent terminology and preferred word choices across a project', 'c' => 'Formatting the final PDF', 'd' => 'Tracking word count only'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'Which of these best fixes a run-on sentence: \'I finished the report I sent it to my manager.\'', ['a' => 'I finished the report, I sent it to my manager.', 'b' => 'I finished the report, and I sent it to my manager.', 'c' => 'I finished the report i sent it to my manager.', 'd' => 'I finished the report; sent, it to my manager.'], 'b', null, 1];
+    $q[] = ['writing_translation', 'medium', 'mcq', 'What does \'brand voice\' refer to in content writing?', ['a' => 'The literal audio narration of an ad', 'b' => 'The consistent personality and tone a brand uses across all its written content', 'c' => 'The font used in a logo', 'd' => 'The company\'s stock price'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'What is the correct usage: \'affect\' vs \'effect\' in — \'The new policy will ___ our revenue.\'', ['a' => 'effect', 'b' => 'affect', 'c' => 'affective', 'd' => 'effected'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'What does \'headline writing\' primarily aim to achieve?', ['a' => 'Summarizing the entire article in detail', 'b' => 'Grabbing attention and compelling the reader to continue reading', 'c' => 'Listing keywords only', 'd' => 'Meeting a strict word count'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'What is \'machine translation post-editing (MTPE)\'?', ['a' => 'Translating without any software', 'b' => 'Reviewing and correcting machine-translated text for accuracy, fluency, and cultural fit', 'c' => 'Editing only images in a document', 'd' => 'A type of grammar software'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'Which sentence demonstrates correct use of the Oxford comma?', ['a' => 'I bought apples, oranges and bananas.', 'b' => 'I bought apples, oranges, and bananas.', 'c' => 'I bought apples oranges, and bananas.', 'd' => 'I bought, apples, oranges and, bananas.'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'What is \'connotation\' in word choice?', ['a' => 'The dictionary definition of a word', 'b' => 'The implied emotional or cultural association a word carries beyond its literal meaning', 'c' => 'The number of syllables in a word', 'd' => 'A grammar rule for verbs'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'What is the main risk of translating idioms literally?', ['a' => 'It saves time', 'b' => 'The meaning can become confusing or nonsensical in the target language', 'c' => 'It always improves clarity', 'd' => 'There is no risk'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'Which is the more concise, effective version of: \'Due to the fact that we were unable to complete the task\'?', ['a' => 'Due to the fact that we were unable to complete the task', 'b' => 'Because we couldn\'t complete the task', 'c' => 'For the reason that the task was not completed by us', 'd' => 'In light of the fact of non-completion'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'What does \'tone\' in writing refer to?', ['a' => 'The font size used', 'b' => 'The writer\'s attitude toward the subject/audience (e.g. formal, casual, playful)', 'c' => 'The number of paragraphs', 'd' => 'The translation software used'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'What is plagiarism in content writing?', ['a' => 'Quoting a source with proper citation', 'b' => 'Using someone else\'s work or ideas without proper attribution, presenting it as original', 'c' => 'Using synonyms while writing', 'd' => 'Editing your own previous drafts'], 'b', null, 1];
+    $q[] = ['writing_translation', 'hard', 'mcq', 'In a formal Telugu-English mixed script for social content, what should generally guide word choice?', ['a' => 'Use only pure Telugu, never English', 'b' => 'Use natural code-mixing that matches how the target audience actually speaks, prioritizing clarity and relatability', 'c' => 'Use only English translated word-for-word', 'd' => 'Randomly alternate languages every word'], 'b', null, 1];
 
-    $q[] = ['uiux', 'hard', 'mcq', 'What is the difference between "low-fidelity" and "high-fidelity" prototypes?', ['a' => 'Low-fidelity is a rough sketch/wireframe; high-fidelity is a detailed, near-final interactive design', 'b' => 'They are identical', 'c' => 'High-fidelity is always hand-drawn', 'd' => 'Low-fidelity is only used for backend testing'], 'a', null, 5];
-    $q[] = ['uiux', 'hard', 'mcq', 'What is "Fitts\'s Law" in UX design?', ['a' => 'A law about color theory', 'b' => 'A predictive model stating time-to-reach-target depends on size and distance', 'c' => 'A rule about font pairing', 'd' => 'A law about database design'], 'b', null, 5];
-    $q[] = ['uiux', 'hard', 'task', 'Design a student registration page UI (describe — no Figma file required).', null, null, [
-        'fields' => [
-            ['key' => 'layout', 'label' => 'Layout (header/logo, fields, CTA)', 'min' => 30],
-            ['key' => 'colors', 'label' => 'Color / spacing / font choices and why', 'min' => 20],
-            ['key' => 'progress', 'label' => 'Progress/step indicator approach', 'min' => 10],
-        ],
-        'keywords_any' => ['button', 'register', 'field', 'cta'],
-    ], 10];
-    $q[] = ['uiux', 'hard', 'task', 'Users drop off on registration. List 3 UI/UX reasons + redesign fixes.', null, null, [
-        'fields' => [
-            ['key' => 'r1', 'label' => 'Reason 1 + fix', 'min' => 15],
-            ['key' => 'r2', 'label' => 'Reason 2 + fix', 'min' => 15],
-            ['key' => 'r3', 'label' => 'Reason 3 + fix', 'min' => 15],
-        ],
-        'keywords_any' => [],
-    ], 5];
-    $q[] = ['uiux', 'hard', 'task', 'Accessibility for color-blind / visually impaired users (min 2 techniques).', null, null, [
-        'fields' => [
-            ['key' => 't1', 'label' => 'Technique 1', 'min' => 10],
-            ['key' => 't2', 'label' => 'Technique 2', 'min' => 10],
-        ],
-        'keywords_any' => ['contrast', 'label', 'alt', 'aria', 'screen', 'color', 'text', 'focus', 'keyboard'],
-    ], 5];
+    // ── Business & Finance ──
+    $q[] = ['business_finance', 'easy', 'mcq', 'A company has revenue of ₹12,00,000 and total costs of ₹8,00,000. What is its profit margin?', ['a' => '66.7%', 'b' => '33.3%', 'c' => '50%', 'd' => '40%'], 'b', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'What does \'break-even point\' mean?', ['a' => 'The point where profit is maximum', 'b' => 'The point where total revenue equals total costs (zero profit/loss)', 'c' => 'The point of maximum loss', 'd' => 'The starting capital amount'], 'b', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'If a company invests ₹5,00,000 and gains ₹6,50,000 back, what is the ROI?', ['a' => '15%', 'b' => '30%', 'c' => '130%', 'd' => '23%'], 'b', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'What does \'CAC\' stand for in business metrics?', ['a' => 'Customer Annual Contract', 'b' => 'Customer Acquisition Cost', 'c' => 'Company Asset Calculation', 'd' => 'Cost After Commission'], 'b', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'What does \'LTV\' (or CLV) measure in business?', ['a' => 'Legal Tax Value', 'b' => 'Lifetime Value — the total revenue expected from a customer over their relationship with the business', 'c' => 'Loan to Value ratio only', 'd' => 'Local Tax Valuation'], 'b', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'What is \'burn rate\' in a startup context?', ['a' => 'The rate at which a company gains revenue', 'b' => 'The rate at which a company spends its available cash reserves', 'c' => 'The rate of employee turnover', 'd' => 'The company\'s tax rate'], 'b', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'What does \'runway\' mean for a startup?', ['a' => 'Physical office space', 'b' => 'How many months a company can operate before running out of cash at current burn rate', 'c' => 'The company\'s growth rate', 'd' => 'Its market share'], 'b', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'What is EBITDA?', ['a' => 'Earnings Before Interest, Taxes, Depreciation, and Amortization', 'b' => 'Estimated Business Income Tax Deduction Amount', 'c' => 'Equity-Based Investment Trading Data Analysis', 'd' => 'Earnings Before Income, Tax, and Deductibles Applied'], 'a', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'A cap table primarily tracks what?', ['a' => 'Employee attendance', 'b' => 'Ownership stakes/equity distribution among founders, investors, and employees', 'c' => 'Product inventory', 'd' => 'Marketing campaign budgets'], 'b', null, 1];
+    $q[] = ['business_finance', 'easy', 'mcq', 'What is the difference between gross margin and net margin?', ['a' => 'They are the same', 'b' => 'Gross margin = revenue minus COGS; net margin also subtracts operating expenses, interest, and taxes', 'c' => 'Net margin is always higher than gross margin', 'd' => 'Gross margin includes taxes, net margin doesn\'t'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'What is \'working capital\'?', ['a' => 'Total company valuation', 'b' => 'Current assets minus current liabilities — a measure of short-term financial health', 'c' => 'The initial seed funding amount', 'd' => 'Employee salary budget only'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'What does TAM/SAM/SOM refer to in market sizing?', ['a' => 'Types of tax filings', 'b' => 'Total Addressable Market / Serviceable Addressable Market / Serviceable Obtainable Market', 'c' => 'Sales And Marketing metrics only', 'd' => 'Startup funding stages'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'In startup funding, what typically comes right after a \'Seed\' round?', ['a' => 'IPO', 'b' => 'Series A', 'c' => 'Series C', 'd' => 'Debt financing only'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'What is \'equity dilution\'?', ['a' => 'Increase in shareholder value only', 'b' => 'Reduction in existing shareholders\' ownership percentage when new shares are issued', 'c' => 'A type of tax exemption', 'd' => 'A loan repayment method'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'What does \'opportunity cost\' mean?', ['a' => 'The literal cash cost of an opportunity', 'b' => 'The value of the next best alternative given up when making a choice', 'c' => 'A one-time setup fee', 'd' => 'Profit earned from an opportunity'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'Which of these is a \'fixed cost\' for a gig platform business like Peaklyy?', ['a' => 'Per-gig commission paid to freelancers', 'b' => 'Monthly server/hosting subscription', 'c' => 'Payment processing fee per transaction', 'd' => 'Referral bonus per signup'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'If a product costs ₹500 to make and sells for ₹800, what is the markup percentage?', ['a' => '37.5%', 'b' => '60%', 'c' => '160%', 'd' => '40%'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'What does a \'valuation multiple\' (e.g. 3x revenue) help estimate?', ['a' => 'Employee salaries', 'b' => 'A company\'s approximate worth based on a multiple of its revenue or earnings', 'c' => 'Tax liability', 'd' => 'Number of shares outstanding'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'What is \'DPIIT recognition\' typically a prerequisite for in India?', ['a' => 'Filing income tax returns', 'b' => 'Accessing certain government startup schemes, tax benefits, and grant eligibility', 'c' => 'Getting a business bank account', 'd' => 'Registering a trademark'], 'b', null, 1];
+    $q[] = ['business_finance', 'medium', 'mcq', 'What is the primary purpose of a SWOT analysis?', ['a' => 'Calculating tax liability', 'b' => 'Evaluating a business\'s Strengths, Weaknesses, Opportunities, and Threats', 'c' => 'Setting employee salaries', 'd' => 'Designing a logo'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'What does \'commission-based revenue model\' mean, as used by gig platforms?', ['a' => 'Charging users a flat monthly subscription only', 'b' => 'Earning a percentage of the value of each completed transaction/gig', 'c' => 'Selling advertising space only', 'd' => 'Charging a one-time signup fee only'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'What is the formula for calculating compound interest (A = final amount, P = principal, r = rate, n = compounds/year, t = years)?', ['a' => 'A = P(1+rt)', 'b' => 'A = P(1 + r/n)^(nt)', 'c' => 'A = P + r*t', 'd' => 'A = P/(1+rt)'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'What does a \'current ratio\' (current assets / current liabilities) measure?', ['a' => 'Long-term profitability', 'b' => 'A company\'s short-term ability to pay off its immediate obligations', 'c' => 'Employee productivity', 'd' => 'Market share growth'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'What is \'debt financing\' compared to \'equity financing\'?', ['a' => 'Both mean giving up ownership', 'b' => 'Debt financing means borrowing funds to be repaid with interest, without giving up ownership; equity means selling ownership stakes', 'c' => 'Debt financing means selling shares', 'd' => 'There is no real difference'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'In a Business Model Canvas, what does the \'Value Proposition\' block describe?', ['a' => 'The company\'s tax structure', 'b' => 'The core problem solved and unique value delivered to customers', 'c' => 'The office location', 'd' => 'The founding date'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'If a gig platform charges a 15% commission on a ₹2,000 completed gig, how much does the platform earn?', ['a' => '₹200', 'b' => '₹300', 'c' => '₹150', 'd' => '₹500'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'What is \'depreciation\' in accounting?', ['a' => 'An increase in asset value over time', 'b' => 'The systematic reduction of an asset\'s recorded value over its useful life', 'c' => 'A type of tax refund', 'd' => 'A marketing expense category'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'What does \'unit economics\' analyze?', ['a' => 'The company\'s total revenue only', 'b' => 'The direct revenues and costs associated with a single unit of business (e.g. one customer or one gig)', 'c' => 'Employee headcount growth', 'd' => 'Office square footage cost'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'Which of the following best describes \'bootstrapping\' a startup?', ['a' => 'Raising money exclusively from VCs', 'b' => 'Growing the business using personal savings and reinvested revenue, without external funding', 'c' => 'Taking a bank loan only', 'd' => 'Going public via IPO immediately'], 'b', null, 1];
+    $q[] = ['business_finance', 'hard', 'mcq', 'What does a \'pitch deck\' typically need to clearly communicate to investors?', ['a' => 'Only the founding team\'s resumes', 'b' => 'The problem, solution, market size, traction, business model, and funding ask', 'c' => 'Just financial projections with no context', 'd' => 'The company\'s social media follower count only'], 'b', null, 1];
 
-    // ── Domain 3 Content ──
-    $q[] = ['content', 'easy', 'mcq', 'What is the primary purpose of a "call-to-action" in content writing?', ['a' => 'To confuse the reader', 'b' => 'To prompt the reader to take a specific action', 'c' => 'To end the article', 'd' => 'To add humor'], 'b', null, 5];
-    $q[] = ['content', 'easy', 'mcq', 'What does "SEO-friendly content" mean?', ['a' => 'Content written only for search engines, not readers', 'b' => 'Content optimized to rank well in search engines while staying readable', 'c' => 'Content with no headings', 'd' => 'Content written in one long paragraph'], 'b', null, 5];
-    $q[] = ['content', 'easy', 'mcq', 'What is a "headline" in content writing?', ['a' => 'The last line of an article', 'b' => 'The title that grabs attention and summarizes the piece', 'c' => 'A footnote', 'd' => 'A hyperlink'], 'b', null, 5];
-    $q[] = ['content', 'easy', 'mcq', 'Which of these is an example of a content format?', ['a' => 'Blog post', 'b' => 'Database', 'c' => 'Compiler', 'd' => 'Server'], 'a', null, 5];
-    $q[] = ['content', 'easy', 'task', 'Write a 3-line product description for a reusable water bottle.', null, null, [
-        'fields' => [
-            ['key' => 'line1', 'label' => 'Line 1', 'min' => 8],
-            ['key' => 'line2', 'label' => 'Line 2', 'min' => 8],
-            ['key' => 'line3', 'label' => 'Line 3', 'min' => 8],
-        ],
-        'keywords_any' => ['bottle', 'water', 'reuse', 'eco', 'hydrat', 'drink'],
-    ], 5];
-    $q[] = ['content', 'easy', 'task', 'Write a catchy headline (under 10 words) for "5 study tips for exams."', null, null, [
-        'fields' => [
-            ['key' => 'headline', 'label' => 'Headline (max ~10 words)', 'min' => 8, 'max_words' => 12],
-        ],
-        'keywords_any' => ['study', 'exam', 'tip', 'score', 'focus', 'learn'],
-    ], 5];
+    // ── Digital Marketing ──
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'What does CTR stand for?', ['a' => 'Cost to Reach', 'b' => 'Click Through Rate', 'c' => 'Conversion Tracking Ratio', 'd' => 'Customer Traffic Report'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'If an ad gets 5,000 impressions and 150 clicks, what is the CTR?', ['a' => '1.5%', 'b' => '3%', 'c' => '30%', 'd' => '0.3%'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'What does CPC mean?', ['a' => 'Cost Per Conversion', 'b' => 'Cost Per Click', 'c' => 'Content Publishing Cycle', 'd' => 'Customer Purchase Confirmation'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'What is the main difference between on-page SEO and off-page SEO?', ['a' => 'They are identical', 'b' => 'On-page SEO optimizes content/structure within your site; off-page SEO involves external factors like backlinks', 'c' => 'Off-page SEO only applies to social media', 'd' => 'On-page SEO is only about images'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'What does \'organic reach\' mean on social media?', ['a' => 'Reach gained purely through paid advertising', 'b' => 'The number of people who see your content without paid promotion', 'c' => 'The total follower count', 'd' => 'Reach measured only in rural areas'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'What is a UTM parameter used for?', ['a' => 'Encrypting a URL', 'b' => 'Tracking the source, medium, and campaign of website traffic in analytics', 'c' => 'Shortening a URL', 'd' => 'Blocking bots from a website'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'What does \'retargeting\' (or remarketing) in ads mean?', ['a' => 'Targeting a completely new audience every time', 'b' => 'Showing ads specifically to people who already visited your site or engaged with your brand', 'c' => 'Randomly targeting all internet users', 'd' => 'Targeting only competitor\'s customers'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'If a campaign spends ₹10,000 and generates ₹40,000 in revenue, what is the ROAS (Return on Ad Spend)?', ['a' => '2x', 'b' => '4x', 'c' => '40x', 'd' => '0.4x'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'What does the AIDA framework stand for in marketing funnels?', ['a' => 'Ask, Inform, Decide, Act', 'b' => 'Attention, Interest, Desire, Action', 'c' => 'Analyze, Identify, Design, Adjust', 'd' => 'Attract, Invite, Deliver, Assess'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'easy', 'mcq', 'What is the primary purpose of an email \'open rate\' metric?', ['a' => 'Measures how many emails bounced', 'b' => 'Measures the percentage of recipients who opened the email', 'c' => 'Measures how many unsubscribed', 'd' => 'Measures delivery speed'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What does TOFU/MOFU/BOFU refer to in marketing funnels?', ['a' => 'Types of ad formats', 'b' => 'Top of Funnel / Middle of Funnel / Bottom of Funnel stages of the buyer journey', 'c' => 'Social media platforms', 'd' => 'Payment processing stages'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What primarily influences the Instagram Reels algorithm\'s distribution of content?', ['a' => 'Only the number of hashtags used', 'b' => 'Engagement signals like watch time, likes, shares, comments, and relevance to viewer interests', 'c' => 'The time zone of the creator only', 'd' => 'The length of the caption only'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What does \'backlink\' mean in SEO?', ['a' => 'A link within the same page', 'b' => 'A link from an external website pointing to your website', 'c' => 'A broken link', 'd' => 'A link to a competitor'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What is the purpose of A/B testing in a marketing campaign?', ['a' => 'To run two campaigns on different platforms', 'b' => 'To compare two versions of an element (e.g. ad copy) to see which performs better', 'c' => 'To duplicate a campaign for backup', 'd' => 'To test server uptime'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What does \'engagement rate\' typically measure on social media?', ['a' => 'Total follower count only', 'b' => 'Interactions (likes, comments, shares) relative to reach or followers', 'c' => 'Number of posts published', 'd' => 'Ad spend amount'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What is the primary goal of a landing page in a marketing funnel?', ['a' => 'To showcase the entire website navigation', 'b' => 'To convert visitors toward a single, specific action (e.g. sign up, purchase)', 'c' => 'To display all products available', 'd' => 'To rank on Google only'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What is \'influencer marketing\'?', ['a' => 'Advertising exclusively through TV', 'b' => 'Partnering with individuals who have an engaged audience to promote a brand/product', 'c' => 'Marketing only to company employees', 'd' => 'A type of SEO technique'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What does \'social proof\' refer to in marketing?', ['a' => 'Legal documentation for ads', 'b' => 'Using testimonials, reviews, or user numbers to build trust and credibility', 'c' => 'A government ad certification', 'd' => 'A type of paid ad format'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What does CPM stand for in advertising?', ['a' => 'Cost Per Minute', 'b' => 'Cost Per Mille (cost per 1,000 impressions)', 'c' => 'Content Performance Metric', 'd' => 'Customer Profile Match'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'medium', 'mcq', 'What is the main benefit of segmenting an email list before a campaign?', ['a' => 'It guarantees zero unsubscribes', 'b' => 'It allows more relevant, targeted messaging to different audience groups, improving engagement', 'c' => 'It reduces the total number of emails needed to send once', 'd' => 'It automatically writes the email copy'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'What does a \'conversion funnel\' visualize?', ['a' => 'Website loading speed stages', 'b' => 'The step-by-step journey a user takes from awareness to completing a desired action', 'c' => 'Server architecture', 'd' => 'Ad budget allocation only'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'What is the purpose of \'hashtag strategy\' on social platforms?', ['a' => 'To decorate captions only', 'b' => 'To increase content discoverability by categorizing posts for relevant audiences', 'c' => 'To reduce post length', 'd' => 'To block spam comments'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'What does \'brand positioning\' define?', ['a' => 'The company\'s office address', 'b' => 'How a brand is uniquely perceived by its target audience relative to competitors', 'c' => 'The color scheme only', 'd' => 'The pricing formula'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'In Google Ads, what does \'Quality Score\' primarily affect?', ['a' => 'Only the visual design of the ad', 'b' => 'Ad rank and cost-per-click, based on relevance, expected CTR, and landing page experience', 'c' => 'The advertiser\'s tax rate', 'd' => 'The number of employees needed'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'What does \'viral content\' typically rely on to spread?', ['a' => 'Paid promotion exclusively', 'b' => 'High shareability driven by strong emotional resonance, relatability, or novelty', 'c' => 'Government mandates', 'd' => 'Random algorithm luck with no pattern'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'What is the purpose of a content calendar?', ['a' => 'To track employee vacations', 'b' => 'To plan, organize, and schedule content publishing across channels in advance', 'c' => 'To calculate tax deadlines', 'd' => 'To log customer complaints'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'If a Reel targeting placement anxiety among Hyderabad college students underperforms in watch time, which metric should you check first to diagnose the issue?', ['a' => 'Follower count of the account', 'b' => 'Average watch time / drop-off point in the video', 'c' => 'The founder\'s bio description', 'd' => 'The app\'s total storage size'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'What does \'customer segmentation\' allow marketers to do?', ['a' => 'Charge every customer the same price', 'b' => 'Group customers by shared characteristics to tailor messaging and offers more effectively', 'c' => 'Ignore smaller customer groups entirely', 'd' => 'Automatically increase ad budget'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'Which KPI would best measure the success of a brand awareness campaign (vs. a direct-response campaign)?', ['a' => 'Conversion rate', 'b' => 'Reach and impressions', 'c' => 'Cost per purchase', 'd' => 'Cart abandonment rate'], 'b', null, 1];
+    $q[] = ['digital_marketing', 'hard', 'mcq', 'What does \'organic vs paid\' distinguish in marketing channels?', ['a' => 'Food-related products vs tech products', 'b' => 'Unpaid, earned visibility vs visibility gained through paid advertising', 'c' => 'Domestic vs international marketing', 'd' => 'B2B vs B2C marketing'], 'b', null, 1];
 
-    $q[] = ['content', 'medium', 'mcq', 'What is "tone of voice" in content writing?', ['a' => 'The volume at which content is read aloud', 'b' => 'The personality/style a brand uses consistently in its writing', 'c' => 'The font size used', 'd' => 'The length of the article'], 'b', null, 5];
-    $q[] = ['content', 'medium', 'mcq', 'What is the difference between "copywriting" and "content writing"?', ['a' => 'They are exactly the same', 'b' => 'Copywriting persuades for immediate action (ads/sales); content writing informs/engages over time (blogs/articles)', 'c' => 'Copywriting is always longer', 'd' => 'Content writing is only for social media'], 'b', null, 5];
-    $q[] = ['content', 'medium', 'mcq', 'What does "keyword density" refer to in SEO writing?', ['a' => 'The number of images on a page', 'b' => 'How often a target keyword appears relative to total word count', 'c' => 'The font weight of a keyword', 'd' => 'The number of backlinks'], 'b', null, 5];
-    $q[] = ['content', 'medium', 'task', 'Rewrite to make more engaging: "Our app helps you manage tasks."', null, null, [
-        'fields' => [
-            ['key' => 'rewrite', 'label' => 'Your rewritten sentence', 'min' => 20],
-        ],
-        'keywords_any' => [],
-    ], 5];
-    $q[] = ['content', 'medium', 'task', 'Write a ~100-word blog intro: "Why students should start freelancing early." Hook in first line.', null, null, [
-        'fields' => [
-            ['key' => 'intro', 'label' => 'Blog intro (~80–120 words)', 'min' => 120],
-        ],
-        'keywords_any' => ['freelance', 'student', 'skill', 'earn', 'career', 'experience'],
-    ], 5];
+    // ── Data Analytics ──
+    $q[] = ['data_analytics', 'easy', 'mcq', 'What is the median of this dataset: 4, 8, 15, 16, 23?', ['a' => '8', 'b' => '15', 'c' => '16', 'd' => '13.2'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'What does \'standard deviation\' measure?', ['a' => 'The average value of a dataset', 'b' => 'The amount of variation or spread in a set of data values', 'c' => 'The highest value in a dataset', 'd' => 'The total count of data points'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'What is the key difference between correlation and causation?', ['a' => 'They mean exactly the same thing', 'b' => 'Correlation means two variables move together; causation means one variable directly causes a change in the other', 'c' => 'Causation is always weaker than correlation', 'd' => 'Correlation only applies to financial data'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'In Excel, what does VLOOKUP primarily search?', ['a' => 'Rows, searching left to right, then returning a value to the left', 'b' => 'The first column of a range, returning a value from a specified column to the right', 'c' => 'Only column headers', 'd' => 'Cell formatting only'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'What is an advantage of INDEX/MATCH over VLOOKUP?', ['a' => 'It can only look up numbers, not text', 'b' => 'It can look up values to the left of the reference column and is more flexible', 'c' => 'It is always slower', 'd' => 'It cannot handle large datasets'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'What is a \'pivot table\' used for?', ['a' => 'Formatting cell borders', 'b' => 'Summarizing, grouping, and aggregating large datasets interactively', 'c' => 'Creating charts only, with no data summary', 'd' => 'Password-protecting a spreadsheet'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'In SQL, what does a `GROUP BY` clause do?', ['a' => 'Sorts rows alphabetically only', 'b' => 'Groups rows sharing a common value so aggregate functions (like COUNT, SUM) can be applied per group', 'c' => 'Deletes duplicate rows permanently', 'd' => 'Joins two unrelated tables'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'What is the difference between an INNER JOIN and a LEFT JOIN in SQL?', ['a' => 'They always return identical results', 'b' => 'INNER JOIN returns only matching rows in both tables; LEFT JOIN returns all rows from the left table plus matches from the right', 'c' => 'LEFT JOIN never includes NULL values', 'd' => 'INNER JOIN is used only for text data'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'What does \'sampling bias\' refer to?', ['a' => 'A perfectly random and representative sample', 'b' => 'A sample that is not representative of the population, skewing results', 'c' => 'A statistical significance test', 'd' => 'A type of data visualization error only'], 'b', null, 1];
+    $q[] = ['data_analytics', 'easy', 'mcq', 'Which chart type is most appropriate for showing a trend over time?', ['a' => 'Pie chart', 'b' => 'Line chart', 'c' => 'Scatter plot only', 'd' => 'Stacked bar chart is the only correct option'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'What does a \'p-value\' commonly indicate in hypothesis testing (informally)?', ['a' => 'The exact effect size of a result', 'b' => 'The probability of observing the data (or more extreme) if the null hypothesis were true', 'c' => 'The total number of data points tested', 'd' => 'The percentage of missing data'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'What is an \'outlier\' in a dataset?', ['a' => 'The most common value', 'b' => 'A data point that differs significantly from other observations', 'c' => 'The average value', 'd' => 'A duplicate row'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'What does normalizing/cleaning data typically involve?', ['a' => 'Deleting the entire dataset', 'b' => 'Handling missing values, correcting errors, and standardizing formats for consistency', 'c' => 'Only converting numbers to text', 'd' => 'Removing all outliers automatically without review'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'In Python\'s pandas library, what does `df.dropna()` do?', ['a' => 'Deletes all columns', 'b' => 'Removes rows (or columns) containing missing/NaN values', 'c' => 'Fills missing values with zero', 'd' => 'Sorts the dataframe'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'What is a \'confidence interval\' informally used to express?', ['a' => 'A guaranteed exact value', 'b' => 'A range of values likely to contain the true population parameter, with a stated confidence level (e.g. 95%)', 'c' => 'The total sample size', 'd' => 'The margin of error is always zero'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'What does \'skewness\' describe in a distribution?', ['a' => 'The average of the dataset', 'b' => 'The asymmetry of a data distribution relative to a normal (bell curve) distribution', 'c' => 'The total variance', 'd' => 'The number of categories in the data'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'Which SQL clause filters rows AFTER aggregation (e.g. after GROUP BY)?', ['a' => 'WHERE', 'b' => 'HAVING', 'c' => 'FILTER', 'd' => 'ORDER BY'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'What is the purpose of an ETL process (Extract, Transform, Load)?', ['a' => 'Encrypting sensitive data only', 'b' => 'Moving data from source systems, transforming/cleaning it, and loading it into a target system for analysis', 'c' => 'Exporting charts to PDF', 'd' => 'Testing application code'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'What does a \'cohort analysis\' typically examine?', ['a' => 'A single user\'s complete history only', 'b' => 'Behavior of groups of users who share a common starting point (e.g. signup month) over time', 'c' => 'Only revenue totals with no grouping', 'd' => 'Server uptime logs'], 'b', null, 1];
+    $q[] = ['data_analytics', 'medium', 'mcq', 'If a dataset has values 2, 4, 4, 4, 5, 5, 7, 9, what is the mode?', ['a' => '2', 'b' => '4', 'c' => '5', 'd' => '9'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'What does a high positive correlation coefficient (close to +1) indicate?', ['a' => 'No relationship between variables', 'b' => 'As one variable increases, the other tends to increase as well', 'c' => 'As one variable increases, the other tends to decrease', 'd' => 'The variables are identical'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'What is the primary purpose of a dashboard\'s KPI selection?', ['a' => 'To display as many metrics as possible regardless of relevance', 'b' => 'To surface the most critical, actionable metrics aligned with business goals', 'c' => 'To replace all written reports', 'd' => 'To automatically increase revenue'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'What does the term \'null value\' represent in a database?', ['a' => 'The number zero', 'b' => 'The absence of a value / unknown or missing data', 'c' => 'An error in the query syntax', 'd' => 'A negative number'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'What is \'data storytelling\'?', ['a' => 'Presenting raw numbers with no context', 'b' => 'Combining data, visuals, and narrative to communicate insights clearly to an audience', 'c' => 'A fictional writing genre', 'd' => 'A type of database schema'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'Which measure of central tendency is most affected by extreme outliers?', ['a' => 'Median', 'b' => 'Mean (average)', 'c' => 'Mode', 'd' => 'None are affected'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'What does a scatter plot with points clustered tightly around an upward line suggest?', ['a' => 'No correlation', 'b' => 'Strong positive correlation between the two variables', 'c' => 'Strong negative correlation', 'd' => 'The data is entirely random'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'In Excel, what does the formula `=SUMIFS(B:B, A:A, "Yes")` do?', ['a' => 'Sums all values in column B regardless of column A', 'b' => 'Sums values in column B only where the corresponding value in column A equals \'Yes\'', 'c' => 'Counts rows where column A equals \'Yes\'', 'd' => 'Deletes rows where column A is not \'Yes\''], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'What is the difference between a bar chart and a histogram?', ['a' => 'They are exactly the same', 'b' => 'Bar charts compare discrete categories; histograms show the distribution of continuous numerical data in bins', 'c' => 'Histograms are only for text data', 'd' => 'Bar charts cannot show numeric data'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'What does \'variance\' measure in statistics?', ['a' => 'The middle value of a dataset', 'b' => 'The average of the squared differences from the mean, indicating data spread', 'c' => 'The most frequent value', 'd' => 'The total sum of all values'], 'b', null, 1];
+    $q[] = ['data_analytics', 'hard', 'mcq', 'What is a common strategy for handling missing data besides deletion?', ['a' => 'Ignoring the dataset entirely', 'b' => 'Imputation — filling missing values using mean, median, or predictive methods', 'c' => 'Duplicating random rows', 'd' => 'Converting all data to text format'], 'b', null, 1];
 
-    $q[] = ['content', 'hard', 'mcq', 'What is "content repurposing"?', ['a' => 'Deleting old content', 'b' => 'Transforming one piece of content into multiple formats (e.g., blog to video script to social post)', 'c' => 'Writing content only once and never reusing it', 'd' => 'Copying competitor content'], 'b', null, 5];
-    $q[] = ['content', 'hard', 'task', 'Edit this poor paragraph: identify 3 issues + rewrite.', null, null, [
-        'fields' => [
-            ['key' => 'issues', 'label' => 'At least 3 issues', 'min' => 20],
-            ['key' => 'rewrite', 'label' => 'Improved rewrite', 'min' => 40],
-        ],
-        'keywords_any' => [],
-    ], 10];
-    $q[] = ['content', 'hard', 'task', 'Website copy for a startup with zero brand awareness — questions for founder + tone.', null, null, [
-        'fields' => [
-            ['key' => 'questions', 'label' => 'Questions you would ask the founder', 'min' => 30],
-            ['key' => 'tone', 'label' => 'Tone you would choose and why', 'min' => 20],
-        ],
-        'keywords_any' => [],
-    ], 5];
-    $q[] = ['content', 'hard', 'task', 'Rewrite casually for Instagram: "Our platform connects students with verified job opportunities through an AI-driven matching system."', null, null, [
-        'fields' => [
-            ['key' => 'caption', 'label' => 'Casual Instagram-style rewrite', 'min' => 25],
-        ],
-        'keywords_any' => ['student', 'job', 'gig', 'match', 'peaklyy', 'work', 'opportun'],
-    ], 5];
+    // ── Video & Animation ──
+    $q[] = ['video_animation', 'easy', 'mcq', 'What does FPS stand for in video?', ['a' => 'File Processing Speed', 'b' => 'Frames Per Second', 'c' => 'Final Production Stage', 'd' => 'Format Preview Setting'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'What is a common standard frame rate for smooth cinematic video?', ['a' => '10 fps', 'b' => '24 fps', 'c' => '60,000 fps', 'd' => '1 fps'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'What does \'aspect ratio\' describe?', ['a' => 'The video\'s total file size', 'b' => 'The proportional relationship between a video\'s width and height (e.g. 16:9)', 'c' => 'The color depth of the video', 'd' => 'The audio bitrate'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'If a video is shot in 4K resolution, what is its approximate horizontal pixel count?', ['a' => '1920 pixels', 'b' => '3840 pixels', 'c' => '720 pixels', 'd' => '7680 pixels'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'What does a \'keyframe\' define in animation/video editing?', ['a' => 'A frame with an error', 'b' => 'A specific point marking a start/end value for a property (position, opacity, etc.) that the software interpolates between', 'c' => 'The very last frame of a video only', 'd' => 'A frame used only for audio sync'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'What is \'color grading\' in video post-production?', ['a' => 'Adding subtitles', 'b' => 'Adjusting and enhancing the color and tone of footage for a consistent visual mood', 'c' => 'Compressing the video file', 'd' => 'Renaming video files'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'What is the purpose of a storyboard before filming?', ['a' => 'To edit the final cut', 'b' => 'To visually plan out shots, scenes, and sequence before production begins', 'c' => 'To add background music', 'd' => 'To compress the final video'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'What does \'bitrate\' affect in a video file?', ['a' => 'Only the audio channels', 'b' => 'The amount of data processed per second, affecting quality and file size', 'c' => 'The frame rate only', 'd' => 'The aspect ratio'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'What is the difference between MP4 and MOV as video containers?', ['a' => 'MOV cannot contain video, only audio', 'b' => 'Both are container formats that can hold compressed video/audio; MP4 is more universally compatible, MOV is common in Apple/editing workflows', 'c' => 'MP4 is only for images', 'd' => 'They are identical with no differences'], 'b', null, 1];
+    $q[] = ['video_animation', 'easy', 'mcq', 'What does \'chroma key\' (green screen) technique allow?', ['a' => 'Adding subtitles automatically', 'b' => 'Removing a solid-color background to composite footage onto another background', 'c' => 'Increasing video resolution', 'd' => 'Syncing audio to video'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'What are the \'12 principles of animation\' primarily used for?', ['a' => 'Video file compression standards', 'b' => 'Guiding principles (like squash & stretch, timing, anticipation) for creating believable, appealing animation', 'c' => 'Color grading rules', 'd' => 'Camera settings for filming'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'What does \'rotoscoping\' involve?', ['a' => 'Recording audio only', 'b' => 'Tracing over live-action footage frame by frame to create animation or effects', 'c' => 'Adjusting the frame rate', 'd' => 'Adding background music'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'In video editing, what is a \'jump cut\'?', ['a' => 'A smooth crossfade transition', 'b' => 'An abrupt cut between two shots of the same subject, creating a jarring, discontinuous effect', 'c' => 'A type of audio transition', 'd' => 'A slow-motion effect'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'What does \'B-roll\' refer to in video production?', ['a' => 'The main interview footage', 'b' => 'Supplementary footage used to cover cuts, add context, or enrich the main narrative', 'c' => 'Broken/unusable footage', 'd' => 'The final rendered file'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'What is \'easing\' (or an easing curve) used for in animation?', ['a' => 'Adding background noise', 'b' => 'Controlling the acceleration/deceleration of a motion, making it feel more natural instead of linear', 'c' => 'Reducing render time only', 'd' => 'Adjusting audio pitch'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'If a video is 30 seconds long at 24fps, approximately how many total frames does it contain?', ['a' => '30', 'b' => '720', 'c' => '24', 'd' => '7200'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'What does \'foley\' refer to in sound design?', ['a' => 'Background music composition', 'b' => 'Reproducing everyday sound effects (footsteps, cloth rustling, etc.) added in post-production to sync with visuals', 'c' => 'Voiceover recording only', 'd' => 'Subtitle syncing'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'What does \'rule of thirds\' help with in video composition?', ['a' => 'Determining video length', 'b' => 'Placing key visual elements along imaginary gridlines/intersections for a more balanced, engaging composition', 'c' => 'Setting the audio levels', 'd' => 'Choosing the export codec'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'What is the primary purpose of a \'codec\' in video?', ['a' => 'To add special effects', 'b' => 'To compress and decompress video/audio data for storage and playback efficiency', 'c' => 'To add captions automatically', 'd' => 'To determine the aspect ratio only'], 'b', null, 1];
+    $q[] = ['video_animation', 'medium', 'mcq', 'What does \'frame interpolation\' do in animation software?', ['a' => 'Deletes unnecessary frames', 'b' => 'Automatically generates in-between frames to smooth motion between keyframes', 'c' => 'Adds audio between frames', 'd' => 'Converts video to black and white'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'Why might a video thumbnail significantly affect a video\'s click-through rate (CTR)?', ['a' => 'Thumbnails have no effect on viewer behavior', 'b' => 'It\'s often the first visual impression that determines whether a viewer decides to click and watch', 'c' => 'Thumbnails only affect upload speed', 'd' => 'Platforms ignore thumbnails in ranking'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'What does \'pacing\' refer to in video editing?', ['a' => 'The video\'s file format', 'b' => 'The rhythm and speed at which a video\'s scenes and cuts unfold to maintain engagement', 'c' => 'The camera\'s focal length', 'd' => 'The number of actors in a scene'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'What is the purpose of \'motion graphics\' software like After Effects?', ['a' => 'Only for shooting raw footage', 'b' => 'Creating animated graphics, titles, and visual effects layered into video', 'c' => 'Editing audio exclusively', 'd' => 'Managing project file storage only'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'What does a higher shutter speed typically do to fast motion in video?', ['a' => 'Creates more motion blur', 'b' => 'Freezes/sharpens fast motion with less blur', 'c' => 'Slows down the frame rate', 'd' => 'Changes the color temperature'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'What does \'voiceover sync\' require careful attention to?', ['a' => 'Matching the narration timing precisely with corresponding visuals or lip movement', 'b' => 'Only matching background music tempo', 'c' => 'Randomizing audio timing for effect', 'd' => 'Removing all ambient sound'], 'a', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'Which YouTube/social algorithm factor most directly influences whether a video gets recommended to more viewers?', ['a' => 'The exact upload time only', 'b' => 'Audience retention and watch time relative to video length', 'c' => 'The number of tags used, regardless of retention', 'd' => 'The title\'s character count'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'What does a \'transition\' in video editing refer to?', ['a' => 'The opening title card only', 'b' => 'The visual technique (cut, fade, wipe, etc.) used to move from one shot or scene to the next', 'c' => 'The final export settings', 'd' => 'The audio mixing level'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'What is the benefit of shooting and editing in a wider aspect ratio like 9:16 for Instagram Reels?', ['a' => 'It has no effect on how content displays', 'b' => 'It fills the full vertical mobile screen, maximizing engagement on mobile-first platforms', 'c' => 'It only works for landscape TVs', 'd' => 'It reduces file size to zero'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'What does \'render\' mean in video/animation workflows?', ['a' => 'Recording raw footage', 'b' => 'Processing and exporting the final edited project into a playable video file', 'c' => 'Deleting unused clips', 'd' => 'Uploading directly to social media'], 'b', null, 1];
+    $q[] = ['video_animation', 'hard', 'mcq', 'What is the purpose of using keyframed opacity in a logo animation intro?', ['a' => 'To make the logo file smaller', 'b' => 'To animate the logo fading in/out smoothly over a set duration', 'c' => 'To change the logo\'s color permanently', 'd' => 'To add background music automatically'], 'b', null, 1];
 
-    // ── Domain 4 Digital Marketing ──
-    $q[] = ['digital_marketing', 'easy', 'mcq', 'What does SEO stand for?', ['a' => 'Search Engine Optimization', 'b' => 'Site Engine Operation', 'c' => 'Search Engagement Online', 'd' => 'System Engine Optimization'], 'a', null, 5];
-    $q[] = ['digital_marketing', 'easy', 'mcq', 'Which of these is a social media platform used for marketing?', ['a' => 'Figma', 'b' => 'Instagram', 'c' => 'MySQL', 'd' => 'GitHub'], 'b', null, 5];
-    $q[] = ['digital_marketing', 'easy', 'mcq', 'What is a "target audience"?', ['a' => 'Everyone on the internet', 'b' => 'The specific group of people a campaign is designed to reach', 'c' => 'The marketing team', 'd' => 'A type of ad format'], 'b', null, 5];
-    $q[] = ['digital_marketing', 'easy', 'mcq', 'What is the purpose of a hashtag on social media?', ['a' => 'To make posts private', 'b' => 'To categorize content and increase discoverability', 'c' => 'To delete a post', 'd' => 'To edit an image'], 'b', null, 5];
-    $q[] = ['digital_marketing', 'easy', 'task', 'Suggest 3 hashtags for a student internship platform post.', null, null, [
-        'fields' => [
-            ['key' => 'h1', 'label' => 'Hashtag 1', 'min' => 2],
-            ['key' => 'h2', 'label' => 'Hashtag 2', 'min' => 2],
-            ['key' => 'h3', 'label' => 'Hashtag 3', 'min' => 2],
-        ],
-        'keywords_any' => ['#', 'intern', 'student', 'career', 'job', 'peaklyy', 'gig'],
-    ], 5];
+    // ── Photography ──
+    $q[] = ['photography', 'easy', 'mcq', 'What are the three elements of the \'exposure triangle\'?', ['a' => 'Focus, Zoom, Flash', 'b' => 'Aperture, Shutter Speed, ISO', 'c' => 'Contrast, Saturation, Brightness', 'd' => 'Lens, Sensor, Tripod'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What does a wider aperture (e.g. f/1.8) primarily create?', ['a' => 'Greater depth of field, everything in focus', 'b' => 'Shallower depth of field, with a blurred background (bokeh)', 'c' => 'Slower shutter speed automatically', 'd' => 'Higher ISO automatically'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What does \'ISO\' control in a camera?', ['a' => 'The lens focal length', 'b' => 'The camera sensor\'s sensitivity to light', 'c' => 'The shutter speed only', 'd' => 'The white balance'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What effect does a slower shutter speed have when photographing motion?', ['a' => 'Freezes motion completely', 'b' => 'Creates motion blur as the subject moves during the longer exposure', 'c' => 'Increases the depth of field only', 'd' => 'Has no effect on motion capture'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What does the \'rule of thirds\' suggest for composition?', ['a' => 'Placing the subject dead-center always', 'b' => 'Dividing the frame into a 3x3 grid and placing key elements along the lines/intersections', 'c' => 'Using only three colors in a photo', 'd' => 'Taking three shots of every scene'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What is \'white balance\' used to correct?', ['a' => 'Blurry images', 'b' => 'Color casts caused by different lighting conditions, ensuring whites appear neutral', 'c' => 'Image sharpness', 'd' => 'Depth of field'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What is the main advantage of shooting in RAW format over JPEG?', ['a' => 'RAW files are always smaller', 'b' => 'RAW retains significantly more image data, allowing greater flexibility in post-processing edits', 'c' => 'RAW cannot be edited at all', 'd' => 'JPEG always has better quality'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What does a camera\'s \'histogram\' display?', ['a' => 'The GPS location of the shot', 'b' => 'A graph representing the distribution of tones (shadows to highlights) in an image', 'c' => 'The lens focal length used', 'd' => 'The battery life remaining'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What is \'golden hour\' in photography?', ['a' => 'Midday when the sun is highest', 'b' => 'The period shortly after sunrise or before sunset, offering soft, warm, flattering light', 'c' => 'Any hour with clear skies', 'd' => 'The first hour after a photoshoot starts'], 'b', null, 1];
+    $q[] = ['photography', 'easy', 'mcq', 'What does \'bokeh\' refer to?', ['a' => 'A sharp, in-focus background', 'b' => 'The aesthetic quality of the blurred, out-of-focus areas in an image, especially highlights', 'c' => 'A type of camera flash', 'd' => 'A black and white filter'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What is the purpose of an ND (Neutral Density) filter?', ['a' => 'To add color tint to a photo', 'b' => 'To reduce the amount of light entering the lens, allowing slower shutter speeds or wider apertures in bright conditions', 'c' => 'To increase ISO sensitivity', 'd' => 'To sharpen the image automatically'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What does a longer focal length (e.g. 200mm telephoto) typically do?', ['a' => 'Widens the field of view significantly', 'b' => 'Magnifies distant subjects and compresses the background', 'c' => 'Increases depth of field drastically', 'd' => 'Reduces image resolution'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What is \'panning\' technique used for in photography?', ['a' => 'Capturing completely still subjects only', 'b' => 'Tracking a moving subject with the camera at a slow shutter speed to blur the background while keeping the subject sharp', 'c' => 'Zooming in and out rapidly', 'd' => 'Switching between color and black-and-white'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What does \'metering mode\' in a camera help determine?', ['a' => 'The correct focus point only', 'b' => 'How the camera measures light in the scene to calculate proper exposure', 'c' => 'The image file format', 'd' => 'The lens type compatibility'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What is the difference between \'AF-S\' and \'AF-C\' focus modes?', ['a' => 'They are the exact same mode', 'b' => 'AF-S locks focus on a single point for stationary subjects; AF-C continuously tracks focus on moving subjects', 'c' => 'AF-C is only for video, never photos', 'd' => 'AF-S is only used in low light'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'If you increase ISO significantly in low light, what is the common trade-off?', ['a' => 'The image becomes sharper', 'b' => 'Increased digital noise/grain in the image', 'c' => 'The depth of field increases', 'd' => 'The white balance shifts automatically to correct'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What does \'exposure compensation\' allow a photographer to do?', ['a' => 'Change the lens focal length', 'b' => 'Manually brighten or darken the camera\'s automatic exposure setting', 'c' => 'Switch between RAW and JPEG', 'd' => 'Adjust the flash sync speed only'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What is a classic \'three-point lighting\' setup composed of?', ['a' => 'Only a single overhead light', 'b' => 'Key light, fill light, and back (rim) light', 'c' => 'Three identical front-facing lights', 'd' => 'Natural light plus two flashes only'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What do \'leading lines\' do in a photo composition?', ['a' => 'Distract the viewer from the subject', 'b' => 'Guide the viewer\'s eye through the image toward the main subject or a focal point', 'c' => 'Only work in black-and-white photography', 'd' => 'Reduce the image\'s depth of field'], 'b', null, 1];
+    $q[] = ['photography', 'medium', 'mcq', 'What does \'crop factor\' relate to in relation to sensor size?', ['a' => 'The photo\'s file compression', 'b' => 'How a smaller sensor (vs full-frame) effectively narrows the field of view for a given focal length', 'c' => 'The camera\'s battery consumption', 'd' => 'The photographer\'s editing software choice'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'If using a full-frame camera at f/2.8, ISO 400, 1/250s, and you switch to f/5.6 (2 stops less light), what shutter speed keeps the same exposure (ISO unchanged)?', ['a' => '1/1000s', 'b' => '1/60s', 'c' => '1/250s (no change needed)', 'd' => '1/500s'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'What does \'dynamic range\' refer to in a camera sensor?', ['a' => 'The number of megapixels', 'b' => 'The range between the darkest shadows and brightest highlights a sensor can capture with detail', 'c' => 'The maximum shutter speed available', 'd' => 'The lens zoom range'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'What is the purpose of shooting in \'manual mode\' rather than \'auto mode\'?', ['a' => 'It removes all creative control from the photographer', 'b' => 'It gives full control over aperture, shutter speed, and ISO for precise creative and technical exposure decisions', 'c' => 'It only works for video recording', 'd' => 'It automatically applies filters'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'What does \'flash sync speed\' refer to?', ['a' => 'The maximum ISO a camera supports', 'b' => 'The fastest shutter speed at which a camera can properly synchronize with a flash', 'c' => 'The number of flash units used', 'd' => 'The battery charge time for a flash'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'In portrait photography, why might a photographer choose a wider aperture like f/1.4-f/2.8?', ['a' => 'To keep the entire background sharply in focus', 'b' => 'To isolate the subject with a blurred background, drawing attention to them', 'c' => 'To reduce the ISO needed in bright light only', 'd' => 'To increase the shutter speed automatically'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'What is \'macro photography\' primarily focused on?', ['a' => 'Capturing wide landscapes', 'b' => 'Extreme close-up photography of small subjects, showing fine detail', 'c' => 'Long-exposure night photography only', 'd' => 'Sports and action photography'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'What does color temperature measured in Kelvin (K) describe?', ['a' => 'The camera\'s internal processor speed', 'b' => 'Whether a light source appears warm (orange, low K) or cool (blue, high K)', 'c' => 'The camera sensor\'s megapixel count', 'd' => 'The lens aperture range'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'What is the purpose of a long exposure technique (e.g. several seconds) commonly used for?', ['a' => 'Freezing a fast-moving subject completely sharp', 'b' => 'Capturing motion trails like light streaks, flowing water, or star trails', 'c' => 'Increasing the camera\'s ISO automatically', 'd' => 'Reducing the photo\'s file size'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'In Lightroom or similar editing software, what does adjusting \'highlights and shadows\' sliders typically control?', ['a' => 'The overall image cropping', 'b' => 'Recovering detail in the brightest and darkest parts of an image independently', 'c' => 'The camera\'s lens type', 'd' => 'The image\'s file format'], 'b', null, 1];
+    $q[] = ['photography', 'hard', 'mcq', 'What composition technique involves using a natural element (like a doorway or branches) to frame the main subject?', ['a' => 'Rule of thirds', 'b' => 'Framing', 'c' => 'Panning', 'd' => 'Bracketing'], 'b', null, 1];
 
-    $q[] = ['digital_marketing', 'medium', 'mcq', 'What does "CTR" stand for in digital marketing?', ['a' => 'Content Type Rating', 'b' => 'Click-Through Rate', 'c' => 'Customer Trust Report', 'd' => 'Content Tracking Result'], 'b', null, 5];
-    $q[] = ['digital_marketing', 'medium', 'mcq', 'What is "A/B testing" used for in marketing campaigns?', ['a' => 'Testing app bugs', 'b' => 'Comparing two versions of an ad/content to see which performs better', 'c' => 'Testing server speed', 'd' => 'Checking grammar'], 'b', null, 5];
-    $q[] = ['digital_marketing', 'medium', 'mcq', 'What is the difference between "organic reach" and "paid reach"?', ['a' => 'They are the same', 'b' => 'Organic reach is unpaid audience exposure; paid reach comes from advertising spend', 'c' => 'Paid reach is always free', 'd' => 'Organic reach only applies to email'], 'b', null, 5];
-    $q[] = ['digital_marketing', 'medium', 'mcq', 'What is a "sales funnel"?', ['a' => 'A single advertisement', 'b' => 'The step-by-step journey a customer takes from awareness to purchase', 'c' => 'A type of email', 'd' => 'A social media filter'], 'b', null, 5];
-    $q[] = ['digital_marketing', 'medium', 'task', 'Write a short Instagram caption (2–3 lines) for a back-to-school student discount.', null, null, [
-        'fields' => [
-            ['key' => 'caption', 'label' => 'Caption (2–3 lines)', 'min' => 25],
-        ],
-        'keywords_any' => ['student', 'school', 'discount', 'offer', 'back', '%', 'deal'],
-    ], 5];
+    // ── Practical tasks (Peaklyy_Question_Paper.md) — unscored on auto-grade (points 0) ──
+    $task = static function (string $domain, string $prompt, string $mustSatisfy = '') {
+        $full = $mustSatisfy !== ''
+            ? ($prompt . "\n\nMust satisfy: " . $mustSatisfy)
+            : $prompt;
+        return [$domain, 'task', 'task', $full, null, null, $mustSatisfy !== '' ? ['must_satisfy' => $mustSatisfy] : null, 0];
+    };
 
-    $q[] = ['digital_marketing', 'hard', 'mcq', 'What does "CAC" (Customer Acquisition Cost) measure?', ['a' => 'The total revenue of a company', 'b' => 'The cost incurred to acquire one new customer', 'c' => 'The number of employees in marketing', 'd' => 'The price of the product'], 'b', null, 5];
-    $q[] = ['digital_marketing', 'hard', 'task', '₹10,000/month social strategy for student sign-ups — platforms, content, metrics.', null, null, [
-        'fields' => [
-            ['key' => 'platforms', 'label' => 'Platforms + why', 'min' => 15],
-            ['key' => 'content', 'label' => 'Content types', 'min' => 15],
-            ['key' => 'metrics', 'label' => 'Metrics to track', 'min' => 10],
-        ],
-        'keywords_any' => ['instagram', 'meta', 'youtube', 'linkedin', 'ctr', 'sign', 'cpc', 'reach'],
-    ], 10];
-    $q[] = ['digital_marketing', 'hard', 'task', 'Design a 3-post Peaklyy campaign for college students (awareness / engagement / conversion).', null, null, [
-        'fields' => [
-            ['key' => 'post1', 'label' => 'Post 1 (awareness)', 'min' => 15],
-            ['key' => 'post2', 'label' => 'Post 2 (engagement)', 'min' => 15],
-            ['key' => 'post3', 'label' => 'Post 3 (conversion)', 'min' => 15],
-        ],
-        'keywords_any' => ['peaklyy', 'student', 'sign', 'learn', 'earn'],
-    ], 5];
-    $q[] = ['digital_marketing', 'hard', 'task', 'High impressions, very low CTR — what\'s wrong and what to test first?', null, null, [
-        'fields' => [
-            ['key' => 'problem', 'label' => 'What could be going wrong', 'min' => 20],
-            ['key' => 'test', 'label' => 'What you would test first', 'min' => 15],
-        ],
-        'keywords_any' => ['creative', 'cta', 'headline', 'audience', 'offer', 'hook', 'thumbnail'],
-    ], 5];
+    // A1. Python
+    $q[] = $task('python', 'Build a rate-limited API client wrapper (using requests) that enforces a token-bucket limiter and retries failed calls using exponential backoff with jitter.', 'retries increase delay on repeated 429 errors; denies calls when the bucket is empty and allows them once refilled; raises a custom error after max retries instead of crashing.');
+    $q[] = $task('python', 'Implement an LRU cache decorator with TTL-based expiry, built from scratch (no functools.lru_cache).', 'evicts the least-recently-used key on overflow; a recently accessed key survives eviction over an older one; expired keys return a miss even within size limits.');
+    $q[] = $task('python', 'Write a CSV → JSON ETL script that validates rows against a schema and separates valid output from an error report.', 'rows missing required fields are excluded and logged; type-mismatched rows are flagged, not silently coerced; valid-only input produces exact row-count-matching output.');
+    $q[] = $task('python', 'Build a recursive arithmetic expression evaluator supporting + - * / ( ) with correct precedence — no eval().', '"3 + 4 * 2" → 11; "(1 + 2) * (3 - 1)" → 6; division by zero raises a handled error; malformed input raises a clear syntax error.');
+    $q[] = $task('python', 'Build a priority task scheduler (using threading/queue) that respects both priority order and job dependencies.', 'dependent jobs never start before their prerequisite completes; circular dependencies are detected and rejected pre-execution; independent high-priority jobs run ahead of low-priority ones.');
 
-    // ── Domain 5 Video ──
-    $q[] = ['video_animation', 'easy', 'mcq', 'What does "FPS" stand for in video?', ['a' => 'Frames Per Second', 'b' => 'File Processing System', 'c' => 'Fast Playback Speed', 'd' => 'Frame Position Setting'], 'a', null, 5];
-    $q[] = ['video_animation', 'easy', 'mcq', 'Which of these is a video editing software?', ['a' => 'Adobe Premiere Pro', 'b' => 'MySQL', 'c' => 'Figma', 'd' => 'Postman'], 'a', null, 5];
-    $q[] = ['video_animation', 'easy', 'mcq', 'What is a "storyboard" used for?', ['a' => 'Storing files', 'b' => 'Planning the visual sequence of a video before production', 'c' => 'Editing audio only', 'd' => 'Writing code'], 'b', null, 5];
-    $q[] = ['video_animation', 'easy', 'mcq', 'What is the difference between 2D and 3D animation?', ['a' => '2D uses flat/two-dimensional visuals; 3D uses depth and volume', 'b' => 'They are the same', 'c' => '3D is always hand-drawn', 'd' => '2D can only be black and white'], 'a', null, 5];
-    $q[] = ['video_animation', 'easy', 'task', '4-shot storyboard for a 15s promo: students earning through gigs (one line per shot).', null, null, [
-        'fields' => [
-            ['key' => 's1', 'label' => 'Shot 1', 'min' => 8],
-            ['key' => 's2', 'label' => 'Shot 2', 'min' => 8],
-            ['key' => 's3', 'label' => 'Shot 3', 'min' => 8],
-            ['key' => 's4', 'label' => 'Shot 4', 'min' => 8],
-        ],
-        'keywords_any' => ['student', 'gig', 'earn', 'app', 'phone', 'work'],
-    ], 5];
+    // A2. HTML & CSS
+    $q[] = $task('html_css', 'Build a responsive 3-tier pricing table (CSS Grid, no JS) that reflows to stacked cards on mobile with the "recommended" tier emphasized.', 'side-by-side layout ≥768px, stacked <768px, recommended tier distinguishable without relying on color alone.');
+    $q[] = $task('html_css', 'Build a custom accessible dropdown using only HTML/CSS (:focus-within, :checked) — no JavaScript.', 'fully keyboard-operable (Tab/Enter/Space); correct semantics/ARIA for the selected value; works with JS disabled.');
+    $q[] = $task('html_css', 'Build a CSS-only image carousel using scroll-snap.', 'clean snap to each slide on scroll/swipe/keyboard; functions on touch devices; works with JS disabled.');
+    $q[] = $task('html_css', 'Build a print-optimized HTML invoice using @media print.', 'no split table rows across page breaks; nav/buttons hidden only in print output; fits standard page width.');
+    $q[] = $task('html_css', 'Build a CSS Grid dashboard layout (sidebar + header + main) using grid-template-areas, responsive across 3 breakpoints.', 'sidebar adapts without overlapping content at tablet width; no horizontal scroll at any breakpoint; consistent area placement across sizes.');
 
-    $q[] = ['video_animation', 'medium', 'mcq', 'What is a "transition" in video editing?', ['a' => 'The final export step', 'b' => 'An effect used to move smoothly from one scene/clip to another', 'c' => 'A type of audio file', 'd' => 'A camera angle'], 'b', null, 5];
-    $q[] = ['video_animation', 'medium', 'mcq', 'What is "color grading" in video editing?', ['a' => 'Adjusting and enhancing the color/tone of footage for mood and consistency', 'b' => 'Deleting unwanted scenes', 'c' => 'Adding subtitles', 'd' => 'Compressing file size'], 'a', null, 5];
-    $q[] = ['video_animation', 'medium', 'mcq', 'What does "aspect ratio" refer to?', ['a' => 'The audio quality of a video', 'b' => 'The proportional relationship between a video\'s width and height (e.g., 16:9, 9:16)', 'c' => 'The number of scenes in a video', 'd' => 'The frame rate'], 'b', null, 5];
-    $q[] = ['video_animation', 'medium', 'task', '30s Instagram Reel: "How Peaklyy works" — shot-by-shot breakdown.', null, null, [
-        'fields' => [
-            ['key' => 'breakdown', 'label' => 'Shot-by-shot (with approximate seconds)', 'min' => 40],
-        ],
-        'keywords_any' => ['peaklyy', 'student', 'sign', 'gig', 'match', 'earn'],
-    ], 5];
+    // A3. JavaScript
+    $q[] = $task('javascript', 'Build a debounced search-as-you-type component with stale-request cancellation via AbortController.', 'rapid typing triggers exactly one network call per debounce window; superseded requests are aborted; no race condition shows outdated results.');
+    $q[] = $task('javascript', 'Implement a custom event emitter with .on(), .once(), .off(), supporting async listeners.', '.once() fires exactly once; an error in one listener doesn\'t block others; .off() removes only the targeted listener.');
+    $q[] = $task('javascript', 'Build a vanilla-JS drag-and-drop kanban board with localStorage persistence.', 'drag between columns updates DOM and stored state; page refresh restores state exactly; invalid drop targets leave state unchanged.');
+    $q[] = $task('javascript', 'Build a custom form validation library supporting sync + async rules (no external packages).', 'required-field errors show on blur; async validation shows pending → resolved states correctly; multiple invalid fields display errors simultaneously.');
+    $q[] = $task('javascript', 'Build a virtualized infinite-scroll list for 10,000 items (only visible rows in the DOM).', 'DOM node count stays roughly constant regardless of scroll position; jumping to a scroll offset renders correct items; resizing doesn\'t break positioning.');
 
-    $q[] = ['video_animation', 'hard', 'mcq', 'What is the difference between "keyframe animation" and "motion tracking"?', ['a' => 'They\'re identical techniques', 'b' => 'Keyframe animation defines specific points to create movement; motion tracking follows a real object\'s movement to attach effects to it', 'c' => 'Motion tracking is only for audio', 'd' => 'Keyframe animation is only used in 3D'], 'b', null, 5];
-    $q[] = ['video_animation', 'hard', 'task', 'Pitch a 60s Peaklyy explainer (hook 3s + core message + CTA + visual style).', null, null, [
-        'fields' => [
-            ['key' => 'hook', 'label' => 'Hook (first 3 seconds)', 'min' => 10],
-            ['key' => 'core', 'label' => 'Core message', 'min' => 20],
-            ['key' => 'cta', 'label' => 'Call-to-action', 'min' => 8],
-            ['key' => 'style', 'label' => 'Visual style', 'min' => 10],
-        ],
-        'keywords_any' => ['peaklyy', 'student', 'learn', 'earn', 'sign'],
-    ], 10];
-    $q[] = ['video_animation', 'hard', 'task', 'Video "feels boring" — 3 things you\'d check/change (pacing, transitions, music…).', null, null, [
-        'fields' => [
-            ['key' => 'c1', 'label' => 'Change 1', 'min' => 10],
-            ['key' => 'c2', 'label' => 'Change 2', 'min' => 10],
-            ['key' => 'c3', 'label' => 'Change 3', 'min' => 10],
-        ],
-        'keywords_any' => ['pace', 'music', 'transition', 'visual', 'cut', 'broll', 'text', 'hook'],
-    ], 5];
-    $q[] = ['video_animation', 'hard', 'task', 'Describe a 2–3s premium logo reveal (movement, timing, effects).', null, null, [
-        'fields' => [
-            ['key' => 'reveal', 'label' => 'Logo reveal description', 'min' => 30],
-        ],
-        'keywords_any' => ['scale', 'fade', 'ease', 'glow', 'slide', 'opacity', 'motion', 'timing'],
-    ], 5];
+    // B. Design & Creative UI
+    $q[] = $task('ui_design', 'Design a 3–4 screen onboarding flow for a fitness app.');
+    $q[] = $task('ui_design', 'Create a mood board and logo concept for a sustainable coffee brand.');
+    $q[] = $task('ui_design', 'Redesign a cluttered dashboard applying visual hierarchy and Gestalt principles.');
+    $q[] = $task('ui_design', 'Design light and dark mode "Now Playing" screens for a music app.');
+    $q[] = $task('ui_design', 'Build a mini design system (colors, type scale, button states, spacing) for a fintech product.');
+
+    // C. Writing & Translation
+    $q[] = $task('writing_translation', 'Write a 600-word SEO blog post on "remote work productivity" using 3 target keywords naturally.');
+    $q[] = $task('writing_translation', 'Translate a 300-word marketing brochure (English → Spanish), preserving tone and idiom.');
+    $q[] = $task('writing_translation', 'Write plain-language documentation for a technical API endpoint.');
+    $q[] = $task('writing_translation', 'Write an 800-word short story with a twist ending, including a locked door, a stranger, and a letter.');
+    $q[] = $task('writing_translation', 'Localize a set of app UI strings into French and Hindi within character-length constraints.');
+
+    // D. Business & Finance
+    $q[] = $task('business_finance', 'Build a linked 3-statement financial model for a SaaS startup (3-year projection).');
+    $q[] = $task('business_finance', 'Perform a break-even and sensitivity analysis for a new product launch.');
+    $q[] = $task('business_finance', 'Write a Series A investment memo including comparables-based valuation.');
+    $q[] = $task('business_finance', 'Build a cash flow forecast and working capital analysis for a seasonal business.');
+    $q[] = $task('business_finance', 'Draft a competitive analysis and SWOT ending in a Go/No-Go recommendation.');
+
+    // E. Digital Marketing
+    $q[] = $task('digital_marketing', 'Design a full-funnel paid ad strategy with cross-platform budget allocation.');
+    $q[] = $task('digital_marketing', 'Build a 5-email cart-abandonment sequence with A/B subject line variants.');
+    $q[] = $task('digital_marketing', 'Build a one-quarter content calendar and SEO strategy for 3 buyer personas.');
+    $q[] = $task('digital_marketing', 'Write a social campaign brief for a product launch across platforms.');
+    $q[] = $task('digital_marketing', 'Audit a competitor\'s SEO, social, and paid presence with 5 prioritized recommendations.');
+
+    // F. Data Analytics
+    $q[] = $task('data_analytics', 'Clean a messy sales dataset and build a cohort retention analysis.');
+    $q[] = $task('data_analytics', 'Analyze an A/B test for statistical significance and recommend a winner.');
+    $q[] = $task('data_analytics', 'Build an RFM customer segmentation model.');
+    $q[] = $task('data_analytics', 'Build a churn prediction model/dashboard highlighting key drivers.');
+    $q[] = $task('data_analytics', 'Design a North Star metric dashboard from raw usage logs.');
+
+    // G. Videography & Animation
+    $q[] = $task('video_animation', 'Storyboard and shot-list a 60-second brand explainer video.');
+    $q[] = $task('video_animation', 'Edit raw interview footage into a polished 3-minute piece.');
+    $q[] = $task('video_animation', 'Create a 15-second 2D motion graphics logo reveal.');
+    $q[] = $task('video_animation', 'Animate a character walk-cycle demonstrating squash-and-stretch.');
+    $q[] = $task('video_animation', 'Produce a shot plan for a stop-motion/timelapse product demo.');
+
+    // H. Photography
+    $q[] = $task('photography', 'Plan a 5-angle e-commerce product photography set.');
+    $q[] = $task('photography', 'Create a 3-point lighting diagram and shot plan for corporate headshots.');
+    $q[] = $task('photography', 'Plan a golden-hour outdoor lifestyle photoshoot with weather contingency.');
+    $q[] = $task('photography', 'Design a brand-consistent photo editing/retouching workflow.');
+    $q[] = $task('photography', 'Plan a restaurant menu food photography shoot (props, angles, lighting).');
 
     $out = [];
     $i = 0;
@@ -308,3 +462,4 @@ function peaklyyQuestionDefinitions(): array
     }
     return $out;
 }
+

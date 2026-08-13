@@ -75,9 +75,40 @@ if ($method === 'PUT') {
 
     $fields = [];
     $params = [];
+    $statusIn = null;
     foreach (['title', 'value', 'stage_id', 'contact_id', 'expected_close_date', 'probability', 'description', 'status'] as $f) {
-        if (array_key_exists($f, $input)) { $fields[] = "$f = ?"; $params[] = $input[$f]; }
+        if (!array_key_exists($f, $input)) {
+            continue;
+        }
+        if ($f === 'status') {
+            $statusIn = strtolower(trim((string) $input['status']));
+            if (!in_array($statusIn, ['open', 'won', 'lost'], true)) {
+                respond(['error' => 'Invalid status'], 400);
+            }
+            $fields[] = 'status = ?';
+            $params[] = $statusIn;
+            continue;
+        }
+        $fields[] = "$f = ?";
+        $params[] = $input[$f];
     }
+
+    // Couple status ↔ forecast fields so won/lost boards don't lie.
+    if ($statusIn === 'won') {
+        if (!array_key_exists('probability', $input)) {
+            $fields[] = 'probability = ?';
+            $params[] = 100;
+        }
+        if (!array_key_exists('expected_close_date', $input)) {
+            $fields[] = 'expected_close_date = COALESCE(expected_close_date, CURRENT_DATE)';
+        }
+    } elseif ($statusIn === 'lost') {
+        if (!array_key_exists('probability', $input)) {
+            $fields[] = 'probability = ?';
+            $params[] = 0;
+        }
+    }
+
     if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
 
     $orgAnd = orgFilterSqlAnd($tokenData, 'd', $db);

@@ -50,10 +50,13 @@ export async function getAllPaymentLinks(filters?: {
   period?: PaymentLinkPeriod;
   /** Bypass the server-side sync cache and force a full Razorpay sync. */
   force?: boolean;
+  /** Payment Records page: managers see self + downline only. */
+  forRecords?: boolean;
 }): Promise<PaymentLinksListResult> {
   const extra: Record<string, string> = {};
   if (filters?.status) extra.status = filters.status;
   if (filters?.force) extra.force = "1";
+  if (filters?.forRecords) extra.view = "records";
 
   let from = filters?.from;
   let to = filters?.to;
@@ -118,6 +121,15 @@ export async function cancelPaymentLink(
   id: string,
 ): Promise<RazorpayPaymentLink> {
   return apiFetch<RazorpayPaymentLink>(paymentLinksUrl("cancel", id), {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function deletePaymentLink(
+  id: string,
+): Promise<{ id: string; deleted: boolean }> {
+  return apiFetch<{ id: string; deleted: boolean }>(paymentLinksUrl("delete", id), {
     method: "POST",
     body: JSON.stringify({}),
   });

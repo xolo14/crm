@@ -579,7 +579,7 @@ export default function MarketingDashboard() {
                       );
                       return (
                         <TableRow key={l.id}>
-                          <TableCell><Checkbox checked={selectedLeadIds.has(l.id)} onCheckedChange={() => toggleLeadSelect(l.id)} disabled={!!l.assigned_to} /></TableCell>
+                          <TableCell><Checkbox checked={selectedLeadIds.has(l.id)} onCheckedChange={() => toggleLeadSelect(l.id)} disabled={!!l.assigned_to || !!(formLeadAssignments[l.id]?.length)} /></TableCell>
                           <TableCell className="text-sm font-medium">{l.name}</TableCell>
                           <TableCell className="text-xs text-muted-foreground">{l.email || '—'}</TableCell>
                           <TableCell className="text-xs">{l.phone || '—'}</TableCell>

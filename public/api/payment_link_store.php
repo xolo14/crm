@@ -95,6 +95,22 @@ function paymentLinkEnsureSchema(PDO $db): void
     } catch (Throwable $e) {
         // Column already exists.
     }
+
+    try {
+        if (!syncpediaColumnExists($db, 'payment_links', 'deleted_at')) {
+            if (syncpediaDbIsMysql($db)) {
+                $db->exec(
+                    'ALTER TABLE payment_links ADD COLUMN deleted_at DATETIME DEFAULT NULL',
+                );
+            } else {
+                $db->exec(
+                    'ALTER TABLE payment_links ADD COLUMN deleted_at TIMESTAMP DEFAULT NULL',
+                );
+            }
+        }
+    } catch (Throwable $e) {
+        // Column already exists.
+    }
 }
 
 /** Mark a link so list/cache-hit fulfill will retry receipt/enrollment. */
@@ -224,17 +240,18 @@ function paymentLinkMapRazorpayStatus(string $status, int $amountPaid, int $amou
 
 /**
  * Rank used to prevent status downgrades on concurrent writes.
- * Must match paymentLinkStatusRank(): paid > partially_paid > created > expired > cancelled.
- * Money-bearing states must never lose to terminal cancel/expire.
+ * paid / partially_paid never lose to cancel/expire.
+ * cancelled / expired outrank created so cancel/expire persist in CRM.
+ * Must match paymentLinkStatusRank().
  */
 function paymentLinkStatusRankSql(string $expr): string
 {
     return "CASE {$expr}
         WHEN 'paid' THEN 5
         WHEN 'partially_paid' THEN 4
-        WHEN 'created' THEN 3
-        WHEN 'expired' THEN 2
-        WHEN 'cancelled' THEN 1
+        WHEN 'cancelled' THEN 3
+        WHEN 'expired' THEN 3
+        WHEN 'created' THEN 2
         ELSE 0 END";
 }
 
@@ -379,6 +396,9 @@ function paymentLinkUpsertFromRazorpay(
 
     $existing = paymentLinkFindByRazorpayId($plinkId);
     $notes = is_array($rzpLink['notes'] ?? null) ? $rzpLink['notes'] : [];
+    if (is_array($paymentEntity['notes'] ?? null)) {
+        $notes = array_merge($paymentEntity['notes'], $notes);
+    }
     if ($existing && !empty($existing['notes'])) {
         $decoded = json_decode((string) $existing['notes'], true);
         if (is_array($decoded)) {
@@ -438,33 +458,10 @@ function paymentLinkUpsertFromRazorpay(
             $plinkId,
         ]);
     } else {
-        $ins = $db->prepare(
-            'INSERT INTO payment_links (
-                razorpay_payment_link_id, salesperson_id, salesperson_referral_code,
-                customer_name, customer_email, customer_phone, amount, currency, description,
-                reference_id, status, amount_paid, razorpay_short_url, expire_by, notes,
-                accept_partial, payment_type
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-        );
-        $ins->execute([
-            $plinkId,
-            $salespersonId,
-            trim((string) ($notes['referral_code'] ?? $notes['crm_referral'] ?? '')),
-            trim((string) ($cust['name'] ?? '')),
-            trim((string) ($cust['email'] ?? '')) ?: null,
-            trim((string) ($cust['contact'] ?? '')) ?: null,
-            $amount,
-            (string) ($rzpLink['currency'] ?? 'INR'),
-            trim((string) ($rzpLink['description'] ?? '')) ?: null,
-            trim((string) ($rzpLink['reference_id'] ?? '')) ?: null,
-            $status,
-            $amountPaid,
-            trim((string) ($rzpLink['short_url'] ?? '')),
-            $expireBy,
-            $notesJson,
-            (($rzpLink['accept_partial'] ?? false) === true) ? 1 : 0,
-            (($rzpLink['accept_partial'] ?? false) === true) ? 'partial' : 'full',
-        ]);
+        // Deny creating CRM payment rows from webhook alone (shared Razorpay account).
+        // Links must be created via the CRM first so org_id / salesperson are trusted.
+        error_log('[payment_links] rejecting unknown razorpay link (not created via CRM): ' . $plinkId);
+        return null;
     }
 
     return paymentLinkFindByRazorpayId($plinkId);
@@ -473,9 +470,10 @@ function paymentLinkUpsertFromRazorpay(
 /**
  * List access scope for payment links (mirrors leads.php: manager = downline, admin/org = tenant, rep = self).
  *
+ * @param bool $forRecords When true, managers are limited to self + downline (Payment Records page).
  * @return array{mode: string, org_id: ?string, salesperson_ids: string[], org_member_ids: string[]}
  */
-function paymentLinksBuildAccessScope(PDO $db, array $tokenData): array
+function paymentLinksBuildAccessScope(PDO $db, array $tokenData, bool $forRecords = false): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     $userId = trim((string) ($tokenData['user_id'] ?? ''));
@@ -502,7 +500,19 @@ function paymentLinksBuildAccessScope(PDO $db, array $tokenData): array
         ];
     }
     if ($role === 'manager') {
-        // Align with org-wide leads visibility for managers.
+        if ($forRecords) {
+            $visible = hierarchyGetVisibleUserIds($db, $tokenData);
+            if (empty($visible) && $userId !== '') {
+                $visible = [$userId];
+            }
+            return [
+                'mode' => 'downline',
+                'org_id' => $resolvedOrgId,
+                'salesperson_ids' => array_values($visible),
+                'org_member_ids' => [],
+            ];
+        }
+        // Payment Links page: org-wide for managers.
         if ($resolvedOrgId === null) {
             return [
                 'mode' => 'self',
@@ -695,7 +705,7 @@ function paymentLinkListCrmRows(?int $fromUnix = null, ?int $toUnix = null, int 
     $sql = 'SELECT razorpay_payment_link_id, customer_name, customer_email, customer_phone,
                    amount, currency, amount_paid, status, description, reference_id,
                    razorpay_short_url, expire_by, notes, salesperson_id, created_at, updated_at
-            FROM payment_links WHERE 1=1';
+            FROM payment_links WHERE deleted_at IS NULL';
     $params = [];
     if ($accessScope !== null) {
         $scopeSql = paymentLinksCrmListScopeSql($accessScope);
@@ -783,12 +793,75 @@ function paymentLinkStatusRank(string $status): int
     static $ranks = [
         'paid' => 5,
         'partially_paid' => 4,
-        'created' => 3,
-        'expired' => 2,
-        'cancelled' => 1,
+        'cancelled' => 3,
+        'expired' => 3,
+        'created' => 2,
     ];
 
     return $ranks[strtolower(trim($status))] ?? 0;
+}
+
+/**
+ * Hide a cancelled/expired link from the CRM table (soft-delete).
+ * Razorpay keeps the cancelled link; we just stop showing it in the CRM list.
+ */
+function paymentLinkDeleteFromCrm(string $plinkId): bool
+{
+    $plinkId = trim($plinkId);
+    if ($plinkId === '') {
+        return false;
+    }
+    $db = paymentLinksDb();
+    paymentLinkEnsureSchema($db);
+    $st = $db->prepare(
+        "UPDATE payment_links
+         SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE razorpay_payment_link_id = ?
+           AND deleted_at IS NULL
+           AND LOWER(TRIM(status)) IN ('cancelled', 'expired')",
+    );
+    $st->execute([$plinkId]);
+    return $st->rowCount() > 0;
+}
+
+/** @return list<string> Soft-deleted Razorpay payment link ids. */
+function paymentLinkDeletedIds(PDO $db): array
+{
+    try {
+        paymentLinkEnsureSchema($db);
+        $st = $db->query(
+            'SELECT razorpay_payment_link_id FROM payment_links
+             WHERE deleted_at IS NOT NULL
+             ORDER BY deleted_at DESC
+             LIMIT 2000',
+        );
+        $ids = [];
+        foreach ($st ? ($st->fetchAll(PDO::FETCH_ASSOC) ?: []) : [] as $row) {
+            $id = trim((string) ($row['razorpay_payment_link_id'] ?? ''));
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+        return $ids;
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+/** @param list<mixed> $items @return list<mixed> */
+function paymentLinksExcludeDeleted(array $items, PDO $db): array
+{
+    $deleted = array_fill_keys(paymentLinkDeletedIds($db), true);
+    if ($deleted === []) {
+        return $items;
+    }
+    return array_values(array_filter($items, static function ($item) use ($deleted) {
+        if (!is_array($item)) {
+            return false;
+        }
+        $id = trim((string) ($item['id'] ?? ''));
+        return $id === '' || !isset($deleted[$id]);
+    }));
 }
 
 /**
@@ -1001,7 +1074,8 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
     $to = !empty($filters['to']) ? (int) $filters['to'] : null;
     $accessScope = null;
     if ($tokenData !== null) {
-        $accessScope = paymentLinksBuildAccessScope(paymentLinksDb(), $tokenData);
+        $forRecords = !empty($filters['for_records']);
+        $accessScope = paymentLinksBuildAccessScope(paymentLinksDb(), $tokenData, $forRecords);
     }
 
     $cacheFile = paymentLinksSyncCachePath($filters);
@@ -1074,6 +1148,8 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
     if ($accessScope !== null) {
         $items = paymentLinksApplyListScope($items, $accessScope);
     }
+
+    $items = paymentLinksExcludeDeleted($items, paymentLinksDb());
 
     usort($items, static function ($a, $b): int {
         $a = is_array($a) ? $a : [];

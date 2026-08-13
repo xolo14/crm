@@ -183,13 +183,9 @@ if (is_array($formRow)) {
     if ($requiresKey && $storedHash !== '') {
         $providedApiKey = trim((string) ($_SERVER['HTTP_X_FORM_API_KEY'] ?? ''));
         if ($providedApiKey === '') {
-            // Backward-compat for old shared links while we migrate callers off URL/body secrets.
-            $providedApiKey = trim((string) ($input['api_key'] ?? ($_GET['api_key'] ?? '')));
-        }
-        if ($providedApiKey === '') {
             respond([
                 'error' => 'Form API key required',
-                'hint' => 'Send X-Form-Api-Key header (preferred) or rotate/update older integration links.',
+                'hint' => 'Send X-Form-Api-Key header only (query/body api_key is no longer accepted).',
             ], 401);
         }
         if (!formExternalApiKeyVerify($providedApiKey, $storedHash)) {
@@ -228,7 +224,44 @@ if ($formCreatorId !== '') {
     }
 }
 
-// No ?ref= on link → assign to form creator so it appears in their Form Leads / My Leads.
+// No ?ref= on link → round-robin across form assignees, else form creator.
+if (!$assignedTo && is_array($formRow)) {
+    $formIdForAssign = trim((string) ($formRow['id'] ?? ''));
+    $memberIds = [];
+    if ($formIdForAssign !== '') {
+        try {
+            ensureLeadFormAssignmentsTable($db);
+            $mst = $db->prepare(
+                'SELECT member_id FROM lead_form_assignments WHERE form_id = ? ORDER BY created_at ASC, member_id ASC'
+            );
+            $mst->execute([$formIdForAssign]);
+            foreach ($mst->fetchAll(PDO::FETCH_ASSOC) as $mr) {
+                $mid = trim((string) ($mr['member_id'] ?? ''));
+                if ($mid !== '') {
+                    $memberIds[] = $mid;
+                }
+            }
+        } catch (Throwable $e) {
+            $memberIds = [];
+        }
+    }
+    if ($memberIds !== []) {
+        $n = count($memberIds);
+        $seq = 0;
+        try {
+            $cst = $db->prepare(
+                "SELECT COUNT(*) FROM leads WHERE source = ? OR (tags IS NOT NULL AND tags LIKE ?)"
+            );
+            $cst->execute([$source, '%"form_id":"' . $formIdForAssign . '"%']);
+            $seq = (int) $cst->fetchColumn();
+        } catch (Throwable $e) {
+            $seq = (int) (microtime(true) * 1000);
+        }
+        $assignedTo = $memberIds[$seq % $n];
+    } elseif ($formCreatorId !== '') {
+        $assignedTo = $formCreatorId;
+    }
+}
 if (!$assignedTo && $formCreatorId !== '') {
     $assignedTo = $formCreatorId;
 }

@@ -273,7 +273,7 @@ export function EmailSetup() {
 
       <SettingsSection
         title="Mail routing"
-        description="Email 1 is automatically used for every unassigned mail type. You can route individual mail types through Email 2 or Email 3."
+        description="Each mail type uses its designated account first. If that account fails (auth, quota, or SMTP error), the CRM automatically tries your other active accounts in slot order — org-wide for every category."
       >
         <div className="divide-y divide-gray-100">
           {categories.map((category) => (

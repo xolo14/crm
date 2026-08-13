@@ -13,12 +13,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
 import * as perms from '@/lib/permissions';
+import { normalizeAppRole } from '@/lib/roleUtils';
 import { Plus, Download, MoreHorizontal, Pencil, Trash2, Loader2 } from 'lucide-react';
 import {
   batchScheduleStatus,
   batchStatusLabel,
+  batchSalesDisplayStatus,
   BATCH_READ_ONLY_ROLES,
   isOpenBatchSchedule,
+  formatBatchDate,
 } from '@/utils/batchSchedule';
 
 const CAN_CREATE_ROLES = ['super_admin', 'admin', 'manager'];
@@ -88,7 +91,7 @@ export default function Batches() {
   const [editStart, setEditStart] = useState('');
   const [editEnd, setEditEnd] = useState('');
 
-  const currentRole = role || '';
+  const currentRole = normalizeAppRole(role);
   const canCreate = CAN_CREATE_ROLES.includes(currentRole);
   const canEditAll = CAN_EDIT_ALL_ROLES.includes(currentRole);
   const canDelete = CAN_DELETE_ROLES.includes(currentRole);
@@ -125,8 +128,10 @@ export default function Batches() {
     }
   };
 
-  const displayStatus = (batch: { start_date?: string; end_date?: string }) =>
-    batchScheduleStatus(batch.start_date, batch.end_date);
+  const displayStatus = (batch: { start_date?: string; end_date?: string; status?: string }) =>
+    isReadOnlyViewer
+      ? batchSalesDisplayStatus(batch.start_date, batch.end_date, batch.status)
+      : batchScheduleStatus(batch.start_date, batch.end_date);
 
   const statusColor = (status: string) => {
     if (status === 'active') return 'bg-emerald-500/10 text-emerald-700 border-emerald-200';
@@ -136,7 +141,15 @@ export default function Batches() {
 
   const visibleBatches = useMemo(() => {
     if (!isReadOnlyViewer) return batches;
-    return batches.filter((b) => isOpenBatchSchedule(b.start_date, b.end_date));
+    const open = batches.filter((b) => isOpenBatchSchedule(b.start_date, b.end_date, b.status));
+    // All active batches first, then upcoming — so L1 can enroll into running batches.
+    return [...open].sort((a, b) => {
+      const sa = batchSalesDisplayStatus(a.start_date, a.end_date, a.status);
+      const sb = batchSalesDisplayStatus(b.start_date, b.end_date, b.status);
+      if (sa === 'active' && sb !== 'active') return -1;
+      if (sb === 'active' && sa !== 'active') return 1;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    });
   }, [batches, isReadOnlyViewer]);
 
   const activeCount = useMemo(
@@ -259,7 +272,7 @@ export default function Batches() {
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Batches</h1>
           <p className="text-sm text-muted-foreground mt-1">
             {visibleBatches.length} batches • {activeCount} active
-            {isReadOnlyViewer ? ' • upcoming & active only' : ''}
+            {isReadOnlyViewer ? ' • upcoming + all active (enrollable)' : ''}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -422,8 +435,8 @@ export default function Batches() {
                       </div>
                       {batch.start_date && (
                         <p className="text-xs text-muted-foreground mt-1">
-                          {new Date(batch.start_date).toLocaleDateString()}
-                          {batch.end_date ? ` → ${new Date(batch.end_date).toLocaleDateString()}` : ''}
+                          {formatBatchDate(batch.start_date) || '—'}
+                          {formatBatchDate(batch.end_date) ? ` → ${formatBatchDate(batch.end_date)}` : ''}
                         </p>
                       )}
                     </div>
@@ -477,8 +490,8 @@ export default function Batches() {
                     <TableCell className="font-medium">{batch.name}</TableCell>
                     <TableCell className="text-sm">{batch.course_name || batch.course || '—'}</TableCell>
                     <TableCell className="text-sm">
-                      {batch.start_date ? new Date(batch.start_date).toLocaleDateString() : '—'}
-                      {batch.end_date ? ` → ${new Date(batch.end_date).toLocaleDateString()}` : ''}
+                      {formatBatchDate(batch.start_date) || '—'}
+                      {formatBatchDate(batch.end_date) ? ` → ${formatBatchDate(batch.end_date)}` : ''}
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">

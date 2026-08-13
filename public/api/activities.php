@@ -9,8 +9,21 @@ $userId = $tokenData['user_id'];
 
 if ($method === 'GET') {
     $scope = activitiesListScopeSql($db, $tokenData, 'a');
-    $stmt = $db->prepare('SELECT * FROM activities a WHERE 1=1' . $scope['sql'] . ' ORDER BY a.occurred_at DESC LIMIT 100');
-    $stmt->execute($scope['params']);
+    $leadId = trim((string) ($_GET['lead_id'] ?? ''));
+    $sql = 'SELECT * FROM activities a WHERE 1=1' . $scope['sql'];
+    $params = $scope['params'];
+
+    // Per-lead history: latest N for that lead (not a global org-wide cap).
+    if ($leadId !== '') {
+        $sql .= ' AND a.lead_id = ?';
+        $params[] = $leadId;
+        $sql .= ' ORDER BY COALESCE(a.occurred_at, a.created_at) DESC LIMIT 10';
+    } else {
+        $sql .= ' ORDER BY COALESCE(a.occurred_at, a.created_at) DESC LIMIT 100';
+    }
+
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
     respond(['data' => $stmt->fetchAll()]);
 }
 

@@ -8,25 +8,29 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { Users, Building2, Layers, IndianRupee, TrendingUp, ExternalLink, Shield, Activity, Loader2, Link2, UserPlus } from 'lucide-react';
+import { Users, Building2, Layers, IndianRupee, TrendingUp, ExternalLink, Shield, Activity, Loader2, Link2, UserPlus, GraduationCap } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { DateRangeFilter, DateRange } from '@/components/DateRangeFilter';
-import { parseServerDateTime } from '@/lib/dateTime';
+import { parseServerDateTime, buildDailyLeadTrend } from '@/lib/dateTime';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/hooks/use-toast';
+import { filterAndSortAssignRoster } from '@/lib/assignRoster';
+import { computeLeadKpis, normalizeLeadsByStatus } from '@/lib/dashboardKpis';
 
 const COLORS = ['hsl(162, 63%, 41%)', 'hsl(200, 70%, 50%)', 'hsl(38, 92%, 50%)', 'hsl(0, 70%, 55%)', 'hsl(270, 60%, 55%)', 'hsl(330, 70%, 55%)', 'hsl(45, 80%, 50%)', 'hsl(180, 60%, 45%)'];
 const SOURCE_LABELS: Record<string, string> = { google_ads: 'Google Ads', instagram: 'Instagram', facebook: 'Facebook', youtube: 'YouTube', website: 'Website', google_forms: 'Google Forms', whatsapp: 'WhatsApp', referral: 'Referral', walkin: 'Walk-in', college_seminar: 'College Seminar', other: 'Other' };
 const STATUS_LABELS: Record<string, string> = { new: 'New', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Demo Scheduled', demo_attended: 'Demo Attended', considering: 'Considering', enrolled: 'Enroll', converted: 'Enroll', lost: 'Lost' };
 
 export default function AdminDashboard() {
-  const { profile, organization, role } = useAuth();
+  const { profile, organization, role, user } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [dateRange, setDateRange] = useState<DateRange>({});
   const [loading, setLoading] = useState(true);
   const [leads, setLeads] = useState<any[]>([]);
+  const [leadsTotal, setLeadsTotal] = useState(0);
+  const [leadsByStatusServer, setLeadsByStatusServer] = useState<Record<string, number>>({});
   const [batchesCount, setBatchesCount] = useState(0);
   const [activeBatches, setActiveBatches] = useState(0);
   const [totalRevenue, setTotalRevenue] = useState(0);
@@ -44,24 +48,35 @@ export default function AdminDashboard() {
   const fetchTeam = async () => {
     try {
       const data = await api.team.list();
-      setTeamMembers((data.data || []).filter((m: any) => m.role === 'sales_representative' && m.is_active));
-    } catch {}
+      setTeamMembers(
+        filterAndSortAssignRoster(data.data || [], {
+          excludeUserId: user?.id,
+        }),
+      );
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const fetchData = async () => {
     setLoading(true);
     try {
       const data = await api.profiles.dashboard();
-      const allLeads = data.leads || [];
+      const payload = (data?.leads != null || data?.leads_total != null)
+        ? data
+        : (data?.data || data || {});
+      const allLeads = payload.leads || [];
       setLeads(allLeads);
+      setLeadsTotal(Number(payload.leads_total ?? allLeads.length) || allLeads.length);
+      setLeadsByStatusServer(normalizeLeadsByStatus(payload.leads_by_status));
       setRecentLeads(allLeads.slice(0, 10));
       setUnassignedLeads(allLeads.filter((l: any) => !l.assigned_to));
-      setBatchesCount(data.batches_count || 0);
-      setActiveBatches(data.active_batches || 0);
-      setTotalRevenue(data.total_revenue || 0);
-      setPendingRevenue(data.pending_revenue || 0);
+      setBatchesCount(payload.batches_count || 0);
+      setActiveBatches(payload.active_batches || 0);
+      setTotalRevenue(Number(payload.total_revenue || 0));
+      setPendingRevenue(Number(payload.pending_revenue || 0));
 
-      const profiles = data.profiles || [];
+      const profiles = payload.profiles || [];
       const nameMap: Record<string, string> = {};
       const userIdMap: Record<string, string> = {};
       const uidNameMap: Record<string, string> = {};
@@ -82,10 +97,24 @@ export default function AdminDashboard() {
   }, [leads, dateRange]);
 
   const leadsByStatus = useMemo(() => {
+    const hasDateFilter = !!(dateRange.from || dateRange.to);
+    if (!hasDateFilter && Object.keys(leadsByStatusServer).length > 0) {
+      const c: Record<string, number> = {};
+      for (const [raw, n] of Object.entries(leadsByStatusServer)) {
+        let key = raw || 'new';
+        if (key === 'converted') key = 'enrolled';
+        c[key] = (c[key] || 0) + Number(n || 0);
+      }
+      return Object.entries(c).map(([name, value]) => ({ name: STATUS_LABELS[name] || name, value }));
+    }
     const c: Record<string, number> = {};
-    for (const l of filteredLeads) { const s = l.status || 'new'; c[s] = (c[s] || 0) + 1; }
+    for (const l of filteredLeads) {
+      let s = l.status || 'new';
+      if (s === 'converted') s = 'enrolled';
+      c[s] = (c[s] || 0) + 1;
+    }
     return Object.entries(c).map(([name, value]) => ({ name: STATUS_LABELS[name] || name, value }));
-  }, [filteredLeads]);
+  }, [filteredLeads, leadsByStatusServer, dateRange.from, dateRange.to]);
 
   const leadsBySource = useMemo(() => {
     const c: Record<string, number> = {};
@@ -93,14 +122,15 @@ export default function AdminDashboard() {
     return Object.entries(c).map(([name, value]) => ({ name: SOURCE_LABELS[name] || name, value })).sort((a, b) => b.value - a.value);
   }, [filteredLeads]);
 
-  const dailyTrend = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const l of filteredLeads) { const d = new Date(l.created_at).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }); map[d] = (map[d] || 0) + 1; }
-    return Object.entries(map).slice(-14).map(([date, count]) => ({ date, leads: count }));
-  }, [filteredLeads]);
+  const dailyTrend = useMemo(() => buildDailyLeadTrend(filteredLeads, 14), [filteredLeads]);
 
-  const totalLeads = filteredLeads.length;
-  const converted = filteredLeads.filter(l => l.status === 'converted' || l.status === 'enrolled').length;
+  const hasDateFilter = !!(dateRange.from || dateRange.to);
+  const { total: totalLeads, converted } = computeLeadKpis({
+    hasDateFilter,
+    leads: filteredLeads,
+    leadsTotal,
+    byStatus: leadsByStatusServer,
+  });
   const convRate = totalLeads > 0 ? Math.round((converted / totalLeads) * 100) : 0;
 
   const handleAssignLead = async (leadId: string, repId: string) => {
@@ -158,6 +188,7 @@ export default function AdminDashboard() {
           { label: 'Total Leads', value: totalLeads, icon: Users, sub: `${converted} enroll`, bg: 'from-emerald-500/10 to-teal-500/10', ic: 'text-emerald-600' },
           { label: 'Organization', value: organization?.name || '-', icon: Building2, sub: organization?.slug || 'Current workspace', bg: 'from-blue-500/10 to-indigo-500/10', ic: 'text-blue-600' },
           { label: 'Batches', value: activeBatches, icon: Layers, sub: `${batchesCount} total`, bg: 'from-purple-500/10 to-pink-500/10', ic: 'text-purple-600' },
+          { label: 'Enrolled', value: converted, icon: GraduationCap, sub: `${convRate}% conversion`, bg: 'from-teal-500/10 to-emerald-500/10', ic: 'text-teal-600' },
           { label: 'Revenue', value: fmt(totalRevenue), icon: IndianRupee, sub: `${fmt(pendingRevenue)} pending`, bg: 'from-green-500/10 to-emerald-500/10', ic: 'text-green-600' },
           { label: 'Conv. Rate', value: `${convRate}%`, icon: TrendingUp, sub: 'Leads → Students', bg: 'from-teal-500/10 to-cyan-500/10', ic: 'text-teal-600' },
         ].map(c => (
@@ -317,7 +348,7 @@ export default function AdminDashboard() {
                     <p className="text-sm font-medium">{l.name}</p>
                     <p className="text-xs text-muted-foreground">{l.email || l.phone || '—'}</p>
 {l.referred_by && codeToName[l.referred_by] && <button onClick={() => navigate(`/leads/form-leads?employee=${codeToUserId[l.referred_by]}`)} className="text-[10px] text-emerald-600 hover:underline text-left">Collected: {codeToName[l.referred_by]}</button>}
-                    {l.assigned_to && userIdToName[l.assigned_to] && <p className="text-[10px] text-blue-600">Collected: {userIdToName[l.assigned_to]}</p>}
+                    {l.assigned_to && userIdToName[l.assigned_to] && <p className="text-[10px] text-blue-600">Assigned: {userIdToName[l.assigned_to]}</p>}
                   </div>
                   <Badge variant="outline" className="capitalize text-xs">{(l.status || 'new').replace(/_/g, ' ')}</Badge>
                 </div>

@@ -121,11 +121,13 @@ export function FormDescriptionEditor({
     emitFromEditor();
   }
 
+  const isDefaultMuted = !color || /^#6b7280$/i.test(String(color).trim());
+
   return (
-    <div className={cn("rounded-xl border border-black/10 bg-white/80 overflow-hidden", className)}>
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-black/5 bg-slate-50/90 px-2 py-1.5">
+    <div className={cn("rounded-xl border border-border bg-card overflow-hidden", className)}>
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-muted/50 px-2 py-1.5">
         <Select onValueChange={applyFontFamily}>
-          <SelectTrigger className="h-8 w-[140px] text-xs bg-white">
+          <SelectTrigger className="h-8 w-[140px] text-xs bg-background">
             <SelectValue placeholder="Font" />
           </SelectTrigger>
           <SelectContent>
@@ -137,7 +139,7 @@ export function FormDescriptionEditor({
           </SelectContent>
         </Select>
         <Select onValueChange={applyFontSize}>
-          <SelectTrigger className="h-8 w-[72px] text-xs bg-white">
+          <SelectTrigger className="h-8 w-[72px] text-xs bg-background">
             <SelectValue placeholder="Size" />
           </SelectTrigger>
           <SelectContent>
@@ -205,8 +207,11 @@ export function FormDescriptionEditor({
           aria-multiline
           contentEditable
           suppressContentEditableWarning
-          className="min-h-[96px] max-h-[240px] overflow-y-auto px-3 py-2.5 text-[15px] leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-emerald-100"
-          style={{ color, whiteSpace: "pre-wrap" }}
+          className={cn(
+            "min-h-[96px] max-h-[240px] overflow-y-auto px-3 py-2.5 text-[15px] leading-relaxed outline-none bg-background/40 focus-visible:ring-2 focus-visible:ring-emerald-500/25",
+            isDefaultMuted && "text-muted-foreground",
+          )}
+          style={isDefaultMuted ? { whiteSpace: "pre-wrap" } : { color, whiteSpace: "pre-wrap" }}
           onInput={emitFromEditor}
           onBlur={emitFromEditor}
           onPaste={(e) => {

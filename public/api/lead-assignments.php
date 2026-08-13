@@ -152,23 +152,92 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
     $input = getInput();
 
     $action = $_GET['action'] ?? 'assign';
 
+    if ($action === 'set') {
+        $leadId = trim((string) ($input['lead_id'] ?? ''));
+        $userIds = $input['user_ids'] ?? null;
+        if ($leadId === '' || !is_array($userIds)) {
+            respond(['error' => 'lead_id and user_ids[] required'], 400);
+        }
+        syncpediaAssertLeadInScope($db, $tokenData, $leadId);
+        $clean = [];
+        foreach ($userIds as $uid) {
+            $uid = trim((string) $uid);
+            if ($uid === '') {
+                continue;
+            }
+            syncpediaAssertUserInCallerOrg($db, $tokenData, $uid);
+            $clean[] = $uid;
+        }
+        leadsReplaceAssignees($db, $leadId, $clean);
+        respond([
+            'id' => $leadId,
+            'assigned_to' => $clean[0] ?? null,
+            'user_ids' => $clean,
+            'message' => 'Lead assignees updated',
+        ], 201);
+    }
+
     if ($action === 'bulk') {
         $leadIds = $input['lead_ids'] ?? [];
-        $assignTo = $input['user_id'] ?? '';
-        if (empty($leadIds) || !$assignTo) respond(['error' => 'lead_ids and user_id required'], 400);
-        syncpediaAssertUserInCallerOrg($db, $tokenData, $assignTo);
+        if (!is_array($leadIds) || $leadIds === []) {
+            respond(['error' => 'lead_ids required'], 400);
+        }
+        $multiIds = $input['user_ids'] ?? null;
+        $singleId = trim((string) ($input['user_id'] ?? ''));
 
-        foreach ($leadIds as $leadId) {
-            syncpediaAssertLeadInScope($db, $tokenData, (string) $leadId);
-            leadsSetAssignee($db, (string) $leadId, (string) $assignTo);
+        $assigneeIds = [];
+        if (is_array($multiIds) && $multiIds !== []) {
+            foreach ($multiIds as $uid) {
+                $uid = trim((string) $uid);
+                if ($uid === '') {
+                    continue;
+                }
+                syncpediaAssertUserInCallerOrg($db, $tokenData, $uid);
+                $assigneeIds[] = $uid;
+            }
+        } elseif ($singleId !== '') {
+            syncpediaAssertUserInCallerOrg($db, $tokenData, $singleId);
+            $assigneeIds = [$singleId];
+        } else {
+            respond(['error' => 'user_id or user_ids[] required'], 400);
+        }
+        if ($assigneeIds === []) {
+            respond(['error' => 'At least one assignee required'], 400);
         }
 
-        respond(['message' => count($leadIds) . ' leads assigned'], 201);
+        $ok = 0;
+        $failed = 0;
+        $errors = [];
+        foreach ($leadIds as $leadId) {
+            $leadId = trim((string) $leadId);
+            if ($leadId === '') {
+                $failed++;
+                continue;
+            }
+            try {
+                syncpediaAssertLeadInScope($db, $tokenData, $leadId);
+                leadsReplaceAssignees($db, $leadId, $assigneeIds);
+                $ok++;
+            } catch (Throwable $e) {
+                $failed++;
+                if (count($errors) < 20) {
+                    $errors[] = $leadId . ': ' . $e->getMessage();
+                }
+            }
+        }
+
+        respond([
+            'message' => "$ok leads assigned",
+            'assigned' => $ok,
+            'failed' => $failed,
+            'user_ids' => $assigneeIds,
+            'errors' => $errors,
+        ], $ok > 0 ? 201 : 400);
     }
 
     $leadId = trim((string) ($input['lead_id'] ?? ''));
@@ -179,13 +248,14 @@ if ($method === 'POST') {
     syncpediaAssertLeadInScope($db, $tokenData, $leadId);
     syncpediaAssertUserInCallerOrg($db, $tokenData, $assignTo);
 
-    leadsSetAssignee($db, $leadId, $assignTo);
+    // Single add: keep existing multi-assignees; set primary only if empty.
+    leadsSetAssignee($db, $leadId, $assignTo, false);
 
     respond(['id' => $leadId, 'message' => 'Lead assigned'], 201);
 }
 
 if ($method === 'DELETE') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
 
@@ -197,30 +267,52 @@ if ($method === 'DELETE') {
     }
     syncpediaAssertLeadInScope($db, $tokenData, (string) ($row['lead_id'] ?? ''));
 
-    trashArchiveRow($db, 'lead_assignment', 'lead_assignments', $id, $tokenData);
     $leadIdForSync = (string) ($row['lead_id'] ?? '');
     $removedUserId = trim((string) ($row['user_id'] ?? ''));
 
-    $stmt = $db->prepare("DELETE FROM lead_assignments WHERE id = ?");
-    $stmt->execute([$id]);
-
-    // Keep leads.assigned_to aligned with remaining assignments.
-    if ($leadIdForSync !== '') {
-        $leadSt = $db->prepare('SELECT assigned_to FROM leads WHERE id = ? LIMIT 1');
-        $leadSt->execute([$leadIdForSync]);
-        $leadRow = $leadSt->fetch(PDO::FETCH_ASSOC);
-        $primary = is_array($leadRow) ? trim((string) ($leadRow['assigned_to'] ?? '')) : '';
-
-        $next = $db->prepare('SELECT user_id FROM lead_assignments WHERE lead_id = ? ORDER BY created_at ASC LIMIT 1');
-        $next->execute([$leadIdForSync]);
-        $nextUser = $next->fetchColumn();
-        if ($nextUser) {
-            if ($primary === '' || ($removedUserId !== '' && $primary === $removedUserId)) {
-                $db->prepare('UPDATE leads SET assigned_to = ? WHERE id = ?')->execute([(string) $nextUser, $leadIdForSync]);
+    $ownTxn = !$db->inTransaction();
+    if ($ownTxn) {
+        $db->beginTransaction();
+    }
+    try {
+        if ($leadIdForSync !== '') {
+            $lock = $db->prepare('SELECT id, assigned_to FROM leads WHERE id = ? FOR UPDATE');
+            $lock->execute([$leadIdForSync]);
+            if (!$lock->fetch()) {
+                throw new RuntimeException('Lead not found');
             }
-        } elseif ($primary === '' || $primary === $removedUserId) {
-            $db->prepare('UPDATE leads SET assigned_to = NULL WHERE id = ?')->execute([$leadIdForSync]);
         }
+        trashArchiveRow($db, 'lead_assignment', 'lead_assignments', $id, $tokenData);
+        $db->prepare('DELETE FROM lead_assignments WHERE id = ?')->execute([$id]);
+
+        if ($leadIdForSync !== '') {
+            $leadSt = $db->prepare('SELECT assigned_to FROM leads WHERE id = ? LIMIT 1');
+            $leadSt->execute([$leadIdForSync]);
+            $leadRow = $leadSt->fetch(PDO::FETCH_ASSOC);
+            $primary = is_array($leadRow) ? trim((string) ($leadRow['assigned_to'] ?? '')) : '';
+
+            $next = $db->prepare('SELECT user_id FROM lead_assignments WHERE lead_id = ? ORDER BY created_at ASC LIMIT 1');
+            $next->execute([$leadIdForSync]);
+            $nextUser = $next->fetchColumn();
+            if ($nextUser) {
+                if ($primary === '' || ($removedUserId !== '' && $primary === $removedUserId)) {
+                    $db->prepare('UPDATE leads SET assigned_to = ? WHERE id = ?')->execute([(string) $nextUser, $leadIdForSync]);
+                }
+            } elseif ($primary === '' || $primary === $removedUserId) {
+                $db->prepare('UPDATE leads SET assigned_to = NULL WHERE id = ?')->execute([$leadIdForSync]);
+            }
+        }
+        if ($ownTxn) {
+            $db->commit();
+        }
+    } catch (Throwable $e) {
+        if ($ownTxn && $db->inTransaction()) {
+            try {
+                $db->rollBack();
+            } catch (Throwable $ignored) {
+            }
+        }
+        respond(['error' => 'Failed to remove assignment: ' . $e->getMessage()], 500);
     }
     respond(['message' => 'Assignment removed']);
 }

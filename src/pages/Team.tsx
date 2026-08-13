@@ -27,6 +27,11 @@ import {
   normalizeAppRole,
   TEAM_ROLE_GROUPS,
 } from '@/lib/roleUtils';
+import {
+  defaultManagerPages,
+  managerPagesBySection,
+  resolveManagerPagesForEdit,
+} from '@/lib/managerPageAccess';
 /** Shown for platform-level users (no tenant org) and super admins without org metadata. */
 const PLATFORM_ORG_DISPLAY_NAME = 'Syncpedia';
 
@@ -49,8 +54,8 @@ type TeamMember = {
   org_admin_email?: string | null;
   /** Last admin-set password removed — use one-time reveal on create/reset only. */
   login_password?: string | null;
-  /** Per-member page toggles (payments for sales rep, offer letters for HR). */
-  page_access?: { payments?: boolean; offer_letters?: boolean } | null;
+  /** Per-member page toggles (payments for sales rep, offer letters for HR, pages for managers). */
+  page_access?: { payments?: boolean; offer_letters?: boolean; pages?: Record<string, boolean> } | null;
 };
 
 function normalizeRole(roleKey: string) {
@@ -143,6 +148,7 @@ export default function Team() {
   const [editingMember, setEditingMember] = useState<TeamMember | null>(null);
   const [editPassword, setEditPassword] = useState('');
   const [editOpen, setEditOpen] = useState(false);
+  const [managerPagesOpen, setManagerPagesOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
   const [taskAssignTo, setTaskAssignTo] = useState<TeamMember | null>(null);
@@ -168,7 +174,7 @@ export default function Team() {
   });
   const currentLevel = getRoleLevel(currentRole);
   /** L4/L3: full roster CRUD. L2: add L1 members assigned to self only. */
-  const canManageMembers = authNorm === 'super_admin' || authNorm === 'admin';
+  const canManageMembers = authNorm === 'super_admin' || authNorm === 'admin' || authNorm === 'org';
   const canAddMembers = canManageMembers || isManagerViewer;
   /** Assign L1 members to a manager (reports_to) — Super Admin / Admin only. */
   const canAssignTeam = canManageMembers;
@@ -324,6 +330,9 @@ export default function Team() {
       page_access: {
         payments: normalizeRole(newMember.role) === 'sales_representative' ? Boolean(newMember.page_access.payments) : false,
         offer_letters: normalizeRole(newMember.role) === 'hr' ? Boolean(newMember.page_access.offer_letters) : false,
+        ...(normalizeRole(newMember.role) === 'manager'
+          ? { pages: newMember.page_access?.pages || defaultManagerPages(true) }
+          : {}),
       },
     };
     if (isL1OperationalRole(newMember.role)) {
@@ -409,11 +418,13 @@ export default function Team() {
   };
 
   const openEditMember = (member: TeamMember) => {
+    const role = normalizeRole(member.role);
     setEditingMember({
       ...member,
       page_access: {
         payments: Boolean(member.page_access?.payments),
         offer_letters: Boolean(member.page_access?.offer_letters),
+        pages: role === 'manager' ? resolveManagerPagesForEdit(member.page_access) : {},
       },
     });
     setEditPassword('');
@@ -428,7 +439,7 @@ export default function Team() {
     }
     try {
       if (isManagerViewer && !canManageMembers) {
-        // Managers may only update page-access toggles
+        // Managers may only update page-access toggles for L1
         await api.team.update(editingMember.id, {
           page_access: {
             payments: normalizeRole(editingMember.role) === 'sales_representative' ? Boolean(editingMember.page_access?.payments) : false,
@@ -436,14 +447,18 @@ export default function Team() {
           },
         });
       } else {
+        const role = normalizeRole(editingMember.role);
         const payload: Record<string, unknown> = {
           full_name: editingMember.full_name.trim(),
           email: editingMember.email.trim(),
           phone: editingMember.phone || '',
           role: editingMember.role,
           page_access: {
-            payments: normalizeRole(editingMember.role) === 'sales_representative' ? Boolean(editingMember.page_access?.payments) : false,
-            offer_letters: normalizeRole(editingMember.role) === 'hr' ? Boolean(editingMember.page_access?.offer_letters) : false,
+            payments: role === 'sales_representative' ? Boolean(editingMember.page_access?.payments) : false,
+            offer_letters: role === 'hr' ? Boolean(editingMember.page_access?.offer_letters) : false,
+            ...(role === 'manager'
+              ? { pages: editingMember.page_access?.pages || defaultManagerPages(true) }
+              : {}),
           },
         };
         if (canAssignTeam && isL1OperationalRole(editingMember.role)) {
@@ -1191,7 +1206,11 @@ export default function Team() {
                                   role: v,
                                   reports_to_id: isL1OperationalRole(v) ? p.reports_to_id : null,
                                   reports_to_name: isL1OperationalRole(v) ? p.reports_to_name : null,
-                                  page_access: { payments: false, offer_letters: false },
+                                  page_access: {
+                                    payments: false,
+                                    offer_letters: false,
+                                    pages: normalizeRole(v) === 'manager' ? defaultManagerPages(true) : {},
+                                  },
                                 }
                               : p,
                           )
@@ -1276,6 +1295,38 @@ export default function Team() {
                     />
                   </div>
                 )}
+                {normalizeRole(editingMember.role) === 'manager' && canManageMembers && (
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background px-3 py-2.5">
+                    <div className="min-w-0 pr-2">
+                      <p className="text-sm font-medium">Page access</p>
+                      <p className="text-xs text-muted-foreground">
+                        Grant which pages this manager may open. They only see pages you enable here (within your org’s enabled modules).
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => {
+                        setEditingMember((p) =>
+                          p
+                            ? {
+                                ...p,
+                                page_access: {
+                                  ...(p.page_access || {}),
+                                  pages: resolveManagerPagesForEdit(p.page_access),
+                                },
+                              }
+                            : p,
+                        );
+                        setManagerPagesOpen(true);
+                      }}
+                    >
+                      Configure pages
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1315,6 +1366,129 @@ export default function Team() {
               </Button>
               <Button className="w-full sm:w-auto" onClick={() => void handleEdit()}>Save Changes</Button>
             </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={managerPagesOpen} onOpenChange={setManagerPagesOpen}>
+        <DialogContent className="!flex max-w-[95vw] sm:max-w-lg max-h-[min(90dvh,720px)] flex-col gap-0 p-0 overflow-hidden">
+          <DialogHeader className="px-6 py-4 border-b shrink-0">
+            <DialogTitle>Manager page access</DialogTitle>
+            <p className="text-sm text-muted-foreground">
+              Toggle which pages {editingMember?.full_name || 'this manager'} can open in the CRM.
+            </p>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
+            <div className="space-y-5 pr-1 pb-1">
+              {managerPagesBySection().map(({ title, options }) => (
+                <div key={title} className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+                  <div className="space-y-2">
+                    {options.map((opt) => {
+                      const checked = Boolean(editingMember?.page_access?.pages?.[opt.key]);
+                      return (
+                        <div
+                          key={opt.key}
+                          className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2.5"
+                        >
+                          <div className="min-w-0 pr-2">
+                            <p className="text-sm font-medium">{opt.label}</p>
+                            <p className="text-xs text-muted-foreground">{opt.description}</p>
+                          </div>
+                          <Switch
+                            className="shrink-0"
+                            checked={checked}
+                            onCheckedChange={(on) =>
+                              setEditingMember((p) =>
+                                p
+                                  ? {
+                                      ...p,
+                                      page_access: {
+                                        ...(p.page_access || {}),
+                                        pages: {
+                                          ...(p.page_access?.pages || defaultManagerPages(true)),
+                                          [opt.key]: on,
+                                        },
+                                      },
+                                    }
+                                  : p,
+                              )
+                            }
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter className="px-6 py-4 border-t shrink-0 gap-2 sm:justify-between bg-background">
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setEditingMember((p) =>
+                    p
+                      ? { ...p, page_access: { ...(p.page_access || {}), pages: defaultManagerPages(true) } }
+                      : p,
+                  )
+                }
+              >
+                Enable all
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setEditingMember((p) =>
+                    p
+                      ? { ...p, page_access: { ...(p.page_access || {}), pages: defaultManagerPages(false) } }
+                      : p,
+                  )
+                }
+              >
+                Disable all
+              </Button>
+            </div>
+            <Button
+              type="button"
+              onClick={() => {
+                // Persist page grants immediately so Done does not rely only on parent Save Changes.
+                void (async () => {
+                  if (!editingMember || normalizeRole(editingMember.role) !== 'manager') {
+                    setManagerPagesOpen(false);
+                    return;
+                  }
+                  try {
+                    const pages = editingMember.page_access?.pages || defaultManagerPages(true);
+                    const page_access = {
+                      payments: false,
+                      offer_letters: false,
+                      pages,
+                    };
+                    await api.team.update(editingMember.id, { page_access });
+                    setEditingMember((p) => (p ? { ...p, page_access } : p));
+                    setTeam((prev) =>
+                      prev.map((m) => (m.id === editingMember.id ? { ...m, page_access } : m)),
+                    );
+                    toast({ title: 'Page access saved' });
+                    setManagerPagesOpen(false);
+                  } catch (err: any) {
+                    toast({
+                      variant: 'destructive',
+                      title: 'Could not save page access',
+                      description: err?.message,
+                    });
+                  }
+                })();
+              }}
+            >
+              Done
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

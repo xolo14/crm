@@ -21,6 +21,8 @@ import type { CallLog, CreateCallLogInput } from "@/types/callLog";
 export const LEAD_PIPELINE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "new", label: "New" },
   { value: "contacted", label: "Contacted" },
+  { value: "not_answered", label: "Not answered" },
+  { value: "messaged", label: "Messaged" },
   { value: "qualified", label: "Qualified" },
   { value: "interested", label: "Interested" },
   { value: "demo_scheduled", label: "Demo Scheduled" },

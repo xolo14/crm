@@ -128,7 +128,11 @@ if ($method === 'PUT') {
     $stmt = $db->prepare('UPDATE payments SET ' . implode(', ', $fields) . ' WHERE id = ?' . $of['sql']);
     $stmt->execute(array_merge($params, $of['params']));
     if ($stmt->rowCount() < 1) {
-        respond(['error' => 'Payment not found or access denied'], 404);
+        $exists = $db->prepare('SELECT 1 FROM payments p WHERE p.id = ?' . $of['sql'] . ' LIMIT 1');
+        $exists->execute(array_merge([$id], $of['params']));
+        if (!$exists->fetchColumn()) {
+            respond(['error' => 'Payment not found or access denied'], 404);
+        }
     }
     respond(['message' => 'Payment updated']);
 }

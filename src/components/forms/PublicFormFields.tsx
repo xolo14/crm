@@ -1,5 +1,6 @@
 import type { BuilderQuestion, FormSection } from "@/components/forms/formBuilderTypes";
 import { isEmailQuestion, questionFieldKey } from "@/components/forms/formBuilderTypes";
+import { PhoneNumberField } from "@/components/forms/PhoneNumberField";
 
 type Props = {
   sections: FormSection[];
@@ -269,6 +270,20 @@ function renderQuestionInput(
         type="time"
         value={value}
         onChange={(e) => onChange(key, e.target.value)}
+      />
+    );
+  }
+
+  if (q.type === "phone_number") {
+    return (
+      <PhoneNumberField
+        id={inputId}
+        value={value}
+        onChange={(v) => onChange(key, v)}
+        required={!!q.required}
+        disabled={disabled}
+        placeholder={q.description || "10-digit number"}
+        publicStyle
       />
     );
   }

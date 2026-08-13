@@ -1,38 +1,38 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import {
-  MONTHLY_HALF,
-  MONTHLY_TARGET,
-  TRAINING_TARGET,
-} from "../constants";
-import { canAdvancePhase } from "../logic";
 import { evaluateMember } from "../salaryEngine";
 import { getPhaseDayProgress } from "../phaseDays";
 import type { FresherMember } from "../types";
+import { monthlyGateAmount, resolveMemberPolicy, type FresherOrgPolicy } from "../policy";
 import { GLASS_PANEL, PHASE_ACCENTS } from "../uiTokens";
 import { useFresherSalaryStore } from "../useFresherSalaryStore";
-import { AlertTriangle, Trash2 } from "lucide-react";
-import { Month2SubChances } from "./Month2SubChances";
+import { Trash2 } from "lucide-react";
 import { PhaseInputBlock } from "./PhaseInputBlock";
 import { PhaseTimeline } from "./PhaseTimeline";
 import { SalarySummary } from "./SalarySummary";
 import { SalaryTypePill } from "./SalaryTypePill";
+import { SalaryFlowDiagram } from "./SalaryFlowDiagram";
 
 export type MemberDetailProps = {
   member: FresherMember;
+  policy: FresherOrgPolicy;
   glass?: string;
-  onRequestAdvance: () => void;
+  /** Org admin may manually override achieved amounts. */
+  canManualEdit?: boolean;
   onRequestRemove: () => void;
+  onManualSave?: (member: FresherMember) => void | Promise<void>;
 };
 
 export function MemberDetail({
   member,
+  policy,
   glass = GLASS_PANEL,
-  onRequestAdvance,
+  canManualEdit = false,
   onRequestRemove,
+  onManualSave,
 }: MemberDetailProps) {
   const fixedSalary = useFresherSalaryStore((s) => s.fixedSalaryEstimate);
   const updatePhaseData = useFresherSalaryStore((s) => s.updatePhaseData);
@@ -44,110 +44,132 @@ export function MemberDetail({
     };
 
   const dayLine = getPhaseDayProgress(member.joiningDate, member.currentPhase);
+  const terms = resolveMemberPolicy(policy, member.salaryTerms);
+  const gate = monthlyGateAmount(terms);
+  const readOnly = !canManualEdit;
 
   return (
     <>
-      <SheetHeader className="space-y-1 pr-8">
-        <SheetTitle className="text-2xl font-bold tracking-tight text-[#0f2318]">{member.name}</SheetTitle>
-        <SheetDescription className="text-sm">
+      <DialogHeader className="space-y-1 pr-8 text-left">
+        <DialogTitle className="text-2xl font-bold tracking-tight text-[#0f2318]">{member.name}</DialogTitle>
+        <DialogDescription className="text-sm">
           {member.role} · Joined {member.joiningDate}
           {dayLine ? <span className="mt-1 block text-xs text-[#0f5230]">{dayLine.label}</span> : null}
-        </SheetDescription>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Phases move automatically from the training start date. Achieved sales sync from payment links
+            {canManualEdit ? "; org admins can override amounts below." : "."}
+          </span>
+        </DialogDescription>
         <div className="flex flex-wrap gap-2 pt-2">
           <SalaryTypePill type={member.salaryType} />
           <Badge variant="secondary">{member.headlineStatus}</Badge>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="mt-3 w-fit border-destructive/40 text-destructive hover:bg-destructive/10"
-          onClick={onRequestRemove}
-        >
-          <Trash2 className="h-3.5 w-3.5 mr-2" />
-          Remove member
-        </Button>
-      </SheetHeader>
+        {canManualEdit ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-3 w-fit border-destructive/40 text-destructive hover:bg-destructive/10"
+            onClick={onRequestRemove}
+          >
+            <Trash2 className="h-3.5 w-3.5 mr-2" />
+            Remove member
+          </Button>
+        ) : null}
+      </DialogHeader>
 
-      <ScrollArea className="mt-6 h-[calc(100dvh-8rem)] pr-4">
+      <ScrollArea className="mt-4 max-h-[min(70vh,720px)] pr-3">
+        <SalaryFlowDiagram policy={terms} activePhase={member.currentPhase} compact className="mb-4" />
+
         <PhaseTimeline current={member.currentPhase} />
 
         <div className={cn(glass, "mt-4 border-border p-3 text-[11px] text-muted-foreground")}>
-          <p className="mb-1 text-xs font-semibold text-[#0f2318]">Engine snapshot</p>
+          <p className="mb-1 text-xs font-semibold text-[#0f2318]">Progress snapshot</p>
           <p className="leading-relaxed">{evaluateMember(member).summaryHeadline}</p>
         </div>
 
-        <SalarySummary member={member} fixedSalary={fixedSalary} className="mt-6" />
+        <SalarySummary
+          member={member}
+          fixedSalary={terms.fixed_salary_monthly || fixedSalary}
+          orgPolicy={policy}
+          className="mt-6"
+        />
 
-        <div className="space-y-6 mt-6">
+        <div className="mt-6 space-y-6">
           <PhaseInputBlock
-            title="Phase 1 — Training (15 days, unpaid)"
+            title={`Training (${terms.training_days} days, unpaid)`}
             accent={PHASE_ACCENTS.training}
-            target={TRAINING_TARGET}
+            target={terms.training_target}
             achieved={member.training.achieved}
+            disabled={readOnly}
             onAchieved={(v) =>
               patch(member.id)((m) => ({
                 ...m,
                 training: { ...m.training, achieved: v },
               }))
             }
-            help={`Target ₹${TRAINING_TARGET.toLocaleString("en-IN")}. Met → Month 1 fixed track; not met → performance.`}
+            help={`Target ₹${terms.training_target.toLocaleString("en-IN")}. Met → next month fixed ₹${terms.fixed_salary_monthly.toLocaleString("en-IN")}; else target-based.`}
             badge={member.training.status}
           />
 
           <PhaseInputBlock
-            title="Phase 2 — Month 1 (30 days)"
+            title="Month 1"
             accent={PHASE_ACCENTS.month1}
-            target={MONTHLY_TARGET}
+            target={gate}
             achieved={member.month1.achieved}
+            disabled={readOnly}
             onAchieved={(v) =>
               patch(member.id)((m) => ({
                 ...m,
                 month1: { ...m.month1, achieved: v },
               }))
             }
-            help={`≥ 50% (₹${MONTHLY_HALF.toLocaleString("en-IN")}) → fixed-eligible Month 2.`}
+            help={`Gate ₹${gate.toLocaleString("en-IN")} (${terms.monthly_gate_percent}% of ₹${terms.monthly_full_target.toLocaleString("en-IN")}). Met → fixed next month; miss → target-based next month.`}
             badge={member.month1.status}
           />
 
-          <Month2SubChances
-            member={member}
-            onPatch={(fn) => patch(member.id)(fn)}
-            glassClassName={glass}
+          <PhaseInputBlock
+            title="Month 2"
+            accent={PHASE_ACCENTS.month2}
+            target={gate}
+            achieved={member.month2.totalAchieved}
+            disabled={readOnly}
+            onAchieved={(v) =>
+              patch(member.id)((m) => ({
+                ...m,
+                month2: { ...m.month2, totalAchieved: v },
+              }))
+            }
+            help={`Same gate. Miss while on fixed still moves you to target-based next month.`}
+            badge={String(member.month2.status)}
           />
 
           <PhaseInputBlock
-            title="Phase 4 — Month 3 (final)"
+            title="Month 3"
             accent={PHASE_ACCENTS.month3}
-            target={MONTHLY_TARGET}
+            target={gate}
             achieved={member.month3.achieved}
+            disabled={readOnly}
             onAchieved={(v) =>
               patch(member.id)((m) => ({
                 ...m,
                 month3: { ...m.month3, achieved: v },
               }))
             }
-            help="100% → Confirmed · 70–99% → Probation · &lt;70% → Performance review."
+            help="Same rule every month through probation: achieve gate → fixed next; miss → target-based next."
             badge={member.month3.status}
           />
         </div>
 
-        {canAdvancePhase(member) && member.currentPhase !== "completed" && (
+        {canManualEdit && onManualSave ? (
           <Button
             type="button"
-            className="mt-8 w-full bg-[#2ed573] font-semibold text-[#0f2318] hover:bg-[#26c968]"
-            onClick={onRequestAdvance}
+            className="mt-8 w-full bg-[#0f5230] font-semibold text-white hover:bg-[#0c4226]"
+            onClick={() => void onManualSave(member)}
           >
-            Advance to next phase
+            Save manual overrides
           </Button>
-        )}
-
-        {!canAdvancePhase(member) && member.currentPhase !== "completed" && (
-          <p className="mt-6 flex items-center gap-2 text-xs text-amber-800">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            Advance unlocks when this phase period ends (last calendar day). Target can be met earlier; overfulfill still counts in this phase.
-          </p>
-        )}
+        ) : null}
       </ScrollArea>
     </>
   );

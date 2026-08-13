@@ -43,9 +43,15 @@ function cors() {
     syncpediaSecurityHeaders();
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
-    header('Access-Control-Allow-Origin: ' . syncpediaCorsOrigin());
+    $origin = syncpediaCorsOrigin();
+    header('Access-Control-Allow-Origin: ' . $origin);
+    // Required for HttpOnly session cookies from the SPA (origin must not be *).
+    if ($origin !== '' && $origin !== '*') {
+        header('Access-Control-Allow-Credentials: true');
+        header('Vary: Origin');
+    }
     header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Lead-Api-Key, X-Form-Api-Key, X-Assessment-Api-Key, X-Peaklyy-Api-Key, X-Cron-Key");
     header("Content-Type: application/json; charset=UTF-8");
 
     if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -53,28 +59,149 @@ function cors() {
     }
 }
 
+/** HttpOnly session cookie name (JWT). Prefer this over localStorage Bearer tokens. */
+function syncpediaAuthCookieName(): string
+{
+    return 'syncpedia_session';
+}
+
+function syncpediaIssueAuthCookie(string $token): void
+{
+    $token = trim($token);
+    if ($token === '') {
+        return;
+    }
+    $maxAge = defined('TOKEN_EXPIRY') ? max(300, (int) TOKEN_EXPIRY) : 28800;
+    $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (isset($_SERVER['SERVER_PORT']) && (string) $_SERVER['SERVER_PORT'] === '443')
+        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+    $params = [
+        'expires' => time() + $maxAge,
+        'path' => '/',
+        'httponly' => true,
+        'samesite' => 'Lax',
+        'secure' => $secure,
+    ];
+    setcookie(syncpediaAuthCookieName(), $token, $params);
+}
+
+function syncpediaClearAuthCookie(): void
+{
+    $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (isset($_SERVER['SERVER_PORT']) && (string) $_SERVER['SERVER_PORT'] === '443')
+        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+    setcookie(syncpediaAuthCookieName(), '', [
+        'expires' => time() - 3600,
+        'path' => '/',
+        'httponly' => true,
+        'samesite' => 'Lax',
+        'secure' => $secure,
+    ]);
+}
+
+/** Raw JWT from Authorization Bearer or HttpOnly session cookie. */
+function syncpediaExtractBearerOrCookieToken(): string
+{
+    $headers = getallheaders();
+    if (!is_array($headers)) {
+        $headers = [];
+    }
+    if (empty($headers['Authorization']) && empty($headers['authorization'])) {
+        if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
+            $headers['Authorization'] = $_SERVER['HTTP_AUTHORIZATION'];
+        } elseif (!empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+            $headers['Authorization'] = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+        }
+    }
+    $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? '';
+    if (preg_match('/Bearer\s+(\S+)/', $authHeader, $matches)) {
+        return trim((string) $matches[1]);
+    }
+    $cookieName = syncpediaAuthCookieName();
+    $fromCookie = trim((string) ($_COOKIE[$cookieName] ?? ''));
+    return $fromCookie;
+}
+
 function getInput() {
     return json_decode(file_get_contents('php://input'), true) ?? [];
 }
 
 function generateUUID() {
+    $bytes = random_bytes(16);
+    $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+    $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+    $hex = bin2hex($bytes);
     return sprintf(
-        '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
-        mt_rand(0, 0xffff), mt_rand(0, 0xffff),
-        mt_rand(0, 0xffff),
-        mt_rand(0, 0x0fff) | 0x4000,
-        mt_rand(0, 0x3fff) | 0x8000,
-        mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff)
+        '%s-%s-%s-%s-%s',
+        substr($hex, 0, 8),
+        substr($hex, 8, 4),
+        substr($hex, 12, 4),
+        substr($hex, 16, 4),
+        substr($hex, 20, 12)
     );
 }
 
+/** Ensure users.token_version exists (session revoke on password change / offboard). */
+function ensureUsersTokenVersionColumn(PDO $db): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'users', 'token_version')) {
+            $db->exec('ALTER TABLE users ADD COLUMN token_version INT UNSIGNED NOT NULL DEFAULT 1');
+        }
+        $done = true;
+    } catch (Throwable $e) {
+        error_log('[users] token_version column: ' . $e->getMessage());
+    }
+}
+
+function syncpediaUserTokenVersion(PDO $db, string $userId): int
+{
+    ensureUsersTokenVersionColumn($db);
+    try {
+        $st = $db->prepare('SELECT token_version FROM users WHERE id = ? LIMIT 1');
+        $st->execute([$userId]);
+        $v = $st->fetchColumn();
+        return max(1, (int) $v);
+    } catch (Throwable $e) {
+        return 1;
+    }
+}
+
+/** Invalidate all existing JWTs for this user (password change, reset, admin set password, deactivate). */
+function syncpediaBumpUserTokenVersion(PDO $db, string $userId): void
+{
+    $uid = trim($userId);
+    if ($uid === '') {
+        return;
+    }
+    ensureUsersTokenVersionColumn($db);
+    try {
+        $db->prepare('UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = ?')->execute([$uid]);
+    } catch (Throwable $e) {
+        error_log('[users] bump token_version: ' . $e->getMessage());
+    }
+}
+
 // Simple JWT implementation
-function createToken($userId, $role, $orgId = null) {
+function createToken($userId, $role, $orgId = null, ?int $tokenVersion = null) {
+    if ($tokenVersion === null) {
+        try {
+            $db = (new Database())->getConnection();
+            $tokenVersion = syncpediaUserTokenVersion($db, (string) $userId);
+        } catch (Throwable $e) {
+            $tokenVersion = 1;
+        }
+    }
     $header = base64_encode(json_encode(['alg' => 'HS256', 'typ' => 'JWT']));
     $payload = base64_encode(json_encode([
         'user_id' => $userId,
         'role' => $role,
         'org_id' => $orgId,
+        'tv' => (int) $tokenVersion,
         'exp' => time() + TOKEN_EXPIRY,
         'iat' => time(),
     ]));
@@ -109,24 +236,12 @@ if (!function_exists('getallheaders')) {
 }
 
 function verifyToken() {
-    $headers = getallheaders();
-    if (!is_array($headers)) {
-        $headers = [];
-    }
-    if (empty($headers['Authorization']) && empty($headers['authorization'])) {
-        if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
-            $headers['Authorization'] = $_SERVER['HTTP_AUTHORIZATION'];
-        } elseif (!empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
-            $headers['Authorization'] = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
-        }
-    }
-    $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? '';
-
-    if (!preg_match('/Bearer\s+(.+)/', $authHeader, $matches)) {
+    $rawToken = syncpediaExtractBearerOrCookieToken();
+    if ($rawToken === '') {
         respond(['error' => 'No token provided'], 401);
     }
 
-    $parts = explode('.', $matches[1]);
+    $parts = explode('.', $rawToken);
     if (count($parts) !== 3) {
         respond(['error' => 'Invalid token'], 401);
     }
@@ -146,27 +261,57 @@ function verifyToken() {
         respond(['error' => 'Token expired'], 401);
     }
 
-    // Reject deactivated accounts even if JWT is still within expiry.
+    // Reject deactivated / revoked sessions; always load live role/org (fail closed).
     $uid = trim((string) ($data['user_id'] ?? ''));
-    if ($uid !== '') {
+    if ($uid === '') {
+        respond(['error' => 'Invalid token payload'], 401);
+    }
+    try {
+        $db = (new Database())->getConnection();
+        ensureUsersTokenVersionColumn($db);
+        $st = $db->prepare('SELECT is_active, role, org_id, token_version FROM users WHERE id = ? LIMIT 1');
         try {
-            $db = (new Database())->getConnection();
+            $st->execute([$uid]);
+            $row = $st->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $colErr) {
+            // Pre-migration DBs without token_version yet.
             $st = $db->prepare('SELECT is_active, role, org_id FROM users WHERE id = ? LIMIT 1');
             $st->execute([$uid]);
             $row = $st->fetch(PDO::FETCH_ASSOC);
-            if (!$row || !(int) ($row['is_active'] ?? 0)) {
-                respond(['error' => 'Account is deactivated'], 401);
+            if (is_array($row)) {
+                $row['token_version'] = 1;
             }
-            // Prefer live role/org from DB over stale JWT claims.
-            if (isset($row['role']) && trim((string) $row['role']) !== '') {
-                $data['role'] = (string) $row['role'];
-            }
-            if (array_key_exists('org_id', $row)) {
-                $data['org_id'] = $row['org_id'];
-            }
-        } catch (Throwable $e) {
-            // If users table unavailable, keep JWT payload (bootstrap/migration edge).
         }
+        if (!$row || !(int) ($row['is_active'] ?? 0)) {
+            respond(['error' => 'Account is deactivated'], 401);
+        }
+        $liveTv = max(1, (int) ($row['token_version'] ?? 1));
+        $tokenTv = (int) ($data['tv'] ?? 0);
+        // Missing tv (pre-revoke JWTs) or mismatched version → force re-login.
+        if ($tokenTv !== $liveTv) {
+            respond(['error' => 'Session expired — please sign in again'], 401);
+        }
+        if (isset($row['role']) && trim((string) $row['role']) !== '') {
+            $data['role'] = (string) $row['role'];
+        }
+        // Prefer live users.org_id. For super_admin, keep JWT switch_org when DB org is empty
+        // so tenant lists (batches/courses) stay scoped to the switched organization.
+        if (array_key_exists('org_id', $row)) {
+            $dbOrg = $row['org_id'];
+            $dbOrgTrim = is_string($dbOrg) || is_numeric($dbOrg) ? trim((string) $dbOrg) : '';
+            $jwtOrgTrim = trim((string) ($data['org_id'] ?? ''));
+            $normRole = syncpediaNormalizeRoleKey((string) ($data['role'] ?? ''));
+            if ($dbOrgTrim !== '') {
+                $data['org_id'] = (string) $dbOrg;
+            } elseif ($normRole === 'super_admin' && $jwtOrgTrim !== '') {
+                $data['org_id'] = $jwtOrgTrim;
+            } else {
+                $data['org_id'] = $dbOrg;
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[verifyToken] user lookup failed: ' . $e->getMessage());
+        respond(['error' => 'Authentication temporarily unavailable'], 401);
     }
 
     if (function_exists('syncpediaSetMailContext')) {
@@ -635,8 +780,12 @@ function tenantBatchCatalogWhere(PDO $db, array $tokenData, string $batchAlias =
     if ($orgId === null || $orgId === '') {
         return ['where' => '1=0', 'params' => []];
     }
+    // Match batch org, parent course org, or legacy blank/NULL batch org on an org course.
     return [
-        'where' => "({$batchAlias}.org_id = ? OR {$courseAlias}.org_id = ?)",
+        'where' => "("
+            . "NULLIF(TRIM({$batchAlias}.org_id), '') = ?"
+            . " OR NULLIF(TRIM({$courseAlias}.org_id), '') = ?"
+            . ")",
         'params' => [$orgId, $orgId],
     ];
 }
@@ -801,8 +950,8 @@ function orgFilterLeadsTenant(PDO $db, array $tokenData, string $alias = ''): ar
     }
     $orgId = resolveCreatorOrgId($db, $tokenData);
     if (!$orgId) {
-        $col = $alias !== '' ? "{$alias}." : '';
-        return ['where' => "({$col}org_id IS NULL)", 'params' => []];
+        // Fail closed — never expose null-org / orphan leads to callers without a tenant.
+        return ['where' => '1=0', 'params' => []];
     }
     $col = $alias !== '' ? "{$alias}." : '';
     $sql = "({$col}org_id = ? OR (({$col}org_id IS NULL OR {$col}org_id = '') AND (
@@ -1200,9 +1349,10 @@ function hierarchyL1OwnLeadsScopeSql(array $tokenData, string $alias = ''): arra
         return ['sql' => ' AND 1=0', 'params' => []];
     }
     $col = $alias !== '' ? "{$alias}." : '';
+    $idCol = $alias !== '' ? "{$alias}.id" : 'id';
     return [
-        'sql' => " AND ({$col}assigned_to = ? OR {$col}referred_by = (SELECT referral_code FROM users WHERE id = ?) OR {$col}created_by = ?)",
-        'params' => [$userId, $userId, $userId],
+        'sql' => " AND ({$col}assigned_to = ? OR {$col}referred_by = (SELECT referral_code FROM users WHERE id = ?) OR {$col}created_by = ? OR EXISTS (SELECT 1 FROM lead_assignments la WHERE la.lead_id = {$idCol} AND la.user_id = ?))",
+        'params' => [$userId, $userId, $userId, $userId],
     ];
 }
 
@@ -2189,6 +2339,15 @@ function respond($data, $status = 200) {
     }
     http_response_code($status);
     header('Content-Type: application/json; charset=UTF-8');
+    $debug = defined('APP_DEBUG') && APP_DEBUG === true;
+    if (is_array($data) && !$debug) {
+        unset($data['detail'], $data['file'], $data['line'], $data['trace'], $data['exception']);
+        if (isset($data['error']) && is_string($data['error'])
+            && preg_match('/SQLSTATE|PDOException|Unknown column|Duplicate entry|mysqli_|syntax error/i', $data['error'])
+        ) {
+            $data['error'] = $status >= 500 ? 'Server error' : 'Request failed';
+        }
+    }
     $flags = JSON_UNESCAPED_UNICODE;
     if (defined('JSON_INVALID_UTF8_SUBSTITUTE')) {
         $flags |= JSON_INVALID_UTF8_SUBSTITUTE;
@@ -2218,36 +2377,195 @@ function enrollStudentRowAlreadyExists(PDO $db, string $leadId): bool {
 }
 
 /**
- * Single source of truth for lead assignment: leads.assigned_to + lead_assignments.
- * Clears other assignees, upserts the primary row, and updates the lead column.
+ * Upsert one lead_assignments row (idempotent under unique index).
+ */
+function leadsUpsertAssignmentRow(PDO $db, string $leadId, string $userId): void
+{
+    $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
+    $exists->execute([$leadId, $userId]);
+    if ($exists->fetch()) {
+        return;
+    }
+    try {
+        $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
+            ->execute([generateUUID(), $leadId, $userId]);
+    } catch (Throwable $e) {
+        if (!isMysqlDuplicateKey($e)) {
+            throw $e;
+        }
+    }
+}
+
+/**
+ * Replace the full assignee set for a lead (multi-member assign).
+ * Primary owner = first user id; empty list clears assignment.
+ *
+ * @param list<string> $userIds
+ * @throws Throwable on DB failure (callers must not swallow)
+ */
+function leadsReplaceAssignees(PDO $db, string $leadId, array $userIds): void
+{
+    $leadId = trim($leadId);
+    if ($leadId === '') {
+        throw new InvalidArgumentException('lead_id required');
+    }
+    $normalized = [];
+    foreach ($userIds as $uid) {
+        $uid = trim((string) $uid);
+        if ($uid !== '' && !isset($normalized[$uid])) {
+            $normalized[$uid] = true;
+        }
+    }
+    $ids = array_keys($normalized);
+
+    ensureLeadAssignmentsUnique($db);
+    $ownTxn = !$db->inTransaction();
+    if ($ownTxn) {
+        $db->beginTransaction();
+    }
+    try {
+        $lock = $db->prepare('SELECT id FROM leads WHERE id = ? FOR UPDATE');
+        $lock->execute([$leadId]);
+        if (!$lock->fetch()) {
+            throw new RuntimeException('Lead not found');
+        }
+        if ($ids === []) {
+            $db->prepare('UPDATE leads SET assigned_to = NULL WHERE id = ?')->execute([$leadId]);
+            $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$leadId]);
+        } else {
+            $primary = $ids[0];
+            $db->prepare('UPDATE leads SET assigned_to = ? WHERE id = ?')->execute([$primary, $leadId]);
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $del = $db->prepare("DELETE FROM lead_assignments WHERE lead_id = ? AND user_id NOT IN ($placeholders)");
+            $del->execute(array_merge([$leadId], $ids));
+            foreach ($ids as $uid) {
+                leadsUpsertAssignmentRow($db, $leadId, $uid);
+            }
+        }
+        if ($ownTxn) {
+            $db->commit();
+        }
+    } catch (Throwable $e) {
+        if ($ownTxn && $db->inTransaction()) {
+            try {
+                $db->rollBack();
+            } catch (Throwable $ignored) {
+            }
+        }
+        throw $e;
+    }
+}
+
+/**
+ * Set primary assignee. When $exclusive is true (default), replaces the full set with this one user
+ * (create / single reassign). When false, upserts the user into the multi-assign set and sets
+ * assigned_to only if currently empty (or to this user when forcing primary via exclusive).
  *
  * @throws Throwable on DB failure (callers must not swallow)
  */
-function leadsSetAssignee(PDO $db, string $leadId, ?string $userId): void
+function leadsSetAssignee(PDO $db, string $leadId, ?string $userId, bool $exclusive = true): void
 {
     $leadId = trim($leadId);
     if ($leadId === '') {
         throw new InvalidArgumentException('lead_id required');
     }
     $uid = $userId !== null ? trim($userId) : '';
-    if ($uid === '') {
-        $db->prepare('UPDATE leads SET assigned_to = NULL WHERE id = ?')->execute([$leadId]);
-        $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ?')->execute([$leadId]);
+    if ($exclusive || $uid === '') {
+        leadsReplaceAssignees($db, $leadId, $uid === '' ? [] : [$uid]);
         return;
     }
-    $db->prepare('UPDATE leads SET assigned_to = ? WHERE id = ?')->execute([$uid, $leadId]);
-    $db->prepare('DELETE FROM lead_assignments WHERE lead_id = ? AND user_id <> ?')->execute([$leadId, $uid]);
-    $exists = $db->prepare('SELECT id FROM lead_assignments WHERE lead_id = ? AND user_id = ? LIMIT 1');
-    $exists->execute([$leadId, $uid]);
-    if (!$exists->fetch()) {
-        try {
-            $db->prepare('INSERT INTO lead_assignments (id, lead_id, user_id) VALUES (?,?,?)')
-                ->execute([generateUUID(), $leadId, $uid]);
-        } catch (Throwable $e) {
-            if (!isMysqlDuplicateKey($e)) {
-                throw $e;
+
+    ensureLeadAssignmentsUnique($db);
+    $ownTxn = !$db->inTransaction();
+    if ($ownTxn) {
+        $db->beginTransaction();
+    }
+    try {
+        $lock = $db->prepare('SELECT id, assigned_to FROM leads WHERE id = ? FOR UPDATE');
+        $lock->execute([$leadId]);
+        $row = $lock->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            throw new RuntimeException('Lead not found');
+        }
+        leadsUpsertAssignmentRow($db, $leadId, $uid);
+        $primary = trim((string) ($row['assigned_to'] ?? ''));
+        if ($primary === '') {
+            $db->prepare('UPDATE leads SET assigned_to = ? WHERE id = ?')->execute([$uid, $leadId]);
+        }
+        if ($ownTxn) {
+            $db->commit();
+        }
+    } catch (Throwable $e) {
+        if ($ownTxn && $db->inTransaction()) {
+            try {
+                $db->rollBack();
+            } catch (Throwable $ignored) {
             }
         }
+        throw $e;
+    }
+}
+
+/** Best-effort UNIQUE(lead_id, user_id) so concurrent assigns cannot create duplicate rows. */
+function ensureLeadAssignmentsUnique(PDO $db): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+    try {
+        $db->exec('CREATE UNIQUE INDEX uq_lead_assignments_lead_user ON lead_assignments (lead_id, user_id)');
+    } catch (Throwable $e) {
+        error_log('[lead_assignments] unique index: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Drop/unlink student for a lead and release batch seats (clear batch_id/course_id).
+ */
+function leadsDropStudentForLead(PDO $db, string $leadId): void
+{
+    $leadId = trim($leadId);
+    if ($leadId === '') {
+        return;
+    }
+    try {
+        $db->prepare(
+            "UPDATE students
+             SET lead_id = NULL, status = 'dropped', batch_id = NULL, course_id = NULL
+             WHERE lead_id = ?",
+        )->execute([$leadId]);
+    } catch (Throwable $e) {
+        // Older schemas may lack course_id/batch_id — fall back to status unlink only.
+        try {
+            $db->prepare("UPDATE students SET lead_id = NULL, status = 'dropped' WHERE lead_id = ?")->execute([$leadId]);
+        } catch (Throwable $ignored) {
+            error_log('[students] drop for lead failed: ' . $e->getMessage());
+        }
+    }
+}
+
+/** Active linked students occupying a batch seat. */
+function studentsActiveSeatCount(PDO $db, string $batchId): int
+{
+    $batchId = trim($batchId);
+    if ($batchId === '') {
+        return 0;
+    }
+    try {
+        $st = $db->prepare(
+            "SELECT COUNT(*) FROM students
+             WHERE batch_id = ?
+               AND lead_id IS NOT NULL AND TRIM(lead_id) <> ''
+               AND LOWER(TRIM(COALESCE(status, 'active'))) NOT IN ('dropped', 'inactive', 'deleted')",
+        );
+        $st->execute([$batchId]);
+        return (int) $st->fetchColumn();
+    } catch (Throwable $e) {
+        $st = $db->prepare('SELECT COUNT(*) FROM students WHERE batch_id = ?');
+        $st->execute([$batchId]);
+        return (int) $st->fetchColumn();
     }
 }
 
@@ -2269,9 +2587,41 @@ function ensureStudentsLeadIdUnique(PDO $db): void {
     }
 }
 
+/** Who enrolled the student (team member). Safe on older DBs. */
+function ensureStudentsEnrolledByColumn(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $done = true;
+    try {
+        if (!syncpediaColumnExists($db, 'students', 'enrolled_by')) {
+            $db->exec('ALTER TABLE students ADD COLUMN enrolled_by CHAR(36) DEFAULT NULL');
+        }
+        try {
+            $db->exec('CREATE INDEX idx_students_enrolled_by ON students (enrolled_by)');
+        } catch (Throwable $ignored) {
+            /* index may already exist */
+        }
+    } catch (Throwable $e) {
+        error_log('[students] enrolled_by column: ' . $e->getMessage());
+    }
+}
+
 /** Pipeline statuses on `leads.status` (aligned with leads.php PUT). */
 function leadsAllowedStatuses(): array {
-    return ['new', 'contacted', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'];
+    return [
+        'new',
+        'contacted',
+        'not_answered',
+        'messaged',
+        'qualified',
+        'interested',
+        'demo_scheduled',
+        'demo_attended',
+        'enrolled',
+        'lost',
+    ];
 }
 
 /**
@@ -2308,19 +2658,22 @@ function leadsAssertStatusTransition(?string $fromStatus, string $toStatus): ?st
         return 'Invalid status';
     }
     if (!in_array($from, leadsAllowedStatuses(), true)) {
-        // Legacy junk in DB — treat as starting from "new" so we cannot teleport to enrolled.
+        // Legacy junk in DB — treat as starting from "new".
         $from = 'new';
     }
 
+    // Ops-friendly: forward, small rewind, lost/reopen. Enrolled only → lost (or stay).
     $allowed = [
-        'new' => ['contacted', 'qualified', 'interested', 'demo_scheduled', 'lost'],
-        'contacted' => ['new', 'qualified', 'interested', 'demo_scheduled', 'lost'],
-        'qualified' => ['contacted', 'interested', 'demo_scheduled', 'demo_attended', 'lost'],
-        'interested' => ['contacted', 'qualified', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
-        'demo_scheduled' => ['interested', 'demo_attended', 'enrolled', 'lost'],
+        'new' => ['contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
+        'contacted' => ['new', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
+        'not_answered' => ['new', 'contacted', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
+        'messaged' => ['new', 'contacted', 'not_answered', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
+        'qualified' => ['contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
+        'interested' => ['contacted', 'not_answered', 'messaged', 'qualified', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
+        'demo_scheduled' => ['interested', 'qualified', 'demo_attended', 'enrolled', 'lost', 'contacted'],
         'demo_attended' => ['demo_scheduled', 'interested', 'enrolled', 'lost'],
         'enrolled' => ['lost'],
-        'lost' => ['new', 'contacted', 'interested', 'qualified'],
+        'lost' => ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'qualified', 'demo_scheduled', 'enrolled'],
     ];
     $ok = $allowed[$from] ?? [];
     if (!in_array($to, $ok, true)) {
@@ -2453,6 +2806,10 @@ function userCanAccessStudentRow(PDO $db, array $tokenData, string $userId, stri
     if ($studentOrg !== '' && $studentOrg === $orgId) {
         return true;
     }
+    // Legacy rows with empty org_id: admins/managers in the tenant may still manage them.
+    if ($studentOrg === '' && in_array($role, ['admin', 'org', 'manager', 'super_admin'], true)) {
+        return true;
+    }
     $leadId = trim((string) ($studentRow['lead_id'] ?? ''));
     if ($leadId !== '') {
         try {
@@ -2480,47 +2837,21 @@ function userCanAccessStudentRow(PDO $db, array $tokenData, string $userId, stri
     return false;
 }
 
-/** Same idea as editing a lead from CRM: rep sees assigned/referred; admin/org same-org; manager = list scope. */
+/** Same visibility as listing a lead: if it appears in the member's Leads scope, they may update it. */
 function userCanUpdateLeadForCallLog(PDO $db, array $tokenData, string $userId, string $rawRole, array $leadRow): bool {
     $rawRole = syncpediaNormalizeRoleKey($rawRole);
     if ($rawRole === 'super_admin') {
         return true;
     }
-    if ($rawRole === 'sales_representative' || hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
-        if (($leadRow['assigned_to'] ?? '') === $userId) {
-            return true;
-        }
-        if ((string) ($leadRow['created_by'] ?? '') === $userId) {
-            return true;
-        }
-        try {
-            $rc = $db->prepare('SELECT referral_code FROM users WHERE id = ? LIMIT 1');
-            $rc->execute([$userId]);
-            $code = trim((string) ($rc->fetch()['referral_code'] ?? ''));
-            return $code !== '' && trim((string) ($leadRow['referred_by'] ?? '')) === $code;
-        } catch (Throwable $ignored) {
-            return false;
-        }
+    $leadId = trim((string) ($leadRow['id'] ?? ''));
+    if ($leadId === '') {
+        return false;
     }
-    if (in_array($rawRole, ['admin', 'org'], true)) {
-        $orgId = userEffectiveOrgId($db, $tokenData, $userId);
-        $leadOrg = trim((string) ($leadRow['org_id'] ?? ''));
+    $scope = tenantLeadsScopeSql($db, $tokenData, 'l');
+    $st = $db->prepare("SELECT l.id FROM leads l WHERE l.id = ?{$scope['sql']} LIMIT 1");
+    $st->execute(array_merge([$leadId], $scope['params']));
 
-        return $orgId !== null && $orgId !== '' && $leadOrg === $orgId;
-    }
-    if ($rawRole === 'manager') {
-        $leadId = trim((string) ($leadRow['id'] ?? ''));
-        if ($leadId === '') {
-            return false;
-        }
-        $scope = tenantLeadsScopeSql($db, $tokenData, 'l');
-        $st = $db->prepare("SELECT l.id FROM leads l WHERE l.id = ?{$scope['sql']} LIMIT 1");
-        $st->execute(array_merge([$leadId], $scope['params']));
-
-        return (bool) $st->fetch(PDO::FETCH_ASSOC);
-    }
-
-    return false;
+    return (bool) $st->fetch(PDO::FETCH_ASSOC);
 }
 
 /**
@@ -2556,19 +2887,41 @@ function leadsTryAttachStudentForEnrollment(PDO $db, array $tokenData, string $l
         }
     }
     try {
-        $ins = $db->prepare('INSERT INTO students (id, name, email, phone, college, year_of_study, lead_id, org_id, status, enrollment_date) VALUES (?,?,?,?,?,?,?,?,?,?)');
-        $ins->execute([
-            $sid,
-            $stuName,
-            $stuEmail,
-            $leadRow['phone'] ?? null,
-            $leadRow['college'] ?? null,
-            $leadRow['year_of_study'] ?? null,
-            $leadId,
-            $orgIdForStudent,
-            'active',
-            $enrollDay,
-        ]);
+        ensureStudentsEnrolledByColumn($db);
+        $enrolledBy = trim((string) ($tokenData['user_id'] ?? ''));
+        if ($enrolledBy === '') {
+            $enrolledBy = null;
+        }
+        if ($enrolledBy !== null && syncpediaColumnExists($db, 'students', 'enrolled_by')) {
+            $ins = $db->prepare('INSERT INTO students (id, name, email, phone, college, year_of_study, lead_id, org_id, status, enrollment_date, enrolled_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+            $ins->execute([
+                $sid,
+                $stuName,
+                $stuEmail,
+                $leadRow['phone'] ?? null,
+                $leadRow['college'] ?? null,
+                $leadRow['year_of_study'] ?? null,
+                $leadId,
+                $orgIdForStudent,
+                'active',
+                $enrollDay,
+                $enrolledBy,
+            ]);
+        } else {
+            $ins = $db->prepare('INSERT INTO students (id, name, email, phone, college, year_of_study, lead_id, org_id, status, enrollment_date) VALUES (?,?,?,?,?,?,?,?,?,?)');
+            $ins->execute([
+                $sid,
+                $stuName,
+                $stuEmail,
+                $leadRow['phone'] ?? null,
+                $leadRow['college'] ?? null,
+                $leadRow['year_of_study'] ?? null,
+                $leadId,
+                $orgIdForStudent,
+                'active',
+                $enrollDay,
+            ]);
+        }
     } catch (Throwable $insErr) {
         if (isMysqlDuplicateKey($insErr) && enrollStudentRowAlreadyExists($db, $leadId)) {
             return;
@@ -2629,7 +2982,20 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
     }
     $prevStatus = leadsNormalizeStatus((string) ($leadRow['status'] ?? ''));
     try {
-        $db->prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')->execute([$newStatus, $leadId]);
+        $cas = $db->prepare(
+            'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?'
+        );
+        $cas->execute([$newStatus, $leadId, (string) ($leadRow['status'] ?? $prevStatus)]);
+        if ($cas->rowCount() < 1) {
+            // Retry once with normalized prev if DB had alias (converted/etc.)
+            $cas2 = $db->prepare(
+                'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND LOWER(TRIM(status)) = ?'
+            );
+            $cas2->execute([$newStatus, $leadId, $prevStatus]);
+            if ($cas2->rowCount() < 1) {
+                return 'Lead was updated by someone else — refresh and try again';
+            }
+        }
     } catch (Throwable $e) {
         return 'Could not update lead status';
     }
@@ -2654,12 +3020,9 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
             }
             return 'Could not create student for enrollment';
         }
-    } elseif ($prevStatus === 'enrolled' || enrollStudentRowAlreadyExists($db, $leadId)) {
-        // Leaving enrolled (or cleaning stale enrolled students) via call-log status change.
-        try {
-            $db->prepare("UPDATE students SET lead_id = NULL, status = 'dropped' WHERE lead_id = ?")->execute([$leadId]);
-        } catch (Throwable $ignored) {
-        }
+    } elseif ($prevStatus === 'enrolled' || $prevStatus === 'converted') {
+        // Only drop students when leaving enrolled — never on unrelated status edits.
+        leadsDropStudentForLead($db, $leadId);
     }
 
     return null;
@@ -2752,10 +3115,10 @@ function ensureUsersPageAccessColumn(PDO $db): void {
 }
 
 /**
- * @return array{payments: bool, offer_letters: bool}
+ * @return array{payments: bool, offer_letters: bool, pages: array<string,bool>}
  */
 function userDecodePageAccess(?string $json): array {
-    $defaults = ['payments' => false, 'offer_letters' => false];
+    $defaults = ['payments' => false, 'offer_letters' => false, 'pages' => []];
     if (!is_string($json) || trim($json) === '') {
         return $defaults;
     }
@@ -2763,9 +3126,18 @@ function userDecodePageAccess(?string $json): array {
     if (!is_array($decoded)) {
         return $defaults;
     }
+    $pages = [];
+    if (isset($decoded['pages']) && is_array($decoded['pages'])) {
+        foreach ($decoded['pages'] as $k => $v) {
+            $key = is_string($k) ? trim($k) : '';
+            if ($key === '') continue;
+            $pages[$key] = !empty($v);
+        }
+    }
     return [
         'payments' => !empty($decoded['payments']),
         'offer_letters' => !empty($decoded['offer_letters']),
+        'pages' => $pages,
     ];
 }
 
@@ -2776,17 +3148,32 @@ function userAttachPageAccess(array &$user): void {
 }
 
 /**
- * Normalize page_access from Team create/update. Defaults all OFF.
- * Only relevant flags for the target role are stored as true; others forced off.
+ * Normalize page_access from Team create/update. Defaults all OFF for L1 flags.
+ * For managers, optional pages{} map stores per-page toggles.
  *
  * @param mixed $input
- * @return array{payments: bool, offer_letters: bool}
+ * @return array{payments: bool, offer_letters: bool, pages: array<string,bool>}
  */
 function userNormalizePageAccessInput($input, string $memberRole): array {
-    $access = ['payments' => false, 'offer_letters' => false];
+    $access = ['payments' => false, 'offer_letters' => false, 'pages' => []];
     if (is_array($input)) {
         $access['payments'] = !empty($input['payments']);
         $access['offer_letters'] = !empty($input['offer_letters']);
+        $pagesIn = isset($input['pages']) && is_array($input['pages']) ? $input['pages'] : null;
+        if (is_array($pagesIn)) {
+            foreach ($pagesIn as $k => $v) {
+                $key = is_string($k) ? trim($k) : '';
+                // Only reserve the nested container key; "payments" / "offer_letters" are valid manager page keys.
+                if ($key === '' || $key === 'pages') {
+                    continue;
+                }
+                // Allow snake_case feature keys only
+                if (!preg_match('/^[a-z][a-z0-9_]{0,63}$/', $key)) {
+                    continue;
+                }
+                $access['pages'][$key] = !empty($v);
+            }
+        }
     }
     $role = syncpediaNormalizeRoleKey($memberRole);
     if ($role !== 'sales_representative') {
@@ -2795,15 +3182,23 @@ function userNormalizePageAccessInput($input, string $memberRole): array {
     if ($role !== 'hr') {
         $access['offer_letters'] = false;
     }
+    if ($role !== 'manager') {
+        $access['pages'] = [];
+    }
     return $access;
 }
 
 function userSavePageAccess(PDO $db, string $userId, array $access): void {
     ensureUsersPageAccessColumn($db);
-    $json = json_encode([
+    $payload = [
         'payments' => !empty($access['payments']),
         'offer_letters' => !empty($access['offer_letters']),
-    ], JSON_UNESCAPED_UNICODE);
+    ];
+    // Always persist pages when provided (including all-false) so configured managers stay restricted.
+    if (isset($access['pages']) && is_array($access['pages'])) {
+        $payload['pages'] = $access['pages'];
+    }
+    $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
     $db->prepare('UPDATE users SET page_access_json = ? WHERE id = ?')->execute([$json, $userId]);
 }
 
@@ -3044,7 +3439,7 @@ function syncpediaGetOrCreateOrgId(PDO $db, string $actingUserId): ?string {
  */
 function resolveCreatorOrgId(PDO $db, array $tokenData): ?string {
     $tokenOrg = $tokenData['org_id'] ?? null;
-    if ($tokenOrg !== null && $tokenOrg !== '') {
+    if ($tokenOrg !== null && trim((string) $tokenOrg) !== '') {
         return (string) $tokenOrg;
     }
 
@@ -3057,6 +3452,32 @@ function resolveCreatorOrgId(PDO $db, array $tokenData): ?string {
             $dbOrg = $row['org_id'] ?? null;
             if ($dbOrg !== null && trim((string) $dbOrg) !== '') {
                 return (string) $dbOrg;
+            }
+        } catch (Throwable $e) {
+            /* fall through */
+        }
+
+        // Sales / L1 users sometimes lack users.org_id — inherit from reports_to chain.
+        try {
+            if (syncpediaColumnExists($db, 'users', 'reports_to_id')) {
+                $uid = $creatorId;
+                for ($i = 0; $i < 8; $i++) {
+                    $st = $db->prepare('SELECT org_id, reports_to_id FROM users WHERE id = ? LIMIT 1');
+                    $st->execute([$uid]);
+                    $row = $st->fetch(PDO::FETCH_ASSOC);
+                    if (!$row) {
+                        break;
+                    }
+                    $dbOrg = trim((string) ($row['org_id'] ?? ''));
+                    if ($dbOrg !== '') {
+                        return $dbOrg;
+                    }
+                    $mgr = trim((string) ($row['reports_to_id'] ?? ''));
+                    if ($mgr === '' || $mgr === $uid) {
+                        break;
+                    }
+                    $uid = $mgr;
+                }
             }
         } catch (Throwable $e) {
             /* fall through to platform fallback */
@@ -3083,8 +3504,17 @@ function batchParseScheduleDate(?string $value): ?DateTimeImmutable
     if ($value === '') {
         return null;
     }
+    $iso = substr($value, 0, 10);
+    // MySQL zero-dates and garbage must not count as a real end/start.
+    if ($iso === '' || strpos($iso, '0000-') === 0 || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $iso)) {
+        return null;
+    }
     try {
-        return new DateTimeImmutable(substr($value, 0, 10));
+        $dt = new DateTimeImmutable($iso);
+        if ($dt->format('Y-m-d') !== $iso) {
+            return null;
+        }
+        return $dt;
     } catch (Throwable $e) {
         return null;
     }
@@ -3115,6 +3545,25 @@ function batchScheduleStatus(?string $startDate, ?string $endDate, ?DateTimeImmu
     return 'upcoming';
 }
 
+/** True when batch date range overlaps the calendar month of $today. */
+function batchOverlapsMonth(?string $startDate, ?string $endDate, ?DateTimeImmutable $today = null): bool
+{
+    $today = $today ?? new DateTimeImmutable('today');
+    $monthStart = new DateTimeImmutable($today->format('Y-m-01'));
+    $monthEnd = new DateTimeImmutable($today->format('Y-m-t'));
+    $start = batchParseScheduleDate($startDate);
+    $end = batchParseScheduleDate($endDate);
+
+    if ($start === null && $end === null) {
+        return true;
+    }
+
+    $rangeStart = $start ?? $monthStart;
+    $rangeEnd = $end ?? $monthEnd;
+
+    return $rangeStart <= $monthEnd && $rangeEnd >= $monthStart;
+}
+
 /** Apply schedule-based status to listed batches and persist when changed. */
 function batchesSyncScheduleStatus(PDO $db, array &$rows): void
 {
@@ -3124,6 +3573,21 @@ function batchesSyncScheduleStatus(PDO $db, array &$rows): void
         }
         $computed = batchScheduleStatus($row['start_date'] ?? null, $row['end_date'] ?? null);
         $stored = strtolower(trim((string) ($row['status'] ?? '')));
+        // Keep explicitly active batches enrollable (do not demote on list).
+        if ($stored === 'active' && $computed !== 'active') {
+            $row['status'] = 'active';
+            continue;
+        }
+        // Repair rows wrongly marked completed because of 0000-00-00 / invalid end dates.
+        if ($stored === 'completed' && $computed === 'active') {
+            $row['status'] = 'active';
+            try {
+                $upd = $db->prepare('UPDATE batches SET status = ? WHERE id = ?');
+                $upd->execute(['active', $row['id']]);
+            } catch (Throwable $ignored) {
+            }
+            continue;
+        }
         $row['status'] = $computed;
         if ($stored !== $computed) {
             try {
@@ -3136,22 +3600,40 @@ function batchesSyncScheduleStatus(PDO $db, array &$rows): void
     unset($row);
 }
 
-/** Team lead / sales reps: list only upcoming and active batches (read-only viewers). */
+/**
+ * Sales reps (L1): show all upcoming + all active batches so they can enroll students.
+ * Completed batches (with a real past end date) are hidden.
+ */
 function batchesFilterViewerSchedule(array $tokenData, array $rows): array
 {
-    $role = strtolower(trim((string) ($tokenData['role'] ?? '')));
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     $viewerRoles = ['sales_representative'];
     if (!in_array($role, $viewerRoles, true)) {
         return $rows;
     }
 
-    return array_values(array_filter($rows, static function ($row) {
+    $today = new DateTimeImmutable('today');
+
+    return array_values(array_filter($rows, static function ($row) use ($today) {
         if (!is_array($row)) {
             return false;
         }
-        $status = batchScheduleStatus($row['start_date'] ?? null, $row['end_date'] ?? null);
+        $stored = strtolower(trim((string) ($row['status'] ?? '')));
+        if ($stored === 'active' || $stored === 'upcoming') {
+            return true;
+        }
+        $schedule = batchScheduleStatus($row['start_date'] ?? null, $row['end_date'] ?? null, $today);
+        if ($schedule === 'upcoming' || $schedule === 'active') {
+            return true;
+        }
+        // If marked completed only because end_date was invalid/missing, still show as active.
+        $end = batchParseScheduleDate($row['end_date'] ?? null);
+        $start = batchParseScheduleDate($row['start_date'] ?? null);
+        if ($end === null && $start !== null && $today >= $start) {
+            return true;
+        }
 
-        return $status === 'upcoming' || $status === 'active';
+        return false;
     }));
 }
 
@@ -3549,6 +4031,163 @@ function formLeadAttachmentAllowedMimeTypes(): array {
 }
 
 /**
+ * Store a Peaklyy assessment answer attachment under uploads/assessment_answers/.
+ *
+ * @return string Relative URL path e.g. /uploads/assessment_answers/xxx.pdf
+ */
+function savePeaklyyAnswerUpload(?array $file): string {
+    if ($file === null || !isset($file['error'])) {
+        respond(['error' => 'No file uploaded'], 400);
+    }
+    if ((int) $file['error'] === UPLOAD_ERR_NO_FILE) {
+        respond(['error' => 'No file uploaded'], 400);
+    }
+    if ((int) $file['error'] !== UPLOAD_ERR_OK) {
+        respond(['error' => 'File upload failed'], 400);
+    }
+    $tmp = $file['tmp_name'] ?? '';
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        respond(['error' => 'Invalid file upload'], 400);
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size > leadResumeMaxBytes()) {
+        respond(['error' => 'File exceeds 5MB limit'], 400);
+    }
+    $mime = '';
+    if (class_exists('finfo')) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($tmp) ?: '';
+    }
+    $allowed = array_merge(formLeadAttachmentAllowedMimeTypes(), [
+        'application/zip',
+        'application/x-zip-compressed',
+        'application/octet-stream',
+    ]);
+    if ($mime === '' || !in_array($mime, $allowed, true)) {
+        respond(['error' => 'File must be PDF, Word, image, text, or ZIP (max 5MB)'], 400);
+    }
+    $uploadParent = __DIR__ . '/../uploads/assessment_answers';
+    if (!is_dir($uploadParent)) {
+        if (!mkdir($uploadParent, 0755, true)) {
+            respond(['error' => 'Cannot create upload directory'], 500);
+        }
+    }
+    $baseDir = realpath($uploadParent);
+    if ($baseDir === false) {
+        respond(['error' => 'Upload directory unavailable'], 500);
+    }
+    $orig = basename((string) ($file['name'] ?? 'file'));
+    $orig = preg_replace('/[^a-zA-Z0-9._-]/', '_', $orig) ?: 'file';
+    $filename = uniqid('', true) . '_' . $orig;
+    $destFs = $baseDir . DIRECTORY_SEPARATOR . $filename;
+    if (!move_uploaded_file($tmp, $destFs)) {
+        respond(['error' => 'Failed to save file'], 500);
+    }
+    return '/uploads/assessment_answers/' . $filename;
+}
+
+/**
+ * Sanitize candidate name for download filenames.
+ */
+function peaklyySanitizeCandidateFileBase(string $name): string
+{
+    $name = trim($name);
+    $name = preg_replace('/\s+/u', '_', $name) ?? 'Candidate';
+    $name = preg_replace('/[^a-zA-Z0-9._-]/', '_', $name) ?? 'Candidate';
+    $name = trim($name, '._-');
+    return $name !== '' ? $name : 'Candidate';
+}
+
+/**
+ * Persist notepad answer as a .txt file (CandidateName_Q1.txt).
+ * Overwrites existing notepad path when provided.
+ *
+ * @return array{path:string,file_name:string}
+ */
+function savePeaklyyNotepadTextFile(
+    string $candidateName,
+    int $questionNumber,
+    string $text,
+    ?string $existingRelativePath = null
+): array {
+    $base = peaklyySanitizeCandidateFileBase($candidateName);
+    $q = max(1, $questionNumber);
+    $displayName = $base . '_Q' . $q . '.txt';
+
+    $uploadParent = __DIR__ . '/../uploads/assessment_answers';
+    if (!is_dir($uploadParent)) {
+        if (!mkdir($uploadParent, 0755, true)) {
+            respond(['error' => 'Cannot create upload directory'], 500);
+        }
+    }
+    $baseDir = realpath($uploadParent);
+    if ($baseDir === false) {
+        respond(['error' => 'Upload directory unavailable'], 500);
+    }
+
+    $destFs = null;
+    $relPath = null;
+    if ($existingRelativePath) {
+        $raw = $existingRelativePath[0] === '/' ? $existingRelativePath : '/' . $existingRelativePath;
+        if (strpos($raw, '/uploads/assessment_answers/') === 0 && strpos($raw, '..') === false) {
+            $candidate = $baseDir . DIRECTORY_SEPARATOR . basename($raw);
+            $resolved = realpath(dirname($candidate));
+            if ($resolved !== false && str_starts_with(str_replace('\\', '/', $resolved), str_replace('\\', '/', $baseDir))) {
+                $destFs = $baseDir . DIRECTORY_SEPARATOR . basename($raw);
+                $relPath = '/uploads/assessment_answers/' . basename($raw);
+            }
+        }
+    }
+    if ($destFs === null) {
+        $storageName = 'np_' . str_replace('.', '', uniqid('', true)) . '_' . $displayName;
+        $destFs = $baseDir . DIRECTORY_SEPARATOR . $storageName;
+        $relPath = '/uploads/assessment_answers/' . $storageName;
+    }
+
+    if (file_put_contents($destFs, $text) === false) {
+        respond(['error' => 'Failed to save notepad file'], 500);
+    }
+
+    return [
+        'path' => (string) $relPath,
+        'file_name' => $displayName,
+    ];
+}
+
+/**
+ * Resolve /uploads/... relative path to an absolute filesystem path.
+ */
+function peaklyyResolveUploadFsPath(string $rawPath): ?string
+{
+    $rawPath = trim($rawPath);
+    if ($rawPath === '') {
+        return null;
+    }
+    if ($rawPath[0] !== '/') {
+        $rawPath = '/' . $rawPath;
+    }
+    if (strpos($rawPath, '..') !== false) {
+        return null;
+    }
+    $candidates = [
+        dirname(__DIR__) . str_replace('/', DIRECTORY_SEPARATOR, $rawPath),
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . str_replace('/', DIRECTORY_SEPARATOR, substr($rawPath, strlen('/uploads'))),
+    ];
+    foreach ($candidates as $candidate) {
+        $resolved = realpath($candidate);
+        if ($resolved === false || !is_file($resolved)) {
+            continue;
+        }
+        $norm = str_replace('\\', '/', $resolved);
+        if (strpos($norm, '/uploads/') === false) {
+            continue;
+        }
+        return $resolved;
+    }
+    return null;
+}
+
+/**
  * Store a public-form attachment under uploads/form_leads/.
  *
  * @return string|null Relative URL path e.g. /uploads/form_leads/xxx.pdf
@@ -3611,6 +4250,70 @@ function ensureLeadsSourceColumnVarchar(PDO $db): void {
         /* column may already be VARCHAR */
     }
     $done = true;
+}
+
+/**
+ * leads.status was a narrow ENUM missing not_answered / messaged (and other pipeline values).
+ * Invalid ENUM writes become '' in non-strict MySQL → blank status in the UI.
+ */
+function ensureLeadsStatusColumn(PDO $db, bool $force = false): void {
+    static $done = false;
+    if ($done && !$force) {
+        return;
+    }
+    if ($force) {
+        $done = false;
+    }
+
+    $columnOk = static function (PDO $db): bool {
+        try {
+            $stmt = $db->query("SHOW COLUMNS FROM leads LIKE 'status'");
+            $col = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : false;
+            if (!$col) {
+                return false;
+            }
+            $type = strtolower((string) ($col['Type'] ?? ''));
+            // VARCHAR accepts any pipeline status; ENUM must explicitly list not_answered + messaged.
+            if (str_starts_with($type, 'varchar') || str_starts_with($type, 'char') || str_starts_with($type, 'text')) {
+                return true;
+            }
+            return str_contains($type, 'not_answered') && str_contains($type, 'messaged');
+        } catch (Throwable $e) {
+            return false;
+        }
+    };
+
+    if (!$columnOk($db)) {
+        try {
+            $db->exec("ALTER TABLE leads MODIFY COLUMN status VARCHAR(40) NOT NULL DEFAULT 'new'");
+        } catch (PDOException $e) {
+            try {
+                $db->exec(
+                    "ALTER TABLE leads MODIFY COLUMN status ENUM(
+                        'new','contacted','not_answered','messaged','qualified','interested',
+                        'demo_scheduled','demo_attended','enrolled','lost','converted','considering','not_interested'
+                    ) NOT NULL DEFAULT 'new'"
+                );
+            } catch (PDOException $e2) {
+                error_log('[leads] ensureLeadsStatusColumn ALTER failed: ' . $e2->getMessage());
+            }
+        }
+    }
+
+    try {
+        $db->exec("UPDATE leads SET status = 'new' WHERE status IS NULL OR TRIM(CAST(status AS CHAR)) = ''");
+    } catch (PDOException $e) {
+        try {
+            $db->exec("UPDATE leads SET status = 'new' WHERE status IS NULL OR status = ''");
+        } catch (PDOException $e2) {
+            /* ignore */
+        }
+    }
+
+    // Only skip future runs once the column can store the new statuses.
+    if ($columnOk($db)) {
+        $done = true;
+    }
 }
 
 /** Ensure leads.resume_path exists for public forms and CRM uploads. */
@@ -4104,6 +4807,114 @@ function deleteCallRecordingIfExists(?string $relativePath): void {
     @unlink($full);
 }
 
+/** Max bytes for manual payment proof uploads (12MB). */
+function paymentProofMaxBytes(): int
+{
+    return 12 * 1024 * 1024;
+}
+
+/** Image + PDF mime types accepted as payment proof. */
+function paymentProofAllowedMimeTypes(): array
+{
+    return [
+        'image/jpeg',
+        'image/jpg',
+        'image/pjpeg',
+        'image/png',
+        'image/gif',
+        'image/webp',
+        'image/bmp',
+        'image/x-ms-bmp',
+        'image/tiff',
+        'image/heic',
+        'image/heif',
+        'image/svg+xml',
+        'application/pdf',
+        'application/x-pdf',
+    ];
+}
+
+/**
+ * Validate and store a payment proof image/PDF under uploads/payment_proofs/.
+ *
+ * @param array|null $file Single element from $_FILES
+ * @return string|null Relative path e.g. /uploads/payment_proofs/xxx.jpg
+ */
+function savePaymentProofUpload(?array $file): ?string
+{
+    if ($file === null || !isset($file['error'])) {
+        return null;
+    }
+    if ((int) $file['error'] === UPLOAD_ERR_NO_FILE) {
+        return null;
+    }
+    if ((int) $file['error'] !== UPLOAD_ERR_OK) {
+        respond(['error' => 'Proof upload failed'], 400);
+    }
+    $tmp = $file['tmp_name'] ?? '';
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        respond(['error' => 'Invalid proof upload'], 400);
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size > paymentProofMaxBytes()) {
+        respond(['error' => 'Proof file exceeds 12MB limit'], 400);
+    }
+    $mime = '';
+    if (class_exists('finfo')) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($tmp) ?: '';
+    }
+    if ($mime === '' || !in_array(strtolower($mime), paymentProofAllowedMimeTypes(), true)) {
+        respond(['error' => 'Proof must be an image (jpg, png, gif, webp, bmp, tiff, heic, svg) or PDF'], 400);
+    }
+    $uploadParent = __DIR__ . '/../uploads/payment_proofs';
+    if (!is_dir($uploadParent)) {
+        if (!mkdir($uploadParent, 0755, true)) {
+            respond(['error' => 'Cannot create upload directory'], 500);
+        }
+    }
+    $baseDir = realpath($uploadParent);
+    if ($baseDir === false) {
+        respond(['error' => 'Upload directory unavailable'], 500);
+    }
+    $orig = basename((string) ($file['name'] ?? 'proof'));
+    $orig = preg_replace('/[^a-zA-Z0-9._-]/', '_', $orig) ?: 'proof';
+    $filename = uniqid('mp_', true) . '_' . $orig;
+    $destFs = $baseDir . DIRECTORY_SEPARATOR . $filename;
+    if (!move_uploaded_file($tmp, $destFs)) {
+        respond(['error' => 'Failed to save proof file'], 500);
+    }
+    return '/uploads/payment_proofs/' . $filename;
+}
+
+/** Remove a stored payment proof (safe path under uploads/payment_proofs/). */
+function deletePaymentProofIfExists(?string $relativePath): void
+{
+    if ($relativePath === null || $relativePath === '') {
+        return;
+    }
+    $rel = str_replace('\\', '/', $relativePath);
+    $rel = ltrim($rel, '/');
+    if ($rel === '' || strpos($rel, '..') !== false) {
+        return;
+    }
+    $uploadRoot = realpath(__DIR__ . '/../uploads/payment_proofs');
+    if ($uploadRoot === false) {
+        return;
+    }
+    $candidate = __DIR__ . '/../' . str_replace('/', DIRECTORY_SEPARATOR, $rel);
+    $full = realpath($candidate);
+    if ($full === false || !is_file($full)) {
+        return;
+    }
+    $uploadRootNorm = str_replace('\\', '/', $uploadRoot);
+    $fullNorm = str_replace('\\', '/', $full);
+    if (strpos($fullNorm, rtrim($uploadRootNorm, '/')) !== 0) {
+        return;
+    }
+    @unlink($full);
+}
+
 /**
  * Referral code format SP-{FIRSTNAME}-{4 digits}, unique in users.referral_code.
  */
@@ -4391,6 +5202,457 @@ function fresherEffectivePaymentPhaseKey(?array $trackerPayload, ?array $calenda
         return $trackerKey;
     }
     return $trackerKey;
+}
+
+/** Default org fresher salary + incentive policy (matches B2C spreadsheet). */
+function fresherDefaultIncentiveTiers(): array {
+    return [
+        ['threshold' => 0, 'rate_percent' => 2],
+        ['threshold' => 80000, 'rate_percent' => 4],
+        ['threshold' => 120000, 'rate_percent' => 8],
+        ['threshold' => 160000, 'rate_percent' => 12],
+        ['threshold' => 200000, 'rate_percent' => 14],
+    ];
+}
+
+function fresherNormalizeIncentiveTiers($raw): array {
+    $defaults = fresherDefaultIncentiveTiers();
+    if (!is_array($raw) || count($raw) === 0) {
+        return $defaults;
+    }
+    $parsed = [];
+    foreach ($raw as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $threshold = (int) max(0, round((float) ($row['threshold'] ?? $row['min_collected'] ?? 0)));
+        $rate = (float) ($row['rate_percent'] ?? $row['rate'] ?? 0);
+        $rate = max(0, min(100, $rate));
+        $parsed[] = ['threshold' => $threshold, 'rate_percent' => $rate];
+    }
+    if (count($parsed) === 0) {
+        return $defaults;
+    }
+    usort($parsed, static function ($a, $b) {
+        return $a['threshold'] <=> $b['threshold'];
+    });
+    if ((int) ($parsed[0]['threshold'] ?? -1) !== 0) {
+        array_unshift($parsed, ['threshold' => 0, 'rate_percent' => (float) ($defaults[0]['rate_percent'] ?? 2)]);
+    }
+    $byTh = [];
+    foreach ($parsed as $t) {
+        $byTh[(int) $t['threshold']] = $t;
+    }
+    ksort($byTh, SORT_NUMERIC);
+    return array_values($byTh);
+}
+
+function fresherDefaultPolicy(): array {
+    return [
+        'training_days' => 15,
+        'training_target' => 30000,
+        'month_days' => 30,
+        'monthly_full_target' => 160000,
+        'monthly_gate_percent' => 50,
+        'fixed_salary_monthly' => 15000,
+        'probation_months' => 3,
+        'incentive_tiers' => fresherDefaultIncentiveTiers(),
+    ];
+}
+
+function fresherNormalizePolicy($raw): array {
+    $d = fresherDefaultPolicy();
+    if (!is_array($raw)) {
+        return $d;
+    }
+    $out = $d;
+    foreach ($d as $k => $fallback) {
+        if ($k === 'incentive_tiers') {
+            continue;
+        }
+        if (!array_key_exists($k, $raw)) {
+            continue;
+        }
+        $n = (int) round((float) $raw[$k]);
+        if ($k === 'monthly_gate_percent') {
+            $n = max(0, min(100, $n));
+        } elseif ($k === 'probation_months') {
+            $n = max(1, min(12, $n));
+        } elseif (in_array($k, ['training_days', 'month_days'], true)) {
+            $n = max(1, $n);
+        } else {
+            $n = max(0, $n);
+        }
+        $out[$k] = $n;
+    }
+    $out['incentive_tiers'] = fresherNormalizeIncentiveTiers($raw['incentive_tiers'] ?? null);
+    return $out;
+}
+
+function fresherMonthlyGateAmount(array $policy): int {
+    $pct = (int) ($policy['monthly_gate_percent'] ?? 50);
+    $full = (int) ($policy['monthly_full_target'] ?? 160000);
+    return (int) round($full * (max(0, min(100, $pct)) / 100));
+}
+
+function fresherEnsurePolicyTable(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS fresher_salary_policy (
+          org_id CHAR(36) NOT NULL,
+          payload TEXT NOT NULL,
+          updated_by CHAR(36) DEFAULT NULL,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (org_id)
+        )
+    ");
+    $done = true;
+}
+
+function fresherLoadOrgPolicy(PDO $db, ?string $orgId): array {
+    fresherEnsurePolicyTable($db);
+    $orgId = trim((string) $orgId);
+    if ($orgId === '') {
+        return fresherDefaultPolicy();
+    }
+    $st = $db->prepare('SELECT payload FROM fresher_salary_policy WHERE org_id = ? LIMIT 1');
+    $st->execute([$orgId]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$row || empty($row['payload'])) {
+        return fresherDefaultPolicy();
+    }
+    $j = json_decode((string) $row['payload'], true);
+    return fresherNormalizePolicy(is_array($j) ? $j : null);
+}
+
+function fresherSaveOrgPolicy(PDO $db, string $orgId, array $policy, ?string $updatedBy): array {
+    fresherEnsurePolicyTable($db);
+    $norm = fresherNormalizePolicy($policy);
+    $payload = json_encode($norm, JSON_UNESCAPED_UNICODE);
+    $orgId = trim($orgId);
+    // MySQL upsert
+    try {
+        $st = $db->prepare('
+            INSERT INTO fresher_salary_policy (org_id, payload, updated_by, updated_at)
+            VALUES (?, ?, ?, NOW())
+            ON DUPLICATE KEY UPDATE payload = VALUES(payload), updated_by = VALUES(updated_by), updated_at = NOW()
+        ');
+        $st->execute([$orgId, $payload, $updatedBy]);
+    } catch (Throwable $e) {
+        $st = $db->prepare('DELETE FROM fresher_salary_policy WHERE org_id = ?');
+        $st->execute([$orgId]);
+        $st = $db->prepare('INSERT INTO fresher_salary_policy (org_id, payload, updated_by) VALUES (?, ?, ?)');
+        $st->execute([$orgId, $payload, $updatedBy]);
+    }
+    return $norm;
+}
+
+/**
+ * Calendar phase using org policy day lengths.
+ *
+ * @return array{phase_key:string,label:string,window_start:?string,window_end_exclusive:?string,target_rupees:int}|null
+ */
+function fresherComputePhaseFromJoinPolicy(?string $joinYmd, array $policy): ?array {
+    if ($joinYmd === null || trim($joinYmd) === '') {
+        return null;
+    }
+    $joinYmd = substr(preg_replace('/[^0-9\-]/', '', (string) $joinYmd), 0, 10);
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $joinYmd)) {
+        return null;
+    }
+    $policy = fresherNormalizePolicy($policy);
+    $td = (int) $policy['training_days'];
+    $md = (int) $policy['month_days'];
+    $pm = (int) $policy['probation_months'];
+    $trainT = (int) $policy['training_target'];
+    $gate = fresherMonthlyGateAmount($policy);
+    try {
+        $join = new DateTimeImmutable($joinYmd . 'T00:00:00Z');
+    } catch (Throwable $e) {
+        return null;
+    }
+    $today = (new DateTimeImmutable('now', new DateTimeZone('UTC')))->setTime(0, 0, 0);
+    if ($today < $join) {
+        return [
+            'phase_key' => 'pre_join',
+            'label' => 'Training (upcoming)',
+            'window_start' => $join->format('Y-m-d'),
+            'window_end_exclusive' => $join->modify('+' . $td . ' days')->format('Y-m-d'),
+            'target_rupees' => $trainT,
+        ];
+    }
+    $cursor = $join;
+    $trainEnd = $join->modify('+' . $td . ' days');
+    if ($today < $trainEnd) {
+        return [
+            'phase_key' => 'training',
+            'label' => 'Training (' . $td . ' days)',
+            'window_start' => $cursor->format('Y-m-d'),
+            'window_end_exclusive' => $trainEnd->format('Y-m-d'),
+            'target_rupees' => $trainT,
+        ];
+    }
+    $cursor = $trainEnd;
+    for ($i = 1; $i <= $pm; $i++) {
+        $end = $cursor->modify('+' . $md . ' days');
+        if ($today < $end) {
+            return [
+                'phase_key' => 'month' . $i,
+                'label' => 'Month ' . $i,
+                'window_start' => $cursor->format('Y-m-d'),
+                'window_end_exclusive' => $end->format('Y-m-d'),
+                'target_rupees' => $gate,
+            ];
+        }
+        $cursor = $end;
+    }
+    return [
+        'phase_key' => 'completed',
+        'label' => 'Program completed',
+        'window_start' => null,
+        'window_end_exclusive' => null,
+        'target_rupees' => 0,
+    ];
+}
+
+function fresherPhaseWindowByKeyPolicy(string $joinYmd, string $phaseKey, array $policy): ?array {
+    $policy = fresherNormalizePolicy($policy);
+    $td = (int) $policy['training_days'];
+    $md = (int) $policy['month_days'];
+    $pm = (int) $policy['probation_months'];
+    $trainT = (int) $policy['training_target'];
+    $gate = fresherMonthlyGateAmount($policy);
+    try {
+        $join = new DateTimeImmutable($joinYmd . 'T00:00:00Z');
+    } catch (Throwable $e) {
+        return null;
+    }
+    if ($phaseKey === 'pre_join' || $phaseKey === 'training') {
+        return [
+            'phase_key' => $phaseKey === 'pre_join' ? 'pre_join' : 'training',
+            'label' => $phaseKey === 'pre_join' ? 'Training (upcoming)' : ('Training (' . $td . ' days)'),
+            'window_start' => $join->format('Y-m-d'),
+            'window_end_exclusive' => $join->modify('+' . $td . ' days')->format('Y-m-d'),
+            'target_rupees' => $trainT,
+        ];
+    }
+    if ($phaseKey === 'completed') {
+        return [
+            'phase_key' => 'completed',
+            'label' => 'Program completed',
+            'window_start' => null,
+            'window_end_exclusive' => null,
+            'target_rupees' => 0,
+        ];
+    }
+    if (preg_match('/^month(\d+)$/', $phaseKey, $m)) {
+        $idx = (int) $m[1];
+        if ($idx < 1 || $idx > max($pm, 3)) {
+            return null;
+        }
+        $cursor = $join->modify('+' . $td . ' days');
+        for ($i = 1; $i < $idx; $i++) {
+            $cursor = $cursor->modify('+' . $md . ' days');
+        }
+        $end = $cursor->modify('+' . $md . ' days');
+        return [
+            'phase_key' => 'month' . $idx,
+            'label' => 'Month ' . $idx,
+            'window_start' => $cursor->format('Y-m-d'),
+            'window_end_exclusive' => $end->format('Y-m-d'),
+            'target_rupees' => $gate,
+        ];
+    }
+    return null;
+}
+
+/** Sum payment_links.amount_paid (paise→INR) for salesperson in [start, endExclusive). */
+function fresherSumPaymentLinksInWindow(
+    PDO $db,
+    string $traineeUserId,
+    ?string $orgId,
+    ?string $windowStart,
+    ?string $windowEndExclusive
+): float {
+    $traineeUserId = trim($traineeUserId);
+    if ($traineeUserId === '' || $windowStart === null || $windowStart === '') {
+        return 0.0;
+    }
+    $sql = "SELECT COALESCE(SUM(amount_paid), 0) FROM payment_links
+            WHERE salesperson_id = ?
+              AND amount_paid > 0
+              AND status IN ('paid','partially_paid')
+              AND created_at >= ?";
+    $params = [$traineeUserId, $windowStart . ' 00:00:00'];
+    if ($windowEndExclusive !== null && $windowEndExclusive !== '') {
+        $sql .= ' AND created_at < ?';
+        $params[] = $windowEndExclusive . ' 00:00:00';
+    }
+    if ($orgId !== null && trim($orgId) !== '') {
+        $sql .= ' AND org_id = ?';
+        $params[] = trim($orgId);
+    }
+    try {
+        $st = $db->prepare($sql);
+        $st->execute($params);
+        $paise = (float) $st->fetchColumn();
+        return round($paise / 100, 2);
+    } catch (Throwable $e) {
+        return 0.0;
+    }
+}
+
+/**
+ * Auto-move phase from join date + fill achieved from payment links.
+ * Manual achieved overrides (admin) are kept when payload.manual_overrides[phase]=true.
+ *
+ * @return array updated payload
+ */
+function fresherAutoSyncMemberPayload(PDO $db, array $payload, array $policy, ?string $orgId): array {
+    $policy = fresherNormalizePolicy($policy);
+    $join = substr(trim((string) ($payload['joiningDate'] ?? '')), 0, 10);
+    $tid = trim((string) ($payload['trainee_user_id'] ?? ''));
+    if ($join === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $join)) {
+        return $payload;
+    }
+
+    $overrides = is_array($payload['manual_overrides'] ?? null) ? $payload['manual_overrides'] : [];
+    $cal = fresherComputePhaseFromJoinPolicy($join, $policy);
+    if ($cal === null) {
+        return $payload;
+    }
+
+    $trainWin = fresherPhaseWindowByKeyPolicy($join, 'training', $policy);
+    $m1Win = fresherPhaseWindowByKeyPolicy($join, 'month1', $policy);
+    $m2Win = fresherPhaseWindowByKeyPolicy($join, 'month2', $policy);
+    $m3Win = fresherPhaseWindowByKeyPolicy($join, 'month3', $policy);
+
+    $sum = function (?array $win) use ($db, $tid, $orgId): float {
+        if (!$win || empty($win['window_start'])) {
+            return 0.0;
+        }
+        if ($tid === '') {
+            return 0.0;
+        }
+        return fresherSumPaymentLinksInWindow(
+            $db,
+            $tid,
+            $orgId,
+            (string) $win['window_start'],
+            isset($win['window_end_exclusive']) ? (string) $win['window_end_exclusive'] : null
+        );
+    };
+
+    $trainT = (int) $policy['training_target'];
+    $gate = fresherMonthlyGateAmount($policy);
+    $full = (int) $policy['monthly_full_target'];
+
+    if (empty($overrides['training'])) {
+        $payload['training']['achieved'] = $sum($trainWin);
+    }
+    $payload['training']['target'] = $trainT;
+    $payload['training']['isPaid'] = false;
+    $achT = (float) ($payload['training']['achieved'] ?? 0);
+    $payload['training']['status'] = $achT <= 0 ? 'pending' : ($achT >= $trainT ? 'passed' : 'failed');
+
+    if (empty($overrides['month1'])) {
+        $payload['month1']['achieved'] = $sum($m1Win);
+    }
+    $payload['month1']['target'] = $full;
+    $ach1 = (float) ($payload['month1']['achieved'] ?? 0);
+    $payload['month1']['status'] = $ach1 <= 0 ? 'pending' : ($ach1 >= $gate ? 'fixed_eligible' : 'performance');
+
+    if (empty($overrides['month2'])) {
+        $payload['month2']['totalAchieved'] = $sum($m2Win);
+    }
+    $ach2 = (float) ($payload['month2']['totalAchieved'] ?? 0);
+    if (!isset($payload['month2']['first10Days']) || !is_array($payload['month2']['first10Days'])) {
+        $payload['month2']['first10Days'] = ['achieved' => 0, 'target' => $gate, 'status' => 'pending'];
+    }
+    if (!isset($payload['month2']['next15Days']) || !is_array($payload['month2']['next15Days'])) {
+        $payload['month2']['next15Days'] = ['achieved' => 0, 'target' => $gate, 'status' => 'pending'];
+    }
+    $payload['month2']['status'] = $ach2 <= 0 ? 'pending' : ($ach2 >= $gate ? 'full_fixed' : 'target_based');
+
+    if (empty($overrides['month3'])) {
+        $payload['month3']['achieved'] = $sum($m3Win);
+    }
+    $payload['month3']['target'] = $full;
+    $ach3 = (float) ($payload['month3']['achieved'] ?? 0);
+    $payload['month3']['status'] = $ach3 <= 0 ? 'pending' : ($ach3 >= $gate ? 'confirmed' : 'performance');
+
+    // Auto phase from calendar (map monthN > 3 to month3 storage key when needed).
+    $phaseKey = (string) ($cal['phase_key'] ?? 'training');
+    if ($phaseKey === 'pre_join') {
+        $phaseKey = 'training';
+    }
+    if (preg_match('/^month(\d+)$/', $phaseKey, $mm)) {
+        $n = (int) $mm[1];
+        if ($n >= 3) {
+            $phaseKey = $n > 3 ? 'completed' : 'month3';
+            // If still in month 3 of a longer probation, keep month3.
+            if ($n === 3) {
+                $phaseKey = 'month3';
+            } elseif ($n > 3 && $n <= (int) $policy['probation_months']) {
+                // Store extra months' progress on month3 bucket for display; phase label from calendar.
+                $phaseKey = 'month3';
+            }
+        }
+    }
+    if ($phaseKey === 'completed' || ($cal['phase_key'] ?? '') === 'completed') {
+        $payload['currentPhase'] = 'completed';
+    } elseif (in_array($phaseKey, ['training', 'month1', 'month2', 'month3'], true)) {
+        $payload['currentPhase'] = $phaseKey;
+    } else {
+        $payload['currentPhase'] = 'training';
+    }
+
+    // Salary type for current month = outcome of previous phase only.
+    // Hit gate → fixed next month; miss gate (even from fixed) → target_based next month.
+    $salaryType = 'performance';
+    $cur = (string) $payload['currentPhase'];
+    if ($cur === 'training') {
+        $salaryType = 'performance';
+    } elseif ($cur === 'month1') {
+        $salaryType = $payload['training']['status'] === 'passed' ? 'fixed' : 'target_based';
+    } elseif ($cur === 'month2') {
+        $salaryType = $payload['month1']['status'] === 'fixed_eligible' ? 'fixed' : 'target_based';
+    } elseif ($cur === 'month3' || $cur === 'completed') {
+        $salaryType = in_array((string) ($payload['month2']['status'] ?? ''), ['full_fixed', 'fixed_eligible_month3'], true)
+            ? 'fixed'
+            : 'target_based';
+    }
+    $payload['salaryType'] = $salaryType;
+
+    $label = (string) ($cal['label'] ?? $cur);
+    $tgt = (int) ($cal['target_rupees'] ?? 0);
+    $achNow = 0.0;
+    if ($cur === 'training') {
+        $achNow = (float) ($payload['training']['achieved'] ?? 0);
+    } elseif ($cur === 'month1') {
+        $achNow = (float) ($payload['month1']['achieved'] ?? 0);
+    } elseif ($cur === 'month2') {
+        $achNow = (float) ($payload['month2']['totalAchieved'] ?? 0);
+    } elseif ($cur === 'month3') {
+        $achNow = (float) ($payload['month3']['achieved'] ?? 0);
+    }
+    $payload['headlineStatus'] = $label . ' · ' . ($salaryType === 'fixed' ? 'Fixed salary track' : 'Target-based')
+        . ' · Achieved ₹' . number_format($achNow, 0, '.', ',')
+        . ' / ₹' . number_format($tgt, 0, '.', ',')
+        . ' (from payment links)';
+    $payload['calendar_phase_key'] = (string) ($cal['phase_key'] ?? $cur);
+    $payload['calendar_label'] = $label;
+    $payload['policy_snapshot'] = [
+        'training_target' => $trainT,
+        'monthly_gate' => $gate,
+        'monthly_full_target' => $full,
+        'fixed_salary_monthly' => (int) $policy['fixed_salary_monthly'],
+    ];
+
+    return $payload;
 }
 
 /**

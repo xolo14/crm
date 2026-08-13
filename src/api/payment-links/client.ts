@@ -14,6 +14,7 @@ export function paymentLinksUrl(
     | "create"
     | "fetch"
     | "cancel"
+    | "delete"
     | "remind"
     | "send_email"
     | "send_form_link"
@@ -41,14 +42,9 @@ export function paymentLinksUrl(
 }
 
 function authHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {
+  return {
     "Content-Type": "application/json",
   };
-  const token = localStorage.getItem("auth_token");
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
 }
 
 export function paymentLinksFetchInit(
@@ -56,6 +52,7 @@ export function paymentLinksFetchInit(
 ): RequestInit {
   return {
     cache: "no-store",
+    credentials: "include",
     ...options,
     headers: {
       Accept: "application/json",

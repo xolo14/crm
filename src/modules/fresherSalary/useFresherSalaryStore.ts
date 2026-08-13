@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ZUSTAND_STORAGE_KEY } from './constants';
+import type { FresherOrgPolicy } from './policy';
 import type { FresherMember } from './types';
 import {
   advancePhase as advancePhaseEngine,
@@ -14,7 +15,14 @@ type FresherSalaryState = {
   fixedSalaryEstimate: number;
   /** Replace roster from server GET (org-scoped). */
   hydrateMembers: (members: FresherMember[]) => void;
-  addMember: (name: string, role: string, joiningDate: string, email?: string | null, traineeUserId?: string | null) => void;
+  addMember: (
+    name: string,
+    role: string,
+    joiningDate: string,
+    email?: string | null,
+    traineeUserId?: string | null,
+    salaryTerms?: FresherOrgPolicy | null,
+  ) => void;
   updatePhaseData: (id: string, patch: (m: FresherMember) => FresherMember) => void;
   /** Returns false if validation fails (no achieved entered for current phase). */
   advancePhase: (id: string) => { ok: true; member: FresherMember } | { ok: false; reason: string };
@@ -30,8 +38,8 @@ export const useFresherSalaryStore = create<FresherSalaryState>()(
 
       hydrateMembers: (members) => set({ members: Array.isArray(members) ? members : [] }),
 
-      addMember: (name, role, joiningDate, email, traineeUserId) => {
-        const nm = createNewMember(name, role, joiningDate, email, traineeUserId);
+      addMember: (name, role, joiningDate, email, traineeUserId, salaryTerms) => {
+        const nm = createNewMember(name, role, joiningDate, email, traineeUserId, salaryTerms);
         set((s) => ({ members: [...s.members, nm] }));
       },
 

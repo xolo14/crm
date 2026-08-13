@@ -10,6 +10,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'health') {
 }
 
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/org_razorpay_service.php';
 require_once __DIR__ . '/razorpay_service.php';
 require_once __DIR__ . '/payment_link_store.php';
 require_once __DIR__ . '/payment_link_receipt.php';
@@ -57,6 +58,9 @@ function paymentLinksParseRoute(): array
     if ($sub === 'remind') {
         return ['action' => 'remind', 'id' => $linkId];
     }
+    if ($sub === 'delete') {
+        return ['action' => 'delete', 'id' => $linkId];
+    }
 
     return ['action' => 'fetch', 'id' => $linkId];
 }
@@ -80,11 +84,35 @@ function handlePaymentLinksWebhook(): void
     $raw = file_get_contents('php://input') ?: '';
     $signature = $_SERVER['HTTP_X_RAZORPAY_SIGNATURE'] ?? '';
 
-    if (!razorpayVerifyWebhookSignature($raw, $signature)) {
+    $preferredSecret = null;
+    $eventPreview = json_decode($raw, true);
+    if (is_array($eventPreview)) {
+        $payload = is_array($eventPreview['payload'] ?? null) ? $eventPreview['payload'] : [];
+        $plinkWrap = $payload['payment_link'] ?? null;
+        $plinkEntity = is_array($plinkWrap) && is_array($plinkWrap['entity'] ?? null)
+            ? $plinkWrap['entity']
+            : (is_array($plinkWrap) ? $plinkWrap : null);
+        $plinkId = is_array($plinkEntity) ? trim((string) ($plinkEntity['id'] ?? '')) : '';
+        if ($plinkId !== '') {
+            try {
+                $db = (new Database())->getConnection();
+                $preferredSecret = razorpayWebhookSecretForPaymentLinkId($db, $plinkId);
+                $row = paymentLinkFindByRazorpayId($plinkId);
+                $orgId = is_array($row) ? trim((string) ($row['org_id'] ?? '')) : '';
+                if ($orgId !== '') {
+                    razorpayUseOrgOrPlatform($db, $orgId);
+                }
+            } catch (Throwable $e) {
+                error_log('[RAZORPAY WEBHOOK] org secret lookup: ' . $e->getMessage());
+            }
+        }
+    }
+
+    if (!razorpayVerifyWebhookSignature($raw, $signature, $preferredSecret)) {
         paymentLinksError('Invalid webhook signature', 400);
     }
 
-    $event = json_decode($raw, true);
+    $event = is_array($eventPreview) ? $eventPreview : json_decode($raw, true);
     if (!is_array($event)) {
         paymentLinksError('Invalid JSON', 400);
     }
@@ -461,8 +489,30 @@ function handleSendPaidFormLinkEmail(array $tokenData): void
     ]);
 }
 
+function paymentLinksActivateRazorpayForCaller(array $tokenData, ?string $plinkId = null): void
+{
+    $db = paymentLinksDb();
+    $orgId = null;
+    if ($plinkId !== null && trim($plinkId) !== '') {
+        $row = paymentLinkFindByRazorpayId(trim($plinkId));
+        if (is_array($row)) {
+            $orgId = trim((string) ($row['org_id'] ?? '')) ?: null;
+        }
+    }
+    if ($orgId === null || $orgId === '') {
+        $orgId = resolveCreatorOrgId($db, $tokenData);
+    }
+    if (!razorpayUseOrgOrPlatform($db, is_string($orgId) ? $orgId : null)) {
+        paymentLinksError(
+            'Razorpay is not configured for this organization. Org admin: Settings → Razorpay Setup.',
+            503,
+        );
+    }
+}
+
 function handleCreateStandardPaymentLink(array $tokenData): void
 {
+    paymentLinksActivateRazorpayForCaller($tokenData);
     $body = getInput();
     $errors = [];
 
@@ -512,6 +562,11 @@ function handleCreateStandardPaymentLink(array $tokenData): void
     if ($refCode !== '') {
         $userNotes['crm_referral'] = $refCode;
     }
+    $writeOrg = resolveCreatorOrgId(paymentLinksDb(), $tokenData);
+    if (is_string($writeOrg) && $writeOrg !== '') {
+        $userNotes['org_id'] = $writeOrg;
+        $userNotes['crm_org_id'] = $writeOrg;
+    }
 
     try {
         $link = razorpayCreateStandardPaymentLink([
@@ -538,10 +593,19 @@ function handleCreateStandardPaymentLink(array $tokenData): void
         try {
             $persisted = paymentLinkPersistOnCreate($link, $body, $tokenData);
             if ($persisted === null) {
-                error_log('[payment-links] persist on create returned null for ' . ($link['id'] ?? ''));
+                throw new RuntimeException('CRM persistence returned no payment link record');
             }
         } catch (Throwable $e) {
+            $linkId = trim((string) ($link['id'] ?? ''));
+            if ($linkId !== '') {
+                try {
+                    razorpayCancelPaymentLink($linkId);
+                } catch (Throwable $cancelError) {
+                    error_log('[payment-links] cancel after persistence failure for ' . $linkId . ': ' . $cancelError->getMessage());
+                }
+            }
             error_log('[payment-links] persist on create: ' . $e->getMessage());
+            paymentLinksError('Payment link was created but CRM persistence failed. The payment link was cancelled when possible; please retry.', 500);
         }
         paymentLinksSuccess($link, 201);
     } catch (Throwable $e) {
@@ -598,7 +662,7 @@ try {
                         status, invoice_number, invoice_sent_at, invoice_sent_for_amount_paid,
                         (invoice_pdf_path IS NOT NULL AND invoice_pdf_path != "") AS has_invoice,
                         salesperson_id, salesperson_referral_code, created_at
-                 FROM payment_links WHERE 1=1' . $scopeSql['sql'] . ' ORDER BY updated_at DESC LIMIT 200';
+                 FROM payment_links WHERE deleted_at IS NULL' . $scopeSql['sql'] . ' ORDER BY updated_at DESC LIMIT 200';
             $st = $db->prepare($sql);
             $st->execute($scopeSql['params']);
             paymentLinksSuccess($st ? $st->fetchAll(PDO::FETCH_ASSOC) : []);
@@ -608,6 +672,7 @@ try {
             if ($method !== 'GET') {
                 paymentLinksError('Method not allowed', 405);
             }
+            paymentLinksActivateRazorpayForCaller($tokenData);
             $from = isset($_GET['from']) && $_GET['from'] !== ''
                 ? (int) $_GET['from']
                 : null;
@@ -626,6 +691,7 @@ try {
                 'skip' => $_GET['skip'] ?? 0,
                 'max_pages' => $maxPages,
                 'force' => !empty($_GET['force']),
+                'for_records' => isset($_GET['view']) && $_GET['view'] === 'records',
             ], $tokenData);
             paymentLinksSuccess($result);
             break;
@@ -667,6 +733,7 @@ try {
             }
             $db = paymentLinksDb();
             paymentLinksAssertItemAllowed($db, $tokenData, $id);
+            paymentLinksActivateRazorpayForCaller($tokenData, $id);
             paymentLinksSuccess(razorpayFetchPaymentLink($id));
             break;
 
@@ -679,9 +746,55 @@ try {
             }
             $db = paymentLinksDb();
             paymentLinksAssertItemAllowed($db, $tokenData, $id);
+            paymentLinksActivateRazorpayForCaller($tokenData, $id);
             $cancelled = razorpayCancelPaymentLink($id);
-            paymentLinkUpsertFromRazorpay($cancelled, null);
+            $row = paymentLinkUpsertFromRazorpay($cancelled, null);
+            // Ensure CRM reflects cancel even if Razorpay payload is sparse.
+            if (is_array($row)) {
+                $mapped = paymentLinkMapRazorpayStatus(
+                    (string) ($cancelled['status'] ?? 'cancelled'),
+                    (int) ($row['amount_paid'] ?? 0),
+                    (int) ($row['amount'] ?? 0),
+                );
+                if ($mapped === 'cancelled' || strtolower((string) ($cancelled['status'] ?? '')) === 'cancelled') {
+                    $force = $db->prepare(
+                        "UPDATE payment_links SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+                         WHERE razorpay_payment_link_id = ?
+                           AND LOWER(TRIM(status)) NOT IN ('paid', 'partially_paid')",
+                    );
+                    $force->execute([$id]);
+                    $cancelled['status'] = 'cancelled';
+                }
+            } else {
+                $cancelled['status'] = 'cancelled';
+            }
             paymentLinksSuccess($cancelled);
+            break;
+
+        case 'delete':
+            if ($method !== 'POST' && $method !== 'DELETE') {
+                paymentLinksError('Method not allowed', 405);
+            }
+            if ($id === '') {
+                paymentLinksError('Payment link id required', 400);
+            }
+            $db = paymentLinksDb();
+            paymentLinksAssertItemAllowed($db, $tokenData, $id);
+            $row = paymentLinkFindByRazorpayId($id);
+            if (!$row) {
+                paymentLinksError('Payment link not found', 404);
+            }
+            if (!empty($row['deleted_at'])) {
+                paymentLinksError('Payment link already deleted', 400);
+            }
+            $st = strtolower(trim((string) ($row['status'] ?? '')));
+            if (!in_array($st, ['cancelled', 'expired'], true)) {
+                paymentLinksError('Only cancelled or expired payment links can be deleted', 400);
+            }
+            if (!paymentLinkDeleteFromCrm($id)) {
+                paymentLinksError('Could not delete payment link', 500);
+            }
+            paymentLinksSuccess(['id' => $id, 'deleted' => true]);
             break;
 
         case 'remind':
@@ -693,6 +806,7 @@ try {
             }
             $db = paymentLinksDb();
             paymentLinksAssertItemAllowed($db, $tokenData, $id);
+            paymentLinksActivateRazorpayForCaller($tokenData, $id);
             syncpediaRateLimitConsume('payment_link_remind_' . $id, 1, 15);
             $input = getInput();
             $medium = (($input['medium'] ?? 'email') === 'sms') ? 'sms' : 'email';

@@ -29,7 +29,10 @@ import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
 import {
   buildSourceSummaries,
   filterLeadsBySourceBucket,
+  getFormSourceKey,
+  resolveFormAssigneesForSourceKey,
 } from '@/lib/leadSources';
+import { filterAndSortAssignRoster } from '@/lib/assignRoster';
 
 const MARKETING_RESUME_TYPES = [
   'application/pdf',
@@ -37,11 +40,13 @@ const MARKETING_RESUME_TYPES = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ] as const;
 
-const LEAD_STATUSES = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
+const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
 
 const formatLeadStatus = (s?: string | null) => {
-  if (!s) return '';
+  if (!s) return 'New';
   if (s === 'enrolled' || s === 'converted') return 'Enroll';
+  if (s === 'not_answered') return 'Not answered';
+  if (s === 'messaged') return 'Messaged';
   return s.replace(/_/g, ' ');
 };
 
@@ -50,6 +55,8 @@ const statusBadgeKey = (s?: string | null) => (s === 'converted' ? 'enrolled' : 
 const statusColors: Record<string, string> = {
   new: 'bg-blue-500/10 text-blue-700 border-blue-200',
   contacted: 'bg-amber-500/10 text-amber-700 border-amber-200',
+  not_answered: 'bg-slate-500/10 text-slate-700 border-slate-200',
+  messaged: 'bg-sky-500/10 text-sky-700 border-sky-200',
   interested: 'bg-emerald-500/10 text-emerald-700 border-emerald-200',
   demo_scheduled: 'bg-indigo-500/10 text-indigo-700 border-indigo-200',
   demo_attended: 'bg-violet-500/10 text-violet-700 border-violet-200',
@@ -65,11 +72,6 @@ const SOURCE_LABELS: Record<string, string> = {
   walkin: 'Walk-in', college_seminar: 'College Seminar', other: 'Other',
 };
 
-const SALES_MEMBER_ROLES = new Set(['sales_representative']);
-const isAssignableRole = (role?: string | null) => {
-  const normalized = String(role || '').trim().toLowerCase();
-  return SALES_MEMBER_ROLES.has(normalized) || normalized.startsWith('marketing');
-};
 const isActiveMember = (value: any) => value === true || value === 1 || value === '1' || String(value || '').toLowerCase() === 'true';
 const normalizeMember = (m: any) => ({
   id: m.id,
@@ -80,12 +82,17 @@ const normalizeMember = (m: any) => ({
   is_active: isActiveMember(m.is_active),
   created_at: m.created_at || new Date().toISOString(),
   org_id: m.org_id != null && String(m.org_id).trim() !== '' ? String(m.org_id).trim() : undefined,
+  reports_to_id: m.reports_to_id != null ? String(m.reports_to_id) : null,
+  reports_to_name: m.reports_to_name != null ? String(m.reports_to_name) : null,
 });
 const getRoleCategoryLabel = (role?: string | null) => {
   const normalized = String(role || '').trim().toLowerCase();
   if (normalized.startsWith('marketing')) return 'Marketing';
   if (normalized === 'sales_representative') return 'Sales Representative';
   if (normalized === 'manager') return 'Manager';
+  if (normalized === 'hr') return 'HR';
+  if (normalized === 'trainer') return 'Trainer';
+  if (normalized === 'finance') return 'Finance';
   return normalized ? normalized.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Other';
 };
 
@@ -110,13 +117,19 @@ export default function FormLeads() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
   const [bulkAssigning, setBulkAssigning] = useState(false);
+  const [assignSelectedReps, setAssignSelectedReps] = useState<Set<string>>(new Set());
+  const [assignSaving, setAssignSaving] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [enrollLead, setEnrollLead] = useState<any | null>(null);
-  const [leadForms, setLeadForms] = useState<{ slug: string; name: string }[]>([]);
+  const [leadForms, setLeadForms] = useState<{ id: string; slug: string; name: string }[]>([]);
+  const [formAssignmentsByFormId, setFormAssignmentsByFormId] = useState<
+    Record<string, Array<{ member_id: string; full_name?: string | null }>>
+  >({});
   const [sourceDialogKey, setSourceDialogKey] = useState<string | null>(null);
   const [sourceDialogLabel, setSourceDialogLabel] = useState('');
   const [sourceDialogStatus, setSourceDialogStatus] = useState('all');
+  const [leadAssignments, setLeadAssignments] = useState<Record<string, string[]>>({});
 
   // Marketing add/import
   const isMarketing = role === 'marketing';
@@ -143,13 +156,33 @@ export default function FormLeads() {
     fetchData();
     if (formLeadsAssignmentRoster) fetchTeam();
     api.forms.list()
-      .then((res) => {
+      .then(async (res) => {
         const rows = Array.isArray(res) ? res : res?.data || [];
-        setLeadForms(
-          rows
-            .filter((f: { slug?: string; name?: string }) => f?.slug && f?.name)
-            .map((f: { slug: string; name: string }) => ({ slug: String(f.slug), name: String(f.name) })),
+        const forms = rows
+          .filter((f: { id?: string; slug?: string; name?: string }) => f?.id && f?.slug && f?.name)
+          .map((f: { id: string; slug: string; name: string }) => ({
+            id: String(f.id),
+            slug: String(f.slug),
+            name: String(f.name),
+          }));
+        setLeadForms(forms);
+        if (!formLeadsAssignmentRoster || forms.length === 0) {
+          setFormAssignmentsByFormId({});
+          return;
+        }
+        const pairs = await Promise.all(
+          forms.map(async (form) => {
+            try {
+              const a = await api.forms.assignments(form.id);
+              return [form.id, (a?.data || []) as Array<{ member_id: string; full_name?: string | null }>] as const;
+            } catch {
+              return [form.id, []] as const;
+            }
+          }),
         );
+        const next: Record<string, Array<{ member_id: string; full_name?: string | null }>> = {};
+        for (const [id, list] of pairs) next[id] = list;
+        setFormAssignmentsByFormId(next);
       })
       .catch(() => {});
   }, [role, user?.id, profile?.referral_code]);
@@ -157,7 +190,11 @@ export default function FormLeads() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [leadsData, profilesData] = await Promise.all([api.leads.list(), api.profiles.list()]);
+      const [leadsData, profilesData, assignRes] = await Promise.all([
+        api.leads.list(),
+        api.profiles.list(),
+        api.leadAssignments.list().catch(() => ({ data: [] })),
+      ]);
       const allLeads = Array.isArray(leadsData) ? leadsData : leadsData.data || leadsData.leads || [];
       const myRef = profile?.referral_code || user?.referral_code || '';
       setLeads(allLeads.filter((l: any) => {
@@ -174,6 +211,16 @@ export default function FormLeads() {
         return false;
       }));
       setProfiles((Array.isArray(profilesData) ? profilesData : profilesData.profiles || profilesData.data || []).filter((p: any) => p.referral_code));
+      const assignRows = Array.isArray(assignRes) ? assignRes : (assignRes as { data?: any[] })?.data || [];
+      const map: Record<string, string[]> = {};
+      for (const row of assignRows as Array<{ lead_id?: string; user_id?: string }>) {
+        const lid = String(row.lead_id || '');
+        const uid = String(row.user_id || '');
+        if (!lid || !uid) continue;
+        if (!map[lid]) map[lid] = [];
+        if (!map[lid].includes(uid)) map[lid].push(uid);
+      }
+      setLeadAssignments(map);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };
@@ -182,7 +229,7 @@ export default function FormLeads() {
     try {
       const [teamRes, marketingRes] = await Promise.allSettled([
         api.team.list(),
-        api.marketing.members(),
+        role === 'manager' ? Promise.resolve({ data: [] }) : api.marketing.members(),
       ]);
 
       const teamRows =
@@ -207,11 +254,15 @@ export default function FormLeads() {
           : [];
 
       const mergedById = new Map<string, any>();
-      [...marketingRows, ...teamRows]
-        .filter((m: any) => m.id && isAssignableRole(m.role) && isActiveMember(m.is_active))
-        .forEach((m: any) => mergedById.set(m.id, m));
+      [...marketingRows, ...teamRows].forEach((m: any) => {
+        if (m?.id) mergedById.set(m.id, m);
+      });
 
-      setTeamMembers(Array.from(mergedById.values()));
+      setTeamMembers(
+        filterAndSortAssignRoster(Array.from(mergedById.values()), {
+          excludeUserId: user?.id,
+        }),
+      );
     } catch {}
   };
 
@@ -233,12 +284,23 @@ export default function FormLeads() {
     return map;
   }, [profiles]);
 
-  const canEditLead = (lead: any) => hasEditAll || lead.assigned_to === user?.id;
+  const canEditLead = (lead: any) => {
+    if (hasEditAll) return true;
+    const uid = user?.id ? String(user.id) : '';
+    if (!uid) return false;
+    if (String(lead.assigned_to || '') === uid) return true;
+    if (String(lead.created_by || '') === uid) return true;
+    const ref = String(profile?.referral_code ?? '').trim();
+    if (ref && String(lead.referred_by || '').trim() === ref) return true;
+    return false;
+  };
   const canDeleteLead = () => hasDelete;
 
   const getAssignedName = (id: string) => {
+    if (user?.id && String(id) === String(user.id)) return 'Assigned to self';
     const member = teamMembers.find(m => m.id === id);
     if (member) return member.full_name;
+    if (formAssigneeNameById[id]) return formAssigneeNameById[id];
     return userIdToName[id] || '';
   };
 
@@ -291,7 +353,7 @@ export default function FormLeads() {
     return filterLeadsBySourceBucket(cardLeads, sourceDialogKey);
   }, [cardLeads, sourceDialogKey]);
 
-  const SOURCE_STATUS_CHIP_ORDER = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'];
+  const SOURCE_STATUS_CHIP_ORDER = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'];
 
   const openSourceDialog = (key: string, label: string, status: string = 'all') => {
     setSourceDialogKey(key);
@@ -303,15 +365,62 @@ export default function FormLeads() {
     const name = getAssignedName(lead?.assigned_to);
     return name ? [name] : [];
   };
-  const groupedTeamMembers = useMemo(() => {
+  const formatAssignedLabel = (lead: any) => {
+    const names = getLeadAssignedNames(lead);
+    if (names.length > 0) return names.join(', ');
+    if (lead?.assigned_to) return 'Assigned';
+    return 'Unassigned';
+  };
+  const formAssigneeNameById = useMemo(() => {
+    const map: Record<string, string> = {};
+    Object.values(formAssignmentsByFormId).forEach((rows) => {
+      rows.forEach((row) => {
+        const id = String(row?.member_id || '').trim();
+        const name = String(row?.full_name || '').trim();
+        if (id && name) map[id] = name;
+      });
+    });
+    return map;
+  }, [formAssignmentsByFormId]);
+
+  const getFormAssigneesForKey = (sourceKey: string | null | undefined) =>
+    resolveFormAssigneesForSourceKey(sourceKey, leadForms, formAssignmentsByFormId);
+
+  const getAssignRosterForLead = (lead: any | null | undefined) => {
+    if (!lead) return teamMembers;
+    const formOnes = getFormAssigneesForKey(getFormSourceKey(lead));
+    return formOnes.length > 0 ? formOnes : teamMembers;
+  };
+
+  const assignRosterMembers = useMemo(() => {
+    if (assignLeadId) {
+      const lead = leads.find((l) => l.id === assignLeadId);
+      return getAssignRosterForLead(lead);
+    }
+    if (sourceDialogKey) {
+      const formOnes = getFormAssigneesForKey(sourceDialogKey);
+      if (formOnes.length > 0) return formOnes;
+    }
+    return teamMembers;
+  }, [assignLeadId, leads, sourceDialogKey, leadForms, formAssignmentsByFormId, teamMembers]);
+
+  const groupedAssignRoster = useMemo(() => {
     const groups: Record<string, any[]> = {};
-    teamMembers.forEach((member) => {
-      const label = getRoleCategoryLabel(member.role);
+    assignRosterMembers.forEach((member: any) => {
+      const label =
+        member.role === 'form_assignee' ? 'Form assignees' : getRoleCategoryLabel(member.role);
       if (!groups[label]) groups[label] = [];
       groups[label].push(member);
     });
     return groups;
-  }, [teamMembers]);
+  }, [assignRosterMembers]);
+
+  const sourceDialogAssignMembers = useMemo(() => {
+    const formOnes = getFormAssigneesForKey(sourceDialogKey);
+    return formOnes.length > 0 ? formOnes : teamMembers;
+  }, [sourceDialogKey, leadForms, formAssignmentsByFormId, teamMembers]);
+
+  // KPI helpers keep using cardLeads below
 
   // Reset page on filter change
   useEffect(() => { setCurrentPage(1); }, [search, statusFilter, sourceFilter, employeeFilter]);
@@ -339,6 +448,7 @@ export default function FormLeads() {
     try {
       await api.leads.update(id, { status });
       setLeads(prev => prev.map(l => l.id === id ? { ...l, status } : l));
+      setDetailLead(prev => (prev?.id === id ? { ...prev, status } : prev));
       if (status === 'enrolled') {
         toast({ title: 'Enroll', description: 'Lead set to Enroll and a student record was created (if not already).' });
       } else {
@@ -365,39 +475,62 @@ export default function FormLeads() {
     void updateStatus(lead.id, newStatus);
   };
 
-  const handleAssign = async (repId: string) => {
-    if (!assignLeadId) return;
+  const handleMultiAssign = async () => {
+    if (!assignLeadId || assignSelectedReps.size === 0) return;
+    const repIds = Array.from(assignSelectedReps);
+    const primary = repIds[0];
+    setAssignSaving(true);
     try {
-      await api.leads.update(assignLeadId, { assigned_to: repId });
-      const repName = getAssignedName(repId) || teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
+      await api.leadAssignments.setAssignees(assignLeadId, repIds);
+      setLeads(prev => prev.map(l => l.id === assignLeadId ? { ...l, assigned_to: primary } : l));
+      if (detailLead?.id === assignLeadId) setDetailLead({ ...detailLead, assigned_to: primary });
       const lead = leads.find(l => l.id === assignLeadId);
-      setLeads(prev => prev.map(l => l.id === assignLeadId ? { ...l, assigned_to: repId } : l));
-      toast({ title: `Lead assigned to ${repName}` });
-      await sendNotificationWithEmail({
-        userId: repId, title: 'New Lead Assigned',
-        message: `Lead "${lead?.name || 'Unknown'}" has been assigned to you.`,
-        type: 'lead_assigned', link: '/leads',
-        leadName: lead?.name || 'Unknown', assignedByName: profile?.full_name || 'Manager',
-      });
-      setAssignOpen(false); setAssignLeadId(null);
-    } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
+      const repNames = repIds.map(id => getAssignedName(id) || teamMembers.find(m => m.id === id)?.full_name || '').filter(Boolean).join(', ');
+      toast({ title: `Lead assigned to ${repNames}` });
+      for (const repId of repIds) {
+        await sendNotificationWithEmail({
+          userId: repId, title: 'New Lead Assigned',
+          message: `Lead "${lead?.name || 'Unknown'}" has been assigned to you.`,
+          type: 'lead_assigned', link: '/leads',
+          leadName: lead?.name || 'Unknown', assignedByName: profile?.full_name || 'Manager',
+        });
+      }
+      setAssignOpen(false); setAssignLeadId(null); setAssignSelectedReps(new Set());
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Error', description: err.message });
+    } finally {
+      setAssignSaving(false);
+    }
   };
 
-  const handleBulkAssign = async (repId: string) => {
-    const names: string[] = [];
-    for (const id of selectedIds) {
-      try { await api.leads.update(id, { assigned_to: repId }); const l = leads.find(x => x.id === id); if (l) names.push(l.name); } catch {}
+  const handleBulkAssign = async (repIds: string[]) => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || repIds.length === 0) return;
+    try {
+      const res = await api.leadAssignments.bulkAssign(ids, repIds);
+      const assigned = typeof res?.assigned === 'number' ? res.assigned : ids.length;
+      const failed = typeof res?.failed === 'number' ? res.failed : 0;
+      await fetchData();
+      const repNames = repIds.map(id => getAssignedName(id) || teamMembers.find(m => m.id === id)?.full_name || '').filter(Boolean).join(', ');
+      toast({
+        title: `${assigned} leads assigned to ${repNames}`,
+        description: failed > 0 ? `${failed} failed` : undefined,
+        variant: failed > 0 && assigned === 0 ? 'destructive' : undefined,
+      });
+      if (assigned > 0) {
+        for (const repId of repIds) {
+          await sendNotificationWithEmail({
+            userId: repId, title: `${assigned} Leads Assigned`,
+            message: `You have been assigned ${assigned} lead(s).`,
+            type: 'lead_assigned', link: '/leads',
+            leadName: `${assigned} leads`, assignedByName: profile?.full_name || 'Manager',
+          });
+        }
+      }
+      setSelectedIds(new Set());
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Bulk assign failed', description: err?.message || 'Request failed' });
     }
-    fetchData();
-    const repName = getAssignedName(repId) || teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
-    toast({ title: `${selectedIds.size} leads assigned to ${repName}` });
-    await sendNotificationWithEmail({
-      userId: repId, title: `${selectedIds.size} Leads Assigned`,
-      message: `You have been assigned ${selectedIds.size} new leads: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '...' : ''}.`,
-      type: 'lead_assigned', link: '/leads',
-      leadName: names.slice(0, 3).join(', '), assignedByName: profile?.full_name || 'Manager',
-    });
-    setSelectedIds(new Set());
   };
 
   const handleAutoAllocate = async (leadId: string) => {
@@ -405,13 +538,12 @@ export default function FormLeads() {
     if (!lead?.referred_by) return;
     const repId = codeToUserId[lead.referred_by];
     if (!repId) { toast({ variant: 'destructive', title: 'Collector not found' }); return; }
-    setAssignLeadId(leadId);
     await handleAssignDirect(leadId, repId);
   };
 
   const handleAssignDirect = async (leadId: string, repId: string) => {
     try {
-      await api.leads.update(leadId, { assigned_to: repId });
+      await api.leadAssignments.setAssignees(leadId, [repId]);
       const repName = getAssignedName(repId) || teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
       const lead = leads.find(l => l.id === leadId);
       setLeads(prev => prev.map(l => l.id === leadId ? { ...l, assigned_to: repId } : l));
@@ -429,41 +561,72 @@ export default function FormLeads() {
     const unassigned = filtered.filter(l => !l.assigned_to && l.referred_by && codeToUserId[l.referred_by]);
     if (unassigned.length === 0) { toast({ title: 'No leads to auto-allocate' }); return; }
     let count = 0;
+    let failed = 0;
     for (const lead of unassigned) {
-      try { await api.leads.update(lead.id, { assigned_to: codeToUserId[lead.referred_by] }); count++; } catch {}
+      try {
+        await api.leadAssignments.setAssignees(lead.id, [codeToUserId[lead.referred_by]]);
+        count++;
+      } catch {
+        failed++;
+      }
     }
     fetchData();
-    toast({ title: `${count} leads auto-allocated to their collectors` });
+    toast({
+      title: `${count} leads auto-allocated to their collectors`,
+      description: failed > 0 ? `${failed} failed` : undefined,
+    });
   };
 
-  const handleBulkAutoAssign = async (count: number, repIds: string[]) => {
+  const handleBulkAutoAssign = async (count: number, repIds: string[], poolLeadIds?: string[]) => {
     setBulkAssigning(true);
     try {
-      const toAssign = leads.slice(0, count);
-      if (toAssign.length === 0) return;
+      const pool = poolLeadIds?.length
+        ? leads.filter((l) => poolLeadIds.includes(l.id))
+        : leads.filter((l) => !l.assigned_to);
+      const toAssign = pool.slice(0, count);
+      if (toAssign.length === 0) {
+        toast({
+          variant: 'destructive',
+          title: 'No leads to assign',
+          description: 'Select leads in the source card, or open a source with leads available.',
+        });
+        return;
+      }
       const repAssignments: Record<string, string[]> = {};
-      repIds.forEach(id => { repAssignments[id] = []; });
+      repIds.forEach((id) => { repAssignments[id] = []; });
       toAssign.forEach((lead, i) => {
         const repId = repIds[i % repIds.length];
         repAssignments[repId].push(lead.id);
       });
       let totalAssigned = 0;
+      let failed = 0;
       for (const [repId, leadIds] of Object.entries(repAssignments)) {
-        const names: string[] = [];
-        for (const lid of leadIds) {
-          try { await api.leads.update(lid, { assigned_to: repId }); totalAssigned++; const l = leads.find(x => x.id === lid); if (l) names.push(l.name); } catch {}
-        }
-        if (names.length > 0) {
-          await sendNotificationWithEmail({
-            userId: repId, title: `${names.length} Leads Assigned`,
-            message: `You have been assigned ${names.length} new leads: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '...' : ''}.`,
-            type: 'lead_assigned', link: '/leads',
-            leadName: names.slice(0, 3).join(', '), assignedByName: profile?.full_name || 'Manager',
-          });
+        if (leadIds.length === 0) continue;
+        try {
+          const res = await api.leadAssignments.bulkAssign(leadIds, repId);
+          const ok = typeof res?.assigned === 'number' ? res.assigned : leadIds.length;
+          const fail = typeof res?.failed === 'number' ? res.failed : 0;
+          totalAssigned += ok;
+          failed += fail;
+          if (ok > 0) {
+            const names = leadIds.map((lid) => leads.find((x) => x.id === lid)?.name).filter(Boolean) as string[];
+            await sendNotificationWithEmail({
+              userId: repId, title: `${ok} Leads Assigned`,
+              message: `You have been assigned ${ok} new leads: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '...' : ''}.`,
+              type: 'lead_assigned', link: '/leads',
+              leadName: names.slice(0, 3).join(', '), assignedByName: profile?.full_name || 'Manager',
+            });
+          }
+        } catch {
+          failed += leadIds.length;
         }
       }
       fetchData();
-      toast({ title: `${totalAssigned} leads distributed across ${repIds.length} reps` });
+      toast({
+        title: `${totalAssigned} leads distributed across ${repIds.length} reps`,
+        description: failed > 0 ? `${failed} failed` : undefined,
+        variant: failed > 0 && totalAssigned === 0 ? 'destructive' : undefined,
+      });
     } finally { setBulkAssigning(false); }
   };
 
@@ -495,6 +658,19 @@ export default function FormLeads() {
   };
 
   const openDetail = (lead: any) => { setDetailLead(lead); setDetailOpen(true); };
+  // When viewing a source/form card full page, keep detail inline (no sheet).
+  const openDetailFromCard = (lead: any) => {
+    setDetailLead(lead);
+    setDetailOpen(false);
+  };
+  const closeSourceCard = () => {
+    setSourceDialogKey(null);
+    setDetailLead(null);
+    setDetailOpen(false);
+  };
+  const closeInlineDetail = () => {
+    setDetailLead(null);
+  };
 
   // Marketing: Add lead
   const handleAddLeadSubmit = async () => {
@@ -524,6 +700,7 @@ export default function FormLeads() {
         college: newLead.college.trim() || undefined,
         source: (Object.keys(SOURCE_LABELS).includes(newLead.source) ? newLead.source : 'other') as any,
         referred_by: refCode,
+        assigned_to: user?.id || undefined,
         status: 'new' as const,
         ...(resumePath ? { resume_path: resumePath } : {}),
       });
@@ -571,7 +748,7 @@ export default function FormLeads() {
       const records = importPreview.map(r => ({
         name: r.name, email: r.email || null, phone: r.phone || null, college: r.college || null,
         source: (Object.keys(SOURCE_LABELS).includes(r.source) ? r.source : 'other') as any,
-        referred_by: refCode, status: 'new' as const,
+        referred_by: refCode, assigned_to: user?.id || undefined, status: 'new' as const,
       }));
       await api.leads.bulkCreate(records);
       toast({ title: `${records.length} leads imported!` });
@@ -595,8 +772,146 @@ export default function FormLeads() {
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
+  const formCardDetailPanel =
+    sourceDialogKey && detailLead ? (
+      <div className="space-y-5">
+        <div className="pb-4 border-b border-border">
+          <h3 className="text-lg font-semibold leading-tight">{detailLead.name}</h3>
+          <div className="flex items-center gap-2 mt-2 flex-wrap">
+            {canEditLead(detailLead) ? (
+              <Select
+                value={detailLead.status === 'converted' ? 'enrolled' : (detailLead.status || 'new')}
+                onValueChange={(v: string) => {
+                  if (!v) return;
+                  onLeadStatusSelect(detailLead, v);
+                }}
+              >
+                <SelectTrigger className="h-7 w-auto border-0 p-0">
+                  <Badge variant="outline" className={`${statusColors[statusBadgeKey(detailLead.status)] || ''} capitalize text-xs`}>
+                    {formatLeadStatus(detailLead.status)}
+                  </Badge>
+                </SelectTrigger>
+                <SelectContent className="z-[210]">
+                  {LEAD_STATUSES.map((s) => (
+                    <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Badge variant="outline" className={`${statusColors[detailLead.status] || ''} capitalize text-xs`}>
+                {formatLeadStatus(detailLead.status)}
+              </Badge>
+            )}
+          </div>
+        </div>
+        <div>
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Contact Information</h4>
+          <div className="space-y-2.5">
+            {detailLead.email && (
+              <div className="flex items-center gap-3">
+                <div className="h-8 w-8 rounded-lg bg-blue-500/10 flex items-center justify-center"><Mail className="h-4 w-4 text-blue-600" /></div>
+                <div><p className="text-xs text-muted-foreground">Email</p><p className="text-sm font-medium break-all">{detailLead.email}</p></div>
+              </div>
+            )}
+            {detailLead.phone && (
+              <div className="flex items-center gap-3">
+                <div className="h-8 w-8 rounded-lg bg-green-500/10 flex items-center justify-center"><Phone className="h-4 w-4 text-green-600" /></div>
+                <div><p className="text-xs text-muted-foreground">Phone</p><p className="text-sm font-medium">{detailLead.phone}</p></div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="border-t border-border pt-4">
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Assignment & Tracking</h4>
+          <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 gap-2">
+            <div>
+              <p className="text-xs text-muted-foreground">Assigned To</p>
+              <p className="text-sm font-medium">{formatAssignedLabel(detailLead)}</p>
+            </div>
+          </div>
+        </div>
+        <FormSubmissionDetails notes={detailLead.notes} resumePath={detailLead.resume_path} />
+        <LeadActivityTimeline
+          leadId={detailLead.id}
+          getProfileName={(uid) => getAssignedName(uid) || userIdToName[uid] || 'Unknown'}
+        />
+      </div>
+    ) : null;
+
   return (
     <div>
+      {!!sourceDialogKey && (
+        <SourceLeadsDialog
+          open
+          onOpenChange={(open) => { if (!open) closeSourceCard(); }}
+          sourceKey={sourceDialogKey}
+          title={sourceDialogLabel}
+          initialStatus={sourceDialogStatus}
+          leads={sourceDialogLeads}
+          teamMembers={sourceDialogAssignMembers}
+          isManager={isManager}
+          canBulkAssign={isManager || hasBulkDelete}
+          canBulkDelete={hasBulkDelete}
+          statusColors={statusColors}
+          getLeadAssignedNames={getLeadAssignedNames}
+          onOpenDetail={openDetailFromCard}
+          onOpenAssign={(leadId) => {
+            const lead = leads.find(l => l.id === leadId);
+            setAssignLeadId(leadId);
+            setAssignSelectedReps(
+              new Set(
+                leadAssignments[leadId] || (lead?.assigned_to ? [lead.assigned_to] : []),
+              ),
+            );
+            setAssignOpen(true);
+          }}
+          onBulkAutoAssign={handleBulkAutoAssign}
+          isAutoAssigning={bulkAssigning}
+          onBulkUndoAssign={async (snapshots) => {
+            let ok = 0;
+            for (const snap of snapshots) {
+              try {
+                await api.leadAssignments.setAssignees(snap.leadId, snap.userIds);
+                ok++;
+              } catch { /* continue */ }
+            }
+            fetchData();
+            toast({ title: ok > 0 ? `Undid assignment on ${ok} lead${ok === 1 ? '' : 's'}` : 'Undo failed' });
+          }}
+          getLeadAssignedIds={(lead) =>
+            leadAssignments[lead.id] || (lead.assigned_to ? [lead.assigned_to] : [])
+          }
+          currentUserId={user?.id}
+          onBulkDelete={hasBulkDelete ? async (ids) => {
+            if (!confirm(`Delete ${ids.length} leads permanently?`)) return;
+            let deleted = 0;
+            for (const id of ids) {
+              try {
+                await api.leads.delete(id);
+                deleted++;
+              } catch { /* continue */ }
+            }
+            fetchData();
+            toast({
+              title: deleted > 0
+                ? `${deleted} lead${deleted === 1 ? '' : 's'} deleted`
+                : 'Delete failed',
+              description: deleted < ids.length && deleted > 0
+                ? `${ids.length - deleted} could not be deleted`
+                : undefined,
+            });
+            setSelectedIds(new Set());
+          } : undefined}
+          canEditLead={canEditLead}
+          onStatusChange={onLeadStatusSelect}
+          selectedLeadId={detailLead?.id ?? null}
+          detailPanel={formCardDetailPanel}
+          onCloseDetail={closeInlineDetail}
+          backLabel="Back to Form Leads"
+        />
+      )}
+      {!sourceDialogKey && (
+      <>
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
         <div>
@@ -754,40 +1069,38 @@ export default function FormLeads() {
         </div>
       )}
 
-      <SourceLeadsDialog
-        open={!!sourceDialogKey}
-        onOpenChange={(open) => { if (!open) setSourceDialogKey(null); }}
-        sourceKey={sourceDialogKey}
-        title={sourceDialogLabel}
-        initialStatus={sourceDialogStatus}
-        leads={sourceDialogLeads}
-        teamMembers={teamMembers}
-        isManager={isManager}
-        canBulkAssign={isManager || hasBulkDelete}
-        canBulkDelete={hasBulkDelete}
-        statusColors={statusColors}
-        getLeadAssignedNames={getLeadAssignedNames}
-        onOpenDetail={openDetail}
-        onOpenAssign={(leadId) => { setAssignLeadId(leadId); setAssignOpen(true); }}
-        onBulkAutoAssign={async () => { setBulkAssignOpen(true); }}
-        isAutoAssigning={bulkAssigning}
-        onBulkDelete={hasBulkDelete ? async (ids) => {
-          if (!confirm(`Delete ${ids.length} leads permanently?`)) return;
-          for (const id of ids) { try { await api.leads.delete(id); } catch { /* continue */ } }
-          fetchData();
-          toast({ title: `${ids.length} leads deleted` });
-          setSelectedIds(new Set());
-        } : undefined}
-      />
+      </>
+      )}
 
-      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
+      <Sheet open={detailOpen && !sourceDialogKey} onOpenChange={setDetailOpen}>
         <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
           {detailLead && (
             <>
               <SheetHeader className="pb-4 border-b border-border">
                 <SheetTitle className="text-lg">{detailLead.name}</SheetTitle>
                 <div className="flex items-center gap-2 mt-1 flex-wrap">
-                  <Badge variant="outline" className={`${statusColors[detailLead.status]} capitalize text-xs`}>{formatLeadStatus(detailLead.status)}</Badge>
+                  {canEditLead(detailLead) ? (
+                    <Select
+                      value={detailLead.status === 'converted' ? 'enrolled' : detailLead.status}
+                      onValueChange={(v: string) => {
+                        if (!v) return;
+                        onLeadStatusSelect(detailLead, v);
+                      }}
+                    >
+                      <SelectTrigger className="h-7 w-auto border-0 p-0">
+                        <Badge variant="outline" className={`${statusColors[statusBadgeKey(detailLead.status)] || statusColors[detailLead.status] || ''} capitalize text-xs`}>
+                          {formatLeadStatus(detailLead.status)}
+                        </Badge>
+                      </SelectTrigger>
+                      <SelectContent className="z-[210]">
+                        {LEAD_STATUSES.map((s) => (
+                          <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Badge variant="outline" className={`${statusColors[detailLead.status]} capitalize text-xs`}>{formatLeadStatus(detailLead.status)}</Badge>
+                  )}
                   <Badge variant="secondary" className="text-xs capitalize">{SOURCE_LABELS[detailLead.source] || detailLead.source?.replace(/_/g, ' ')}</Badge>
                   <Badge variant="secondary" className="text-xs">Form Lead</Badge>
                 </div>
@@ -852,20 +1165,32 @@ export default function FormLeads() {
                       <Badge variant="secondary" className="text-[10px] font-mono">{detailLead.referred_by}</Badge>
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
-                      <div><p className="text-xs text-muted-foreground">Assigned To</p><p className="text-sm font-medium">{getAssignedName(detailLead.assigned_to) || 'Unassigned'}</p></div>
-                      {isManager && teamMembers.length > 0 && (
+                      <div><p className="text-xs text-muted-foreground">Assigned To</p><p className="text-sm font-medium">{formatAssignedLabel(detailLead)}</p></div>
+                      {isManager && (getAssignRosterForLead(detailLead).length > 0 || !!user?.id) && (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="outline" size="sm" className="gap-1 h-7 text-xs"><UserPlus className="h-3 w-3" />{detailLead.assigned_to ? 'Reassign' : 'Assign'}</Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent>
+                            {user?.id && (
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  handleAssignDirect(detailLead.id, user.id);
+                                  setDetailLead({ ...detailLead, assigned_to: user.id });
+                                }}
+                              >
+                                Assign to self
+                              </DropdownMenuItem>
+                            )}
                             {detailLead.referred_by && codeToUserId[detailLead.referred_by] && (
                               <DropdownMenuItem onClick={() => { handleAutoAllocate(detailLead.id); setDetailLead({ ...detailLead, assigned_to: codeToUserId[detailLead.referred_by] }); }} className="text-emerald-600 font-medium">
                                 ↺ Auto: {codeToName[detailLead.referred_by]}
                               </DropdownMenuItem>
                             )}
                             <DropdownMenuSeparator />
-                            {teamMembers.map(m => (
+                            {getAssignRosterForLead(detailLead)
+                              .filter((m: any) => !user?.id || String(m.id) !== String(user.id))
+                              .map((m: any) => (
                               <DropdownMenuItem key={m.id} onClick={() => { handleAssignDirect(detailLead.id, m.id); setDetailLead({ ...detailLead, assigned_to: m.id }); }}>
                                 {m.full_name}
                               </DropdownMenuItem>
@@ -902,27 +1227,104 @@ export default function FormLeads() {
         </SheetContent>
       </Sheet>
 
-      {/* Assign Lead Dialog */}
-      <Dialog open={assignOpen} onOpenChange={(open) => { setAssignOpen(open); if (!open) setAssignLeadId(null); }}>
+      {/* Assign Lead Dialog — multi-member */}
+      <Dialog open={assignOpen} onOpenChange={(open) => {
+        if (!assignSaving) {
+          setAssignOpen(open);
+          if (!open) { setAssignLeadId(null); setAssignSelectedReps(new Set()); }
+        }
+      }}>
         <DialogContent className="max-w-[95vw] sm:max-w-sm">
-          <DialogHeader><DialogTitle>Assign Lead to Team Member</DialogTitle></DialogHeader>
-          <div className="space-y-2 py-2">
-            {assignLeadId && leads.find(l => l.id === assignLeadId)?.referred_by && codeToUserId[leads.find(l => l.id === assignLeadId)?.referred_by] && (
-              <Button variant="outline" className="w-full justify-start gap-2 text-emerald-600 border-emerald-200" onClick={() => handleAutoAllocate(assignLeadId)}>
-                <UserPlus className="h-4 w-4" /> ↺ Auto: {codeToName[leads.find(l => l.id === assignLeadId)?.referred_by || '']}
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserPlus className="h-5 w-5 text-primary" /> Assign Lead to Team Members
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 py-2 max-h-64 overflow-y-auto">
+            {isManager && user?.id ? (
+              <div className="space-y-1.5 mb-1">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground px-1">Yourself</p>
+                <label
+                  className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                    assignSelectedReps.has(user.id)
+                      ? 'bg-primary/5 border-primary/30'
+                      : 'bg-muted/30 border-border hover:bg-muted/50'
+                  } ${assignSaving ? 'opacity-60 pointer-events-none' : ''}`}
+                >
+                  <Checkbox
+                    checked={assignSelectedReps.has(user.id)}
+                    onCheckedChange={() => {
+                      setAssignSelectedReps((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(user.id)) next.delete(user.id);
+                        else next.add(user.id);
+                        return next;
+                      });
+                    }}
+                    disabled={assignSaving}
+                  />
+                  <span className="text-sm font-medium">Assign to self</span>
+                </label>
+              </div>
+            ) : null}
+            {assignLeadId && leads.find(l => l.id === assignLeadId)?.referred_by && codeToUserId[leads.find(l => l.id === assignLeadId)?.referred_by || ''] && (
+              <Button
+                variant="outline"
+                className="w-full justify-start gap-2 text-emerald-600 border-emerald-200"
+                disabled={assignSaving}
+                onClick={() => {
+                  const code = leads.find(l => l.id === assignLeadId)?.referred_by || '';
+                  const uid = codeToUserId[code];
+                  if (uid) setAssignSelectedReps(new Set([uid]));
+                }}
+              >
+                <UserPlus className="h-4 w-4" /> Select collector: {codeToName[leads.find(l => l.id === assignLeadId)?.referred_by || ''] || ''}
               </Button>
             )}
-            {Object.entries(groupedTeamMembers).map(([group, members]) => (
+            {Object.entries(groupedAssignRoster).map(([group, members]) => (
               <div key={group} className="space-y-1.5">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground px-1">{group}</p>
-                {members.map((m: any) => (
-                  <Button key={m.id} variant="outline" className="w-full justify-start gap-2" onClick={() => handleAssign(m.id)}>
-                    <UserPlus className="h-4 w-4" /> {m.full_name}
-                  </Button>
+                {members
+                  .filter((m: any) => !user?.id || String(m.id) !== String(user.id))
+                  .map((m: any) => (
+                  <label
+                    key={m.id}
+                    className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-all ${
+                      assignSelectedReps.has(m.id)
+                        ? 'bg-primary/5 border-primary/30'
+                        : 'bg-muted/30 border-border hover:bg-muted/50'
+                    } ${assignSaving ? 'opacity-60 pointer-events-none' : ''}`}
+                  >
+                    <Checkbox
+                      checked={assignSelectedReps.has(m.id)}
+                      onCheckedChange={() => {
+                        setAssignSelectedReps(prev => {
+                          const next = new Set(prev);
+                          if (next.has(m.id)) next.delete(m.id); else next.add(m.id);
+                          return next;
+                        });
+                      }}
+                      disabled={assignSaving}
+                    />
+                    <span className="text-sm font-medium">{m.full_name}</span>
+                  </label>
                 ))}
               </div>
             ))}
+            {assignRosterMembers.length === 0 && !(isManager && user?.id) && (
+              <p className="text-sm text-muted-foreground text-center py-4">No assignees for this form yet</p>
+            )}
           </div>
+          {assignSelectedReps.size > 0 && (
+            <p className="text-xs text-muted-foreground">{assignSelectedReps.size} member{assignSelectedReps.size > 1 ? 's' : ''} selected</p>
+          )}
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => { setAssignOpen(false); setAssignLeadId(null); setAssignSelectedReps(new Set()); }} disabled={assignSaving}>Cancel</Button>
+            <Button onClick={handleMultiAssign} disabled={assignSelectedReps.size === 0 || assignSaving} className="gap-1.5">
+              {assignSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+              {assignSaving ? 'Saving...' : `Assign to ${assignSelectedReps.size}`}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

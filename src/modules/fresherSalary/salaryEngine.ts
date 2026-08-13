@@ -131,10 +131,10 @@ export function evaluateMonth1(achieved: number, _trainingStatus: TrainingSubSta
   const salaryType = salaryTypeAfterMonth1(status === 'fixed_eligible');
   const message =
     achieved <= 0
-      ? 'Enter Month 1 achieved sales (target ₹1,60,000). ≥50% → fixed-eligible Month 2.'
+      ? 'Enter Month 1 achieved sales. Meet the monthly gate → Fixed next month; miss → Target-based next month.'
       : status === 'fixed_eligible'
-        ? '≥50% of monthly target — Fixed Salary Eligible for Month 2.'
-        : 'Below 50% — Performance Based for Month 2.';
+        ? 'Gate met — Fixed Salary for Month 2.'
+        : 'Gate missed — Target Based (no fixed) for Month 2.';
   void _trainingStatus;
   return {
     status,

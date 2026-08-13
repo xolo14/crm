@@ -14,13 +14,19 @@ import {
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { DateRangeFilter, DateRange } from '@/components/DateRangeFilter';
-import { parseServerDateTime } from '@/lib/dateTime';
+import { parseServerDateTime, buildDailyLeadTrend } from '@/lib/dateTime';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/hooks/use-toast';
+import { isSalesRepRole, normalizeAppRole } from '@/lib/roleUtils';
+import { computeLeadKpis, normalizeLeadsByStatus } from '@/lib/dashboardKpis';
 
 const COLORS = ['hsl(270, 60%, 55%)', 'hsl(210, 70%, 50%)', 'hsl(38, 92%, 50%)', 'hsl(162, 63%, 41%)', 'hsl(0, 70%, 55%)', 'hsl(330, 70%, 55%)', 'hsl(45, 80%, 50%)', 'hsl(180, 60%, 45%)'];
 const SOURCE_LABELS: Record<string, string> = { google_ads: 'Google Ads', instagram: 'Instagram', facebook: 'Facebook', youtube: 'YouTube', website: 'Website', google_forms: 'Google Forms', whatsapp: 'WhatsApp', referral: 'Referral', walkin: 'Walk-in', college_seminar: 'Tech Event', other: 'Other' };
 const STATUS_LABELS: Record<string, string> = { new: 'New Lead', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Demo Scheduled', demo_attended: 'Demo Completed', considering: 'Proposal Sent', enrolled: 'Enroll', converted: 'Deal Won', lost: 'Deal Lost' };
+
+function isActiveTeamMember(v: unknown): boolean {
+  return v === 1 || v === true || String(v) === '1';
+}
 
 export default function ITServicesDashboard() {
   const { profile } = useAuth();
@@ -30,6 +36,8 @@ export default function ITServicesDashboard() {
   const [dateRange, setDateRange] = useState<DateRange>({});
   const [loading, setLoading] = useState(true);
   const [leads, setLeads] = useState<any[]>([]);
+  const [leadsTotal, setLeadsTotal] = useState(0);
+  const [leadsByStatusServer, setLeadsByStatusServer] = useState<Record<string, number>>({});
   const [studentsCount, setStudentsCount] = useState(0);
   const [activeStudents, setActiveStudents] = useState(0);
   const [coursesCount, setCoursesCount] = useState(0);
@@ -48,25 +56,36 @@ export default function ITServicesDashboard() {
   const fetchTeam = async () => {
     try {
       const data = await api.team.list();
-      setTeamMembers((data.data || []).filter((m: any) => m.role === 'sales_representative' && m.is_active));
-    } catch {}
+      setTeamMembers(
+        (data.data || []).filter(
+          (m: any) => isSalesRepRole(normalizeAppRole(m.role)) && isActiveTeamMember(m.is_active),
+        ),
+      );
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const fetchData = async () => {
     setLoading(true);
     try {
       const data = await api.profiles.dashboard();
-      const allLeads = data.leads || [];
+      const payload = (data?.leads != null || data?.leads_total != null)
+        ? data
+        : (data?.data || data || {});
+      const allLeads = payload.leads || [];
       setLeads(allLeads);
+      setLeadsTotal(Number(payload.leads_total ?? allLeads.length) || allLeads.length);
+      setLeadsByStatusServer(normalizeLeadsByStatus(payload.leads_by_status));
       setRecentLeads(allLeads.slice(0, 10));
       setUnassignedLeads(allLeads.filter((l: any) => !l.assigned_to));
-      setStudentsCount(data.students_count || 0);
-      setActiveStudents(data.active_students || 0);
-      setCoursesCount(data.courses_count || 0);
-      setTotalRevenue(data.total_revenue || 0);
-      setPendingRevenue(data.pending_revenue || 0);
+      setStudentsCount(Number(payload.students_count || 0));
+      setActiveStudents(Number(payload.active_students || 0));
+      setCoursesCount(Number(payload.courses_count || 0));
+      setTotalRevenue(Number(payload.total_revenue || 0));
+      setPendingRevenue(Number(payload.pending_revenue || 0));
 
-      const profiles = data.profiles || [];
+      const profiles = payload.profiles || [];
       const nameMap: Record<string, string> = {};
       const userIdMap: Record<string, string> = {};
       const uidNameMap: Record<string, string> = {};
@@ -100,10 +119,20 @@ export default function ITServicesDashboard() {
   }, [leads, dateRange]);
 
   const leadsByStatus = useMemo(() => {
+    const hasDateFilter = !!(dateRange.from || dateRange.to);
+    if (!hasDateFilter && Object.keys(leadsByStatusServer).length > 0) {
+      return Object.entries(leadsByStatusServer).map(([name, value]) => ({
+        name: STATUS_LABELS[name] || name,
+        value: Number(value || 0),
+      }));
+    }
     const c: Record<string, number> = {};
-    for (const l of filteredLeads) { const s = l.status || 'new'; c[s] = (c[s] || 0) + 1; }
+    for (const l of filteredLeads) {
+      const s = l.status || 'new';
+      c[s] = (c[s] || 0) + 1;
+    }
     return Object.entries(c).map(([name, value]) => ({ name: STATUS_LABELS[name] || name, value }));
-  }, [filteredLeads]);
+  }, [filteredLeads, leadsByStatusServer, dateRange.from, dateRange.to]);
 
   const leadsBySource = useMemo(() => {
     const c: Record<string, number> = {};
@@ -111,17 +140,18 @@ export default function ITServicesDashboard() {
     return Object.entries(c).map(([name, value]) => ({ name: SOURCE_LABELS[name] || name, value })).sort((a, b) => b.value - a.value);
   }, [filteredLeads]);
 
-  const dailyTrend = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const l of filteredLeads) { const d = new Date(l.created_at).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }); map[d] = (map[d] || 0) + 1; }
-    return Object.entries(map).slice(-14).map(([date, count]) => ({ date, leads: count }));
-  }, [filteredLeads]);
+  const dailyTrend = useMemo(() => buildDailyLeadTrend(filteredLeads, 14), [filteredLeads]);
 
-  const totalLeads = filteredLeads.length;
-  const converted = filteredLeads.filter(l => l.status === 'converted' || l.status === 'enrolled').length;
+  const hasDateFilter = !!(dateRange.from || dateRange.to);
+  const { total: totalLeads, converted, statusCount } = computeLeadKpis({
+    hasDateFilter,
+    leads: filteredLeads,
+    leadsTotal,
+    byStatus: leadsByStatusServer,
+  });
   const convRate = totalLeads > 0 ? Math.round((converted / totalLeads) * 100) : 0;
-  const proposals = filteredLeads.filter(l => l.status === 'considering').length;
-  const demos = filteredLeads.filter(l => l.status === 'demo_attended').length;
+  const proposals = statusCount('considering');
+  const demos = statusCount('demo_attended');
 
   const handleAssignLead = async (leadId: string, repId: string) => {
     try {

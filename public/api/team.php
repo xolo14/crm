@@ -263,7 +263,7 @@ if ($method === 'POST') {
         respond($payload);
     }
 
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'org', 'super_admin', 'manager']);
     $input = getInput();
 
     $email = trim($input['email'] ?? '');
@@ -402,7 +402,6 @@ if ($method === 'POST') {
     $payload = [
         'id' => $id,
         'message' => 'Team member created',
-        'default_password' => $password,
         'email_sent' => $emailSent,
         'email_from' => $emailFrom,
     ];
@@ -414,7 +413,7 @@ if ($method === 'POST') {
 
 // PUT - Update team member
 if ($method === 'PUT') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    requireRole($tokenData, ['admin', 'org', 'super_admin', 'manager']);
     $id = $_GET['id'] ?? '';
     if (!$id) {
         respond(['error' => 'ID required'], 400);
@@ -470,6 +469,9 @@ if ($method === 'PUT') {
                 $params[] = $email;
                 continue;
             }
+            if ($f === 'is_active' && !(int) $input[$f]) {
+                syncpediaBumpUserTokenVersion($db, $id);
+            }
             $fields[] = "$f = ?";
             $params[] = $input[$f];
         }
@@ -497,7 +499,7 @@ if ($method === 'PUT') {
         }
 
         $allowedRoles = [];
-        if (in_array($callerRole, ['super_admin', 'admin'], true)) {
+        if (in_array($callerRole, ['super_admin', 'admin', 'org'], true)) {
             $allowedRoles = array_merge(['manager'], syncpediaL1AssignableRoles(), ['trainer', 'finance', 'student']);
         } elseif ($callerRole === 'manager') {
             $allowedRoles = syncpediaL1AssignableRoles();
@@ -560,6 +562,7 @@ if ($method === 'PUT') {
         $fields[] = 'password_hash = ?';
         $params[] = password_hash($input['password'], PASSWORD_DEFAULT);
         syncpediaStoreUserLoginPassword($db, $id, null);
+        syncpediaBumpUserTokenVersion($db, $id);
     }
 
     $pageAccessSaved = null;

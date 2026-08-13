@@ -9,6 +9,7 @@ import type {
 } from "@/types/paymentLinks";
 import {
   cancelPaymentLink as apiCancel,
+  deletePaymentLink as apiDelete,
   getAllPaymentLinks,
   sendReminder as apiRemind,
 } from "@/utils/paymentLinksApi";
@@ -205,9 +206,7 @@ export default function PaymentLinksPage() {
       try {
         await apiCancel(id);
         setLinks((prev) =>
-          prev.map((l) =>
-            l.id === id ? { ...l, status: "cancelled" as const } : l,
-          ),
+          prev.map((l) => (l.id === id ? { ...l, status: "cancelled" as const } : l)),
         );
         toast({ title: "Payment link cancelled" });
         setDetailLink((d) =>
@@ -217,6 +216,25 @@ export default function PaymentLinksPage() {
         toast({
           variant: "destructive",
           title: "Cancel failed",
+          description: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [toast],
+  );
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      if (!window.confirm("Delete this cancelled payment link from the list?")) return;
+      try {
+        await apiDelete(id);
+        setLinks((prev) => prev.filter((l) => l.id !== id));
+        setDetailLink((d) => (d && d.id === id ? null : d));
+        toast({ title: "Payment link deleted" });
+      } catch (err) {
+        toast({
+          variant: "destructive",
+          title: "Delete failed",
           description: err instanceof Error ? err.message : String(err),
         });
       }
@@ -313,6 +331,7 @@ export default function PaymentLinksPage() {
         onFilterChange={setFilters}
         onViewDetail={setDetailLink}
         onCancel={handleCancel}
+        onDelete={handleDelete}
         onEmail={setMailLink}
         onRefresh={() => void loadLinks({ force: true })}
         onCopyShortUrl={copyShortUrl}
@@ -342,6 +361,7 @@ export default function PaymentLinksPage() {
           link={detailLink}
           onClose={() => setDetailLink(null)}
           onCancel={handleCancel}
+          onDelete={handleDelete}
           onRemind={handleRemind}
           onCopyShortUrl={copyShortUrl}
         />

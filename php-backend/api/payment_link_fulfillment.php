@@ -64,8 +64,7 @@ function paymentLinkResolveLeadId(PDO $db, array $row, array $rzpLink, array $no
              ORDER BY
                CASE WHEN ? <> \'\' AND assigned_to = ? THEN 0 ELSE 1 END,
                CASE WHEN LOWER(TRIM(status)) = \'enrolled\' THEN 1 ELSE 0 END,
-               updated_at DESC
-             LIMIT 1',
+               updated_at DESC',
         );
         $st->execute([$email, $orgId, $salespersonId, $salespersonId]);
     } else {
@@ -74,16 +73,20 @@ function paymentLinkResolveLeadId(PDO $db, array $row, array $rzpLink, array $no
              ORDER BY
                CASE WHEN ? <> \'\' AND assigned_to = ? THEN 0 ELSE 1 END,
                CASE WHEN LOWER(TRIM(status)) = \'enrolled\' THEN 1 ELSE 0 END,
-               updated_at DESC
-             LIMIT 1',
+               updated_at DESC',
         );
         $st->execute([$email, $salespersonId, $salespersonId]);
     }
-    $found = $st->fetch(PDO::FETCH_ASSOC);
-    if (!is_array($found)) {
+    $matches = $st->fetchAll(PDO::FETCH_ASSOC);
+    if (count($matches) === 0) {
         return null;
     }
-    $id = trim((string) ($found['id'] ?? ''));
+    if (count($matches) > 1) {
+        // Ambiguous email — never guess which lead gets the paid enrollment.
+        error_log('[payment_fulfillment] ambiguous email match for payment link; refusing auto-enroll');
+        return null;
+    }
+    $id = trim((string) ($matches[0]['id'] ?? ''));
     return $id !== '' ? $id : null;
 }
 
@@ -134,9 +137,12 @@ function paymentLinkValidateBatchForEnrollment(
     if ($seatLimit < 1) {
         $seatLimit = 30;
     }
-    $cntSt = $db->prepare('SELECT COUNT(*) FROM students WHERE batch_id = ?');
-    $cntSt->execute([$bid]);
-    $enrolled = (int) $cntSt->fetchColumn();
+    try {
+        $lock = $db->prepare('SELECT id FROM batches WHERE id = ? FOR UPDATE');
+        $lock->execute([$bid]);
+    } catch (Throwable $ignored) {
+    }
+    $enrolled = studentsActiveSeatCount($db, $bid);
     if ($enrolled >= $seatLimit) {
         return [
             'course_id' => $courseId,
@@ -198,6 +204,7 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
     $notes = paymentLinkMergedNotes($row, $rzpLink);
     $leadId = paymentLinkResolveLeadId($db, $row, $rzpLink, $notes) ?? '';
     if ($leadId === '') {
+        paymentLinkMarkNeedsReconcile($plinkId);
         return ['ok' => false, 'error' => 'no_lead_match'];
     }
     $tokenData = paymentLinkFulfillmentTokenData($row);
@@ -256,9 +263,18 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
     try {
         $currentStatus = strtolower(trim((string) ($leadRow['status'] ?? '')));
         if ($currentStatus !== 'enrolled') {
+            // Privileged money path: may jump the interactive state machine (e.g. lost→enrolled).
             $db->prepare(
                 'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
             )->execute(['enrolled', $leadId]);
+            syncpediaAuditLog(
+                $db,
+                $tokenData,
+                'payment_enroll',
+                'lead',
+                $leadId,
+                'Payment link ' . $plinkId . ' enrolled lead (from ' . ($currentStatus !== '' ? $currentStatus : 'unknown') . ')',
+            );
         }
 
         leadsTryAttachStudentForEnrollment($db, $tokenData, $leadId);
@@ -267,23 +283,42 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
         }
 
         $batchId = trim((string) ($notes['batch_id'] ?? ''));
+        $batchAttached = $batchId === '';
         if ($batchId !== '') {
-            $v = paymentLinkValidateBatchForEnrollment($db, $batchId, $leadRow, $tokenData);
-            if ($v['error'] === null) {
-                try {
+            $ownTxn = !$db->inTransaction();
+            if ($ownTxn) {
+                $db->beginTransaction();
+            }
+            try {
+                $v = paymentLinkValidateBatchForEnrollment($db, $batchId, $leadRow, $tokenData);
+                if ($v['error'] === null) {
                     $u = $db->prepare(
                         'UPDATE students SET course_id = ?, batch_id = ? WHERE lead_id = ?',
                     );
                     $u->execute([$v['course_id'], $batchId, $leadId]);
-                } catch (Throwable $e) {
-                    error_log('[payment_fulfillment] batch attach: ' . $e->getMessage());
+                    $batchAttached = true;
+                } else {
+                    error_log('[payment_fulfillment] batch skip: ' . $v['error']);
+                    paymentLinkMarkNeedsReconcile($plinkId);
                 }
-            } else {
-                error_log('[payment_fulfillment] batch skip: ' . $v['error']);
+                if ($ownTxn) {
+                    $db->commit();
+                }
+            } catch (Throwable $e) {
+                if ($ownTxn && $db->inTransaction()) {
+                    try {
+                        $db->rollBack();
+                    } catch (Throwable $ignored) {
+                    }
+                }
+                error_log('[payment_fulfillment] batch attach: ' . $e->getMessage());
+                paymentLinkMarkNeedsReconcile($plinkId);
             }
         }
 
-        paymentLinkClearNeedsReconcile($plinkId);
+        if ($batchAttached) {
+            paymentLinkClearNeedsReconcile($plinkId);
+        }
 
         return [
             'ok' => true,

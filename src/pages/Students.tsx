@@ -61,9 +61,8 @@ export default function Students() {
 
   const hasCreate = perms.canCreate(role);
   const hasEditAll = perms.canEditAll(role);
-  // Student hard-delete is admin/org only (API requireRole); managers may create/edit but not delete.
-  const hasDelete = perms.canDelete(role) && ["super_admin", "admin", "org"].includes(String(role || "").toLowerCase());
-  const hasBulkDelete = perms.canBulkDelete(role);
+  const hasDelete = perms.canDelete(role);
+  const hasBulkDelete = perms.canBulkDelete(role) && hasDelete;
   const hasImport = perms.canImport(role);
   const hasExport = perms.canExport(role);
 
@@ -82,8 +81,8 @@ export default function Students() {
   };
 
   const handleExport = () => {
-    const headers = ['S.No', 'Name', 'Email', 'Phone', 'College', 'Year', 'Course', 'Batch', 'Status', 'Enrolled'];
-    const rows = students.map((s, i) => [i + 1, s.name, s.email, s.phone, s.college, s.year_of_study, s.course_name || s.course || '—', s.batch_name || s.batch || '—', s.status, s.enrollment_date]);
+    const headers = ['S.No', 'Name', 'Email', 'Phone', 'College', 'Year', 'Course', 'Batch', 'Enrolled by', 'Status', 'Enrolled'];
+    const rows = students.map((s, i) => [i + 1, s.name, s.email, s.phone, s.college, s.year_of_study, s.course_name || s.course || '—', s.batch_name || s.batch || '—', s.enrolled_by_name || '—', s.status, s.enrollment_date]);
     const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -92,17 +91,42 @@ export default function Students() {
     toast({ title: 'Students exported' });
   };
 
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       const lines = (evt.target?.result as string).split('\n').slice(1).filter(Boolean);
-      const imported = lines.map((line, i) => {
+      let ok = 0;
+      let failed = 0;
+      for (const line of lines) {
         const cols = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
-        return { id: String(Date.now() + i), name: cols[1] || '', email: cols[2] || '', phone: cols[3] || '', college: cols[4] || '', year_of_study: cols[5] || '', course: cols[6] || '—', batch: cols[7] || '—', status: cols[8] || 'active', enrollment_date: cols[9] || new Date().toISOString().split('T')[0] };
+        const name = cols[1] || cols[0] || '';
+        const email = cols[2] || '';
+        if (!name || !email) {
+          failed++;
+          continue;
+        }
+        try {
+          await api.students.create({
+            name,
+            email,
+            phone: cols[3] || null,
+            college: cols[4] || null,
+            year_of_study: cols[5] || null,
+            status: cols[9] || cols[8] || 'active',
+            enrollment_date: cols[10] || cols[9] || new Date().toISOString().split('T')[0],
+          });
+          ok++;
+        } catch {
+          failed++;
+        }
+      }
+      await fetchStudents();
+      toast({
+        title: ok > 0 ? `${ok} students imported` : 'Import failed',
+        description: failed > 0 ? `${failed} row(s) skipped` : undefined,
+        variant: ok === 0 ? 'destructive' : undefined,
       });
-      setStudents(prev => [...imported, ...prev]);
-      toast({ title: `${imported.length} students imported` });
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -116,6 +140,7 @@ export default function Students() {
     || s.organization_name?.toLowerCase().includes(q)
     || String(s.course_name || s.course || '').toLowerCase().includes(q)
     || String(s.batch_name || s.batch || '').toLowerCase().includes(q)
+    || String(s.enrolled_by_name || '').toLowerCase().includes(q)
   );
 
   const statusColor = (status: string) => {
@@ -166,8 +191,26 @@ export default function Students() {
   };
 
   const handleBulkDelete = async () => {
-    for (const id of selectedIds) { await api.students.delete(id); }
-    toast({ title: `${selectedIds.size} students deleted` });
+    if (!hasDelete) {
+      toast({ variant: 'destructive', title: 'Permission denied' });
+      return;
+    }
+    if (!confirm(`Delete ${selectedIds.size} selected student(s)?`)) return;
+    let ok = 0;
+    let failed = 0;
+    for (const id of selectedIds) {
+      try {
+        await api.students.delete(id);
+        ok++;
+      } catch {
+        failed++;
+      }
+    }
+    toast({
+      title: ok > 0 ? `${ok} student(s) deleted` : 'Delete failed',
+      description: failed > 0 ? `${failed} could not be deleted` : undefined,
+      variant: ok === 0 ? 'destructive' : undefined,
+    });
     setSelectedIds(new Set());
     fetchStudents();
   };
@@ -265,6 +308,11 @@ export default function Students() {
                       Lead: {formatLeadSource(student.lead_source)}
                     </div>
                   )}
+                  {student.enrolled_by_name && (
+                    <div className="ml-7 mt-1 text-[11px] text-muted-foreground">
+                      Enrolled by: {student.enrolled_by_name}
+                    </div>
+                  )}
                   {(student.course_name || student.course || student.batch_name || student.batch) && (
                     <div className="ml-7 mt-1 text-[11px] text-muted-foreground">
                       <span className="font-medium text-foreground/80">Enrolled:</span>{' '}
@@ -300,6 +348,7 @@ export default function Students() {
                 <TableHead>Contact</TableHead>
                 <TableHead>Organization</TableHead>
                 <TableHead>Lead source</TableHead>
+                <TableHead>Enrolled by</TableHead>
                 <TableHead>Course</TableHead>
                 <TableHead>Batch</TableHead>
                 <TableHead>College</TableHead>
@@ -310,7 +359,7 @@ export default function Students() {
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
-                <TableRow><TableCell colSpan={hasBulkDelete ? 12 : 11} className="text-center py-8 text-muted-foreground">No students found</TableCell></TableRow>
+                <TableRow><TableCell colSpan={hasBulkDelete ? 13 : 12} className="text-center py-8 text-muted-foreground">No students found</TableCell></TableRow>
               ) : filtered.map((student, index) => (
                 <TableRow key={student.id} className={selectedIds.has(student.id) ? 'bg-muted/50' : ''}>
                   {hasBulkDelete && <TableCell><Checkbox checked={selectedIds.has(student.id)} onCheckedChange={() => toggleSelect(student.id)} /></TableCell>}
@@ -327,6 +376,11 @@ export default function Students() {
                   </TableCell>
                   <TableCell className="text-sm max-w-[120px]">
                     <div className="truncate" title={formatLeadSource(student.lead_source)}>{formatLeadSource(student.lead_source)}</div>
+                  </TableCell>
+                  <TableCell className="text-sm max-w-[140px]">
+                    <div className="truncate" title={String(student.enrolled_by_name || '')}>
+                      {student.enrolled_by_name || '—'}
+                    </div>
                   </TableCell>
                   <TableCell className="text-sm max-w-[140px]">
                     <div className="truncate" title={String(student.course_name || student.course || '')}>
@@ -382,6 +436,7 @@ export default function Students() {
                 <p><span className="text-muted-foreground">College:</span> {detailStudent.college || '—'}</p>
                 <p><span className="text-muted-foreground">Year:</span> {detailStudent.year_of_study || '—'}</p>
                 <p><span className="text-muted-foreground">Enrolled:</span> {detailStudent.enrollment_date ? new Date(detailStudent.enrollment_date).toLocaleDateString() : '—'}</p>
+                <p><span className="text-muted-foreground">Enrolled by:</span> {detailStudent.enrolled_by_name || '—'}</p>
                 <p><span className="text-muted-foreground">Course:</span> {detailStudent.course_name || detailStudent.course || '—'}</p>
                 <p><span className="text-muted-foreground">Batch:</span> {detailStudent.batch_name || detailStudent.batch || '—'}</p>
               </div>

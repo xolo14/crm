@@ -11,17 +11,15 @@ import { getApiBase } from "@/lib/apiBase";
 const API_BASE = getApiBase();
 
 function getToken() {
-  return localStorage.getItem("auth_token");
+  return null;
 }
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
+  const res = await fetch(`${API_BASE}${url}`, { ...options, headers, credentials: "include" });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = typeof data?.detail === "string" ? data.detail : "";
@@ -32,10 +30,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
 }
 
 async function requestMultipart<T>(url: string, formData: FormData): Promise<T> {
-  const token = getToken();
-  const headers: Record<string, string> = {};
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API_BASE}${url}`, { method: "POST", body: formData, headers });
+  const res = await fetch(`${API_BASE}${url}`, { method: "POST", body: formData, credentials: "include" });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = typeof data?.detail === "string" ? data.detail : "";

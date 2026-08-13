@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { format, endOfDay } from 'date-fns';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api } from '@/lib/api';
@@ -83,33 +84,45 @@ export default function MyReferrals() {
     return reps.length > 0 ? reps : teamMembers;
   }, [teamMembers]);
 
-  // Date-filtered data
+  // Date-filtered data (inclusive end-of-day for custom ranges)
   const dateFilteredLeads = useMemo(() => {
     if (!dateRange.from && !dateRange.to) return allLeads;
-    return allLeads.filter(l => {
+    const toEnd = dateRange.to ? endOfDay(dateRange.to) : null;
+    return allLeads.filter((l) => {
       const d = parseServerDateTime(l.created_at);
       if (!d) return true;
       if (dateRange.from && d.getTime() < dateRange.from.getTime()) return false;
-      if (dateRange.to && d.getTime() > dateRange.to.getTime()) return false;
+      if (toEnd && d.getTime() > toEnd.getTime()) return false;
       return true;
     });
   }, [allLeads, dateRange]);
 
   const dateFilteredReports = useMemo(() => {
     if (!dateRange.from && !dateRange.to) return dailyReports;
-    return dailyReports.filter(r => {
+    const toEnd = dateRange.to ? endOfDay(dateRange.to) : null;
+    return dailyReports.filter((r) => {
       const d = parseServerDateTime(r.report_date);
       if (!d) return true;
       if (dateRange.from && d.getTime() < dateRange.from.getTime()) return false;
-      if (dateRange.to && d.getTime() > dateRange.to.getTime()) return false;
+      if (toEnd && d.getTime() > toEnd.getTime()) return false;
       return true;
     });
   }, [dailyReports, dateRange]);
 
+  const periodLabel = useMemo(() => {
+    if (!dateRange.from && !dateRange.to) return 'All time';
+    if (dateRange.from && dateRange.to) {
+      return `${format(dateRange.from, 'MMM d, yyyy')} – ${format(dateRange.to, 'MMM d, yyyy')}`;
+    }
+    if (dateRange.from) return `From ${format(dateRange.from, 'MMM d, yyyy')}`;
+    if (dateRange.to) return `Until ${format(dateRange.to, 'MMM d, yyyy')}`;
+    return 'All time';
+  }, [dateRange]);
+
   const repStats = useMemo(() => {
     const stats: Record<string, {
       name: string; email: string; userId: string;
-      totalAssigned: number; formGenerated: number; converted: number; lost: number; inPipeline: number;
+      totalAssigned: number; formGenerated: number; converted: number; lost: number; contacted: number; newLeads: number;
       totalCalls: number; totalFollowups: number; totalDemos: number; totalConversions: number; reportCount: number;
     }> = {};
 
@@ -118,7 +131,7 @@ export default function MyReferrals() {
         name: p.full_name || p.email || 'Unknown',
         email: p.email || '',
         userId: p.user_id,
-        totalAssigned: 0, formGenerated: 0, converted: 0, lost: 0, inPipeline: 0,
+        totalAssigned: 0, formGenerated: 0, converted: 0, lost: 0, contacted: 0, newLeads: 0,
         totalCalls: 0, totalFollowups: 0, totalDemos: 0, totalConversions: 0, reportCount: 0,
       };
     }
@@ -129,7 +142,8 @@ export default function MyReferrals() {
         stats[lead.assigned_to].totalAssigned++;
         if (lead.status === 'converted' || lead.status === 'enrolled') stats[lead.assigned_to].converted++;
         else if (lead.status === 'lost') stats[lead.assigned_to].lost++;
-        else if (['interested', 'demo_scheduled', 'demo_attended', 'considering'].includes(lead.status)) stats[lead.assigned_to].inPipeline++;
+        else if (lead.status === 'contacted') stats[lead.assigned_to].contacted++;
+        else if (lead.status === 'new' || !lead.status) stats[lead.assigned_to].newLeads++;
       }
       // Form generated leads
       if (lead.referred_by) {
@@ -255,11 +269,19 @@ export default function MyReferrals() {
         {/* Team Overview Tab */}
         <TabsContent value="overview">
           <Card className="border-border/50 shadow-none">
-            <CardHeader><CardTitle className="text-base font-semibold flex items-center gap-2"><Users className="h-4 w-4" />Rep Performance Summary</CardTitle></CardHeader>
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0">
+              <div>
+                <CardTitle className="text-base font-semibold flex items-center gap-2">
+                  <Users className="h-4 w-4" />Rep Performance Summary
+                </CardTitle>
+                <p className="text-xs text-muted-foreground mt-1">Period: {periodLabel}</p>
+              </div>
+              <DateRangeFilter value={dateRange} onChange={setDateRange} />
+            </CardHeader>
             <CardContent>
               {isMobile ? (
                 <div className="space-y-3">
-                  {filteredStats.length === 0 ? <p className="text-center py-8 text-muted-foreground text-sm">No data</p> : filteredStats.map((rep, i) => (
+                  {filteredStats.length === 0 ? <p className="text-center py-8 text-muted-foreground text-sm">No data</p> : filteredStats.map((rep) => (
                     <div key={rep.userId} className="border border-border/50 rounded-lg p-3">
                       <div className="flex items-center justify-between mb-2">
                         <p className="font-semibold text-sm">{rep.name}</p>
@@ -270,6 +292,8 @@ export default function MyReferrals() {
                       <div className="grid grid-cols-2 gap-1 text-xs">
                         <span className="text-muted-foreground">Assigned: <span className="font-medium text-foreground">{rep.totalAssigned}</span></span>
                         <span className="text-muted-foreground">Form: <span className="font-medium text-foreground">{rep.formGenerated}</span></span>
+                        <span className="text-muted-foreground">New: <span className="font-medium text-blue-600">{rep.newLeads}</span></span>
+                        <span className="text-muted-foreground">Contacted: <span className="font-medium text-amber-600">{rep.contacted}</span></span>
                         <span className="text-muted-foreground">Enroll: <span className="font-medium text-green-600">{rep.converted}</span></span>
                         <span className="text-muted-foreground">Lost: <span className="font-medium text-red-500">{rep.lost}</span></span>
                         <span className="text-muted-foreground">Calls: <span className="font-medium text-foreground">{rep.totalCalls}</span></span>
@@ -286,7 +310,8 @@ export default function MyReferrals() {
                       <TableHead>Name</TableHead>
                       <TableHead className="text-center">Assigned</TableHead>
                       <TableHead className="text-center">Form Leads</TableHead>
-                      <TableHead className="text-center">In Pipeline</TableHead>
+                      <TableHead className="text-center">New</TableHead>
+                      <TableHead className="text-center">Contacted</TableHead>
                       <TableHead className="text-center">Enroll</TableHead>
                       <TableHead className="text-center">Lost</TableHead>
                       <TableHead className="text-center">Calls</TableHead>
@@ -297,7 +322,7 @@ export default function MyReferrals() {
                   </TableHeader>
                   <TableBody>
                     {filteredStats.length === 0 ? (
-                      <TableRow><TableCell colSpan={11} className="text-center py-8 text-muted-foreground">No data</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={12} className="text-center py-8 text-muted-foreground">No data</TableCell></TableRow>
                     ) : filteredStats.map((rep, i) => (
                       <TableRow key={rep.userId}>
                         <TableCell className="text-muted-foreground text-sm">{i + 1}</TableCell>
@@ -309,7 +334,8 @@ export default function MyReferrals() {
                         </TableCell>
                         <TableCell className="text-center font-medium">{rep.totalAssigned}</TableCell>
                         <TableCell className="text-center"><Badge variant="secondary" className="text-xs">{rep.formGenerated}</Badge></TableCell>
-                        <TableCell className="text-center text-amber-600">{rep.inPipeline}</TableCell>
+                        <TableCell className="text-center text-blue-600 font-medium">{rep.newLeads}</TableCell>
+                        <TableCell className="text-center text-amber-600 font-medium">{rep.contacted}</TableCell>
                         <TableCell className="text-center text-green-600 font-semibold">{rep.converted}</TableCell>
                         <TableCell className="text-center text-red-500">{rep.lost}</TableCell>
                         <TableCell className="text-center">{rep.totalCalls}</TableCell>

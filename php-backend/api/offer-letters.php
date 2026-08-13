@@ -5,6 +5,13 @@ cors();
 
 $db = (new Database())->getConnection();
 offerLettersEnsurePdfPathColumn($db);
+try {
+    if (!syncpediaColumnExists($db, 'offer_letter_templates', 'mail_json')) {
+        $db->exec('ALTER TABLE offer_letter_templates ADD COLUMN mail_json JSON DEFAULT NULL');
+    }
+} catch (Throwable $e) {
+    /* ignore */
+}
 $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
@@ -90,6 +97,51 @@ function offerLetterAutoloadPath(): ?string {
 }
 
 /**
+ * Split multi-page offer templates (full HTML docs joined by <!-- PAGE_BREAK -->)
+ * into one printable document Dompdf can paginate.
+ */
+function offerLetterNormalizeMultiPageHtml(string $html): string {
+    $parts = preg_split('/<!--\s*PAGE_BREAK\s*-->/i', $html) ?: [];
+    $pages = [];
+    foreach ($parts as $part) {
+        $part = trim((string) $part);
+        if ($part !== '') {
+            $pages[] = $part;
+        }
+    }
+    if (count($pages) <= 1) {
+        return $html;
+    }
+
+    $styleChunks = [];
+    $sections = [];
+    foreach ($pages as $i => $page) {
+        if (preg_match_all('/<style[^>]*>([\s\S]*?)<\/style>/i', $page, $sm)) {
+            foreach ($sm[1] as $css) {
+                $css = trim((string) $css);
+                if ($css !== '') {
+                    $styleChunks[$css] = true;
+                }
+            }
+        }
+        $body = $page;
+        if (preg_match('/<body[^>]*>([\s\S]*?)<\/body>/i', $page, $bm)) {
+            $body = $bm[1];
+        }
+        $break = $i < count($pages) - 1 ? 'page-break-after: always;' : 'page-break-after: auto;';
+        $sections[] = '<div class="offer-print-page" style="width:210mm;height:297mm;position:relative;overflow:hidden;margin:0;background:#fff;'
+            . $break . '">' . $body . '</div>';
+    }
+
+    return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'
+        . '@page{size:A4;margin:0;} html,body{margin:0;padding:0;}'
+        . implode("\n", array_keys($styleChunks))
+        . '</style></head><body>'
+        . implode("\n", $sections)
+        . '</body></html>';
+}
+
+/**
  * @return array{ok:bool,error?:string}
  */
 function offerLetterRenderHtmlToPdf(string $html, string $destAbsPath): array {
@@ -117,17 +169,17 @@ function offerLetterRenderHtmlToPdf(string $html, string $destAbsPath): array {
     }
     try {
         $options = new \Dompdf\Options();
-        $options->set('isRemoteEnabled', true);
+        $options->set('isRemoteEnabled', false);
         $options->set('isHtml5ParserEnabled', true);
         $base = realpath(__DIR__ . '/../');
         if (is_string($base) && $base !== '') {
             $options->setChroot($base);
         }
         $dompdf = new \Dompdf\Dompdf($options);
-        $wrapped = $html;
-        if (stripos($html, '<html') === false) {
+        $wrapped = offerLetterNormalizeMultiPageHtml($html);
+        if (stripos($wrapped, '<html') === false) {
             $wrapped = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{font-family: DejaVu Sans, sans-serif; font-size: 12px;}</style></head><body>'
-                . $html . '</body></html>';
+                . $wrapped . '</body></html>';
         }
         $dompdf->loadHtml($wrapped, 'UTF-8');
         $dompdf->setPaper('A4', 'portrait');
@@ -262,15 +314,31 @@ if ($method === 'POST') {
         $name = trim($input['template_name'] ?? '') ?: 'Untitled Template';
         $roleTitle = trim($input['role_title'] ?? '');
         $html = (string)($input['html_content'] ?? '');
+        $mailJson = null;
+        if (isset($input['mail_json'])) {
+            $mailJson = is_string($input['mail_json'])
+                ? $input['mail_json']
+                : json_encode($input['mail_json'], JSON_UNESCAPED_UNICODE);
+        }
         try {
-            $stmt = $db->prepare("INSERT INTO offer_letter_templates (id, template_name, role_title, html_content, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$id, $name, $roleTitle, $html, $status, $userId, $orgId]);
+            $stmt = $db->prepare("INSERT INTO offer_letter_templates (id, template_name, role_title, html_content, status, created_by, org_id, mail_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$id, $name, $roleTitle, $html, $status, $userId, $orgId, $mailJson]);
         } catch (Exception $e) {
             try {
-                $stmt = $db->prepare("INSERT INTO offer_letter_templates (id, template_name, role_title, html_content, status, created_by) VALUES (?, ?, ?, ?, ?, ?)");
-                $stmt->execute([$id, $name, $roleTitle, $html, $status, $userId]);
+                $stmt = $db->prepare("INSERT INTO offer_letter_templates (id, template_name, role_title, html_content, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                $stmt->execute([$id, $name, $roleTitle, $html, $status, $userId, $orgId]);
+                if ($mailJson !== null) {
+                    try {
+                        $db->prepare('UPDATE offer_letter_templates SET mail_json = ? WHERE id = ?')->execute([$mailJson, $id]);
+                    } catch (Throwable $e3) { /* ignore */ }
+                }
             } catch (Exception $e2) {
-                respond(['error' => 'Could not save template: ' . $e2->getMessage()], 500);
+                try {
+                    $stmt = $db->prepare("INSERT INTO offer_letter_templates (id, template_name, role_title, html_content, status, created_by) VALUES (?, ?, ?, ?, ?, ?)");
+                    $stmt->execute([$id, $name, $roleTitle, $html, $status, $userId]);
+                } catch (Exception $e4) {
+                    respond(['error' => 'Could not save template: ' . $e4->getMessage()], 500);
+                }
             }
         }
         respond(['id' => $id, 'message' => 'Template created'], 201);
@@ -470,6 +538,12 @@ if ($method === 'PUT') {
             $fields[] = "$f = ?";
             $params[] = $input[$f];
         }
+    }
+    if (array_key_exists('mail_json', $input)) {
+        $fields[] = 'mail_json = ?';
+        $params[] = is_string($input['mail_json'])
+            ? $input['mail_json']
+            : json_encode($input['mail_json'], JSON_UNESCAPED_UNICODE);
     }
     if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
 

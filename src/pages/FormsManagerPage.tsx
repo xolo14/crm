@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { DndContext, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { PublicFormShell, builderBrandFromState } from "@/components/forms/PublicFormShell";
 import { PublicFormFields } from "@/components/forms/PublicFormFields";
+import { PhoneNumberField } from "@/components/forms/PhoneNumberField";
 import { buildFormSections } from "@/components/forms/formBuilderTypes";
 import { FormDescriptionEditor } from "@/components/forms/FormDescriptionEditor";
 import { descriptionPlainPreview } from "@/components/forms/formDescriptionHtml";
@@ -21,18 +22,23 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, Briefcase, UserRound, MoreHorizontal, Pencil, Power } from "lucide-react";
+import { Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, MoreHorizontal, Pencil, Power } from "lucide-react";
 import { normalizeFormColor, parseFormMetaJson } from "@/components/forms/publicFormTypes";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormDetailDialog } from "@/components/forms/FormDetailDialog";
 import { FormPublishCampaignDialog } from "@/components/forms/FormPublishCampaignDialog";
 import { canManageFormCampaigns, parseFormCampaign, type FormCampaignConfig } from "@/components/forms/formCampaignTypes";
 import { isL3AdminRole, isMarketingFamilyRole, normalizeAppRole } from "@/lib/roleUtils";
 import { formsManagerCacheKey } from "@/lib/formsManagerCache";
+import DocFormsHubPage from "@/modules/docForms/DocFormsHub";
+import FormApiIntegrationsPage from "@/pages/FormApiIntegrationsPage";
+import { filterAndSortAssignRoster } from "@/lib/assignRoster";
 
 type LeadDestination = "form_leads" | "hr_leads";
+type FormMgmtTab = "leads" | "hr" | "doc" | "api";
 
 function formLeadDestinationFromMeta(meta: ReturnType<typeof parseFormMetaJson>): LeadDestination {
   const dest = String(meta?.lead_destination || "").trim().toLowerCase();
@@ -78,6 +84,8 @@ interface TeamMember {
   referral_code?: string | null;
   role?: string;
   reports_to_id?: string | null;
+  reports_to_name?: string | null;
+  is_active?: number | boolean;
   org_id?: string | null;
   org_name?: string | null;
 }
@@ -104,6 +112,7 @@ type QuestionType =
   | "checkbox_grid"
   | "date"
   | "time"
+  | "phone_number"
   | "section_break";
 
 interface FormField {
@@ -179,6 +188,7 @@ const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
   checkbox_grid: "Checkbox grid",
   date: "Date",
   time: "Time",
+  phone_number: "Number",
   section_break: "Section break",
 };
 
@@ -296,7 +306,7 @@ function mapLegacyFieldToQuestion(field: FormField): Question {
   const typeMap: Record<FieldType, QuestionType> = {
     text: "short_answer",
     email: "short_answer",
-    phone: "short_answer",
+    phone: "phone_number",
     textarea: "paragraph",
     select: "dropdown",
     number: "short_answer",
@@ -309,7 +319,12 @@ function mapLegacyFieldToQuestion(field: FormField): Question {
     required: !!field.required,
     description: "",
     options: field.options || [],
-    validation: field.type === "email" ? { kind: "regex", value: "email" } : undefined,
+    validation:
+      field.type === "email"
+        ? { kind: "regex", value: "email" }
+        : field.type === "number"
+          ? { kind: "number" }
+          : undefined,
   };
 }
 
@@ -318,11 +333,13 @@ function toLegacyFields(questions: Question[]): FormField[] {
     .filter((q) => q.type !== "section_break")
     .map((q, idx) => {
       const keyBase =
-        q.validation?.kind === "regex" && q.validation?.value === "email"
-          ? "email"
-          : /full\s*name/i.test(q.title || "")
-            ? "name"
-            : q.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `field_${idx + 1}`;
+        q.type === "phone_number"
+          ? "phone"
+          : q.validation?.kind === "regex" && q.validation?.value === "email"
+            ? "email"
+            : /full\s*name/i.test(q.title || "")
+              ? "name"
+              : q.title.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `field_${idx + 1}`;
       const typeMap: Record<QuestionType, FieldType> = {
         short_answer:
           q.validation?.kind === "regex" && q.validation?.value === "email"
@@ -340,6 +357,7 @@ function toLegacyFields(questions: Question[]): FormField[] {
         checkbox_grid: "textarea",
         date: "date",
         time: "text",
+        phone_number: "phone",
         section_break: "text",
       };
       return {
@@ -376,10 +394,10 @@ function SortableQuestionCard({
       ref={setNodeRef}
       style={style}
       className={cn(
-        "group relative rounded-2xl border bg-white/92 backdrop-blur-sm",
-        "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_rgba(0,0,0,0.04)]",
+        "group relative rounded-2xl border border-border bg-card/95 backdrop-blur-sm",
+        "shadow-sm dark:shadow-none",
         "transition-all duration-200 hover:-translate-y-0.5",
-        selected && "border-l-4 border-l-[#1D9E75] shadow-[0_0_0_4px_rgba(29,158,117,0.08),0_16px_40px_rgba(0,0,0,0.08)]"
+        selected && "border-l-4 border-l-[#1D9E75] shadow-[0_0_0_4px_rgba(29,158,117,0.12)] dark:shadow-[0_0_0_4px_rgba(29,158,117,0.2)]"
       )}
       onClick={onSelect}
     >
@@ -392,16 +410,19 @@ function SortableQuestionCard({
             value={question.title}
             onChange={(e) => onUpdate({ title: e.target.value })}
             placeholder="Question"
-            className="bg-slate-50 border-transparent focus:bg-white focus:border-[#1D9E75] focus-visible:ring-4 focus-visible:ring-emerald-100"
+            className="bg-muted/60 border-transparent text-foreground placeholder:text-muted-foreground focus:bg-background focus:border-[#1D9E75] focus-visible:ring-4 focus-visible:ring-emerald-500/20"
           />
           <Select value={question.type} onValueChange={(v) => onUpdate(normalizeQuestionForType(question, v as QuestionType))}>
-            <SelectTrigger className="w-[190px]"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-[190px] bg-background"><SelectValue /></SelectTrigger>
             <SelectContent>{Object.entries(QUESTION_TYPE_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent>
           </Select>
         </div>
         <div className="text-sm text-muted-foreground">
           {question.type === "short_answer" && <Input disabled placeholder="Short answer text" />}
           {question.type === "paragraph" && <Textarea disabled placeholder="Long answer text" />}
+          {question.type === "phone_number" && (
+            <PhoneNumberField value="" onChange={() => {}} disabled publicStyle={false} placeholder="10-digit number" />
+          )}
           {(question.type === "multiple_choice" || question.type === "checkboxes" || question.type === "dropdown") && (
             <div className="space-y-1.5">
               {(question.options || []).map((opt, idx) => (
@@ -530,6 +551,7 @@ function isRetiredGlobalBuiltinLeadForm(form: LeadForm): boolean {
 export default function FormsManagerPage() {
   const { role, profile, user, organization } = useAuth();
   const { toast } = useToast();
+  const [searchParams] = useSearchParams();
   const formsCacheKey = useMemo(
     () => formsManagerCacheKey(String(role || ""), organization?.id),
     [role, organization?.id],
@@ -549,7 +571,13 @@ export default function FormsManagerPage() {
   const [history, setHistory] = useState<FormBuilderState[]>([]);
   const [future, setFuture] = useState<FormBuilderState[]>([]);
   const [backfillRunning, setBackfillRunning] = useState(false);
-  const [destinationDialogOpen, setDestinationDialogOpen] = useState(false);
+  const initialTab = (() => {
+    const t = String(searchParams.get("tab") || "").trim().toLowerCase();
+    if (t === "hr" || t === "doc" || t === "api" || t === "leads") return t as FormMgmtTab;
+    return "leads";
+  })();
+  const [mgmtTab, setMgmtTab] = useState<FormMgmtTab>(initialTab);
+  const [docCreateSignal, setDocCreateSignal] = useState(0);
   const [detailForm, setDetailForm] = useState<LeadForm | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [publishCampaignOpen, setPublishCampaignOpen] = useState(false);
@@ -565,21 +593,37 @@ export default function FormsManagerPage() {
 
   const isSuperAdmin = role === "super_admin";
   const normalizedRole = normalizeAppRole(role);
-  // Managers can assign personalized form links to their downline (API enforces team scope).
-  const canAssignForms =
+  const isManager = normalizedRole === "manager";
+  const isOrgAdmin =
     role === "super_admin" ||
     role === "admin" ||
-    isL3AdminRole(normalizedRole) ||
-    normalizedRole === "manager";
+    isL3AdminRole(normalizedRole);
+  // Admins + managers can assign. L1 (marketing etc.) can create but not assign.
+  const canAssignForms = isOrgAdmin || isManager;
   const canEditForms =
     canAssignForms ||
     isL3AdminRole(normalizedRole) ||
     isMarketingFamilyRole(normalizedRole) ||
-    normalizedRole === "manager";
-  const tableColCount = 5 + (isSuperAdmin ? 1 : 0) + (canAssignForms ? 2 : 0) + (canEditForms ? 1 : 0);
+    isManager;
+  // Destination column omitted on Leads/HR tabs (already filtered by destination).
+  const tableColCount = 4 + (isSuperAdmin ? 1 : 0) + (canAssignForms ? 2 : 0) + (canEditForms ? 1 : 0);
   const canAccess = canEditForms;
   const isMarketing = normalizeAppRole(role) === "marketing";
   const myReferralCode = String(profile?.referral_code ?? "").trim();
+  const myUserId = String(user?.id || "").trim();
+
+  /** Manager: only forms they created. Admin/org/super_admin: any form they can see. */
+  const canAssignOnForm = useCallback(
+    (form: LeadForm) => {
+      if (!canAssignForms) return false;
+      if (isOrgAdmin) return true;
+      if (isManager) {
+        return String(form.created_by || "").trim() === myUserId;
+      }
+      return false;
+    },
+    [canAssignForms, isOrgAdmin, isManager, myUserId],
+  );
 
   const baseApplyUrl = useMemo(() => `${window.location.origin}/apply`, []);
 
@@ -613,13 +657,11 @@ export default function FormsManagerPage() {
   const canEditFormRow = useCallback(
     (form: LeadForm) => {
       if (!canEditForms) return false;
-      if (canAssignForms) return true;
-      if (isL3AdminRole(normalizedRole)) {
-        return String(form.org_id || "") === String(organization?.id || "");
-      }
-      return String(form.created_by || "") === String(user?.id || "");
+      if (isOrgAdmin) return true;
+      // Manager / marketing / others: edit only forms they created (assigned forms are view/copy).
+      return String(form.created_by || "") === myUserId;
     },
-    [canEditForms, canAssignForms, normalizedRole, organization?.id, user?.id],
+    [canEditForms, isOrgAdmin, myUserId],
   );
 
   const canManageCampaignsForForm = useCallback(
@@ -706,12 +748,21 @@ export default function FormsManagerPage() {
     }
   }
 
-  function openCreate() {
-    setDestinationDialogOpen(true);
+  function openCreateForTab() {
+    if (mgmtTab === "leads") {
+      startCreateWithDestination("form_leads");
+      return;
+    }
+    if (mgmtTab === "hr") {
+      startCreateWithDestination("hr_leads");
+      return;
+    }
+    if (mgmtTab === "doc") {
+      setDocCreateSignal((n) => n + 1);
+    }
   }
 
   function startCreateWithDestination(leadDestination: LeadDestination) {
-    setDestinationDialogOpen(false);
     setEditing(null);
     editingRef.current = null;
     const next = {
@@ -1022,6 +1073,23 @@ export default function FormsManagerPage() {
     }
   }
 
+  async function duplicateForm(form: LeadForm) {
+    try {
+      const res = (await api.forms.duplicate(form.id)) as { name?: string; slug?: string };
+      toast({
+        title: "Form duplicated",
+        description: res?.name ? `Created “${res.name}”.` : "A copy was created.",
+      });
+      await bootstrap();
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Duplicate failed",
+        description: error?.message || "Try again.",
+      });
+    }
+  }
+
   async function updateAssignments(formId: string, nextIds: string[]) {
     try {
       await api.forms.assignMembers(formId, nextIds);
@@ -1033,11 +1101,6 @@ export default function FormsManagerPage() {
     }
   }
 
-  function isSalesRepRole(role?: string): boolean {
-    const normalized = String(role || "").toLowerCase();
-    return normalized === "sales_representative";
-  }
-
   function isValidMemberId(memberId?: string | null): boolean {
     const id = String(memberId || "").trim();
     // UUIDv4-ish generic matcher used by users.id in this app
@@ -1045,11 +1108,30 @@ export default function FormsManagerPage() {
   }
 
   function isGreenChecked(checked: boolean): string {
-    return `mr-2 inline-block h-3.5 w-3.5 rounded-[3px] border ${checked ? "border-[#1D9E75] bg-[#1D9E75]" : "border-gray-400 bg-white"}`;
+    return `mr-2 inline-block h-3.5 w-3.5 rounded-[3px] border ${checked ? "border-[#1D9E75] bg-[#1D9E75]" : "border-muted-foreground/40 bg-background"}`;
   }
 
   function getAssignableMembersForForm(_form: LeadForm): TeamMember[] {
-    return teamMembers.filter((m) => isValidMemberId(m.id));
+    // Admin: full org roster from team.list. Manager: all downline (API already scopes team.list).
+    return filterAndSortAssignRoster(
+      teamMembers.map((m) => ({
+        ...m,
+        is_active: m.is_active === false || m.is_active === 0 ? 0 : 1,
+      })),
+      { excludeUserId: myUserId },
+    );
+  }
+
+  function memberRoleLabel(role?: string): string {
+    const r = String(role || "").toLowerCase();
+    if (r === "manager") return "Manager";
+    if (r === "sales_representative") return "Sales Rep";
+    if (r.startsWith("marketing")) return "Marketing";
+    if (r === "hr") return "HR";
+    if (r === "trainer") return "Trainer";
+    if (r === "finance") return "Finance";
+    if (r === "admin" || r === "org") return "Admin";
+    return r ? r.replace(/_/g, " ") : "Member";
   }
 
   async function updateAssignmentsForForm(form: LeadForm, nextIds: string[]) {
@@ -1107,15 +1189,15 @@ export default function FormsManagerPage() {
 
   if (builderOpen) {
     return (
-      <div className="min-h-[calc(100dvh-120px)] bg-[linear-gradient(to_bottom,#f4f1ff_0%,#f7f8fc_100%)] -mx-4 sm:-mx-6 lg:-mx-8" onClick={() => setSelectedQuestionId(null)}>
-        <div className="sticky top-0 z-20 h-[72px] backdrop-blur-xl bg-white/80 border-b border-[#ebecef]">
+      <div className="min-h-[calc(100dvh-120px)] bg-muted/40 dark:bg-background -mx-4 sm:-mx-6 lg:-mx-8" onClick={() => setSelectedQuestionId(null)}>
+        <div className="sticky top-0 z-20 h-[72px] backdrop-blur-xl bg-background/90 border-b border-border">
           <div className="px-4 sm:px-6 h-full flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 min-w-0">
               <Button variant="ghost" size="sm" onClick={() => setBuilderOpen(false)}><ArrowLeft className="h-4 w-4 mr-1" />Back</Button>
               <Button variant="ghost" size="sm" onClick={undoBuilder} disabled={history.length === 0}>Undo</Button>
               <Button variant="ghost" size="sm" onClick={redoBuilder} disabled={future.length === 0}>Redo</Button>
               <div className="min-w-0">
-                <Input className="h-8 w-64 bg-transparent border-none shadow-none text-sm font-semibold" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value } }))} />
+                <Input className="h-8 w-64 bg-transparent border-none shadow-none text-sm font-semibold text-foreground" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value } }))} />
                 <p className="text-[11px] text-muted-foreground px-3">Last edited just now</p>
               </div>
             </div>
@@ -1143,10 +1225,10 @@ export default function FormsManagerPage() {
             {builderTab === "questions" && (
               <div className="max-w-[720px] mx-auto space-y-4" onClick={(e) => e.stopPropagation()}>
                 <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-                <Card className="rounded-2xl bg-white/90 backdrop-blur-sm shadow-[0_1px_2px_rgba(0,0,0,0.04),0_12px_32px_rgba(0,0,0,0.06)] overflow-hidden border border-black/5">
+                <Card className="rounded-2xl bg-card backdrop-blur-sm shadow-sm dark:shadow-none overflow-hidden border border-border">
                   <div className="h-[10px] rounded-t-2xl" style={{ background: "linear-gradient(90deg,#1D9E75,#35c997)" }} />
                   <CardContent className="p-6 space-y-3">
-                    <Input className="text-[2rem] leading-tight font-bold tracking-[-0.03em] border-0 shadow-none px-0 focus-visible:ring-0 bg-transparent" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value } }))} placeholder="Untitled Form" />
+                    <Input className="text-[2rem] leading-tight font-bold tracking-[-0.03em] border-0 shadow-none px-0 focus-visible:ring-0 bg-transparent text-foreground placeholder:text-muted-foreground" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value } }))} placeholder="Untitled Form" />
                     <div className="flex items-start gap-2">
                       <div className="flex-1 min-w-0">
                         <FormDescriptionEditor
@@ -1193,7 +1275,7 @@ export default function FormsManagerPage() {
                           />
                           {selectedQuestionId === q.id ? (
                             <div className="absolute right-[-72px] mt-[-120px] hidden xl:block">
-                              <Card className="rounded-2xl w-[52px] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.12)] border-0">
+                              <Card className="rounded-2xl w-[52px] bg-card shadow-md border border-border">
                                 <CardContent className="p-2 space-y-2">
                                   <Button variant="ghost" size="icon" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "short_answer" }))}><Plus className="h-4 w-4" /></Button>
                                   <Button variant="ghost" size="icon" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "section_break" }))}>T</Button>
@@ -1210,9 +1292,9 @@ export default function FormsManagerPage() {
                   </SortableContext>
                 </DndContext>
                 {builder.questions.length === 0 ? (
-                  <Card className="rounded-2xl border-dashed border-2 bg-white/70">
+                  <Card className="rounded-2xl border-dashed border-2 border-border bg-card/60">
                     <CardContent className="py-10 text-center">
-                      <p className="font-medium">Start building your form</p>
+                      <p className="font-medium text-foreground">Start building your form</p>
                       <p className="text-sm text-muted-foreground mt-1">Drag blocks here or add your first question.</p>
                     </CardContent>
                   </Card>
@@ -1513,7 +1595,7 @@ export default function FormsManagerPage() {
           <div className="col-span-3 hidden lg:block">
             <AnimatePresence>
             <motion.div initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 14 }} transition={{ duration: 0.22 }}>
-            <Card className="rounded-none sticky top-20 bg-white/70 backdrop-blur-xl border-l border-black/5 border-y-0 border-r-0 shadow-none">
+            <Card className="rounded-none sticky top-20 bg-card/95 backdrop-blur-xl border-l border-border border-y-0 border-r-0 shadow-none">
               <CardHeader><CardTitle className="text-sm">Field Settings</CardTitle></CardHeader>
               <CardContent className="space-y-3">
                 {!selectedQuestion ? <p className="text-xs text-muted-foreground">Select a question card to edit settings.</p> : (
@@ -1526,6 +1608,11 @@ export default function FormsManagerPage() {
                     </div>
                     <div className="flex items-center justify-between"><span className="text-sm">Required</span><Checkbox checked={selectedQuestion.required} onCheckedChange={(c) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { required: c === true } })} /></div>
                     <div><Label className="text-xs">Description</Label><Textarea value={selectedQuestion.description || ""} onChange={(e) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { description: e.target.value } })} /></div>
+                    {selectedQuestion.type === "phone_number" ? (
+                      <p className="text-xs text-muted-foreground">
+                        Shows a country-code dropdown (with flag) and a 10-digit number input on the public form.
+                      </p>
+                    ) : null}
                     {selectedQuestion.type === "short_answer" ? (
                       <div className="space-y-2">
                         <Label className="text-xs">Validation rule</Label>
@@ -1631,45 +1718,6 @@ export default function FormsManagerPage() {
 
   return (
     <div className="space-y-4">
-      <Dialog open={destinationDialogOpen} onOpenChange={setDestinationDialogOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Where should submissions go?</DialogTitle>
-            <DialogDescription>
-              Choose once when creating the form. You can change this later in Settings.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <button
-              type="button"
-              className="rounded-lg border p-4 text-left hover:border-primary hover:bg-primary/5 transition-colors"
-              onClick={() => startCreateWithDestination("form_leads")}
-            >
-              <div className="flex items-center gap-2 font-medium">
-                <UserRound className="h-4 w-4 text-primary" />
-                Form Leads
-              </div>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Course inquiries, contact forms, and sales leads. Shows in Leads → Form Leads.
-              </p>
-            </button>
-            <button
-              type="button"
-              className="rounded-lg border p-4 text-left hover:border-primary hover:bg-primary/5 transition-colors"
-              onClick={() => startCreateWithDestination("hr_leads")}
-            >
-              <div className="flex items-center gap-2 font-medium">
-                <Briefcase className="h-4 w-4 text-primary" />
-                HR Leads
-              </div>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Job applications and hiring. Shows in Leads → HR Leads with resume preview.
-              </p>
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
       <FormDetailDialog
         open={detailOpen}
         onOpenChange={setDetailOpen}
@@ -1694,26 +1742,13 @@ export default function FormsManagerPage() {
         onConfirm={publishWithCampaign}
       />
 
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Form Management</h1>
-          <p className="text-sm text-muted-foreground">
-            {canAssignForms
-              ? "Create/edit forms and assign personalized form links to team members."
-              : "Create and edit your forms. Copy link includes your referral code so leads appear in My Leads."}
-          </p>
-        </div>
-        {canEditForms ? (
-          <div className="flex items-center gap-2">
-            <Button variant="outline" asChild>
-              <Link to="/form-api-integrations">Form API Integrations</Link>
-            </Button>
-            <Button onClick={openCreate} className="gap-1.5">
-              <Plus className="h-4 w-4" />
-              New Form
-            </Button>
-          </div>
-        ) : null}
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Form Management</h1>
+        <p className="text-sm text-muted-foreground">
+          {canAssignForms
+            ? "Create/edit forms and assign personalized form links to team members."
+            : "Create and edit your forms. Copy link includes your referral code so leads appear in My Leads."}
+        </p>
       </div>
 
       {isMarketing && !myReferralCode ? (
@@ -1722,19 +1757,60 @@ export default function FormsManagerPage() {
         </p>
       ) : null}
 
+      <Tabs value={mgmtTab} onValueChange={(v) => setMgmtTab(v as FormMgmtTab)}>
+        <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1">
+          <TabsTrigger value="leads">Leads Form</TabsTrigger>
+          <TabsTrigger value="hr">HR Form</TabsTrigger>
+          <TabsTrigger value="doc">Certificate & Offer Letter Form</TabsTrigger>
+          <TabsTrigger value="api">Form API</TabsTrigger>
+        </TabsList>
+
+        {canEditForms && (mgmtTab === "leads" || mgmtTab === "hr" || mgmtTab === "doc") ? (
+          <div className="mt-3 flex justify-end">
+            <Button onClick={openCreateForTab} className="gap-1.5">
+              <Plus className="h-4 w-4" />
+              New Form
+            </Button>
+          </div>
+        ) : null}
+
+        <TabsContent value="leads" className="mt-4 space-y-4">
+          {renderLeadFormsTable("form_leads")}
+        </TabsContent>
+        <TabsContent value="hr" className="mt-4 space-y-4">
+          {renderLeadFormsTable("hr_leads")}
+        </TabsContent>
+        <TabsContent value="doc" className="mt-4">
+          <DocFormsHubPage embedded createSignal={docCreateSignal} />
+        </TabsContent>
+        <TabsContent value="api" className="mt-4">
+          <FormApiIntegrationsPage embedded />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+
+  function renderLeadFormsTable(destination: LeadDestination) {
+    const rows = forms.filter(
+      (f) => formLeadDestinationFromMeta(parseFormMetaJson(f.meta_json)) === destination,
+    );
+    const emptyLabel =
+      destination === "hr_leads"
+        ? "No HR forms yet. Create your first HR form."
+        : "No leads forms yet. Create your first leads form.";
+    return (
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-base">Forms</CardTitle>
+          <CardTitle className="text-base">{destination === "hr_leads" ? "HR Forms" : "Leads Forms"}</CardTitle>
         </CardHeader>
         <CardContent className="px-0 sm:px-6">
           <div className="w-full overflow-x-auto">
           <Table className="w-full min-w-0 table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead className={canAssignForms ? "w-[22%]" : "w-[28%]"}>Name</TableHead>
-                {isSuperAdmin ? <TableHead className="w-[12%]">Organization</TableHead> : null}
-                <TableHead className="w-[10%]">Destination</TableHead>
-                <TableHead className="w-[8%]">Status</TableHead>
+                <TableHead className={canAssignForms ? "w-[24%]" : "w-[32%]"}>Name</TableHead>
+                {isSuperAdmin ? <TableHead className="w-[14%]">Organization</TableHead> : null}
+                <TableHead className="w-[10%]">Status</TableHead>
                 <TableHead className="w-[8%] text-right">Subs</TableHead>
                 <TableHead className="w-[8%]">Link</TableHead>
                 {canAssignForms ? <TableHead className="w-[10%]">Assign</TableHead> : null}
@@ -1743,23 +1819,19 @@ export default function FormsManagerPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {forms.length === 0 ? (
+              {rows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={tableColCount} className="text-center py-8 text-sm text-muted-foreground">
-                    No forms yet. Create your first form.
+                    {emptyLabel}
                   </TableCell>
                 </TableRow>
               ) : (
-                forms.map((form) => {
+                rows.map((form) => {
                   const isOn = toBool(form.is_active);
                   const directLink = buildApplyLink(form.slug);
                   const assigned = assignmentsByForm[form.id] || [];
                   const selectedIds = assigned.map((a) => a.member_id);
                   const assignableMembers = getAssignableMembersForForm(form);
-                  const salesManagers = assignableMembers.filter((m) => String(m.role || "").toLowerCase() === "manager");
-                  const managerIds = new Set(salesManagers.map((l) => l.id));
-                  const standaloneSalesReps = assignableMembers.filter((m) => isSalesRepRole(m.role) && (!m.reports_to_id || !managerIds.has(String(m.reports_to_id))));
-                  const leadDest = formLeadDestinationFromMeta(parseFormMetaJson(form.meta_json));
                   return (
                     <TableRow
                       key={form.id}
@@ -1786,11 +1858,6 @@ export default function FormsManagerPage() {
                         </TableCell>
                       ) : null}
                       <TableCell className="align-top">
-                        <Badge variant={leadDest === "hr_leads" ? "secondary" : "default"} className="text-[10px] whitespace-nowrap">
-                          {leadDest === "hr_leads" ? "HR Leads" : "Form Leads"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="align-top">
                         <Badge variant={isOn ? "default" : "secondary"}>{isOn ? "Active" : "Inactive"}</Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums align-top">
@@ -1809,6 +1876,7 @@ export default function FormsManagerPage() {
                       </TableCell>
                       {canAssignForms ? (
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
+                        {canAssignOnForm(form) ? (
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2">
@@ -1820,94 +1888,53 @@ export default function FormsManagerPage() {
                             align="start"
                             side="bottom"
                             sideOffset={6}
-                            className="w-72 max-h-80 overflow-y-auto"
+                            className="w-80 max-h-80 overflow-y-auto"
                           >
-                            <DropdownMenuLabel>Select Team Members</DropdownMenuLabel>
+                            <DropdownMenuLabel>
+                              {isManager ? "Select downline members" : "Select team members"}
+                            </DropdownMenuLabel>
                             <DropdownMenuSeparator />
-                              {salesManagers.map((manager) => {
-                                const reps = assignableMembers.filter((m) => isSalesRepRole(m.role) && m.reports_to_id === manager.id);
-                                const autoAssignIds = reps.map((r) => r.id);
-                                const checked = autoAssignIds.length > 0 && autoAssignIds.every((id) => selectedIds.includes(id));
+                            {assignableMembers.length === 0 ? (
+                              <p className="px-2 py-1 text-xs text-muted-foreground">
+                                {isManager ? "No downline members found." : "No assignable members found."}
+                              </p>
+                            ) : (
+                              assignableMembers.map((member) => {
+                                const checked = selectedIds.includes(member.id);
                                 return (
-                                  <div key={`manager-group-${manager.id}`} className="px-1 py-1.5">
-                                    <DropdownMenuItem
-                                      className="pl-2"
-                                      onSelect={(e) => {
-                                        e.preventDefault();
-                                        const ids = new Set(selectedIds);
-                                        if (checked) autoAssignIds.forEach((id) => ids.delete(id));
-                                        else autoAssignIds.forEach((id) => ids.add(id));
-                                        void updateAssignmentsForForm(form, Array.from(ids));
-                                      }}
-                                    >
-                                      <span
-                                        className={isGreenChecked(checked)}
-                                        title={checked ? "Assigned" : "Click to assign"}
-                                      />
-                                      Manager: {manager.full_name}
-                                    </DropdownMenuItem>
-                                    <div className="ml-4 mt-1 space-y-0.5 border-l border-border/70 pl-2">
-                                      {reps.length === 0 ? (
-                                        <p className="px-2 text-[11px] text-muted-foreground">No sales reps assigned</p>
-                                      ) : (
-                                        reps.map((rep) => {
-                                          const repChecked = selectedIds.includes(rep.id);
-                                          return (
-                                            <DropdownMenuItem
-                                              className="pl-2"
-                                              key={rep.id}
-                                              onSelect={(e) => {
-                                                e.preventDefault();
-                                                const ids = repChecked ? selectedIds.filter((id) => id !== rep.id) : [...selectedIds, rep.id];
-                                                void updateAssignmentsForForm(form, Array.from(new Set(ids)));
-                                              }}
-                                            >
-                                              <span
-                                                className={isGreenChecked(repChecked)}
-                                                title={repChecked ? "Assigned" : "Click to assign"}
-                                              />
-                                              ↳ {rep.full_name}
-                                            </DropdownMenuItem>
-                                          );
-                                        })
-                                      )}
-                                    </div>
-                                  </div>
+                                  <DropdownMenuItem
+                                    className="pl-2"
+                                    key={member.id}
+                                    onSelect={(e) => {
+                                      e.preventDefault();
+                                      const ids = checked
+                                        ? selectedIds.filter((id) => id !== member.id)
+                                        : [...selectedIds, member.id];
+                                      void updateAssignmentsForForm(form, Array.from(new Set(ids)));
+                                    }}
+                                  >
+                                    <span
+                                      className={isGreenChecked(checked)}
+                                      title={checked ? "Assigned" : "Click to assign"}
+                                    />
+                                    <span className="min-w-0 flex-1 truncate">
+                                      {member.full_name || member.email || "Member"}
+                                    </span>
+                                    <span className="ml-2 shrink-0 text-[10px] text-muted-foreground capitalize">
+                                      {memberRoleLabel(member.role)}
+                                      {member.reports_to_name ? ` · ${member.reports_to_name}` : ""}
+                                    </span>
+                                  </DropdownMenuItem>
                                 );
-                              })}
-                              {standaloneSalesReps.length > 0 ? (
-                                <>
-                                  <DropdownMenuSeparator />
-                                  <DropdownMenuLabel>Standalone Sales Reps</DropdownMenuLabel>
-                                  {standaloneSalesReps.map((rep) => {
-                                    const checked = selectedIds.includes(rep.id);
-                                    return (
-                                      <DropdownMenuItem
-                                        className="pl-2"
-                                        key={rep.id}
-                                        onSelect={(e) => {
-                                          e.preventDefault();
-                                          const ids = checked ? selectedIds.filter((id) => id !== rep.id) : [...selectedIds, rep.id];
-                                          void updateAssignmentsForForm(form, Array.from(new Set(ids)));
-                                        }}
-                                      >
-                                        <span
-                                          className={isGreenChecked(checked)}
-                                          title={checked ? "Assigned" : "Click to assign"}
-                                        />
-                                        {rep.full_name}
-                                      </DropdownMenuItem>
-                                    );
-                                  })}
-                                </>
-                              ) : null}
-                              {salesManagers.length === 0 && standaloneSalesReps.length === 0 ? (
-                                <p className="px-2 py-1 text-xs text-muted-foreground">
-                                  No assignable members found.
-                                </p>
-                              ) : null}
+                              })
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
+                        ) : (
+                          <span className="text-xs text-muted-foreground" title="Only forms you created can be assigned">
+                            —
+                          </span>
+                        )}
                       </TableCell>
                       ) : null}
                       {canAssignForms ? (
@@ -1948,6 +1975,10 @@ export default function FormsManagerPage() {
                                 <Pencil className="h-3.5 w-3.5 mr-2" />
                                 Edit
                               </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => void duplicateForm(form)}>
+                                <Copy className="h-3.5 w-3.5 mr-2" />
+                                Duplicate
+                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => void toggleFormStatus(form)}>
                                 <Power className="h-3.5 w-3.5 mr-2" />
                                 {isOn ? "Set Inactive" : "Set Active"}
@@ -1976,8 +2007,7 @@ export default function FormsManagerPage() {
           </div>
         </CardContent>
       </Card>
-
-    </div>
-  );
+    );
+  }
 }
 

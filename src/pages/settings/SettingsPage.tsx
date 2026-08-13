@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
-import { getRoleLevel, isL3AdminRole, normalizeAppRole } from "@/lib/roleUtils";
+import { getRoleLevel, isL1OperationalRole, isL3AdminRole, normalizeAppRole } from "@/lib/roleUtils";
+import { cn } from "@/lib/utils";
 import { SettingsNav } from "@/components/settings/SettingsNav";
 import { AuditLogs } from "@/components/settings/sections/AuditLogs";
 import { ChangePassword } from "@/components/settings/sections/ChangePassword";
@@ -10,6 +12,7 @@ import { GeneralSettings } from "@/components/settings/sections/GeneralSettings"
 import { Localization } from "@/components/settings/sections/Localization";
 import { Security } from "@/components/settings/sections/Security";
 import { EmailSetup } from "@/components/settings/sections/EmailSetup";
+import { RazorpaySetup } from "@/components/settings/sections/RazorpaySetup";
 
 function PersonalProfileSettings() {
   return <GeneralSettings personalOnly />;
@@ -29,18 +32,24 @@ const limitedSectionComponents: Record<string, React.FC> = {
   password: ChangePassword,
 };
 
-/** Manager (L2) and L1 roles get General + Password Change only. */
-function usesLimitedSettings(role?: string | null): boolean {
+/** Manager (L2) and L1 roles get General + Password Change only. HR portal always limited. */
+function usesLimitedSettings(role?: string | null, pathname?: string): boolean {
+  if (pathname?.startsWith("/hr")) return true;
   const r = normalizeAppRole(role);
+  if (r === "hr" || isL1OperationalRole(r)) return true;
   if (r === "super_admin" || isL3AdminRole(r)) return false;
   return getRoleLevel(r) <= 2;
 }
 
 export default function SettingsPage() {
   const { user } = useAuth();
-  const limited = usesLimitedSettings(user?.role);
+  const location = useLocation();
+  const inHrPortal = location.pathname.startsWith("/hr");
+  const limited = usesLimitedSettings(user?.role, location.pathname);
   const normalizedRole = normalizeAppRole(user?.role);
-  const canSeeEmailSetup = normalizedRole === "super_admin" || isL3AdminRole(normalizedRole);
+  const canSeeEmailSetup =
+    !limited && (normalizedRole === "super_admin" || isL3AdminRole(normalizedRole));
+  const canSeeRazorpaySetup = canSeeEmailSetup;
   const sectionComponents = useMemo(
     () =>
       limited
@@ -48,8 +57,9 @@ export default function SettingsPage() {
         : {
             ...adminSectionComponents,
             ...(canSeeEmailSetup ? { "email-setup": EmailSetup } : {}),
+            ...(canSeeRazorpaySetup ? { "razorpay-setup": RazorpaySetup } : {}),
           },
-    [limited, canSeeEmailSetup],
+    [limited, canSeeEmailSetup, canSeeRazorpaySetup],
   );
   const [activeSection, setActiveSection] = useState<string>("general");
 
@@ -59,7 +69,9 @@ export default function SettingsPage() {
     }
   }, [activeSection, sectionComponents]);
 
-  const ActiveSection = sectionComponents[activeSection] ?? GeneralSettings;
+  const ActiveSection =
+    sectionComponents[activeSection] ??
+    (limited ? PersonalProfileSettings : GeneralSettings);
 
   return (
     <div className="min-w-0">
@@ -70,9 +82,22 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <div className="flex flex-col md:flex-row md:min-h-[calc(100dvh-160px)] gap-4 md:gap-6 md:rounded-lg md:border md:border-border md:bg-card md:overflow-hidden">
-        <SettingsNav active={activeSection} onChange={setActiveSection} limited={limited} showEmailSetup={canSeeEmailSetup} />
-        <div className="min-w-0 flex-1 md:overflow-y-auto md:p-6">
+      <div
+        className={cn(
+          "flex flex-col gap-4 md:gap-6",
+          !inHrPortal &&
+            "md:flex-row md:min-h-[calc(100dvh-160px)] md:rounded-lg md:border md:border-border md:bg-card md:overflow-hidden",
+        )}
+      >
+        <SettingsNav
+          active={activeSection}
+          onChange={setActiveSection}
+          limited={limited}
+          showEmailSetup={canSeeEmailSetup}
+          showRazorpaySetup={canSeeRazorpaySetup}
+          pillsOnly={inHrPortal}
+        />
+        <div className={cn("min-w-0 flex-1", !inHrPortal && "md:overflow-y-auto md:p-6")}>
           <ActiveSection />
         </div>
       </div>

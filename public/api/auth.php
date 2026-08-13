@@ -146,6 +146,7 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
         $tokenOrgId = null;
     }
     $token = createToken($user['id'], $user['role'], $tokenOrgId);
+    syncpediaIssueAuthCookie($token);
     unset($user['password_hash'], $user['is_active']);
 
     $org = null;
@@ -264,6 +265,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
         $hash = password_hash($newPass, PASSWORD_DEFAULT);
         $db->prepare("UPDATE users SET password_hash = ? WHERE id = ?")->execute([$hash, $row['user_id']]);
         syncpediaStoreUserLoginPassword($db, (string) $row['user_id'], null);
+        syncpediaBumpUserTokenVersion($db, (string) $row['user_id']);
         $db->prepare("DELETE FROM password_resets WHERE token = ?")->execute([$token]);
         respond(['message' => 'Your password has been changed successfully. You can sign in now.']);
     }
@@ -374,6 +376,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
         $stmt->execute([$id, $email, $hash, $fullName, $role, $referralCode, $orgId]);
 
         $token = createToken($id, $role, $orgId);
+        syncpediaIssueAuthCookie($token);
 
         respond([
             'token' => $token,
@@ -386,6 +389,11 @@ if ($method === 'POST' && isset($_GET['action'])) {
                 'org_id' => $orgId,
             ],
         ], 201);
+    }
+
+    if ($action === 'logout') {
+        syncpediaClearAuthCookie();
+        respond(['ok' => true, 'message' => 'Signed out']);
     }
 
     if ($action === 'change_password') {
@@ -407,7 +415,8 @@ if ($method === 'POST' && isset($_GET['action'])) {
         $newHash = password_hash($newPass, PASSWORD_DEFAULT);
         $db->prepare('UPDATE users SET password_hash = ? WHERE id = ?')->execute([$newHash, $tokenData['user_id']]);
         syncpediaStoreUserLoginPassword($db, (string) $tokenData['user_id'], null);
-        respond(['message' => 'Password updated successfully']);
+        syncpediaBumpUserTokenVersion($db, (string) $tokenData['user_id']);
+        respond(['message' => 'Password updated successfully. Please sign in again.']);
     }
 
     if ($action === 'update_profile') {
@@ -564,6 +573,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
         
         // Re-issue token with new org context
         $token = createToken($tokenData['user_id'], $tokenData['role'], $targetOrgId);
+        syncpediaIssueAuthCookie($token);
         
         $org = null;
         if ($targetOrgId) {

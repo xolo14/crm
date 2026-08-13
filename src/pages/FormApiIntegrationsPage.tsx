@@ -32,7 +32,7 @@ function parseMeta(raw: LeadForm["meta_json"]): Record<string, unknown> {
   return {};
 }
 
-export default function FormApiIntegrationsPage() {
+export default function FormApiIntegrationsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { toast } = useToast();
   const { role } = useAuth();
   const normalizedRole = normalizeAppRole(role);
@@ -74,9 +74,11 @@ export default function FormApiIntegrationsPage() {
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
           You do not have access to manage form API keys.{" "}
-          <Link to="/form-management" className="text-primary underline">
-            Back to Form Management
-          </Link>
+          {!embedded ? (
+            <Link to="/form-management" className="text-primary underline">
+              Back to Form Management
+            </Link>
+          ) : null}
         </CardContent>
       </Card>
     );
@@ -151,11 +153,15 @@ export default function FormApiIntegrationsPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Form API Integrations</h1>
+          {!embedded ? (
+            <h1 className="text-2xl font-bold tracking-tight">Form API Integrations</h1>
+          ) : (
+            <h2 className="text-base font-semibold tracking-tight">Form API Integrations</h2>
+          )}
           <p className="text-sm text-muted-foreground">
             Use per-form API keys for external Apply/Enroll buttons. Send the key in the
             <code className="mx-1 rounded bg-muted px-1 py-0.5">X-Form-Api-Key</code>
-            header, not in the URL.
+            header, not in the URL. All leads and HR forms are listed below.
           </p>
         </div>
         <Button variant="outline" onClick={() => void loadForms()} disabled={loading}>

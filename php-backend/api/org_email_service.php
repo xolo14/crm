@@ -178,21 +178,57 @@ function syncpediaOrganizationSlug(PDO $db, string $orgId): string
 }
 
 /**
- * Resolve tenant SMTP. Org account routes take priority; global SMTP is allowed
- * only for the Syncpedia organization.
+ * Build a resolved SMTP credential array from an org_smtp_accounts row.
  *
- * @return array{ok:bool,tenant?:bool,user?:string,pass?:string,from_name?:string,profiles?:array,error?:string}
+ * @param array<string, mixed> $row
+ * @return array{ok:true,tenant:true,user:string,pass:string,from_name:string,profiles:list<array{host:string,port:int,enc:string}>,slot:int,account_id:string}|null
  */
-function syncpediaResolveTenantSmtp(string $preferredGlobalAccount = 'support'): array
+function syncpediaOrgSmtpRowToResolved(array $row): ?array
+{
+    $email = strtolower(trim((string) ($row['email'] ?? '')));
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return null;
+    }
+    try {
+        $pass = syncpediaDecryptOrgSmtpSecret($row);
+    } catch (Throwable $e) {
+        error_log('[org-smtp] decrypt failed for ' . $email . ': ' . $e->getMessage());
+        return null;
+    }
+    if ($pass === '') {
+        return null;
+    }
+    return [
+        'ok' => true,
+        'tenant' => true,
+        'user' => $email,
+        'pass' => $pass,
+        'from_name' => trim((string) ($row['from_name'] ?? '')),
+        'profiles' => [['host' => 'smtp.gmail.com', 'port' => 587, 'enc' => 'tls']],
+        'slot' => (int) ($row['slot'] ?? 0),
+        'account_id' => (string) ($row['id'] ?? ''),
+    ];
+}
+
+/**
+ * Ordered SMTP accounts for the current org/category.
+ * Primary = category route (or default route / slot 1). Then other active slots.
+ * Syncpedia without org accounts: preferred global mailbox, then the other.
+ *
+ * @return list<array{ok:true,tenant:bool,user:string,pass:string,from_name:string,profiles:list<array{host:string,port:int,enc:string}>,slot?:int,account_id?:string}>
+ */
+function syncpediaListTenantSmtpCandidates(string $preferredGlobalAccount = 'support'): array
 {
     $orgId = trim((string) ($GLOBALS['syncpedia_mail_org_id'] ?? ''));
     if ($orgId === '') {
-        return ['ok' => false, 'error' => 'Email not configured for your organization'];
+        return [];
     }
     try {
         $db = syncpediaCreatePdo();
         syncpediaEnsureOrgEmailSchema($db);
         $category = trim((string) ($GLOBALS['syncpedia_mail_category'] ?? 'default')) ?: 'default';
+
+        $primaryId = '';
         $st = $db->prepare(
             "SELECT a.* FROM org_email_routes r
              INNER JOIN org_smtp_accounts a
@@ -202,46 +238,94 @@ function syncpediaResolveTenantSmtp(string $preferredGlobalAccount = 'support'):
              LIMIT 1",
         );
         $st->execute([$orgId, $category, $category]);
-        $row = $st->fetch(PDO::FETCH_ASSOC);
-        if (!is_array($row)) {
-            $emailOne = $db->prepare(
-                'SELECT * FROM org_smtp_accounts WHERE org_id = ? AND slot = 1 AND is_active = 1 LIMIT 1',
-            );
-            $emailOne->execute([$orgId]);
-            $row = $emailOne->fetch(PDO::FETCH_ASSOC);
+        $primaryRow = $st->fetch(PDO::FETCH_ASSOC);
+
+        $allSt = $db->prepare(
+            'SELECT * FROM org_smtp_accounts WHERE org_id = ? AND is_active = 1 ORDER BY slot ASC',
+        );
+        $allSt->execute([$orgId]);
+        $allRows = $allSt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        if (!is_array($primaryRow) && $allRows) {
+            $primaryRow = $allRows[0];
         }
-        if (is_array($row)) {
-            return [
-                'ok' => true,
-                'tenant' => true,
-                'user' => strtolower(trim((string) $row['email'])),
-                'pass' => syncpediaDecryptOrgSmtpSecret($row),
-                'from_name' => trim((string) ($row['from_name'] ?? '')),
-                'profiles' => [['host' => 'smtp.gmail.com', 'port' => 587, 'enc' => 'tls']],
-            ];
+
+        $ordered = [];
+        $seenEmails = [];
+        if (is_array($primaryRow)) {
+            $primaryId = (string) ($primaryRow['id'] ?? '');
+            $resolved = syncpediaOrgSmtpRowToResolved($primaryRow);
+            if ($resolved !== null) {
+                $ordered[] = $resolved;
+                $seenEmails[$resolved['user']] = true;
+            }
+        }
+        foreach ($allRows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if ($primaryId !== '' && (string) ($row['id'] ?? '') === $primaryId) {
+                continue;
+            }
+            $resolved = syncpediaOrgSmtpRowToResolved($row);
+            if ($resolved === null || isset($seenEmails[$resolved['user']])) {
+                continue;
+            }
+            $ordered[] = $resolved;
+            $seenEmails[$resolved['user']] = true;
+        }
+        if ($ordered) {
+            return $ordered;
         }
 
         if (syncpediaOrganizationSlug($db, $orgId) !== 'syncpedia') {
-            return ['ok' => false, 'error' => 'Email not configured for your organization'];
+            return [];
         }
-        $creds = syncpediaSmtpCredentialsForAccount($preferredGlobalAccount);
-        if ($creds === null) {
-            $other = $preferredGlobalAccount === 'hr' ? 'support' : 'hr';
-            $creds = syncpediaSmtpCredentialsForAccount($other);
+
+        $globals = [];
+        $preferred = $preferredGlobalAccount === 'hr' ? 'hr' : 'support';
+        $other = $preferred === 'hr' ? 'support' : 'hr';
+        foreach ([$preferred, $other] as $acct) {
+            $creds = syncpediaSmtpCredentialsForAccount($acct);
+            if ($creds === null || !syncpediaSmtpEnabled()) {
+                continue;
+            }
+            $user = strtolower(trim((string) $creds['user']));
+            if ($user === '' || isset($seenEmails[$user])) {
+                continue;
+            }
+            $globals[] = [
+                'ok' => true,
+                'tenant' => false,
+                'user' => $user,
+                'pass' => (string) $creds['pass'],
+                'from_name' => '',
+                'profiles' => syncpediaSmtpTransportProfiles(),
+            ];
+            $seenEmails[$user] = true;
         }
-        if ($creds === null || !syncpediaSmtpEnabled()) {
-            return ['ok' => false, 'error' => syncpediaSmtpNotReadyReason()];
-        }
-        return [
-            'ok' => true,
-            'tenant' => false,
-            'user' => $creds['user'],
-            'pass' => $creds['pass'],
-            'from_name' => '',
-            'profiles' => syncpediaSmtpTransportProfiles(),
-        ];
+        return $globals;
     } catch (Throwable $e) {
-        error_log('[org-smtp] resolve: ' . $e->getMessage());
+        error_log('[org-smtp] list candidates: ' . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Resolve tenant SMTP (first / designated candidate). Prefer
+ * syncpediaListTenantSmtpCandidates() when failover is needed.
+ *
+ * @return array{ok:bool,tenant?:bool,user?:string,pass?:string,from_name?:string,profiles?:array,error?:string}
+ */
+function syncpediaResolveTenantSmtp(string $preferredGlobalAccount = 'support'): array
+{
+    $orgId = trim((string) ($GLOBALS['syncpedia_mail_org_id'] ?? ''));
+    if ($orgId === '') {
         return ['ok' => false, 'error' => 'Email not configured for your organization'];
     }
+    $candidates = syncpediaListTenantSmtpCandidates($preferredGlobalAccount);
+    if (!$candidates) {
+        return ['ok' => false, 'error' => 'Email not configured for your organization'];
+    }
+    return $candidates[0];
 }

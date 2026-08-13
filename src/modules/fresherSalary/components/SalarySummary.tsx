@@ -1,22 +1,37 @@
 import { Wallet } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { estimateEarnings } from "../logic";
+import {
+  incentiveRateForCollected,
+  normalizeFresherPolicy,
+  type FresherOrgPolicy,
+} from "../policy";
 import type { FresherMember } from "../types";
 import { GLASS_PANEL } from "../uiTokens";
 
 export type SalarySummaryProps = {
   member: FresherMember;
   fixedSalary: number;
+  orgPolicy?: FresherOrgPolicy | null;
   className?: string;
 };
 
-export function SalarySummary({ member, fixedSalary, className }: SalarySummaryProps) {
-  const est = estimateEarnings(member, fixedSalary);
+export function SalarySummary({ member, fixedSalary, orgPolicy, className }: SalarySummaryProps) {
+  const est = estimateEarnings(member, fixedSalary, orgPolicy);
+  const terms = normalizeFresherPolicy(member.salaryTerms ?? orgPolicy ?? undefined);
+  const collected =
+    member.currentPhase === "month1"
+      ? member.month1.achieved
+      : member.currentPhase === "month2"
+        ? member.month2.totalAchieved
+        : member.month3.achieved;
+  const rate = incentiveRateForCollected(terms, collected);
   const rows: [string, number, string][] = [
     ["Training (unpaid)", est.training, "—"],
     ["Month 1", est.month1, member.training.status === "passed" ? "Fixed" : "Performance"],
     ["Month 2", est.month2, String(member.month2.status)],
     ["Month 3", est.month3, String(member.month3.status)],
+    ["Incentive", est.incentive, `${rate}% of collected`],
   ];
 
   return (
@@ -39,8 +54,9 @@ export function SalarySummary({ member, fixedSalary, className }: SalarySummaryP
           <span>₹{est.total.toLocaleString("en-IN")}</span>
         </div>
         <p className="text-[10px] leading-relaxed text-muted-foreground">
-          Performance: min(achieved ÷ target, 100%) × ₹{fixedSalary.toLocaleString("en-IN")}. Confirmed month uses ~115%
-          base as incentive placeholder.
+          Performance: min(achieved ÷ target, 100%) × ₹
+          {(member.salaryTerms?.fixed_salary_monthly || fixedSalary).toLocaleString("en-IN")}. Incentive uses
+          this member&apos;s tier table on collected amount above the monthly gate.
         </p>
       </div>
     </div>

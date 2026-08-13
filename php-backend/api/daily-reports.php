@@ -42,6 +42,25 @@ function dailyReportsEnsureLostColumn(PDO $db): void
     $done = true;
 }
 
+// GET team members summary (must run before generic list GET)
+if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'team_summary') {
+    requireRole($tokenData, ['admin', 'manager', 'org']);
+
+    $orgScope = hierarchyOrgUserIdsScopeSql($tokenData, 'u.id', $db);
+    $stmt = $db->prepare("
+        SELECT u.id, u.full_name, u.email,
+            COUNT(dr.id) as total_reports,
+            MAX(dr.report_date) as last_report_date
+        FROM users u
+        LEFT JOIN daily_reports dr ON dr.user_id = u.id
+        WHERE u.role = 'sales_representative' AND u.is_active = 1" . $orgScope['sql'] . "
+        GROUP BY u.id, u.full_name, u.email
+        ORDER BY u.full_name
+    ");
+    $stmt->execute($orgScope['params']);
+    respond(['data' => $stmt->fetchAll()]);
+}
+
 // GET - List daily reports
 if ($method === 'GET') {
     $where = "1=1";
@@ -182,25 +201,6 @@ if ($method === 'POST') {
     }
 
     respond(['id' => $id, 'message' => 'Report submitted'], 201);
-}
-
-// GET team members (for managers to pick a rep)
-if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'team_summary') {
-    requireRole($tokenData, ['admin', 'manager', 'org']);
-
-    $orgScope = hierarchyOrgUserIdsScopeSql($tokenData, 'u.id', $db);
-    $stmt = $db->prepare("
-        SELECT u.id, u.full_name, u.email,
-            COUNT(dr.id) as total_reports,
-            MAX(dr.report_date) as last_report_date
-        FROM users u
-        LEFT JOIN daily_reports dr ON dr.user_id = u.id
-        WHERE u.role = 'sales_representative' AND u.is_active = 1" . $orgScope['sql'] . "
-        GROUP BY u.id, u.full_name, u.email
-        ORDER BY u.full_name
-    ");
-    $stmt->execute($orgScope['params']);
-    respond(['data' => $stmt->fetchAll()]);
 }
 
 respond(['error' => 'Method not allowed'], 405);

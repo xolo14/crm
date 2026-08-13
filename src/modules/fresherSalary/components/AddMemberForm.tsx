@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +13,12 @@ import {
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
 import { Check, ChevronsUpDown, Loader2 } from "lucide-react";
+import {
+  normalizeFresherPolicy,
+  type FresherOrgPolicy,
+} from "../policy";
+import { PolicyTermsFields } from "./PolicyTermsFields";
+import { SalaryFlowDiagram } from "./SalaryFlowDiagram";
 
 export type FresherTeamPick = {
   id: string;
@@ -25,6 +31,8 @@ export type AddMemberFormProps = {
   name: string;
   role: string;
   joiningDate: string;
+  /** Org defaults — form starts from these and allows per-person edits. */
+  defaultPolicy: FresherOrgPolicy;
   /** Sales reps, sales executives, and team leads (same org as caller). */
   picklist: FresherTeamPick[];
   picklistLoading?: boolean;
@@ -32,7 +40,7 @@ export type AddMemberFormProps = {
   onPickMember: (member: FresherTeamPick) => void;
   onRoleChange: (v: string) => void;
   onJoiningDateChange: (v: string) => void;
-  onSubmit: () => void;
+  onSubmit: (salaryTerms: FresherOrgPolicy) => void;
   disabled?: boolean;
   submitting?: boolean;
   className?: string;
@@ -54,6 +62,7 @@ export function AddMemberForm({
   name,
   role,
   joiningDate,
+  defaultPolicy,
   picklist,
   picklistLoading,
   picklistEmptyHint,
@@ -66,6 +75,13 @@ export function AddMemberForm({
   className,
 }: AddMemberFormProps) {
   const [open, setOpen] = useState(false);
+  const [terms, setTerms] = useState<FresherOrgPolicy>(() =>
+    normalizeFresherPolicy(defaultPolicy),
+  );
+
+  useEffect(() => {
+    setTerms(normalizeFresherPolicy(defaultPolicy));
+  }, [defaultPolicy]);
 
   const selectedId = useMemo(
     () => picklist.find((p) => p.full_name.trim() === name.trim())?.id ?? "",
@@ -85,15 +101,19 @@ export function AddMemberForm({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h2 className="text-base font-semibold text-gray-900">Add Fresher Member</h2>
-          <p className="mt-0.5 text-xs text-gray-400">New member starts 15-day training immediately</p>
+          <p className="mt-0.5 text-xs text-gray-400">
+            Set salary &amp; incentive terms for this person — defaults come from org policy
+          </p>
         </div>
         <span className="inline-flex w-fit items-center rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs text-blue-600">
-          Training starts today
+          Training starts on join date
         </span>
       </div>
 
       <p className="mt-3 text-xs leading-relaxed text-gray-500">
-        Choose someone from the team search so their CRM user is linked — this saves their training start date on the server.
+        Choose someone from the team search so their CRM user is linked — this saves their
+        training start date on the server. Edit targets / probation / incentives below; the
+        graph updates live.
       </p>
 
       <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -125,7 +145,9 @@ export function AddMemberForm({
                     "e.g. search sales rep or team lead…"
                   )}
                 </span>
-                {picklistLoading ? null : <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />}
+                {picklistLoading ? null : (
+                  <ChevronsUpDown className="h-4 w-4 shrink-0 opacity-50" />
+                )}
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
@@ -135,7 +157,8 @@ export function AddMemberForm({
                   <CommandEmpty>
                     {picklistLoading
                       ? "Loading…"
-                      : picklistEmptyHint || "No sales reps or team leads in your organisation."}
+                      : picklistEmptyHint ||
+                        "No sales reps or team leads in your organisation."}
                   </CommandEmpty>
                   <CommandGroup>
                     {picklist.map((m) => {
@@ -152,11 +175,15 @@ export function AddMemberForm({
                           <Check
                             className={cn(
                               "mt-0.5 h-4 w-4 shrink-0",
-                              selectedId === m.id ? "opacity-100 text-[#2ed573]" : "opacity-0",
+                              selectedId === m.id
+                                ? "opacity-100 text-[#2ed573]"
+                                : "opacity-0",
                             )}
                           />
                           <div className="min-w-0 flex-1">
-                            <div className="truncate text-sm font-medium text-gray-900">{m.full_name}</div>
+                            <div className="truncate text-sm font-medium text-gray-900">
+                              {m.full_name}
+                            </div>
                             <div className="truncate text-[11px] text-gray-500">
                               {m.email} · {roleDisplayLabel(m.role)}
                             </div>
@@ -190,27 +217,35 @@ export function AddMemberForm({
             className={inputClass}
           />
         </div>
+      </div>
 
-        <div className="flex items-end lg:col-span-1">
-          <Button
-            type="button"
-            className={cn(
-              "h-[42px] w-full rounded-xl bg-[#2ed573] px-5 text-sm font-semibold text-[#0f2318] transition-colors hover:bg-[#22c265] lg:w-auto lg:min-w-[160px]",
-              !canSubmit && "cursor-not-allowed opacity-50",
-            )}
-            onClick={onSubmit}
-            disabled={!canSubmit}
-          >
-            {submitting ? (
-              <span className="inline-flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Adding…
-              </span>
-            ) : (
-              <>+ Add to Training</>
-            )}
-          </Button>
-        </div>
+      <div className="mt-6 rounded-xl border border-gray-100 bg-gray-50/60 p-4">
+        <PolicyTermsFields compact value={terms} onChange={setTerms} />
+      </div>
+
+      <div className="mt-4">
+        <SalaryFlowDiagram policy={terms} defaultOpen />
+      </div>
+
+      <div className="mt-5 flex justify-end">
+        <Button
+          type="button"
+          className={cn(
+            "h-[42px] rounded-xl bg-[#2ed573] px-5 text-sm font-semibold text-[#0f2318] transition-colors hover:bg-[#22c265] min-w-[160px]",
+            !canSubmit && "cursor-not-allowed opacity-50",
+          )}
+          onClick={() => onSubmit(normalizeFresherPolicy(terms))}
+          disabled={!canSubmit}
+        >
+          {submitting ? (
+            <span className="inline-flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Adding…
+            </span>
+          ) : (
+            <>+ Add to Training</>
+          )}
+        </Button>
       </div>
     </section>
   );

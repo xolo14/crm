@@ -246,3 +246,70 @@ export function buildMemberPaymentSummaries(
     return b.totalLinks - a.totalLinks;
   });
 }
+
+/** Approved manual payment row from API (amount in rupees). */
+export interface ManualPaymentRow {
+  id: string;
+  submitted_by: string;
+  amount: number | string;
+  status: string;
+  paid_at?: string | null;
+  created_at?: string | null;
+  submitted_by_name?: string | null;
+  submitted_by_email?: string | null;
+  submitted_by_referral?: string | null;
+  payment_method?: string | null;
+  customer_name?: string | null;
+  proof_path?: string | null;
+  notes?: string | null;
+}
+
+/** Merge approved manual payments into member summaries (rupees → paise). */
+export function mergeManualPaymentsIntoSummaries(
+  summaries: MemberPaymentSummary[],
+  manuals: ManualPaymentRow[],
+): MemberPaymentSummary[] {
+  const map = new Map<string, MemberPaymentSummary>();
+  for (const s of summaries) {
+    const key = s.creator.id || s.creator.full_name || "unknown";
+    map.set(key, { ...s, creator: { ...s.creator } });
+  }
+
+  for (const m of manuals) {
+    if (String(m.status || "").toLowerCase() !== "approved") continue;
+    const uid = String(m.submitted_by || "");
+    const key = uid || String(m.submitted_by_name || "unknown");
+    const paise = Math.round(Number(m.amount || 0) * 100);
+    if (!Number.isFinite(paise) || paise <= 0) continue;
+
+    const cur =
+      map.get(key) ??
+      ({
+        creator: {
+          id: uid,
+          full_name: String(m.submitted_by_name || "Unknown"),
+          email: m.submitted_by_email ? String(m.submitted_by_email) : undefined,
+          referral_code: m.submitted_by_referral
+            ? String(m.submitted_by_referral)
+            : undefined,
+        },
+        totalLinks: 0,
+        paidCount: 0,
+        partialCount: 0,
+        paymentsReceivedCount: 0,
+        totalCollectedPaise: 0,
+      } satisfies MemberPaymentSummary);
+
+    cur.paymentsReceivedCount += 1;
+    cur.paidCount += 1;
+    cur.totalCollectedPaise += paise;
+    map.set(key, cur);
+  }
+
+  return [...map.values()].sort((a, b) => {
+    if (b.totalCollectedPaise !== a.totalCollectedPaise) {
+      return b.totalCollectedPaise - a.totalCollectedPaise;
+    }
+    return b.totalLinks - a.totalLinks;
+  });
+}

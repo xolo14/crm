@@ -16,7 +16,7 @@ interface BulkAssignDialogProps {
   isAssigning?: boolean;
 }
 
-const PRESET_COUNTS = [10, 20, 30, 50, 100];
+const PRESET_COUNTS = [10, 20, 30, 40, 50];
 
 const getRoleCategoryLabel = (role?: string) => {
   const normalized = String(role || '').trim().toLowerCase();
@@ -77,17 +77,18 @@ export function BulkAssignDialog({ open, onOpenChange, teamMembers, unassignedCo
             <Label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 block">
               Step 1: How many leads to assign?
             </Label>
-            <p className="text-xs text-muted-foreground mb-3">{unassignedCount} leads available</p>
+            <p className="text-xs text-muted-foreground mb-3">{unassignedCount} leads available to assign</p>
             <div className="flex flex-wrap gap-2 mb-3">
-              {PRESET_COUNTS.filter(n => n <= unassignedCount || n === PRESET_COUNTS[0]).map(n => (
+              {PRESET_COUNTS.map(n => (
                 <button
                   key={n}
+                  type="button"
                   onClick={() => { setSelectedCount(Math.min(n, unassignedCount)); setUseCustom(false); }}
-                  disabled={n > unassignedCount || isAssigning}
+                  disabled={n > unassignedCount || unassignedCount <= 0 || isAssigning}
                   className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all ${
-                    !useCustom && selectedCount === Math.min(n, unassignedCount)
+                    !useCustom && selectedCount === Math.min(n, Math.max(unassignedCount, 0)) && n <= unassignedCount
                       ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                      : n > unassignedCount
+                      : n > unassignedCount || unassignedCount <= 0
                         ? 'bg-muted/30 text-muted-foreground/50 border-border cursor-not-allowed'
                         : 'bg-muted/50 text-foreground border-border hover:bg-muted hover:border-primary/30'
                   }`}
@@ -96,8 +97,9 @@ export function BulkAssignDialog({ open, onOpenChange, teamMembers, unassignedCo
                 </button>
               ))}
               <button
+                type="button"
                 onClick={() => setUseCustom(true)}
-                disabled={isAssigning}
+                disabled={isAssigning || unassignedCount <= 0}
                 className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all ${
                   useCustom
                     ? 'bg-primary text-primary-foreground border-primary shadow-sm'

@@ -44,6 +44,9 @@ $tokenData = verifyToken();
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+if (function_exists('ensureLeadsStatusColumn')) {
+    ensureLeadsStatusColumn($db);
+}
 
 /**
  * Validate batch for lead enrollment; returns course_id, counts, or error.
@@ -83,9 +86,7 @@ function leadsValidateBatchForLeadEnrollment(PDO $db, string $batchId, array $le
     } catch (Throwable $ignored) {
         // Not in a transaction yet — count still helps; caller enroll txn will re-check.
     }
-    $cntSt = $db->prepare('SELECT COUNT(*) FROM students WHERE batch_id = ?');
-    $cntSt->execute([$bid]);
-    $enrolled = (int) $cntSt->fetchColumn();
+    $enrolled = studentsActiveSeatCount($db, $bid);
     if ($enrolled >= $seatLimit) {
         return ['course_id' => $courseId, 'seat_limit' => $seatLimit, 'enrolled' => $enrolled, 'error' => 'This batch is full (seat limit reached)'];
     }
@@ -106,6 +107,7 @@ function leadsAttachStudentToBatch(PDO $db, string $leadId, ?string $courseId, s
 
 if ($method === 'GET') {
     try {
+    @set_time_limit(300);
     $scope = tenantLeadsScopeSql($db, $tokenData, '');
     $where = '1=1' . $scope['sql'];
     $params = $scope['params'];
@@ -147,28 +149,81 @@ if ($method === 'GET') {
         respond(['debug' => $debugMeta]);
     }
 
-    // Soft cap — Leads Management loads client-side; dashboard COUNT includes all rows.
-    // Previous hard LIMIT 500 made the UI show 500 of ~2k+ leads.
-    $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 10000;
+    // Soft cap per request — clients may page with offset until truncated=false.
+    $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 100000;
     if ($limit < 1) {
-        $limit = 10000;
+        $limit = 100000;
     }
-    if ($limit > 20000) {
-        $limit = 20000;
+    if ($limit > 100000) {
+        $limit = 100000;
+    }
+    $offset = isset($_GET['offset']) ? (int) $_GET['offset'] : 0;
+    if ($offset < 0) {
+        $offset = 0;
     }
 
     $countStmt = $db->prepare("SELECT COUNT(*) FROM leads WHERE $where");
     $countStmt->execute($params);
     $total = (int) $countStmt->fetchColumn();
 
-    $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $limit);
+    $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $limit . " OFFSET " . $offset);
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
+    $fetched = count($rows);
+
+    // Resolve creator display names for "Created by" (Added leads card, managers).
+    if ($fetched > 0 && syncpediaColumnExists($db, 'leads', 'created_by')) {
+        $creatorIds = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $cid = trim((string) ($row['created_by'] ?? ''));
+            if ($cid !== '') {
+                $creatorIds[$cid] = true;
+            }
+        }
+        $idList = array_keys($creatorIds);
+        if ($idList !== []) {
+            $nameMap = [];
+            foreach (array_chunk($idList, 200) as $chunk) {
+                $ph = implode(',', array_fill(0, count($chunk), '?'));
+                try {
+                    $ns = $db->prepare("SELECT id, full_name FROM users WHERE id IN ($ph)");
+                    $ns->execute($chunk);
+                    while ($u = $ns->fetch(PDO::FETCH_ASSOC)) {
+                        if (!is_array($u)) {
+                            continue;
+                        }
+                        $uid = trim((string) ($u['id'] ?? ''));
+                        if ($uid === '') {
+                            continue;
+                        }
+                        $nameMap[$uid] = trim((string) ($u['full_name'] ?? ''));
+                    }
+                } catch (Throwable $ignored) {
+                }
+            }
+            foreach ($rows as &$row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $cid = trim((string) ($row['created_by'] ?? ''));
+                $row['created_by_name'] = ($cid !== '' && isset($nameMap[$cid]) && $nameMap[$cid] !== '')
+                    ? $nameMap[$cid]
+                    : null;
+            }
+            unset($row);
+        }
+    }
+
     respond([
         'data' => $rows,
-        'count' => count($rows),
+        'count' => $fetched,
         'total' => $total,
-        'truncated' => count($rows) < $total,
+        'limit' => $limit,
+        'offset' => $offset,
+        'truncated' => ($offset + $fetched) < $total,
     ]);
     } catch (Throwable $e) {
         error_log('leads.php GET: ' . $e->getMessage());
@@ -329,6 +384,10 @@ if ($method === 'POST') {
                 $assignedTo = $row['assigned_to'] ?? null;
                 if ($assignedTo !== null && trim((string) $assignedTo) === '') {
                     $assignedTo = null;
+                }
+                // L1 importers own rows they bring in so status/edit works immediately.
+                if (hierarchyRoleUsesL1OwnLeadsScope($tokenData) && ($assignedTo === null || $assignedTo === '')) {
+                    $assignedTo = $userId;
                 }
                 $orgId = $bulkOrgId;
                 if ($callerRole === 'super_admin') {
@@ -538,14 +597,11 @@ if ($method === 'POST') {
             $assignedTo = null;
         }
     }
-    // Sales rep UI does not show "Assign to" — leads must be assigned to self or they disappear from GET (assigned_to / referred_by filter).
-    if (in_array($role, ['sales_representative'], true) && ($assignedTo === null || $assignedTo === '')) {
+    // L1 (sales / marketing / HR) UI often omits "Assign to" — assign to self so list + status edit work.
+    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData) && ($assignedTo === null || $assignedTo === '')) {
         $assignedTo = $userId;
     }
-    // Managers: auto-assign unassigned creates to self
-    if ($role === 'manager' && ($assignedTo === null || $assignedTo === '')) {
-        $assignedTo = $userId;
-    }
+    // Managers never auto-own creates — leave unassigned for L1 bulk/manual assign.
     // After auto-assign, load assignee org for tenant stamping
     if (!empty($assignedTo) && !is_array($assigneeRow)) {
         $ustmt = $db->prepare('SELECT id, org_id FROM users WHERE id = ? LIMIT 1');
@@ -574,8 +630,8 @@ if ($method === 'POST') {
 
     $referredBy = trim((string) ($input['referred_by'] ?? ''));
     $referredBy = $referredBy !== '' ? $referredBy : null;
-    // Manual rep entries: stamp referral attribution like form/referral leads (My Leads / analytics).
-    if (in_array($role, ['sales_representative'], true) && ($referredBy === null || $referredBy === '')) {
+    // Manual L1 entries: stamp referral attribution like form/referral leads (My Leads / analytics).
+    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData) && ($referredBy === null || $referredBy === '')) {
         try {
             $rcStmt = $db->prepare('SELECT referral_code FROM users WHERE id = ? LIMIT 1');
             $rcStmt->execute([$userId]);
@@ -605,6 +661,23 @@ if ($method === 'POST') {
     $createdBy = is_string($userId) && $userId !== '' ? $userId : null;
     $hasCreatedBy = syncpediaColumnExists($db, 'leads', 'created_by');
 
+    // Stamp manual CRM creates so they land in the "Added leads" source card.
+    $tagsIn = $input['tags'] ?? [];
+    if (!is_array($tagsIn)) {
+        $tagsIn = [];
+    }
+    $hasManualTag = false;
+    foreach ($tagsIn as $t) {
+        if (strtolower(trim((string) $t)) === 'entry:manual') {
+            $hasManualTag = true;
+            break;
+        }
+    }
+    if (!$hasManualTag) {
+        $tagsIn[] = 'entry:manual';
+    }
+    $tagsJson = json_encode(array_values($tagsIn));
+
     try {
         if ($hasCreatedBy) {
             $stmt = $db->prepare("INSERT INTO leads (id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, notes, resume_path, assigned_to, tags, org_id, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
@@ -622,7 +695,7 @@ if ($method === 'POST') {
                 $input['notes'] ?? null,
                 $resumePathIn,
                 $assignedTo,
-                json_encode($input['tags'] ?? []),
+                $tagsJson,
                 $orgId,
                 $createdBy,
             ]);
@@ -642,7 +715,7 @@ if ($method === 'POST') {
                 $input['notes'] ?? null,
                 $resumePathIn,
                 $assignedTo,
-                json_encode($input['tags'] ?? []),
+                $tagsJson,
                 $orgId,
             ]);
         }
@@ -668,7 +741,7 @@ if ($method === 'POST') {
                     $input['source'] ?? 'other',
                     $input['notes'] ?? null,
                     $assignedTo,
-                    json_encode($input['tags'] ?? []),
+                    $tagsJson,
                     $orgId,
                     $createdBy,
                 ]);
@@ -687,7 +760,7 @@ if ($method === 'POST') {
                     $input['source'] ?? 'other',
                     $input['notes'] ?? null,
                     $assignedTo,
-                    json_encode($input['tags'] ?? []),
+                    $tagsJson,
                     $orgId,
                 ]);
             }
@@ -796,7 +869,23 @@ if ($method === 'PUT') {
         ensureStudentsLeadIdUnique($db);
         try {
             $db->beginTransaction();
-            $stmt->execute($params);
+            $lockLead = $db->prepare('SELECT id, status FROM leads WHERE id = ? FOR UPDATE');
+            $lockLead->execute([$id]);
+            $locked = $lockLead->fetch(PDO::FETCH_ASSOC);
+            if (!$locked) {
+                throw new RuntimeException('Lead not found');
+            }
+            $livePrev = leadsNormalizeStatus((string) ($locked['status'] ?? ''));
+            if ($livePrev !== leadsNormalizeStatus($prevStatus)) {
+                throw new RuntimeException('Lead was updated by someone else — refresh and try again');
+            }
+            $execParams = $params;
+            $execParams[] = $prevStatus;
+            $casStmt = $db->prepare($updateSql . ' AND status = ?');
+            $casStmt->execute($execParams);
+            if ($casStmt->rowCount() < 1) {
+                throw new RuntimeException('Lead was updated by someone else — refresh and try again');
+            }
 
             $q = $db->prepare('SELECT id, name, email, phone, college, year_of_study, org_id FROM leads WHERE id = ? LIMIT 1');
             $q->execute([$id]);
@@ -832,19 +921,41 @@ if ($method === 'PUT') {
                     }
                 }
                 try {
-                    $ins = $db->prepare('INSERT INTO students (id, name, email, phone, college, year_of_study, lead_id, org_id, status, enrollment_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-                    $ins->execute([
-                        $sid,
-                        $stuName,
-                        $stuEmail,
-                        $leadRow['phone'] ?? null,
-                        $leadRow['college'] ?? null,
-                        $leadRow['year_of_study'] ?? null,
-                        $id,
-                        $orgIdForStudent,
-                        'active',
-                        $enrollDay,
-                    ]);
+                    ensureStudentsEnrolledByColumn($db);
+                    $enrolledBy = trim((string) ($tokenData['user_id'] ?? ''));
+                    if ($enrolledBy === '') {
+                        $enrolledBy = null;
+                    }
+                    if ($enrolledBy !== null && syncpediaColumnExists($db, 'students', 'enrolled_by')) {
+                        $ins = $db->prepare('INSERT INTO students (id, name, email, phone, college, year_of_study, lead_id, org_id, status, enrollment_date, enrolled_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+                        $ins->execute([
+                            $sid,
+                            $stuName,
+                            $stuEmail,
+                            $leadRow['phone'] ?? null,
+                            $leadRow['college'] ?? null,
+                            $leadRow['year_of_study'] ?? null,
+                            $id,
+                            $orgIdForStudent,
+                            'active',
+                            $enrollDay,
+                            $enrolledBy,
+                        ]);
+                    } else {
+                        $ins = $db->prepare('INSERT INTO students (id, name, email, phone, college, year_of_study, lead_id, org_id, status, enrollment_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+                        $ins->execute([
+                            $sid,
+                            $stuName,
+                            $stuEmail,
+                            $leadRow['phone'] ?? null,
+                            $leadRow['college'] ?? null,
+                            $leadRow['year_of_study'] ?? null,
+                            $id,
+                            $orgIdForStudent,
+                            'active',
+                            $enrollDay,
+                        ]);
+                    }
                 } catch (Throwable $insErr) {
                     if (isMysqlDuplicateKey($insErr) && enrollStudentRowAlreadyExists($db, $id)) {
                         // Idempotent: lead already has (or shares) a student row.
@@ -981,6 +1092,9 @@ if ($method === 'PUT') {
             if (!is_string($msg) || $msg === '') {
                 $msg = 'Unknown error';
             }
+            if (stripos($msg, 'updated by someone else') !== false) {
+                respond(['error' => $msg], 409);
+            }
             if (strlen($msg) > 500) {
                 $msg = substr($msg, 0, 500) . '…';
             }
@@ -1000,13 +1114,10 @@ if ($method === 'PUT') {
         respond(['message' => 'Lead updated']);
     }
 
+    // Only drop students when leaving enrolled — never because an orphan student row exists.
     $clearStudentOnUnenroll = array_key_exists('status', $input)
         && $input['status'] !== 'enrolled'
-        && (
-            $prevStatus === 'enrolled'
-            || $prevStatus === 'converted'
-            || enrollStudentRowAlreadyExists($db, $id)
-        );
+        && ($prevStatus === 'enrolled' || $prevStatus === 'converted');
 
     // Optimistic status lock: reject stale concurrent status overwrites.
     $statusLockPrev = null;
@@ -1017,23 +1128,24 @@ if ($method === 'PUT') {
     if ($clearStudentOnUnenroll) {
         try {
             $db->beginTransaction();
-            $stmt->execute($params);
-            try {
-                $stuSnap = $db->prepare('SELECT * FROM students WHERE lead_id = ?');
-                $stuSnap->execute([$id]);
-                while ($sr = $stuSnap->fetch(PDO::FETCH_ASSOC)) {
-                    trashArchivePayload($db, 'student', $sr, $tokenData);
-                }
-                $delStu = $db->prepare('DELETE FROM students WHERE lead_id = ?');
-                $delStu->execute([$id]);
-            } catch (Throwable $delErr) {
-                try {
-                    $unlink = $db->prepare("UPDATE students SET lead_id = NULL, status = 'dropped' WHERE lead_id = ?");
-                    $unlink->execute([$id]);
-                } catch (Throwable $ignored) {
-                    throw $delErr;
-                }
+            $lockLead = $db->prepare('SELECT id, status FROM leads WHERE id = ? FOR UPDATE');
+            $lockLead->execute([$id]);
+            $locked = $lockLead->fetch(PDO::FETCH_ASSOC);
+            if (!$locked) {
+                throw new RuntimeException('Lead not found');
             }
+            $livePrev = leadsNormalizeStatus((string) ($locked['status'] ?? ''));
+            if ($livePrev !== leadsNormalizeStatus($prevStatus)) {
+                throw new RuntimeException('Lead was updated by someone else — refresh and try again');
+            }
+            $execParams = $params;
+            $execParams[] = $prevStatus;
+            $casStmt = $db->prepare($updateSql . ' AND status = ?');
+            $casStmt->execute($execParams);
+            if ($casStmt->rowCount() < 1) {
+                throw new RuntimeException('Lead was updated by someone else — refresh and try again');
+            }
+            leadsDropStudentForLead($db, $id);
             if ($db->inTransaction()) {
                 if (!$db->commit()) {
                     throw new RuntimeException('Database commit failed');
@@ -1047,6 +1159,9 @@ if ($method === 'PUT') {
             $msg = $e->getMessage();
             if (!is_string($msg) || $msg === '') {
                 $msg = 'Unknown error';
+            }
+            if (stripos($msg, 'updated by someone else') !== false) {
+                respond(['error' => $msg], 409);
             }
             if (strlen($msg) > 500) {
                 $msg = substr($msg, 0, 500) . '…';
@@ -1069,13 +1184,21 @@ if ($method === 'PUT') {
 
     try {
         if ($statusLockPrev !== null) {
-            $paramsWithLock = $params;
-            $paramsWithLock[] = $statusLockPrev;
-            $lockSql = $updateSql . ' AND status = ?';
-            $lockStmt = $db->prepare($lockSql);
-            $lockStmt->execute($paramsWithLock);
-            if ($lockStmt->rowCount() < 1) {
-                respond(['error' => 'Lead was updated by someone else — refresh and try again'], 409);
+            $rawPrevLock = (string) $statusLockPrev;
+            $normPrevLock = leadsNormalizeStatus($rawPrevLock);
+            // Truncated ENUM leftovers ('') or unknown legacy values break CAS — update without lock.
+            $skipCas = ($rawPrevLock === '' || !in_array($normPrevLock, leadsAllowedStatuses(), true));
+            if ($skipCas) {
+                $stmt->execute($params);
+            } else {
+                $paramsWithLock = $params;
+                $paramsWithLock[] = $statusLockPrev;
+                $lockSql = $updateSql . ' AND status = ?';
+                $lockStmt = $db->prepare($lockSql);
+                $lockStmt->execute($paramsWithLock);
+                if ($lockStmt->rowCount() < 1) {
+                    respond(['error' => 'Lead was updated by someone else — refresh and try again'], 409);
+                }
             }
         } else {
             $stmt->execute($params);
@@ -1089,6 +1212,35 @@ if ($method === 'PUT') {
             $msg = substr($msg, 0, 500) . '…';
         }
         respond(['error' => 'Lead update failed: ' . $msg], 500);
+    }
+
+    // Confirm status actually persisted (catches legacy ENUM truncation to '').
+    if (array_key_exists('status', $input)) {
+        $wantStatus = leadsNormalizeStatus((string) $input['status']);
+        $chk = $db->prepare('SELECT status FROM leads WHERE id = ? LIMIT 1');
+        $chk->execute([$id]);
+        $gotStatus = leadsNormalizeStatus((string) ($chk->fetchColumn() ?: ''));
+        if ($gotStatus !== $wantStatus) {
+            if (function_exists('ensureLeadsStatusColumn')) {
+                ensureLeadsStatusColumn($db, true);
+            }
+            try {
+                $retry = $db->prepare('UPDATE leads SET status = ? WHERE id = ?');
+                $retry->execute([$wantStatus, $id]);
+                $chk->execute([$id]);
+                $gotStatus = leadsNormalizeStatus((string) ($chk->fetchColumn() ?: ''));
+            } catch (Throwable $e) {
+                respond([
+                    'error' => 'Status could not be saved. Ask an admin to update leads.status to allow not_answered/messaged.',
+                    'detail' => $e->getMessage(),
+                ], 500);
+            }
+            if ($gotStatus !== $wantStatus) {
+                respond([
+                    'error' => 'Status could not be saved. The database status column does not accept "' . $wantStatus . '".',
+                ], 500);
+            }
+        }
     }
 
     // Keep lead_assignments in sync with primary assigned_to.

@@ -236,6 +236,102 @@ export function PublicFormShell({
           background-size: 10px;
           padding-right: 32px;
         }
+        .sp-form-phone {
+          display: flex;
+          gap: 8px;
+          align-items: stretch;
+          width: 100%;
+        }
+        .sp-form-phone-code-wrap {
+          position: relative;
+          flex: 0 0 7.5rem;
+          max-width: 7.5rem;
+          min-width: 7.5rem;
+        }
+        .sp-form-phone-code {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding-left: 8px;
+          padding-right: 22px;
+          cursor: pointer;
+          appearance: none;
+          -webkit-appearance: none;
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23666' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+          background-repeat: no-repeat;
+          background-position: right 8px center;
+          background-size: 10px;
+        }
+        .sp-form-phone-code:disabled {
+          cursor: not-allowed;
+          opacity: 0.65;
+        }
+        .sp-form-phone-flag-img {
+          width: 20px;
+          height: 15px;
+          object-fit: cover;
+          border-radius: 2px;
+          box-shadow: 0 0 0 1px rgba(0,0,0,0.08);
+          flex-shrink: 0;
+        }
+        .sp-form-phone-dial {
+          font-size: 0.82rem;
+          font-weight: 700;
+          letter-spacing: -0.02em;
+          color: var(--sp-text);
+          font-variant-numeric: tabular-nums;
+        }
+        .sp-form-phone-menu {
+          position: absolute;
+          left: 0;
+          top: calc(100% + 4px);
+          z-index: 40;
+          margin: 0;
+          padding: 4px;
+          list-style: none;
+          width: min(18rem, 78vw);
+          max-height: 15rem;
+          overflow: auto;
+          background: var(--sp-field-bg, #fff);
+          border: 1px solid var(--sp-section-border, #e5e7eb);
+          border-radius: 10px;
+          box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+        }
+        .sp-form-phone-option {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          border: 0;
+          background: transparent;
+          text-align: left;
+          padding: 8px 10px;
+          border-radius: 8px;
+          cursor: pointer;
+          color: var(--sp-text);
+          font: inherit;
+        }
+        .sp-form-phone-option:hover,
+        .sp-form-phone-option.is-selected {
+          background: color-mix(in srgb, var(--sp-accent, #2563eb) 12%, transparent);
+        }
+        .sp-form-phone-option-dial {
+          font-weight: 700;
+          font-variant-numeric: tabular-nums;
+          flex-shrink: 0;
+        }
+        .sp-form-phone-option-name {
+          opacity: 0.75;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .sp-form-phone-number {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
         .sp-form-secure {
           display: flex;
           gap: 10px;

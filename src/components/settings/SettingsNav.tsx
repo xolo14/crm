@@ -1,5 +1,6 @@
 import {
   Building2,
+  CreditCard,
   Globe,
   KeyRound,
   Lock,
@@ -17,6 +18,12 @@ interface SettingsNavProps {
   /** If true, only General + Password Change are shown (manager / L1). */
   limited?: boolean;
   showEmailSetup?: boolean;
+  showRazorpaySetup?: boolean;
+  /**
+   * When true (HR portal), never render the desktop side rail — only top pills.
+   * Prevents a second “pages” column beside the HR portal sidebar.
+   */
+  pillsOnly?: boolean;
 }
 
 const fullNavGroups = [
@@ -27,6 +34,7 @@ const fullNavGroups = [
       { id: "company-profile", name: "Company Profile", icon: Building2 },
       { id: "localization", name: "Localization", icon: Globe },
       { id: "email-setup", name: "Email Setup", icon: Mail },
+      { id: "razorpay-setup", name: "Razorpay Setup", icon: CreditCard },
     ],
   },
   {
@@ -49,39 +57,58 @@ const limitedNavGroups = [
   },
 ];
 
-export function SettingsNav({ active, onChange, limited = false, showEmailSetup = false }: SettingsNavProps) {
+export function SettingsNav({
+  active,
+  onChange,
+  limited = false,
+  showEmailSetup = false,
+  showRazorpaySetup = false,
+  pillsOnly = false,
+}: SettingsNavProps) {
   const navGroups = (limited ? limitedNavGroups : fullNavGroups).map((group) => ({
     ...group,
-    items: group.items.filter((item) => item.id !== "email-setup" || showEmailSetup),
+    items: group.items.filter((item) => {
+      if (item.id === "email-setup") return showEmailSetup;
+      if (item.id === "razorpay-setup") return showRazorpaySetup;
+      return true;
+    }),
   }));
   const flatItems = navGroups.flatMap((g) => g.items);
+
+  const pills = (
+    <div className={cn(pillsOnly ? "-mx-0" : "md:hidden -mx-4 px-4", "overflow-x-auto scrollbar-none")}>
+      <div className="flex gap-2 pb-1 min-w-0">
+        {flatItems.map((item) => {
+          const isActive = item.id === active;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onChange(item.id)}
+              className={cn(
+                "touch-target inline-flex items-center gap-1.5 shrink-0 rounded-full border px-3.5 py-2 text-xs font-medium transition-colors",
+                isActive
+                  ? "border-primary bg-primary/10 text-primary"
+                  : "border-border bg-card text-muted-foreground",
+              )}
+            >
+              <item.icon className="h-3.5 w-3.5 shrink-0" />
+              {item.name}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  if (pillsOnly) {
+    return pills;
+  }
 
   return (
     <>
       {/* Mobile: horizontal section pills */}
-      <div className="md:hidden -mx-4 px-4 overflow-x-auto scrollbar-none">
-        <div className="flex gap-2 pb-1 min-w-0">
-          {flatItems.map((item) => {
-            const isActive = item.id === active;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => onChange(item.id)}
-                className={cn(
-                  "touch-target inline-flex items-center gap-1.5 shrink-0 rounded-full border px-3.5 py-2 text-xs font-medium transition-colors",
-                  isActive
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-card text-muted-foreground",
-                )}
-              >
-                <item.icon className="h-3.5 w-3.5 shrink-0" />
-                {item.name}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      {pills}
 
       {/* Desktop: side rail */}
       <aside className="hidden md:block w-[240px] shrink-0 border-r border-border bg-card px-3 py-4 rounded-l-lg">
