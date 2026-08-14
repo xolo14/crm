@@ -74,3 +74,10 @@ define('WHATSAPP_ACCESS_TOKEN', '');   // System user / permanent token for Grap
 // ── Optional n8n automation (server-side only — never put these in VITE_*) ───
 define('N8N_WHATSAPP_WEBHOOK', '');
 define('N8N_EMAIL_WEBHOOK', '');
+
+// ── Google Cloud Storage (issued offer-letter + certificate PDFs) ───────────
+// Private bucket + service-account JSON outside public_html. Leave disabled until configured.
+define('GCS_ENABLED', false);
+define('GCS_BUCKET', ''); // e.g. syncpedia-crm-docs
+// Absolute path on Hostinger, e.g. '/home/u123456789/private/gcs-sa.json' (chmod 600)
+define('GCS_SA_JSON_PATH', '');

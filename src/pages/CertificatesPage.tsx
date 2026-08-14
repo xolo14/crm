@@ -51,13 +51,18 @@ import { CanvasTextBoxFrame, cycleTextBoxDivider, normalizeTextBoxDivider } from
 import { DocFormsWorkspace, DocIssuedPanel } from "@/modules/docForms/DocFormsHub";
 import { applyPlaceholders, extractPlaceholderKeys } from "@/modules/docForms/types";
 import {
-  CERT_BULK_SHEET_HEADERS,
-  CERT_BULK_SHEET_SAMPLE,
   downloadPlaceholderExcelTemplate,
   mapSheetRowsToPlaceholders,
   parsePlaceholderSheetFile,
 } from "@/lib/placeholderSheetImport";
+import {
+  certPlaceholderLabel,
+  getCertificateBulkRowKeys,
+  getCertificateTemplatePlaceholderKeys,
+} from "@/lib/certificatePlaceholders";
 import { resolveUploadSrc } from "@/lib/resumeHref";
+import { buildCertificatePdfBase64 } from "@/utils/certificatePdf";
+import { createRoot } from "react-dom/client";
 
 type CertStatus = "active" | "draft" | "archived";
 type IssuedStatus = "issued" | "revoked" | "expired";
@@ -191,6 +196,35 @@ interface CertTemplateStyle {
   bgImage?: string;
   bgPdf?: string;
   bgOverlayOpacity?: number;
+  /** Email compose uses these (placeholders like {{recipient_name}}, {{sync_id}}). */
+  mail_subject?: string;
+  mail_body?: string;
+}
+
+const DEFAULT_CERT_MAIL_SUBJECT = "Your Certificate is Ready — {{sync_id}}";
+const DEFAULT_CERT_MAIL_BODY = `Dear {{recipient_name}},
+
+We are pleased to inform you that your certificate has been successfully issued.
+
+Please find the attached certificate (PDF) for your reference. You can also
+verify your certificate anytime using your unique SYNC ID: {{sync_id}}
+
+If you have any questions or need assistance, please do not hesitate to reach out.
+
+Warm regards,
+The Certifications Team`;
+
+function parseCertMailConfig(template: CertTemplate | null | undefined): {
+  mail_subject: string;
+  mail_body: string;
+} {
+  const style = (template?.style || {}) as CertTemplateStyle;
+  const subject = String(style.mail_subject || "").trim();
+  const body = String(style.mail_body || "").trim();
+  return {
+    mail_subject: subject || DEFAULT_CERT_MAIL_SUBJECT,
+    mail_body: body || DEFAULT_CERT_MAIL_BODY,
+  };
 }
 
 interface CertTemplateFields {
@@ -819,6 +853,8 @@ function isCertTemplate(value: unknown): value is CertTemplate {
   if (value.style.bgImage !== undefined && typeof value.style.bgImage !== "string") return false;
   if (value.style.bgPdf !== undefined && typeof value.style.bgPdf !== "string") return false;
   if (value.style.bgOverlayOpacity !== undefined && typeof value.style.bgOverlayOpacity !== "number") return false;
+  if (value.style.mail_subject !== undefined && typeof value.style.mail_subject !== "string") return false;
+  if (value.style.mail_body !== undefined && typeof value.style.mail_body !== "string") return false;
   if (!isRecord(value.fields)) return false;
   if (typeof value.fields.title !== "string") return false;
   if (typeof value.fields.recipientName !== "string") return false;
@@ -1246,6 +1282,70 @@ function CertificatePreview({
   );
 }
 
+/** Offscreen render + html2canvas so issue works even when preview step is unmounted. */
+async function captureCertificatePdfBase64(opts: {
+  template: CertTemplate;
+  recipientName: string;
+  domainName: string;
+  companyName?: string;
+  date: string;
+  certID?: string;
+  placeholderValues?: Record<string, string>;
+}): Promise<string> {
+  const page = getCertPageSpec(opts.template.style.pageFormat);
+  const host = document.createElement("div");
+  host.setAttribute("data-cert-pdf-capture", "1");
+  host.style.cssText =
+    "position:fixed;left:-14000px;top:0;z-index:-1;pointer-events:none;opacity:1;background:#fff;";
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  try {
+    await new Promise<void>((resolve) => {
+      root.render(
+        <div className="inline-block bg-white">
+          <CertificatePreview
+            template={opts.template}
+            recipientName={opts.recipientName}
+            domainName={opts.domainName}
+            companyName={opts.companyName}
+            date={opts.date}
+            certID={opts.certID}
+            placeholderValues={opts.placeholderValues}
+            overrides={{ domainName: opts.domainName }}
+            renderPdfBackground
+            showQr
+          />
+        </div>,
+      );
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+    const imgs = Array.from(host.querySelectorAll("img"));
+    await Promise.all(
+      imgs.map(
+        (img) =>
+          new Promise<void>((resolve) => {
+            if (img.complete) {
+              resolve();
+              return;
+            }
+            const done = () => resolve();
+            img.addEventListener("load", done, { once: true });
+            img.addEventListener("error", done, { once: true });
+            setTimeout(done, 2500);
+          }),
+      ),
+    );
+    await new Promise((r) => setTimeout(r, 120));
+    const node = (host.firstElementChild as HTMLElement | null) || host;
+    return await buildCertificatePdfBase64(node, page);
+  } finally {
+    root.unmount();
+    host.remove();
+  }
+}
+
 function TemplateBuilderModal({
   open,
   onOpenChange,
@@ -1275,7 +1375,14 @@ function TemplateBuilderModal({
   const movableImageInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    setDraft(initial);
+    setDraft({
+      ...initial,
+      style: {
+        ...initial.style,
+        mail_subject: initial.style.mail_subject ?? DEFAULT_CERT_MAIL_SUBJECT,
+        mail_body: initial.style.mail_body ?? DEFAULT_CERT_MAIL_BODY,
+      },
+    });
     setPreviewOverrides({});
     setSelectedLayerID(null);
     setBgUploadError("");
@@ -2299,6 +2406,34 @@ function TemplateBuilderModal({
 
               <Card>
                 <CardHeader className="py-3 px-4">
+                  <CardTitle className="text-sm">Email (compose)</CardTitle>
+                  <CardDescription className="text-xs">
+                    Used on Issue → Compose Email. Placeholders like {"{{recipient_name}}"}, {"{{sync_id}}"} are filled when sending.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="px-4 pb-4 space-y-3">
+                  <div>
+                    <Label className="text-xs">Mail subject</Label>
+                    <Input
+                      value={draft.style.mail_subject ?? DEFAULT_CERT_MAIL_SUBJECT}
+                      onChange={(e) => setStyle("mail_subject", e.target.value)}
+                      placeholder={DEFAULT_CERT_MAIL_SUBJECT}
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Mail body</Label>
+                    <Textarea
+                      rows={10}
+                      className="text-sm min-h-[160px]"
+                      value={draft.style.mail_body ?? DEFAULT_CERT_MAIL_BODY}
+                      onChange={(e) => setStyle("mail_body", e.target.value)}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="py-3 px-4">
                   <CardTitle className="text-sm">SYNC ID</CardTitle>
                   <CardDescription className="text-xs">Used for QR verification</CardDescription>
                 </CardHeader>
@@ -2488,6 +2623,362 @@ const fallbackStudents: StudentRecipient[] = [
   { id: "s6", name: "Arjun Iyer", email: "arjun.iyer@example.com" },
 ];
 
+/** Single-recipient issue: form fields = placeholders on the selected template only. */
+function SingleIssueCertDialog({
+  open,
+  onOpenChange,
+  template,
+  orgPrefix,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  template: CertTemplate | null;
+  orgPrefix: string;
+  onConfirm: (issued: IssuedCertificate[]) => Promise<void>;
+}) {
+  const { toast } = useToast();
+  const [step, setStep] = useState<"details" | "preview" | "email">("details");
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [issueDate, setIssueDate] = useState(stableNowISODate());
+  const [isIssuing, setIsIssuing] = useState(false);
+  const [sendingEmail, setSendingEmail] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
+  const [issuePayload, setIssuePayload] = useState<{
+    studentName: string;
+    studentEmail: string;
+    syncId: string;
+    certificateId: string;
+    pdfUrl: string;
+  } | null>(null);
+  const [emailDraft, setEmailDraft] = useState({
+    to: "",
+    cc: "",
+    bcc: "",
+    subject: "",
+    body: "",
+    attachmentUrl: "",
+    attachmentName: "",
+  });
+
+  const templateKeys = useMemo(
+    () => getCertificateTemplatePlaceholderKeys(template),
+    [template],
+  );
+  const fillKeys = useMemo(
+    () => templateKeys.filter((k) => k !== "issue_date"),
+    [templateKeys],
+  );
+
+  useEffect(() => {
+    if (!open || !template) return;
+    setStep("details");
+    setIssueDate(stableNowISODate());
+    setIsIssuing(false);
+    setSendingEmail(false);
+    setEmailSent(false);
+    setIssuePayload(null);
+    setEmailDraft({ to: "", cc: "", bcc: "", subject: "", body: "", attachmentUrl: "", attachmentName: "" });
+    const seed: Record<string, string> = {};
+    for (const k of getCertificateTemplatePlaceholderKeys(template)) {
+      if (k === "issue_date") continue;
+      if (k === "company_name") seed[k] = template.fields.companyName || "";
+      else if (k === "domain_name") seed[k] = template.fields.domainName || "";
+      else seed[k] = "";
+    }
+    setValues(seed);
+  }, [open, template]);
+
+  const setValue = (key: string, value: string) => {
+    setValues((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const assertFilled = (): boolean => {
+    const missing = fillKeys.filter((k) => !String(values[k] ?? "").trim());
+    if (!issueDate.trim()) missing.push("issue_date");
+    if (missing.length) {
+      toast({
+        variant: "destructive",
+        title: "Fill all template fields",
+        description: `Missing: ${missing.map(certPlaceholderLabel).join(", ")}`,
+      });
+      return false;
+    }
+    return true;
+  };
+
+  const recipientName = String(values.recipient_name || values.name || "").trim();
+  const recipientEmail = String(values.recipient_email || values.email || "").trim();
+  const domainName = String(values.domain_name || values.course_name || values.domain || "").trim();
+  const companyName = String(values.company_name || template?.fields.companyName || "").trim();
+
+  const placeholderValues = useMemo(
+    () => ({
+      ...values,
+      issue_date: issueDate,
+      date: issueDate,
+      name: recipientName,
+      domain: domainName,
+      company: companyName,
+    }),
+    [values, issueDate, recipientName, domainName, companyName],
+  );
+
+  const goPreview = () => {
+    if (!assertFilled()) return;
+    setStep("preview");
+  };
+
+  const confirmIssue = async () => {
+    if (!template || !assertFilled()) return;
+    setIsIssuing(true);
+    try {
+      const certId = generateCertId(template.certType, orgPrefix);
+      const verifyToken = generateOpaqueVerifyToken();
+      const nextIssued: IssuedCertificate = {
+        id: certId,
+        templateId: template.id,
+        templateName: template.name,
+        recipientName,
+        courseName: domainName || template.fields.domainName || "Certificate",
+        certType: template.certType,
+        issueDate,
+        status: "issued",
+        verifyToken,
+      };
+      await onConfirm([nextIssued]);
+
+      let pdfBase64 = "";
+      try {
+        pdfBase64 = await captureCertificatePdfBase64({
+          template,
+          recipientName: recipientName || template.fields.recipientName,
+          domainName: domainName || template.fields.domainName,
+          companyName: companyName || template.fields.companyName,
+          date: issueDate,
+          certID: certId,
+          placeholderValues,
+        });
+      } catch (pdfErr) {
+        console.error(pdfErr);
+        toast({
+          variant: "destructive",
+          title: "PDF capture failed",
+          description: "Issuing with server fallback PDF. Preview again and retry for a full design copy.",
+        });
+      }
+
+      const res = await api.certificates.issue({
+        recipientId: `single-${crypto.randomUUID()}`,
+        templateId: template.id,
+        syncId: certId,
+        recipientName,
+        recipientEmail,
+        courseName: domainName,
+        issueDate,
+        verifyToken,
+        pdf_base64: pdfBase64 || undefined,
+      });
+      const payload = {
+        studentName: String((res as any)?.studentName || recipientName).trim(),
+        studentEmail: String((res as any)?.studentEmail || recipientEmail).trim(),
+        syncId: String((res as any)?.syncId || certId).trim(),
+        certificateId: String((res as any)?.certificateId || certId).trim(),
+        pdfUrl: String((res as any)?.pdfUrl || "").trim(),
+      };
+      const emailValues = {
+        ...placeholderValues,
+        recipient_name: payload.studentName,
+        candidate_name: payload.studentName,
+        recipient_email: payload.studentEmail,
+        sync_id: payload.syncId,
+        cert_id: payload.syncId,
+        certificate_id: payload.syncId,
+        course_name: domainName,
+        issue_date: issueDate,
+        date: issueDate,
+      };
+      const mailCfg = parseCertMailConfig(template);
+      setIssuePayload(payload);
+      setEmailDraft({
+        to: payload.studentEmail,
+        cc: "",
+        bcc: "",
+        subject: applyPlaceholders(mailCfg.mail_subject, emailValues),
+        body: applyPlaceholders(mailCfg.mail_body, emailValues),
+        attachmentUrl: payload.pdfUrl,
+        attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.syncId}.pdf`,
+      });
+      setStep("email");
+      toast({ title: "Certificate issued" });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Issue failed", description: e?.message || "Unable to issue." });
+    } finally {
+      setIsIssuing(false);
+    }
+  };
+
+  const sendEmail = async () => {
+    if (!issuePayload) return;
+    if (!emailDraft.to.trim() || !emailDraft.subject.trim() || !emailDraft.body.trim()) {
+      toast({ variant: "destructive", title: "Missing email fields", description: "To, subject and body are required." });
+      return;
+    }
+    try {
+      setSendingEmail(true);
+      await api.certificates.sendEmail({
+        certificateId: issuePayload.certificateId,
+        to: emailDraft.to.trim(),
+        cc: emailDraft.cc.trim() || undefined,
+        bcc: emailDraft.bcc.trim() || undefined,
+        subject: emailDraft.subject,
+        body: emailDraft.body,
+        attachmentUrl: emailDraft.attachmentUrl,
+        attachmentName: emailDraft.attachmentName,
+      });
+      setEmailSent(true);
+      toast({ title: "Certificate email sent!" });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Email send failed", description: e?.message || "Unable to send email." });
+    } finally {
+      setSendingEmail(false);
+    }
+  };
+
+  if (!template) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-base">Issue Certificate — {template.name}</DialogTitle>
+        </DialogHeader>
+
+        <div className="mb-3 flex items-center gap-2 text-xs">
+          <Badge variant={step === "details" ? "default" : "secondary"} className="text-[10px]">1. Details</Badge>
+          <Badge variant={step === "preview" ? "default" : "secondary"} className="text-[10px]">2. Preview</Badge>
+          <Badge variant={step === "email" ? "default" : "secondary"} className="text-[10px]">3. Email</Badge>
+        </div>
+
+        {step === "details" ? (
+          <Card>
+            <CardHeader className="py-3 px-4">
+              <CardTitle className="text-sm">Template placeholders</CardTitle>
+              <CardDescription className="text-xs">
+                Only fields used in this template
+                {fillKeys.length ? `: ${fillKeys.map((k) => `{{${k}}}`).join(", ")}` : ""}.
+                All must be filled to continue.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-3 px-4 pb-4">
+              {fillKeys.length === 0 ? (
+                <p className="text-xs text-muted-foreground sm:col-span-2">No fillable placeholders on this template.</p>
+              ) : (
+                fillKeys.map((key) => (
+                  <div key={key} className={key === "recipient_name" || key === "name" ? "sm:col-span-2" : undefined}>
+                    <Label className="text-xs">
+                      {certPlaceholderLabel(key)} *
+                      <span className="ml-1 font-mono text-[10px] text-muted-foreground">{`{{${key}}}`}</span>
+                    </Label>
+                    <Input
+                      type={key.includes("email") ? "email" : "text"}
+                      value={values[key] || ""}
+                      onChange={(e) => setValue(key, e.target.value)}
+                      placeholder={certPlaceholderLabel(key)}
+                    />
+                  </div>
+                ))
+              )}
+              <div>
+                <Label className="text-xs">Issue date *</Label>
+                <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {step === "preview" ? (
+          <div className="space-y-3">
+            <CertificatePreview
+              template={template}
+              recipientName={recipientName || template.fields.recipientName}
+              domainName={domainName || template.fields.domainName}
+              companyName={companyName || template.fields.companyName}
+              date={issueDate}
+              placeholderValues={placeholderValues}
+              overrides={{ domainName: domainName || template.fields.domainName }}
+              renderPdfBackground
+            />
+          </div>
+        ) : null}
+
+        {step === "email" && issuePayload ? (
+          emailSent ? (
+            <Card>
+              <CardHeader className="py-3 px-4">
+                <CardTitle className="text-sm">Email sent</CardTitle>
+                <CardDescription className="text-xs">Delivered to {issuePayload.studentEmail}</CardDescription>
+              </CardHeader>
+            </Card>
+          ) : (
+            <Card>
+              <CardHeader className="py-3 px-4">
+                <CardTitle className="text-sm">Compose Email</CardTitle>
+                <CardDescription className="text-xs">
+                  Body and subject come from this template&apos;s Email settings (placeholders filled). Edit before sending.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3 px-4 pb-4">
+                <div>
+                  <Label className="text-xs">To</Label>
+                  <Input value={emailDraft.to} onChange={(e) => setEmailDraft((p) => ({ ...p, to: e.target.value }))} />
+                </div>
+                <div>
+                  <Label className="text-xs">Subject</Label>
+                  <Input value={emailDraft.subject} onChange={(e) => setEmailDraft((p) => ({ ...p, subject: e.target.value }))} />
+                </div>
+                <div>
+                  <Label className="text-xs">Body</Label>
+                  <Textarea rows={12} value={emailDraft.body} onChange={(e) => setEmailDraft((p) => ({ ...p, body: e.target.value }))} />
+                </div>
+                <Badge variant="outline" className="text-[11px]">PDF · {emailDraft.attachmentName}</Badge>
+              </CardContent>
+            </Card>
+          )
+        ) : null}
+
+        <DialogFooter>
+          <div className="flex w-full flex-col sm:flex-row gap-2 sm:justify-between">
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (step === "details") onOpenChange(false);
+                else if (step === "preview") setStep("details");
+                else setStep("preview");
+              }}
+            >
+              {step === "details" ? "Cancel" : "Back"}
+            </Button>
+            {step === "details" ? (
+              <Button onClick={goPreview}>Next: Preview</Button>
+            ) : step === "preview" ? (
+              <Button onClick={() => void confirmIssue()} disabled={isIssuing}>
+                {isIssuing ? "Issuing…" : "Issue & Compose Email"}
+              </Button>
+            ) : emailSent ? (
+              <Button onClick={() => onOpenChange(false)}>Done</Button>
+            ) : (
+              <Button onClick={() => void sendEmail()} disabled={sendingEmail}>
+                {sendingEmail ? "Sending…" : "Send Email"}
+              </Button>
+            )}
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function IssueCertWizard({
   open,
   onOpenChange,
@@ -2605,13 +3096,19 @@ function IssueCertWizard({
   );
   const dynamicTemplateKeys = useMemo(() => {
     if (!selectedTemplate) return [] as string[];
-    const keys = extractPlaceholderKeys(
-      ...(selectedTemplate.layers || []).map((l) => String(l.content || "")),
-      String(selectedTemplate.fields.title || ""),
-      String(selectedTemplate.fields.bodyText || ""),
+    return getCertificateTemplatePlaceholderKeys(selectedTemplate).filter(
+      (k) => !["recipient_name", "recipient_email", "domain_name", "issue_date", "company_name"].includes(k),
     );
-    return keys.filter((k) => !["name", "domain", "date", "company", "certID", "recipient_name", "recipient_email", "course_name", "issue_date"].includes(k));
   }, [selectedTemplate]);
+
+  const templateBulkKeys = useMemo(
+    () => getCertificateTemplatePlaceholderKeys(selectedTemplate),
+    [selectedTemplate],
+  );
+  const templateRowKeys = useMemo(() => getCertificateBulkRowKeys(templateBulkKeys), [templateBulkKeys]);
+  const templateHasDomain = templateBulkKeys.includes("domain_name");
+  const templateHasCompany = templateBulkKeys.includes("company_name");
+  const templateHasIssueDate = templateBulkKeys.includes("issue_date");
 
   const toggleRecipient = (id: string) => {
     setSelectedRecipientIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -2634,19 +3131,26 @@ function IssueCertWizard({
 
   const handleCertSheetImport = async (file: File) => {
     try {
+      if (!selectedTemplate) {
+        toast({
+          variant: "destructive",
+          title: "Select a template first",
+          description: "Excel columns follow the placeholders on the selected certificate template.",
+        });
+        return;
+      }
+      const allowedKeys = [...templateBulkKeys, "candidate_name", "email", "course_name", "name", "domain"];
       const grid = await parsePlaceholderSheetFile(file);
-      const allowedDynamic = dynamicTemplateKeys.length > 0 ? dynamicTemplateKeys : [];
       const mapped = mapSheetRowsToPlaceholders(grid, {
-        allowedKeys: [...CERT_BULK_SHEET_HEADERS, "candidate_name", "email", "course_name", ...allowedDynamic],
-        requireKeys: ["recipient_name"],
+        allowedKeys,
+        requireKeys: templateBulkKeys.includes("recipient_name") ? ["recipient_name"] : [],
       });
-      // Also accept rows that only have candidate_name (alias fills recipient_name)
       const rows =
         mapped.rows.length > 0
           ? mapped.rows
-          : mapSheetRowsToPlaceholders(grid, {
-              allowedKeys: [...CERT_BULK_SHEET_HEADERS, "candidate_name", "email", "course_name", ...allowedDynamic],
-            }).rows.filter((r) => r.recipient_name || r.candidate_name);
+          : mapSheetRowsToPlaceholders(grid, { allowedKeys }).rows.filter(
+              (r) => r.recipient_name || r.candidate_name || r.name,
+            );
 
       if (rows.length === 0) {
         toast({
@@ -2659,26 +3163,43 @@ function IssueCertWizard({
 
       const imported: StudentRecipient[] = rows.map((row) => ({
         id: `sheet-${crypto.randomUUID()}`,
-        name: row.recipient_name || row.candidate_name || "Recipient",
+        name: row.recipient_name || row.candidate_name || row.name || "Recipient",
         email: row.recipient_email || row.email || "",
       }));
       const courseMap: Record<string, string> = {};
       const extraMap: Record<string, Record<string, string>> = {};
       imported.forEach((s, i) => {
-        const course = rows[i].domain_name || rows[i].course_name || "";
+        const course = rows[i].domain_name || rows[i].course_name || rows[i].domain || "";
         if (course) courseMap[s.id] = course;
         const extras: Record<string, string> = {};
         Object.keys(rows[i]).forEach((k) => {
-          if (!["recipient_name", "candidate_name", "recipient_email", "email", "domain_name", "course_name", "issue_date", "company_name"].includes(k)) {
-            if (rows[i][k]) extras[k] = rows[i][k];
+          if (
+            ![
+              "recipient_name",
+              "candidate_name",
+              "name",
+              "recipient_email",
+              "email",
+              "domain_name",
+              "course_name",
+              "domain",
+              "issue_date",
+              "company_name",
+            ].includes(k)
+          ) {
+            if (rows[i][k] && templateBulkKeys.includes(k)) extras[k] = rows[i][k];
           }
         });
         if (Object.keys(extras).length > 0) extraMap[s.id] = extras;
       });
       const dateFromSheet = rows.find((r) => r.issue_date)?.issue_date;
-      if (dateFromSheet) setIssueDate(dateFromSheet);
+      if (dateFromSheet && templateHasIssueDate) setIssueDate(dateFromSheet);
+      const companyFromSheet = rows.find((r) => r.company_name)?.company_name;
+      if (companyFromSheet && templateHasCompany) {
+        setExtraGlobalValues((prev) => ({ ...prev, company_name: companyFromSheet }));
+      }
       const firstCourse = Object.values(courseMap)[0];
-      if (firstCourse && !courseName.trim()) setCourseName(firstCourse);
+      if (firstCourse && !courseName.trim() && templateHasDomain) setCourseName(firstCourse);
 
       setStudents((prev) => {
         const keep = prev.filter((s) => !String(s.id).startsWith("sheet-"));
@@ -2689,29 +3210,54 @@ function IssueCertWizard({
       setExtraByRecipientId((prev) => ({ ...prev, ...extraMap }));
       toast({
         title: `Imported ${imported.length} recipient(s)`,
-        description: "Matched Excel columns to certificate placeholders.",
+        description: `Matched columns to this template’s placeholders (${templateRowKeys.join(", ")}).`,
       });
     } catch (e: any) {
       toast({ variant: "destructive", title: "Import failed", description: e?.message || "Could not read file" });
     }
   };
 
+  const downloadCertSheetTemplate = async () => {
+    if (!selectedTemplate) {
+      toast({
+        variant: "destructive",
+        title: "Select a template first",
+        description: "The Excel columns are built from placeholders on the selected template.",
+      });
+      return;
+    }
+    const headers = templateBulkKeys.length ? [...templateBulkKeys] : ["recipient_name", "recipient_email"];
+    const sample = headers.map((h) => {
+      if (h === "recipient_name") return "Priya Patel";
+      if (h === "recipient_email") return "priya@example.com";
+      if (h === "domain_name") return "Full Stack Development";
+      if (h === "issue_date") return stableNowISODate();
+      if (h === "company_name") return "Syncpedia Technologies";
+      return "";
+    });
+    await downloadPlaceholderExcelTemplate(headers, sample, "certificates-bulk-template.xlsx", "Recipients");
+  };
+
   const goNext = () => {
     if (step === 1) {
-      if (selectedRecipientIds.length === 0) {
-        toast({ variant: "destructive", title: "Select recipients", description: "Pick at least one recipient to continue." });
+      if (!selectedTemplate) {
+        toast({ variant: "destructive", title: "Select template", description: "Choose a certificate template first." });
+        return;
+      }
+      if (!issueDate.trim()) {
+        toast({ variant: "destructive", title: "Issue date required", description: "Select an issue date." });
         return;
       }
       setStep(2);
       return;
     }
     if (step === 2) {
-      if (!selectedTemplate) {
-        toast({ variant: "destructive", title: "Select template", description: "Choose a certificate template." });
+      if (selectedRecipientIds.length === 0) {
+        toast({ variant: "destructive", title: "Select recipients", description: "Pick at least one recipient to continue." });
         return;
       }
-      if (!issueDate.trim()) {
-        toast({ variant: "destructive", title: "Issue date required", description: "Select an issue date." });
+      if (!selectedTemplate) {
+        toast({ variant: "destructive", title: "Select template", description: "Choose a certificate template." });
         return;
       }
       const nextIds: Record<string, string> = {};
@@ -2770,15 +3316,46 @@ function IssueCertWizard({
       const issueResults: Array<{ recipientId: string; res: any }> = [];
       for (const recipient of selectedRecipients) {
         const issued = issuedByRecipientId[recipient.id] || issuedList[0];
+        const course = (courseByRecipientId[recipient.id] || courseName).trim();
+        const extra = { ...extraGlobalValues, ...(extraByRecipientId[recipient.id] || {}) };
+        const placeholderValues = {
+          ...extra,
+          recipient_name: recipient.name,
+          candidate_name: recipient.name,
+          recipient_email: recipient.email,
+          sync_id: issued.id,
+          cert_id: issued.id,
+          certificate_id: issued.id,
+          course_name: course,
+          domain_name: course,
+          issue_date: issueDate,
+          date: issueDate,
+          company_name: extra.company_name || selectedTemplate.fields.companyName || "",
+        };
+        let pdfBase64 = "";
+        try {
+          pdfBase64 = await captureCertificatePdfBase64({
+            template: selectedTemplate,
+            recipientName: recipient.name,
+            domainName: course || selectedTemplate.fields.domainName,
+            companyName: placeholderValues.company_name || selectedTemplate.fields.companyName,
+            date: issueDate,
+            certID: issued.id,
+            placeholderValues,
+          });
+        } catch (pdfErr) {
+          console.error(pdfErr);
+        }
         const res = await api.certificates.issue({
           recipientId: recipient.id,
           templateId: selectedTemplate.id,
           syncId: issued.id,
           recipientName: recipient.name,
           recipientEmail: recipient.email,
-          courseName: (courseByRecipientId[recipient.id] || courseName).trim(),
+          courseName: course,
           issueDate,
           verifyToken: issued.verifyToken,
+          pdf_base64: pdfBase64 || undefined,
         });
         issueResults.push({ recipientId: recipient.id, res });
       }
@@ -2805,26 +3382,17 @@ function IssueCertWizard({
         course_name: (courseByRecipientId[primary.id] || courseName).trim(),
         issue_date: issueDate,
         date: issueDate,
+        company_name: extraGlobalValues.company_name || selectedTemplate.fields.companyName || "",
+        domain_name: (courseByRecipientId[primary.id] || courseName).trim(),
       };
-      const defaultSubject = applyPlaceholders(`Your Certificate is Ready — {{sync_id}}`, emailValues);
-      const defaultBody = applyPlaceholders(`Dear {{recipient_name}},
-
-We are pleased to inform you that your certificate has been successfully issued.
-
-Please find the attached certificate (PDF) for your reference. You can also
-verify your certificate anytime using your unique SYNC ID: {{sync_id}}
-
-If you have any questions or need assistance, please do not hesitate to reach out.
-
-Warm regards,
-The Certifications Team`, emailValues);
+      const mailCfg = parseCertMailConfig(selectedTemplate);
       setIssuePayload(payload);
       setEmailDraft({
         to: payload.studentEmail,
         cc: "",
         bcc: "",
-        subject: defaultSubject,
-        body: defaultBody,
+        subject: applyPlaceholders(mailCfg.mail_subject, emailValues),
+        body: applyPlaceholders(mailCfg.mail_body, emailValues),
         attachmentUrl: payload.pdfUrl,
         attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.syncId}.pdf`,
       });
@@ -2898,20 +3466,158 @@ The Certifications Team`, emailValues);
         </DialogHeader>
 
         <div className="mb-4 flex items-center gap-2 text-xs">
-          <Badge variant={step === 1 ? "default" : "secondary"} className="text-[10px]">1. Recipients</Badge>
-          <Badge variant={step === 2 ? "default" : "secondary"} className="text-[10px]">2. Template</Badge>
+          <Badge variant={step === 1 ? "default" : "secondary"} className="text-[10px]">1. Template</Badge>
+          <Badge variant={step === 2 ? "default" : "secondary"} className="text-[10px]">2. Recipients</Badge>
           <Badge variant={step === 3 ? "default" : "secondary"} className="text-[10px]">3. Review</Badge>
           <Badge variant={step === 4 ? "default" : "secondary"} className="text-[10px]">4. Send Email</Badge>
         </div>
 
         {step === 1 && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Card>
+              <CardHeader className="py-3 px-4">
+                <CardTitle className="text-sm">Pick a template</CardTitle>
+                <CardDescription className="text-xs">
+                  Columns for bulk import follow only the placeholders on this template.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                <ScrollArea className="h-[420px] pr-3">
+                  <div className="grid gap-3">
+                    {activeTemplates.map((t) => {
+                      const selected = selectedTemplateId === t.id;
+                      const keys = getCertificateTemplatePlaceholderKeys(t);
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          className={cn(
+                            "rounded-xl border p-3 text-left transition-colors",
+                            selected ? "border-primary ring-2 ring-primary/20 bg-primary/5" : "hover:bg-muted/20",
+                          )}
+                          onClick={() => setSelectedTemplateId(t.id)}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold truncate">{t.name}</div>
+                              <div className="text-[11px] text-muted-foreground font-mono truncate">{t.id}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant={statusBadgeVariant(t.status)} className="text-[10px]">{t.status}</Badge>
+                              <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[t.certType])}>{t.certType}</Badge>
+                            </div>
+                          </div>
+                          {keys.length > 0 ? (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {keys.map((k) => (
+                                <code key={k} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{`{{${k}}}`}</code>
+                              ))}
+                            </div>
+                          ) : null}
+                          <div className="mt-2 overflow-hidden rounded-lg border bg-muted/10">
+                            <div className="p-2">
+                              <CertificatePreview template={t} scale={0.36} renderPdfBackground />
+                            </div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="py-3 px-4">
+                <CardTitle className="text-sm">Issue details</CardTitle>
+                <CardDescription className="text-xs">
+                  Only fields used in the selected template
+                  {selectedTemplate && templateBulkKeys.length
+                    ? ` · ${templateBulkKeys.map((k) => `{{${k}}}`).join(", ")}`
+                    : ""}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="px-4 pb-4 space-y-3">
+                {templateHasDomain ? (
+                  <div>
+                    <Label className="text-xs">{certPlaceholderLabel("domain_name")} (optional default)</Label>
+                    <Input value={courseName} onChange={(e) => setCourseName(e.target.value)} placeholder="Leave empty for template default" />
+                  </div>
+                ) : null}
+                <div>
+                  <Label className="text-xs">Issue date</Label>
+                  <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
+                </div>
+                {templateHasCompany ? (
+                  <div>
+                    <Label className="text-xs">{certPlaceholderLabel("company_name")}</Label>
+                    <Input
+                      value={extraGlobalValues.company_name || selectedTemplate?.fields.companyName || ""}
+                      onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, company_name: e.target.value }))}
+                      placeholder="Company name"
+                    />
+                  </div>
+                ) : null}
+                {dynamicTemplateKeys.length > 0 ? (
+                  <div className="sm:col-span-2 rounded-md border p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <Label className="text-xs">Additional template placeholders</Label>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={applyGlobalExtrasToSelected}>
+                        Fill selected recipients
+                      </Button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {dynamicTemplateKeys.map((k) => (
+                        <div key={k}>
+                          <Label className="text-[11px] font-mono">{`{{${k}}}`}</Label>
+                          <Input
+                            value={extraGlobalValues[k] || ""}
+                            onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, [k]: e.target.value }))}
+                            placeholder={`Value for ${k}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="pt-2">
+                  <Label className="text-xs">Preview (selected template)</Label>
+                  <div className="mt-2">
+                    {selectedTemplate ? (
+                      <CertificatePreview
+                        template={selectedTemplate}
+                        recipientName={selectedRecipients[0]?.name || selectedTemplate.fields.recipientName}
+                        domainName={courseName || selectedTemplate.fields.domainName}
+                        companyName={extraGlobalValues.company_name || selectedTemplate.fields.companyName}
+                        date={issueDate}
+                        placeholderValues={extraGlobalValues}
+                        overrides={{ domainName: courseName || selectedTemplate.fields.domainName }}
+                        renderPdfBackground
+                      />
+                    ) : (
+                      <div className="text-sm text-muted-foreground">Select a template to preview.</div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {step === 2 && (
           <Card>
             <CardHeader className="py-3 px-4">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <CardTitle className="text-sm">Select students</CardTitle>
                   <CardDescription className="text-xs">
-                    Pick students, or import Excel — columns map to placeholders (recipient_name, recipient_email, domain_name…)
+                    Excel columns match this template only
+                    {templateRowKeys.length
+                      ? `: ${templateRowKeys.map((k) => `{{${k}}}`).join(", ")}`
+                      : selectedTemplate
+                        ? ""
+                        : " — pick a template in step 1 first"}
                   </CardDescription>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -2920,14 +3626,7 @@ The Certifications Team`, emailValues);
                     variant="outline"
                     size="sm"
                     className="h-8 text-xs gap-1"
-                    onClick={() =>
-                      void downloadPlaceholderExcelTemplate(
-                        [...CERT_BULK_SHEET_HEADERS],
-                        [...CERT_BULK_SHEET_SAMPLE],
-                        "certificates-bulk-template.xlsx",
-                        "Recipients",
-                      )
-                    }
+                    onClick={() => void downloadCertSheetTemplate()}
                   >
                     <Download className="h-3.5 w-3.5" /> Excel template
                   </Button>
@@ -2970,6 +3669,36 @@ The Certifications Team`, emailValues);
                         <div className="min-w-0">
                           <div className="text-sm font-semibold truncate">{r.name}</div>
                           <div className="text-xs text-muted-foreground truncate">{r.email}</div>
+                          {checked && templateHasDomain ? (
+                            <div className="mt-1" onClick={(e) => e.stopPropagation()}>
+                              <Input
+                                className="h-7 text-xs"
+                                value={courseByRecipientId[r.id] || ""}
+                                onChange={(e) =>
+                                  setCourseByRecipientId((prev) => ({ ...prev, [r.id]: e.target.value }))
+                                }
+                                placeholder={certPlaceholderLabel("domain_name")}
+                              />
+                            </div>
+                          ) : null}
+                          {checked && dynamicTemplateKeys.length > 0 ? (
+                            <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-1" onClick={(e) => e.stopPropagation()}>
+                              {dynamicTemplateKeys.map((k) => (
+                                <Input
+                                  key={k}
+                                  className="h-7 text-xs"
+                                  value={extraByRecipientId[r.id]?.[k] || ""}
+                                  onChange={(e) =>
+                                    setExtraByRecipientId((prev) => ({
+                                      ...prev,
+                                      [r.id]: { ...(prev[r.id] || {}), [k]: e.target.value },
+                                    }))
+                                  }
+                                  placeholder={certPlaceholderLabel(k)}
+                                />
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                         <span className="ml-auto text-[10px] text-muted-foreground">{checked ? "Selected" : ""}</span>
                       </button>
@@ -2979,112 +3708,6 @@ The Certifications Team`, emailValues);
               </ScrollArea>
             </CardContent>
           </Card>
-        )}
-
-        {step === 2 && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader className="py-3 px-4">
-                <CardTitle className="text-sm">Pick a template</CardTitle>
-                <CardDescription className="text-xs">Choose from existing templates</CardDescription>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                <ScrollArea className="h-[420px] pr-3">
-                  <div className="grid gap-3">
-                    {activeTemplates.map((t) => {
-                      const selected = selectedTemplateId === t.id;
-                      return (
-                        <button
-                          key={t.id}
-                          type="button"
-                          className={cn(
-                            "rounded-xl border p-3 text-left transition-colors",
-                            selected ? "border-primary ring-2 ring-primary/20 bg-primary/5" : "hover:bg-muted/20",
-                          )}
-                          onClick={() => setSelectedTemplateId(t.id)}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-sm font-semibold truncate">{t.name}</div>
-                              <div className="text-[11px] text-muted-foreground font-mono truncate">{t.id}</div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <Badge variant={statusBadgeVariant(t.status)} className="text-[10px]">{t.status}</Badge>
-                              <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[t.certType])}>{t.certType}</Badge>
-                            </div>
-                          </div>
-                          <div className="mt-2 overflow-hidden rounded-lg border bg-muted/10">
-                            <div className="p-2">
-                              <CertificatePreview template={t} scale={0.36} renderPdfBackground />
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="py-3 px-4">
-                <CardTitle className="text-sm">Issue details</CardTitle>
-                <CardDescription className="text-xs">Course and issue date</CardDescription>
-              </CardHeader>
-              <CardContent className="px-4 pb-4 space-y-3">
-                <div>
-                  <Label className="text-xs">Course name (optional)</Label>
-                  <Input value={courseName} onChange={(e) => setCourseName(e.target.value)} placeholder="Leave empty for template default" />
-                </div>
-                <div>
-                  <Label className="text-xs">Issue date</Label>
-                  <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
-                </div>
-                {dynamicTemplateKeys.length > 0 ? (
-                  <div className="sm:col-span-2 rounded-md border p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <Label className="text-xs">Additional template placeholders</Label>
-                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={applyGlobalExtrasToSelected}>
-                        Fill selected recipients
-                      </Button>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {dynamicTemplateKeys.map((k) => (
-                        <div key={k}>
-                          <Label className="text-[11px] font-mono">{`{{${k}}}`}</Label>
-                          <Input
-                            value={extraGlobalValues[k] || ""}
-                            onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, [k]: e.target.value }))}
-                            placeholder={`Value for ${k}`}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="pt-2">
-                  <Label className="text-xs">Preview (selected template)</Label>
-                  <div className="mt-2">
-                    {selectedTemplate ? (
-                      <CertificatePreview
-                        template={selectedTemplate}
-                        recipientName={selectedRecipients[0]?.name || selectedTemplate.fields.recipientName}
-                        domainName={courseName || selectedTemplate.fields.domainName}
-                        companyName={selectedTemplate.fields.companyName}
-                        date={issueDate}
-                        placeholderValues={extraGlobalValues}
-                        overrides={{ domainName: courseName || selectedTemplate.fields.domainName }}
-                        renderPdfBackground
-                      />
-                    ) : (
-                      <div className="text-sm text-muted-foreground">Select a template to preview.</div>
-                    )}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
         )}
 
         {step === 3 && (
@@ -3169,7 +3792,9 @@ The Certifications Team`, emailValues);
                 <Card>
                   <CardHeader className="py-3 px-4">
                     <CardTitle className="text-sm">Compose Email</CardTitle>
-                    <CardDescription className="text-xs">Edit before sending the certificate email.</CardDescription>
+                    <CardDescription className="text-xs">
+                      Body and subject come from this template&apos;s Email settings (placeholders filled). Edit before sending.
+                    </CardDescription>
                   </CardHeader>
                   <CardContent className="px-4 pb-4 space-y-3">
                     <div>
@@ -3720,6 +4345,8 @@ export default function CertificatesPage() {
   const [showBuilder, setShowBuilder] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
+  const [showSingleIssue, setShowSingleIssue] = useState(false);
+  const [singleIssueTemplate, setSingleIssueTemplate] = useState<CertTemplate | null>(null);
   const prevWizardOpen = useRef(false);
   const [editingTemplate, setEditingTemplate] = useState<CertTemplate | null>(null);
   const [wizardInitialTemplateId, setWizardInitialTemplateId] = useState<string | undefined>(undefined);
@@ -3872,8 +4499,8 @@ export default function CertificatesPage() {
   };
 
   const issueFromTemplate = (t: CertTemplate) => {
-    setWizardInitialTemplateId(t.id);
-    setShowWizard(true);
+    setSingleIssueTemplate(t);
+    setShowSingleIssue(true);
   };
 
   const addIssuedBatch = async (list: IssuedCertificate[]) => {
@@ -4072,6 +4699,16 @@ export default function CertificatesPage() {
         onOpenChange={setShowWizard}
         templates={templates}
         initialTemplateId={wizardInitialTemplateId}
+        orgPrefix={certOrgContext.orgPrefix}
+        onConfirm={addIssuedBatch}
+      />
+      <SingleIssueCertDialog
+        open={showSingleIssue}
+        onOpenChange={(o) => {
+          setShowSingleIssue(o);
+          if (!o) setSingleIssueTemplate(null);
+        }}
+        template={singleIssueTemplate}
         orgPrefix={certOrgContext.orgPrefix}
         onConfirm={addIssuedBatch}
       />

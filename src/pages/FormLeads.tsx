@@ -30,8 +30,10 @@ import {
   buildSourceSummaries,
   filterLeadsBySourceBucket,
   getFormSourceKey,
+  getLeadSourceBucket,
   resolveFormAssigneesForSourceKey,
 } from '@/lib/leadSources';
+import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
 import { filterAndSortAssignRoster } from '@/lib/assignRoster';
 
 const MARKETING_RESUME_TYPES = [
@@ -147,8 +149,10 @@ export default function FormLeads() {
   const hasEditAll = perms.canEditAll(role);
   const hasDelete = perms.canDelete(role);
   const hasBulkDelete = perms.canBulkDelete(role);
-  const hasExport = perms.canExport(role);
-  const rl = String(role || '').trim().toLowerCase();
+  const rl = String(role || '').trim().toLowerCase().replace(/^superadmin$/, 'super_admin');
+  const canExportLeads = rl === 'super_admin' || rl === 'admin';
+  const [exportCardsOpen, setExportCardsOpen] = useState(false);
+  const [exportCardKeys, setExportCardKeys] = useState<Set<string>>(new Set());
   const formLeadsAssignmentRoster =
     isManager || rl.startsWith('marketing') || rl === 'hr';
 
@@ -646,15 +650,44 @@ export default function FormLeads() {
     setSelectedIds(new Set());
   };
 
-  const handleExport = () => {
-    const headers = ['S.No', 'Name', 'Email', 'Phone', 'College', 'Source', 'Status', 'Collected By', 'Assigned To', 'Created'];
-    const rows = filtered.map((l, i) => [i + 1, l.name, l.email, l.phone, l.college, l.source, l.status, codeToName[l.referred_by] || l.referred_by, getAssignedName(l.assigned_to), l.created_at]);
-    const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v || ''}"`).join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `form-leads-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
-    URL.revokeObjectURL(url);
-    toast({ title: 'Form leads exported successfully' });
+  const downloadLeadsCsv = (rows: any[], filenameHint: string) => {
+    if (!rows.length) {
+      toast({ variant: 'destructive', title: 'Nothing to export', description: 'No leads match the selection.' });
+      return;
+    }
+    const result = downloadLeadsDetailCsv(rows, filenameHint, {
+      getAssignedTo: (lead) => {
+        const names = getLeadAssignedNames(lead);
+        if (names.length) return names.join(', ');
+        return getAssignedName(lead?.assigned_to) || '';
+      },
+      getCollectedBy: (lead) => codeToName[lead?.referred_by] || lead?.referred_by || '',
+      getCreatedBy: (lead) => {
+        const fromApi = String(lead?.created_by_name || '').trim();
+        if (fromApi) return fromApi;
+        const id = String(lead?.created_by || '').trim();
+        if (!id) return '';
+        return getAssignedName(id) || userIdToName[id] || '';
+      },
+    });
+    if (result.ok) {
+      toast({ title: 'Form leads exported', description: `${result.count} lead(s) with full details downloaded.` });
+    }
+  };
+
+  const openExportCardsDialog = () => {
+    setExportCardKeys(new Set(sourceSummaries.map((s) => s.key)));
+    setExportCardsOpen(true);
+  };
+
+  const handleExportSelectedCards = () => {
+    if (exportCardKeys.size === 0) {
+      toast({ variant: 'destructive', title: 'Select at least one card' });
+      return;
+    }
+    const rows = cardLeads.filter((l) => exportCardKeys.has(getLeadSourceBucket(l)));
+    downloadLeadsCsv(rows, `form-leads-${exportCardKeys.size}-cards`);
+    setExportCardsOpen(false);
   };
 
   const openDetail = (lead: any) => { setDetailLead(lead); setDetailOpen(true); };
@@ -908,6 +941,8 @@ export default function FormLeads() {
           detailPanel={formCardDetailPanel}
           onCloseDetail={closeInlineDetail}
           backLabel="Back to Form Leads"
+          canExport={canExportLeads}
+          onExport={(rows) => downloadLeadsCsv(rows, sourceDialogLabel || String(sourceDialogKey || 'form-leads'))}
         />
       )}
       {!sourceDialogKey && (
@@ -946,8 +981,8 @@ export default function FormLeads() {
               <UserPlus className="h-3.5 w-3.5" /><span className="hidden sm:inline">Auto-Allocate</span>
             </Button>
           )}
-          {hasExport && (
-            <Button variant="outline" size="sm" className="gap-1.5 h-8" onClick={handleExport}>
+          {canExportLeads && (
+            <Button variant="outline" size="sm" className="gap-1.5 h-8" onClick={openExportCardsDialog}>
               <Download className="h-3.5 w-3.5" /><span className="hidden sm:inline">Export</span>
             </Button>
           )}
@@ -1415,6 +1450,81 @@ export default function FormLeads() {
           void fetchData();
         }}
       />
+
+      <Dialog open={exportCardsOpen} onOpenChange={setExportCardsOpen}>
+        <DialogContent className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 p-0 overflow-hidden">
+          <DialogHeader className="px-6 pt-6 pb-3 shrink-0">
+            <DialogTitle>Export form leads by card</DialogTitle>
+          </DialogHeader>
+          <p className="px-6 text-xs text-muted-foreground pb-2">
+            Select the form cards to include. Only leads from checked cards are exported.
+          </p>
+          <div className="px-6 pb-2 flex items-center justify-between gap-2 shrink-0">
+            <button
+              type="button"
+              className="text-xs text-primary hover:underline"
+              onClick={() => {
+                if (exportCardKeys.size === sourceSummaries.length) {
+                  setExportCardKeys(new Set());
+                } else {
+                  setExportCardKeys(new Set(sourceSummaries.map((s) => s.key)));
+                }
+              }}
+            >
+              {exportCardKeys.size === sourceSummaries.length && sourceSummaries.length > 0
+                ? 'Deselect all'
+                : 'Select all'}
+            </button>
+            <span className="text-xs text-muted-foreground">
+              {exportCardKeys.size} of {sourceSummaries.length} selected
+            </span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-2 space-y-1.5 max-h-[50vh]">
+            {sourceSummaries.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">No cards available</p>
+            ) : (
+              sourceSummaries.map((summary) => (
+                <label
+                  key={summary.key}
+                  className="flex items-center gap-3 rounded-lg border border-border/60 px-3 py-2.5 cursor-pointer hover:bg-muted/40"
+                >
+                  <Checkbox
+                    checked={exportCardKeys.has(summary.key)}
+                    onCheckedChange={(v) => {
+                      setExportCardKeys((prev) => {
+                        const next = new Set(prev);
+                        if (v === true) next.add(summary.key);
+                        else next.delete(summary.key);
+                        return next;
+                      });
+                    }}
+                  />
+                  <span className="flex-1 min-w-0">
+                    <span className="text-sm font-medium block truncate">{summary.label}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {summary.total} lead{summary.total === 1 ? '' : 's'}
+                    </span>
+                  </span>
+                </label>
+              ))
+            )}
+          </div>
+          <DialogFooter className="px-6 py-4 border-t shrink-0 gap-2">
+            <Button type="button" variant="outline" onClick={() => setExportCardsOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="gap-1.5"
+              disabled={exportCardKeys.size === 0}
+              onClick={handleExportSelectedCards}
+            >
+              <Download className="h-4 w-4" />
+              Export selected
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

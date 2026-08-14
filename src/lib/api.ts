@@ -1071,6 +1071,9 @@ export const api = {
       courseName?: string;
       issueDate?: string;
       verifyToken?: string;
+      /** Browser-generated certificate PDF (base64, optional data-URL prefix). */
+      pdf_base64?: string;
+      pdfBase64?: string;
     }) => request('/certificates.php?action=issue', { method: 'POST', body: JSON.stringify(data) }),
     sendEmail: (data: {
       certificateId: string;

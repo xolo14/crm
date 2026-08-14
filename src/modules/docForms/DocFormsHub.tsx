@@ -995,14 +995,17 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
           mail.mail_subject || "",
           mail.mail_body || "",
           mail.pdf_filename_pattern || "",
-          mail.recipient_email_placeholder || "",
         );
+        const emailKey = String(mail.recipient_email_placeholder || "recipient_email")
+          .replace(/^\{\{\s*|\s*\}\}$/g, "")
+          .trim();
+        if (emailKey && !keys.includes(emailKey)) keys.push(emailKey);
+        keys = keys.filter((k) => !["date", "ref_number", "letterhead_url"].includes(k));
       } else if (formType === "certificate" && tpl) {
         const style = (tpl.style || {}) as TemplateMailConfig & Record<string, unknown>;
         const fields = tpl.fields || {};
-        const layerText = Array.isArray(tpl.layers)
-          ? tpl.layers.map((l: any) => String(l.content || "")).join(" ")
-          : "";
+        const layers = Array.isArray(tpl.layers) ? tpl.layers : [];
+        const layerText = layers.map((l: any) => String(l.content || "")).join(" ");
         keys = extractPlaceholderKeys(
           layerText,
           String(fields.title || ""),
@@ -1010,24 +1013,37 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
           String(style.mail_body || ""),
           String(style.pdf_filename_pattern || ""),
         );
-        // Always include typed cert keys
-        ["name", "domain", "date", "company", "certID", "email"].forEach((k) => {
-          if (!keys.includes(k)) keys.push(k);
-        });
+        // Only typed layers that actually exist on this template
+        const layerTypeToKey: Record<string, string> = {
+          name: "name",
+          domain: "domain",
+          date: "date",
+          company: "company",
+        };
+        for (const layer of layers) {
+          const mapped = layerTypeToKey[String(layer?.type || "")];
+          if (mapped && !keys.includes(mapped)) keys.push(mapped);
+        }
+        // Email for sending when issuing from forms
+        if (!keys.includes("email") && !keys.includes("recipient_email")) keys.push("email");
       }
       if (!keys.length) {
         keys = (form.fields_json || []).map((f) => fieldKeyToPlaceholder(f.key));
       }
       setPlaceholders(keys);
-      if (!maps.length && keys.length) {
-        const seed: DocFormColumnMap[] = keys.slice(0, 6).map((k) => ({
-          id: crypto.randomUUID(),
-          label: k.replace(/_/g, " "),
-          placeholder_key: k,
-          editable: true,
-        }));
-        setColumnMaps(seed);
-      }
+      // Always sync table columns to the linked template's placeholders only
+      const synced: DocFormColumnMap[] = keys.map((k) => {
+        const existing = maps.find((m) => m.placeholder_key === k);
+        return (
+          existing || {
+            id: crypto.randomUUID(),
+            label: k.replace(/_/g, " "),
+            placeholder_key: k,
+            editable: true,
+          }
+        );
+      });
+      setColumnMaps(synced);
     } catch (e: any) {
       toast({ variant: "destructive", title: "Could not load submissions", description: e?.message });
     } finally {
@@ -1117,7 +1133,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
       return;
     }
 
-    const requiredKeys = columnMaps.map((c) => c.placeholder_key).filter(Boolean);
+    const requiredKeys = placeholders.filter(Boolean);
     const missing = requiredKeys.filter((k) => !String(playValues[k] ?? "").trim());
     if (missing.length) {
       toast({ variant: "destructive", title: "Missing required fields", description: missing.join(", ") });
@@ -1314,7 +1330,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
               <DialogDescription>Confirm placeholder values, then OK to generate PDF and email.</DialogDescription>
             </DialogHeader>
             <div className="space-y-2">
-              {(columnMaps.length ? columnMaps.map((c) => c.placeholder_key) : placeholders).filter(Boolean).map((key) => (
+              {placeholders.filter(Boolean).map((key) => (
                 <div key={key}>
                   <Label className="text-xs">{key}</Label>
                   <Input className="h-8 text-xs" value={playValues[key] ?? ""} onChange={(e) => setPlayValues((p) => ({ ...p, [key]: e.target.value }))} />
@@ -1337,7 +1353,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
               <DialogTitle>Edit submission</DialogTitle>
             </DialogHeader>
             <div className="space-y-2">
-              {placeholders.map((key) => (
+              {placeholders.filter(Boolean).map((key) => (
                 <div key={key}>
                   <Label className="text-xs">{key}</Label>
                   <Input className="h-8 text-xs" value={playValues[key] ?? ""} onChange={(e) => setPlayValues((p) => ({ ...p, [key]: e.target.value }))} />

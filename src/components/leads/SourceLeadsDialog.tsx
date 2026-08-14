@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X } from 'lucide-react';
+import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X, Download } from 'lucide-react';
 import { BulkAssignDialog } from '@/components/BulkAssignDialog';
 import { SOURCE_BUCKET_LABELS, getPeaklyyAttemptCount, isAddedSourceBucket, isPeaklyySourceBucket, type LeadSourceBucket } from '@/lib/leadSources';
 import { cn } from '@/lib/utils';
@@ -67,6 +67,10 @@ type SourceLeadsDialogProps = {
   backLabel?: string;
   /** Resolve display name for lead.created_by (Added leads card). */
   getCreatedByName?: (lead: any) => string;
+  /** Export for super_admin / admin only. */
+  canExport?: boolean;
+  /** Export selected rows if any, otherwise the current filtered list. */
+  onExport?: (leadsToExport: any[]) => void;
 };
 
 export function SourceLeadsDialog({
@@ -97,6 +101,8 @@ export function SourceLeadsDialog({
   onCloseDetail,
   backLabel = 'Back to Leads Management',
   getCreatedByName,
+  canExport = false,
+  onExport,
 }: SourceLeadsDialogProps) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState(initialStatus || 'all');
@@ -227,6 +233,13 @@ export function SourceLeadsDialog({
     return filtered;
   }, [filtered, selectedIds]);
 
+  const handleExportClick = () => {
+    if (!onExport) return;
+    const rows =
+      selectedIds.size > 0 ? filtered.filter((l) => selectedIds.has(l.id)) : filtered;
+    onExport(rows);
+  };
+
   const handleAutoAssign = async (count: number, repIds: string[]) => {
     await onBulkAutoAssign(count, repIds, autoAssignPool.map((l) => l.id));
     if (onBulkUndoAssign) {
@@ -332,6 +345,22 @@ export function SourceLeadsDialog({
               {leads.length} lead{leads.length === 1 ? '' : 's'}
             </Badge>
           </div>
+          {canExport && onExport ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5 h-9 shrink-0"
+              disabled={filtered.length === 0 && selectedIds.size === 0}
+              onClick={handleExportClick}
+              title={selectedIds.size > 0 ? `Export ${selectedIds.size} selected` : 'Export leads in this view'}
+            >
+              <Download className="h-4 w-4" />
+              <span className="hidden sm:inline">
+                {selectedIds.size > 0 ? `Export (${selectedIds.size})` : 'Export'}
+              </span>
+            </Button>
+          ) : null}
         </header>
 
         {/* Split panes: each column scrolls on its own */}
@@ -415,6 +444,17 @@ export function SourceLeadsDialog({
                   <span className="text-sm font-medium text-primary">{selectedIds.size} selected</span>
                   {bulkAssignButton}
                   {undoButton}
+                  {canExport && onExport ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 h-10 min-h-10 touch-target"
+                      onClick={handleExportClick}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Export
+                    </Button>
+                  ) : null}
                   {canBulkDelete && onBulkDelete ? (
                     <Button
                       size="sm"

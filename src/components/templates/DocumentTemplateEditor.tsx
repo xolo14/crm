@@ -19,6 +19,7 @@ import {
 export const TEMPLATE_FONT_FACES = [
   { value: 'Georgia, "Times New Roman", serif', label: 'Georgia' },
   { value: '"Times New Roman", Times, serif', label: 'Times New Roman' },
+  { value: 'Futura, "Futura PT", "Century Gothic", "Trebuchet MS", Arial, sans-serif', label: 'Futura' },
   { value: 'Arial, Helvetica, sans-serif', label: 'Arial' },
   { value: 'Verdana, Geneva, sans-serif', label: 'Verdana' },
   { value: '"Segoe UI", Arial, sans-serif', label: 'Segoe UI' },
@@ -41,6 +42,10 @@ export const TEMPLATE_FONT_SIZES = [
   { value: '48px', label: '48' },
 ] as const;
 
+function templateFontByLabel(label: string): string {
+  return TEMPLATE_FONT_FACES.find((f) => f.label === label)?.value || TEMPLATE_FONT_FACES[0].value;
+}
+
 /** First family name from a CSS font-family stack (handles quotes). */
 export function primaryFontName(fontFamily: string): string {
   const first = String(fontFamily || '')
@@ -56,18 +61,22 @@ export function matchTemplateFontFace(fontFamily: string | null | undefined): st
   const key = primaryFontName(fontFamily || '');
   if (!key) return TEMPLATE_FONT_FACES[0].value;
   const aliases: Record<string, string> = {
-    georgia: TEMPLATE_FONT_FACES[0].value,
-    'times new roman': TEMPLATE_FONT_FACES[1].value,
-    times: TEMPLATE_FONT_FACES[1].value,
-    arial: TEMPLATE_FONT_FACES[2].value,
-    helvetica: TEMPLATE_FONT_FACES[2].value,
-    verdana: TEMPLATE_FONT_FACES[3].value,
-    'segoe ui': TEMPLATE_FONT_FACES[4].value,
-    'courier new': TEMPLATE_FONT_FACES[5].value,
-    courier: TEMPLATE_FONT_FACES[5].value,
-    'system-ui': TEMPLATE_FONT_FACES[6].value,
-    '-apple-system': TEMPLATE_FONT_FACES[6].value,
-    blinkmacsystemfont: TEMPLATE_FONT_FACES[6].value,
+    georgia: templateFontByLabel('Georgia'),
+    'times new roman': templateFontByLabel('Times New Roman'),
+    times: templateFontByLabel('Times New Roman'),
+    futura: templateFontByLabel('Futura'),
+    'futura pt': templateFontByLabel('Futura'),
+    'futura std': templateFontByLabel('Futura'),
+    'century gothic': templateFontByLabel('Futura'),
+    arial: templateFontByLabel('Arial'),
+    helvetica: templateFontByLabel('Arial'),
+    verdana: templateFontByLabel('Verdana'),
+    'segoe ui': templateFontByLabel('Segoe UI'),
+    'courier new': templateFontByLabel('Courier New'),
+    courier: templateFontByLabel('Courier New'),
+    'system-ui': templateFontByLabel('System'),
+    '-apple-system': templateFontByLabel('System'),
+    blinkmacsystemfont: templateFontByLabel('System'),
   };
   if (aliases[key]) return aliases[key];
   const byLabel = TEMPLATE_FONT_FACES.find((f) => f.label.toLowerCase() === key);
@@ -1074,6 +1083,26 @@ export function DocumentTemplateEditor({
               }}
             />
           ) : null}
+          <style
+            dangerouslySetInnerHTML={{
+              __html: `
+                @font-face {
+                  font-family: 'Futura';
+                  src: local('Futura'), local('Futura-Book'), local('Futura Book'), local('Futura-Medium'), local('Futura Medium'), local('FuturaPT-Book'), local('Futura Std Book');
+                  font-weight: 400;
+                  font-style: normal;
+                  font-display: swap;
+                }
+                @font-face {
+                  font-family: 'Futura';
+                  src: local('Futura-Bold'), local('Futura Bold'), local('Futura-Medium'), local('Futura Medium'), local('FuturaPT-Bold'), local('Futura Std Bold');
+                  font-weight: 700;
+                  font-style: normal;
+                  font-display: swap;
+                }
+              `,
+            }}
+          />
           {enableTextBoxes ? (
             <CanvasTextBoxFrame
               geom={bodyBox}

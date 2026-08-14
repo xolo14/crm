@@ -47,6 +47,7 @@ function offerLetterStorageDir(): string {
 
 function offerLettersEnsurePdfPathColumn(PDO $db): void {
     syncpediaDocumentEnsureColumn($db, 'offer_letters_sent', 'pdf_path', 'TEXT DEFAULT NULL');
+    syncpediaDocumentEnsureColumn($db, 'offer_letters_sent', 'gcs_object', 'TEXT DEFAULT NULL');
 }
 
 /** Absolute filesystem path for the saved PDF (one file per sent-letter id). */
@@ -201,7 +202,7 @@ function offerLetterRenderHtmlToPdf(string $html, string $destAbsPath): array {
 /**
  * Persist a client-generated PDF (base64, with or without data-URL prefix).
  *
- * @return array{ok:bool,error?:string}
+ * @return array{ok:bool,error?:string,bytes?:string}
  */
 function offerLetterPersistPdfBase64(string $raw, string $destAbsPath): array {
     $raw = trim($raw);
@@ -227,7 +228,26 @@ function offerLetterPersistPdfBase64(string $raw, string $destAbsPath): array {
     if (@file_put_contents($destAbsPath, $bin) === false) {
         return ['ok' => false, 'error' => 'Could not write PDF file to storage'];
     }
-    return ['ok' => true];
+    return ['ok' => true, 'bytes' => $bin];
+}
+
+/**
+ * Decode pdf_base64 without writing (for GCS upload after Dompdf path).
+ */
+function offerLetterDecodePdfBase64(string $raw): ?string {
+    $raw = trim($raw);
+    if (str_starts_with($raw, 'data:')) {
+        $comma = strpos($raw, ',');
+        if ($comma === false) {
+            return null;
+        }
+        $raw = substr($raw, $comma + 1);
+    }
+    $bin = base64_decode($raw, true);
+    if ($bin === false || strlen($bin) < 100 || strncmp($bin, '%PDF', 4) !== 0) {
+        return null;
+    }
+    return $bin;
 }
 
 $actionGet = $_GET['action'] ?? '';
@@ -235,28 +255,34 @@ $actionGet = $_GET['action'] ?? '';
 // GET — stream stored PDF (same auth as list; JS uses fetch + Bearer token)
 if ($method === 'GET' && $actionGet === 'pdf') {
     requireRole($tokenData, ['admin', 'super_admin', 'manager', 'hr']);
+    offerLettersEnsurePdfPathColumn($db);
     $id = trim((string) ($_GET['id'] ?? ''));
     if ($id === '') {
         respond(['error' => 'id required'], 400);
     }
     $org = orgFilter($tokenData, 'ols');
     $params = array_merge([$id], $org['params']);
-    $stmt = $db->prepare("SELECT ols.id FROM offer_letters_sent ols WHERE ols.id = ? AND {$org['where']} LIMIT 1");
+    $stmt = $db->prepare("SELECT ols.id, ols.pdf_path, ols.gcs_object FROM offer_letters_sent ols WHERE ols.id = ? AND {$org['where']} LIMIT 1");
     $stmt->execute($params);
-    if (!$stmt->fetch()) {
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
         respond(['error' => 'Not found'], 404);
     }
-    $path = offerLetterPdfFilePath($id);
-    if (!is_file($path)) {
-        respond(['error' => 'PDF not found on server'], 404);
+    $downloadName = 'offer-letter-' . preg_replace('/[^a-z0-9_-]/i', '_', $id) . '.pdf';
+    $localPath = trim((string) ($row['pdf_path'] ?? ''));
+    if ($localPath === '') {
+        $localPath = syncpediaDocumentStorageRelativePath(offerLetterPdfFilePath($id));
     }
-    while (ob_get_level() > 0) {
-        @ob_end_clean();
+    // Also try absolute legacy path
+    $absLegacy = offerLetterPdfFilePath($id);
+    if (is_file($absLegacy)) {
+        syncpediaDocumentStorageStreamPdf($absLegacy, $downloadName);
     }
-    header('Content-Type: application/pdf');
-    header('Content-Disposition: inline; filename="offer-letter-' . preg_replace('/[^a-z0-9_-]/i', '_', $id) . '.pdf"');
-    readfile($path);
-    exit;
+    syncpediaDocumentStorageStreamLocalOrGcs(
+        $localPath,
+        isset($row['gcs_object']) ? (string) $row['gcs_object'] : null,
+        $downloadName,
+    );
 }
 
 // GET - List templates and sent letters
@@ -366,12 +392,15 @@ if ($method === 'POST') {
         }
 
         $pdfPath = offerLetterPdfFilePath($id);
+        $pdfBytes = null;
+        $gcsObject = null;
         $pdfBase64 = trim((string) ($input['pdf_base64'] ?? $input['pdfBase64'] ?? ''));
         if ($pdfBase64 !== '') {
             $persist = offerLetterPersistPdfBase64($pdfBase64, $pdfPath);
             if (empty($persist['ok'])) {
                 respond(['error' => $persist['error'] ?? 'Could not save offer letter PDF'], 500);
             }
+            $pdfBytes = isset($persist['bytes']) && is_string($persist['bytes']) ? $persist['bytes'] : @file_get_contents($pdfPath);
         } else {
             $rendered = offerLetterRenderHtmlToPdf($html, $pdfPath);
             if (empty($rendered['ok'])) {
@@ -380,10 +409,38 @@ if ($method === 'POST') {
                     'hint' => 'Upload php-backend/vendor (run install-vendor.sh) or retry — the app can send a browser-generated PDF.',
                 ], 500);
             }
+            $pdfBytes = is_file($pdfPath) ? @file_get_contents($pdfPath) : false;
         }
-        $pdfUrl = offerLetterPublicPdfUrl($id);
+        if (!is_string($pdfBytes) || $pdfBytes === '') {
+            respond(['error' => 'Could not read generated offer letter PDF'], 500);
+        }
 
         $recipientName = trim((string)($input['recipient_name'] ?? 'Candidate'));
+        if ($recipientName === '') {
+            $recipientName = 'Candidate';
+        }
+
+        $gcsKey = function_exists('syncpediaGcsObjectKey')
+            ? syncpediaGcsObjectKey(
+                $orgId !== null && $orgId !== '' ? (string) $orgId : null,
+                'offer-letters',
+                $id,
+                $recipientName
+            )
+            : '';
+        if ($gcsKey !== '' && function_exists('syncpediaGcsEnabled') && syncpediaGcsEnabled()
+            && function_exists('syncpediaGcsUploadObject')) {
+            $up = syncpediaGcsUploadObject($gcsKey, $pdfBytes);
+            if (!empty($up['ok']) && !empty($up['object'])) {
+                $gcsObject = (string) $up['object'];
+            } else {
+                error_log('offer_letters GCS upload: ' . ($up['error'] ?? 'failed'));
+            }
+        }
+
+        $pdfUrl = offerLetterPublicPdfUrl($id);
+        $pdfPathRelative = syncpediaDocumentStorageRelativePath($pdfPath);
+
         $roleTitle = trim((string)($input['role_title'] ?? ''));
         $emailSubject = trim((string)($input['email_subject'] ?? ''));
         if ($emailSubject === '') {
@@ -495,15 +552,34 @@ if ($method === 'POST') {
             }
         }
         try {
-            $db->prepare('UPDATE offer_letters_sent SET pdf_path = ? WHERE id = ?')->execute([$pdfPath, $id]);
+            $db->prepare('UPDATE offer_letters_sent SET pdf_path = ?, gcs_object = ? WHERE id = ?')->execute([
+                $pdfPathRelative,
+                $gcsObject,
+                $id,
+            ]);
         } catch (Throwable $e) {
-            error_log('offer_letters pdf_path update: ' . $e->getMessage());
+            try {
+                $db->prepare('UPDATE offer_letters_sent SET pdf_path = ? WHERE id = ?')->execute([$pdfPathRelative, $id]);
+            } catch (Throwable $e2) {
+                error_log('offer_letters pdf_path update: ' . $e2->getMessage());
+            }
+            error_log('offer_letters gcs_object update: ' . $e->getMessage());
         }
+
+        // Free Hostinger disk once GCS has the durable copy
+        if ($gcsObject !== null && $gcsObject !== '') {
+            syncpediaDocumentStorageDeleteLocal($pdfPathRelative);
+            if (is_file($pdfPath)) {
+                @unlink($pdfPath);
+            }
+        }
+
         respond([
             'id' => $id,
             'message' => 'Offer letter sent',
             'pdf_url' => $pdfUrl,
-            'pdf_path' => $pdfPath,
+            'pdf_path' => $pdfPathRelative,
+            'gcs_object' => $gcsObject,
             'email_sent' => true,
             'from' => (string)($mail['from'] ?? syncpediaHrMailAddress()),
             'to' => $recipientEmail,

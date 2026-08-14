@@ -2,8 +2,12 @@
 /**
  * On-disk PDF storage under {site-root}/storage/{subdir}/ (Hostinger: public_html/storage/).
  * DB stores relative paths like storage/payment_invoices/invoice_xxx.pdf
+ * Optional GCS upload via gcs_storage.php when GCS_ENABLED is true.
  */
 require_once __DIR__ . '/helpers.php';
+if (is_file(__DIR__ . '/gcs_storage.php')) {
+    require_once __DIR__ . '/gcs_storage.php';
+}
 
 function syncpediaDocumentStorageBackendRoot(): string
 {
@@ -138,6 +142,87 @@ function syncpediaDocumentStorageSavePdf(string $subdir, string $filename, strin
 
     @chmod($abs, 0644);
     return syncpediaDocumentStorageRelativePath($abs);
+}
+
+/**
+ * Write local PDF (for SMTP attach) and optionally upload to GCS.
+ *
+ * @return array{ok: bool, local_path?: string, local_abs?: string, gcs_object?: string|null, error?: string}
+ */
+function syncpediaDocumentStorageSaveAndUpload(
+    string $subdir,
+    string $filename,
+    string $pdfBinary,
+    string $gcsObjectKey = '',
+): array {
+    if ($pdfBinary === '') {
+        return ['ok' => false, 'error' => 'Empty PDF bytes'];
+    }
+
+    $rel = syncpediaDocumentStorageSavePdf($subdir, $filename, $pdfBinary);
+    if ($rel === null) {
+        return ['ok' => false, 'error' => 'Could not write local PDF'];
+    }
+    $abs = syncpediaDocumentStorageResolvePath($rel);
+    $out = [
+        'ok' => true,
+        'local_path' => $rel,
+        'local_abs' => is_string($abs) ? $abs : null,
+        'gcs_object' => null,
+    ];
+
+    if ($gcsObjectKey !== '' && function_exists('syncpediaGcsEnabled') && syncpediaGcsEnabled()) {
+        $up = syncpediaGcsUploadObject($gcsObjectKey, $pdfBinary);
+        if (!empty($up['ok']) && !empty($up['object'])) {
+            $out['gcs_object'] = (string) $up['object'];
+        } else {
+            error_log('[document_storage] GCS upload failed: ' . ($up['error'] ?? 'unknown'));
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * Delete a local PDF after successful GCS upload + email (frees Hostinger disk).
+ */
+function syncpediaDocumentStorageDeleteLocal(?string $storedPath): void
+{
+    $abs = syncpediaDocumentStorageResolvePath($storedPath);
+    if (is_string($abs) && is_file($abs)) {
+        @unlink($abs);
+    }
+}
+
+/**
+ * Stream PDF from local path or GCS object. Exits on success.
+ */
+function syncpediaDocumentStorageStreamLocalOrGcs(
+    ?string $localPath,
+    ?string $gcsObject,
+    string $downloadName = 'document.pdf',
+): void {
+    if (syncpediaDocumentStorageFileExists($localPath)) {
+        syncpediaDocumentStorageStreamPdf((string) $localPath, $downloadName);
+    }
+    $obj = trim((string) ($gcsObject ?? ''));
+    if ($obj !== '' && function_exists('syncpediaGcsDownloadObject')) {
+        $dl = syncpediaGcsDownloadObject($obj);
+        if (!empty($dl['ok']) && isset($dl['bytes']) && is_string($dl['bytes']) && $dl['bytes'] !== '') {
+            if (function_exists('syncpediaGcsStreamPdfBytes')) {
+                syncpediaGcsStreamPdfBytes($dl['bytes'], $downloadName);
+            }
+            while (ob_get_level() > 0) {
+                @ob_end_clean();
+            }
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: inline; filename="' . syncpediaDocumentSafeFilename($downloadName) . '"');
+            header('Content-Length: ' . (string) strlen($dl['bytes']));
+            echo $dl['bytes'];
+            exit;
+        }
+    }
+    respond(['error' => 'PDF not found on server'], 404);
 }
 
 /**

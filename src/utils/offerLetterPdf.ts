@@ -93,6 +93,18 @@ export function buildMultiPagePrintableHtml(html: string): string {
   @page { size: A4; margin: 0; }
   html, body { margin: 0; padding: 0; background: #fff; }
   .offer-print-page { box-sizing: border-box; }
+  @font-face {
+    font-family: 'Futura';
+    src: local('Futura'), local('Futura-Book'), local('Futura Book'), local('Futura-Medium'), local('Futura Medium');
+    font-weight: 400;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: 'Futura';
+    src: local('Futura-Bold'), local('Futura Bold'), local('Futura-Medium'), local('Futura Medium');
+    font-weight: 700;
+    font-style: normal;
+  }
   ${uniqueStyles.join("\n")}
 </style>
 </head>

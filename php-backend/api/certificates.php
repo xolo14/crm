@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/document_storage.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -25,6 +26,7 @@ function certEnsureTables(PDO $db): void {
           issue_date DATE DEFAULT NULL,
           verify_token TEXT DEFAULT NULL,
           pdf_path TEXT DEFAULT NULL,
+          gcs_object TEXT DEFAULT NULL,
           org_id CHAR(36) DEFAULT NULL,
           issued_by CHAR(36) DEFAULT NULL,
           created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -53,20 +55,29 @@ function certEnsureTables(PDO $db): void {
     ");
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cert_email_logs_certificate ON certificate_email_logs (certificate_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cert_email_logs_org ON certificate_email_logs (org_id)');
+    syncpediaDocumentEnsureColumn($db, 'certificate_issue_artifacts', 'gcs_object', 'TEXT DEFAULT NULL');
 
     $done = true;
 }
 
 function certStorageDir(): string {
-    $dir = realpath(__DIR__ . '/../');
-    if (!is_string($dir) || $dir === '') {
-        $dir = __DIR__ . '/../';
+    return syncpediaDocumentStorageDir('certificates');
+}
+
+function certDecodePdfBase64(string $raw): ?string {
+    $raw = trim($raw);
+    if (str_starts_with($raw, 'data:')) {
+        $comma = strpos($raw, ',');
+        if ($comma === false) {
+            return null;
+        }
+        $raw = substr($raw, $comma + 1);
     }
-    $target = rtrim($dir, '/\\') . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'certificates';
-    if (!is_dir($target)) {
-        @mkdir($target, 0777, true);
+    $bin = base64_decode($raw, true);
+    if ($bin === false || strlen($bin) < 100 || strncmp($bin, '%PDF', 4) !== 0) {
+        return null;
     }
-    return $target;
+    return $bin;
 }
 
 function certBuildSimplePdf(string $title, string $line1, string $line2): string {
@@ -124,17 +135,17 @@ if ($method === 'GET' && $action === 'pdf') {
     $params = array_merge([$certificateId], $org['params']);
     $stmt = $db->prepare("SELECT cia.* FROM certificate_issue_artifacts cia WHERE cia.sync_id = ? AND {$org['where']} ORDER BY cia.created_at DESC LIMIT 1");
     $stmt->execute($params);
-    $row = $stmt->fetch();
-    if (!$row || empty($row['pdf_path']) || !is_file((string) $row['pdf_path'])) {
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
         respond(['error' => 'PDF not found'], 404);
     }
-    while (ob_get_level() > 0) {
-        @ob_end_clean();
+    $downloadName = 'Certificate_' . preg_replace('/[^A-Za-z0-9_-]/', '_', (string) ($row['sync_id'] ?? $certificateId)) . '.pdf';
+    $localPath = trim((string) ($row['pdf_path'] ?? ''));
+    $gcsObject = isset($row['gcs_object']) ? trim((string) $row['gcs_object']) : '';
+    if ($localPath !== '' && is_file($localPath)) {
+        syncpediaDocumentStorageStreamPdf($localPath, $downloadName);
     }
-    header('Content-Type: application/pdf');
-    header('Content-Disposition: inline; filename="' . basename((string) $row['pdf_path']) . '"');
-    readfile((string) $row['pdf_path']);
-    exit;
+    syncpediaDocumentStorageStreamLocalOrGcs($localPath !== '' ? $localPath : null, $gcsObject !== '' ? $gcsObject : null, $downloadName);
 }
 
 if ($method === 'POST' && $action === 'issue') {
@@ -177,11 +188,30 @@ if ($method === 'POST' && $action === 'issue') {
     $verifyToken = isset($input['verifyToken']) ? (string) $input['verifyToken'] : null;
 
     $pdfName = 'Certificate_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $studentName) . '_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $syncId) . '.pdf';
-    $pdfPath = certStorageDir() . DIRECTORY_SEPARATOR . $pdfName;
-    $pdf = certBuildSimplePdf('Certificate Issued', "Student: $studentName", "SYNC ID: $syncId");
-    if (@file_put_contents($pdfPath, $pdf) === false) {
-        respond(['error' => 'Unable to generate certificate PDF'], 500);
+    $pdfBase64 = trim((string) ($input['pdf_base64'] ?? $input['pdfBase64'] ?? ''));
+    $pdfBytes = $pdfBase64 !== '' ? certDecodePdfBase64($pdfBase64) : null;
+    if ($pdfBytes === null) {
+        // Fallback stub only when browser did not send a real PDF
+        $pdfBytes = certBuildSimplePdf('Certificate Issued', "Student: $studentName", "SYNC ID: $syncId");
     }
+
+    $gcsKey = function_exists('syncpediaGcsObjectKey')
+        ? syncpediaGcsObjectKey(
+            $writeOrgId !== null && $writeOrgId !== '' ? (string) $writeOrgId : null,
+            'certificates',
+            $syncId,
+            $studentName
+        )
+        : '';
+    $saved = syncpediaDocumentStorageSaveAndUpload('certificates', $pdfName, $pdfBytes, $gcsKey);
+    if (empty($saved['ok'])) {
+        respond(['error' => $saved['error'] ?? 'Unable to generate certificate PDF'], 500);
+    }
+    $pdfPathRel = (string) ($saved['local_path'] ?? '');
+    $pdfPathAbs = isset($saved['local_abs']) && is_string($saved['local_abs'])
+        ? $saved['local_abs']
+        : (syncpediaDocumentStorageResolvePath($pdfPathRel) ?: (certStorageDir() . DIRECTORY_SEPARATOR . syncpediaDocumentSafeFilename($pdfName)));
+    $gcsObject = isset($saved['gcs_object']) && is_string($saved['gcs_object']) ? $saved['gcs_object'] : null;
 
     $artifactId = generateUUID();
     $upsert = syncpediaUpsertClause(
@@ -194,6 +224,7 @@ if ($method === 'POST' && $action === 'issue') {
             'issue_date = EXCLUDED.issue_date',
             'verify_token = EXCLUDED.verify_token',
             'pdf_path = EXCLUDED.pdf_path',
+            'gcs_object = EXCLUDED.gcs_object',
             'org_id = EXCLUDED.org_id',
             'issued_by = EXCLUDED.issued_by',
         ],
@@ -204,17 +235,53 @@ if ($method === 'POST' && $action === 'issue') {
             '`issue_date` = VALUES(`issue_date`)',
             '`verify_token` = VALUES(`verify_token`)',
             '`pdf_path` = VALUES(`pdf_path`)',
+            '`gcs_object` = VALUES(`gcs_object`)',
             '`org_id` = VALUES(`org_id`)',
             '`issued_by` = VALUES(`issued_by`)',
         ],
     );
-    $ins = $db->prepare("
-        INSERT INTO certificate_issue_artifacts
-        (id, recipient_id, template_id, sync_id, student_name, student_email, course_name, issue_date, verify_token, pdf_path, org_id, issued_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        {$upsert}
-    ");
-    $ins->execute([$artifactId, $recipientId, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPath, $writeOrgId, $userId]);
+    try {
+        $ins = $db->prepare("
+            INSERT INTO certificate_issue_artifacts
+            (id, recipient_id, template_id, sync_id, student_name, student_email, course_name, issue_date, verify_token, pdf_path, gcs_object, org_id, issued_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            {$upsert}
+        ");
+        $ins->execute([$artifactId, $recipientId, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPathRel, $gcsObject, $writeOrgId, $userId]);
+    } catch (Throwable $e) {
+        // Older DBs without gcs_object column
+        $upsertLegacy = syncpediaUpsertClause(
+            $db,
+            '(sync_id)',
+            [
+                'student_name = EXCLUDED.student_name',
+                'student_email = EXCLUDED.student_email',
+                'course_name = EXCLUDED.course_name',
+                'issue_date = EXCLUDED.issue_date',
+                'verify_token = EXCLUDED.verify_token',
+                'pdf_path = EXCLUDED.pdf_path',
+                'org_id = EXCLUDED.org_id',
+                'issued_by = EXCLUDED.issued_by',
+            ],
+            [
+                '`student_name` = VALUES(`student_name`)',
+                '`student_email` = VALUES(`student_email`)',
+                '`course_name` = VALUES(`course_name`)',
+                '`issue_date` = VALUES(`issue_date`)',
+                '`verify_token` = VALUES(`verify_token`)',
+                '`pdf_path` = VALUES(`pdf_path`)',
+                '`org_id` = VALUES(`org_id`)',
+                '`issued_by` = VALUES(`issued_by`)',
+            ],
+        );
+        $ins = $db->prepare("
+            INSERT INTO certificate_issue_artifacts
+            (id, recipient_id, template_id, sync_id, student_name, student_email, course_name, issue_date, verify_token, pdf_path, org_id, issued_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            {$upsertLegacy}
+        ");
+        $ins->execute([$artifactId, $recipientId, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPathRel, $writeOrgId, $userId]);
+    }
 
     $pdfUrl = '/api/certificates.php?action=pdf&certificate_id=' . rawurlencode($syncId);
     respond([
@@ -223,6 +290,7 @@ if ($method === 'POST' && $action === 'issue') {
         'syncId' => $syncId,
         'studentName' => $studentName,
         'studentEmail' => $studentEmail,
+        'gcs_object' => $gcsObject,
     ]);
 }
 
@@ -244,7 +312,7 @@ if ($method === 'POST' && $action === 'send_email') {
 
     $org = orgFilter($tokenData, 'cia', $db);
     $lookupParams = array_merge([$certificateId], $org['params']);
-    $artifactStmt = $db->prepare("SELECT cia.pdf_path, cia.student_name, cia.sync_id, cia.org_id FROM certificate_issue_artifacts cia WHERE cia.sync_id = ? AND {$org['where']} ORDER BY cia.created_at DESC LIMIT 1");
+    $artifactStmt = $db->prepare("SELECT cia.pdf_path, cia.gcs_object, cia.student_name, cia.sync_id, cia.org_id FROM certificate_issue_artifacts cia WHERE cia.sync_id = ? AND {$org['where']} ORDER BY cia.created_at DESC LIMIT 1");
     $artifactStmt->execute($lookupParams);
     $artifact = $artifactStmt->fetch(PDO::FETCH_ASSOC);
     if (!$artifact) {
@@ -252,7 +320,26 @@ if ($method === 'POST' && $action === 'send_email') {
     }
 
     $pdfPath = trim((string) ($artifact['pdf_path'] ?? ''));
-    if ($pdfPath === '' || !is_file($pdfPath)) {
+    $gcsObject = trim((string) ($artifact['gcs_object'] ?? ''));
+    $attachPath = null;
+    $tempDownloaded = false;
+
+    $resolved = syncpediaDocumentStorageResolvePath($pdfPath);
+    if (is_string($resolved) && is_file($resolved)) {
+        $attachPath = $resolved;
+    } elseif ($pdfPath !== '' && is_file($pdfPath)) {
+        $attachPath = $pdfPath;
+    } elseif ($gcsObject !== '' && function_exists('syncpediaGcsDownloadObject')) {
+        $dl = syncpediaGcsDownloadObject($gcsObject);
+        if (!empty($dl['ok']) && isset($dl['bytes']) && is_string($dl['bytes'])) {
+            $tmp = certStorageDir() . DIRECTORY_SEPARATOR . 'mail_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $certificateId) . '.pdf';
+            if (@file_put_contents($tmp, $dl['bytes']) !== false) {
+                $attachPath = $tmp;
+                $tempDownloaded = true;
+            }
+        }
+    }
+    if ($attachPath === null || !is_file($attachPath)) {
         respond(['error' => 'Certificate PDF not found on server'], 404);
     }
 
@@ -272,10 +359,23 @@ if ($method === 'POST' && $action === 'send_email') {
         $body,
         $cc,
         $bcc,
-        [['path' => $pdfPath, 'name' => $attachmentName]],
+        [['path' => $attachPath, 'name' => $attachmentName]],
     );
     if (empty($send['ok'])) {
+        if ($tempDownloaded && is_file($attachPath)) {
+            @unlink($attachPath);
+        }
         respond(['error' => $send['error'] ?? 'Unable to send certificate email'], 500);
+    }
+
+    // Free disk when GCS has the durable copy
+    if ($gcsObject !== '') {
+        syncpediaDocumentStorageDeleteLocal($pdfPath);
+        if ($tempDownloaded && is_file($attachPath)) {
+            @unlink($attachPath);
+        }
+    } elseif ($tempDownloaded && is_file($attachPath)) {
+        @unlink($attachPath);
     }
 
     $fromAddr = (string) ($send['from'] ?? syncpediaSupportMailAddress());
