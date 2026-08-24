@@ -139,7 +139,7 @@ export default function PeaklyyAssessmentPage() {
     if (isCustom) {
       lines.push(`${qCount} MCQ question${qCount === 1 ? "" : "s"}`);
     } else {
-      lines.push("25 random MCQ questions + 5 practical tasks for your domain");
+      lines.push("15 beginner MCQ questions + 1 practical task for your domain");
       lines.push("MCQs are auto-scored; practical tasks are recorded for review");
     }
     lines.push(
@@ -495,7 +495,7 @@ export default function PeaklyyAssessmentPage() {
         {assessment.brand_tagline || "Learn · Earn · Grow"} —{" "}
         {isCustom
           ? "custom assessment with your questions, timed scoring, and star ratings."
-          : "domain screening with 25 MCQs + 5 practical tasks per domain."}
+          : "beginner-friendly domain screening with 15 MCQs + 1 practical task."}
       </p>
       <div className="pk-social-row">
         <span className="pk-social-dot" aria-hidden />
@@ -879,7 +879,7 @@ export default function PeaklyyAssessmentPage() {
                 </p>
                 <p className="text-sm" style={{ color: "var(--pk-muted)" }}>
                   These MCQ results {result.passed ? "are sent to the partner website" : "were recorded"}. Next:
-                  complete 5 practical tasks (notepad / file upload) for manual grading.
+                  complete 1 practical task (notepad / file upload) for manual grading.
                 </p>
                 <Button
                   className="w-full pk-btn"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import JSZip from "jszip";
@@ -6,14 +6,17 @@ import { saveAs } from "file-saver";
 import {
   Award,
   Bold,
+  Check,
   Copy,
   Download,
+  Eye,
   FileDown,
   Italic,
   MoreHorizontal,
   Pencil,
   Plus,
   Printer,
+  QrCode,
   Trash2,
   Archive,
   Send,
@@ -56,17 +59,37 @@ import {
   parsePlaceholderSheetFile,
 } from "@/lib/placeholderSheetImport";
 import {
+  applyCertPlaceholders,
+  canonicalCertPlaceholderKey,
   certPlaceholderLabel,
+  extractAnglePlaceholderLabels,
   getCertificateBulkRowKeys,
+  getCertificateSharedKeys,
   getCertificateTemplatePlaceholderKeys,
+  layerHasCertPlaceholderTokens,
 } from "@/lib/certificatePlaceholders";
+import { ProtectedUploadImage } from "@/components/ProtectedUploadImage";
+import { PlaceholderPalette } from "@/components/templates/PlaceholderPalette";
 import { resolveUploadSrc } from "@/lib/resumeHref";
 import { buildCertificatePdfBase64 } from "@/utils/certificatePdf";
 import { createRoot } from "react-dom/client";
 
 type CertStatus = "active" | "draft" | "archived";
 type IssuedStatus = "issued" | "revoked" | "expired";
-type CertType = "CC" | "ACH" | "PRO" | "INT" | "WS";
+type CertType = string;
+type CertTypeOption = { code: string; label: string; builtin?: boolean };
+const CERT_TYPES: CertType[] = ["CC", "ID", "LR", "IN", "WS", "CS", "AI"];
+const ADD_CERT_TYPE_VALUE = "__add_new_type__";
+const DEFAULT_QR_FG = "#1A6B3C";
+const BUILTIN_CERT_TYPE_OPTIONS: CertTypeOption[] = [
+  { code: "CC", label: "Course Certificate", builtin: true },
+  { code: "ID", label: "Industrial", builtin: true },
+  { code: "LR", label: "Letter of Recommendation", builtin: true },
+  { code: "IN", label: "Internship", builtin: true },
+  { code: "WS", label: "Soft Skills", builtin: true },
+  { code: "CS", label: "Cybersecurity", builtin: true },
+  { code: "AI", label: "AICTE", builtin: true },
+];
 type LayoutStyle = "classic" | "dark-pro" | "elegant";
 
 /** Physical paper size for certificate output (preview + print/PDF). */
@@ -171,21 +194,177 @@ function getCertPageSpec(format?: CertPageFormat | null | unknown): CertPageSpec
   return CERT_PAGE_FORMATS.find((f) => f.id === id) || CERT_PAGE_FORMATS[0];
 }
 
-const CERT_TYPE_LABELS: Record<CertType, string> = {
+function certPageIsPortrait(format?: CertPageFormat | null | unknown): boolean {
+  const spec = getCertPageSpec(format);
+  return spec.heightMm > spec.widthMm;
+}
+
+/** Scale certificate preview to fit available space (portrait + landscape). */
+function CertificatePreviewFit({
+  pageFormat,
+  className,
+  children,
+}: {
+  pageFormat?: CertPageFormat;
+  className?: string;
+  children: ReactNode;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [fit, setFit] = useState<{ width: number; height: number } | null>(null);
+  const pageSpec = getCertPageSpec(pageFormat);
+  const aspect = pageSpec.widthMm / pageSpec.heightMm;
+  const isPortrait = certPageIsPortrait(pageFormat);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      const cw = el.clientWidth;
+      const ch = el.clientHeight;
+      if (cw <= 0 || ch <= 0) return;
+      // Contain: fit full page inside the box without cropping.
+      let width = cw;
+      let height = width / aspect;
+      if (height > ch) {
+        height = ch;
+        width = height * aspect;
+      }
+      setFit({
+        width: Math.floor(Math.max(80, width)),
+        height: Math.floor(Math.max(80, height)),
+      });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [aspect, pageFormat]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={cn(
+        "flex min-h-0 w-full items-center justify-center overflow-hidden",
+        isPortrait ? "min-h-[200px]" : undefined,
+        className,
+      )}
+    >
+      <div
+        className="mx-auto shrink-0"
+        style={
+          fit
+            ? { width: fit.width, height: fit.height, maxWidth: "100%" }
+            : { width: "100%", aspectRatio: String(aspect), maxWidth: "100%", maxHeight: "100%" }
+        }
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Card/list thumbnail.
+ * Landscape keeps the classic scale preview (stable, full page visible).
+ * Portrait uses contain-fit so the tall page is not clipped.
+ */
+function CertificatePreviewThumb({
+  template,
+  height = 140,
+  className,
+  ...previewProps
+}: {
+  template: CertTemplate;
+  height?: number;
+  className?: string;
+} & Omit<
+  ComponentProps<typeof CertificatePreview>,
+  "template" | "scale"
+>) {
+  const isPortrait = certPageIsPortrait(template.style.pageFormat);
+
+  if (!isPortrait) {
+    // Previous landscape thumbnails: fixed scale, top-left origin — full page visible.
+    const scale = height <= 120 ? 0.24 : 0.28;
+    return (
+      <div
+        className={cn("overflow-hidden rounded-md w-full bg-gray-100", className)}
+        style={{ height, position: "relative" }}
+      >
+        <div
+          style={{
+            transform: `scale(${scale})`,
+            transformOrigin: "top left",
+            width: `${100 / scale}%`,
+            pointerEvents: "none",
+            position: "absolute",
+            top: 0,
+            left: 0,
+          }}
+        >
+          <CertificatePreview template={template} renderPdfBackground {...previewProps} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn("overflow-hidden rounded-md w-full bg-gray-100 flex flex-col", className)}
+      style={{ height }}
+    >
+      <CertificatePreviewFit pageFormat={template.style.pageFormat} className="flex-1 min-h-0 h-full">
+        <CertificatePreview template={template} renderPdfBackground {...previewProps} />
+      </CertificatePreviewFit>
+    </div>
+  );
+}
+
+const CERT_TYPE_LABELS: Record<string, string> = {
   CC: "Course Certificate",
-  ACH: "Industrial",
-  PRO: "Letter of Recommendation",
-  INT: "Internship",
+  ID: "Industrial",
+  LR: "Letter of Recommendation",
+  IN: "Internship",
   WS: "Soft Skills",
+  CS: "Cybersecurity",
+  AI: "AICTE",
 };
 
-const CERT_TYPE_COLORS: Record<CertType, string> = {
+const CERT_TYPE_COLORS: Record<string, string> = {
   CC: "bg-teal-100 text-teal-800",
-  ACH: "bg-amber-100 text-amber-800",
-  PRO: "bg-purple-100 text-purple-800",
-  INT: "bg-blue-100 text-blue-800",
+  ID: "bg-amber-100 text-amber-800",
+  LR: "bg-purple-100 text-purple-800",
+  IN: "bg-blue-100 text-blue-800",
   WS: "bg-red-100 text-red-800",
+  CS: "bg-cyan-100 text-cyan-800",
+  AI: "bg-emerald-100 text-emerald-800",
 };
+
+function parseCertTypeOptions(raw: unknown): CertTypeOption[] {
+  if (!Array.isArray(raw)) return [...BUILTIN_CERT_TYPE_OPTIONS];
+  const seen = new Set<string>();
+  const extra: CertTypeOption[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as Record<string, unknown>;
+    const code = normalizeCertType(rec.code ?? rec.certType);
+    const label = String(rec.label ?? rec.name ?? "").trim();
+    if (!isCertType(code) || seen.has(code) || CERT_TYPES.includes(code)) continue;
+    seen.add(code);
+    extra.push({ code, label: label || code, builtin: false });
+  }
+  return [...BUILTIN_CERT_TYPE_OPTIONS, ...extra];
+}
+
+function certTypeLabel(code: string, options?: CertTypeOption[]): string {
+  const match = (options || BUILTIN_CERT_TYPE_OPTIONS).find((t) => t.code === code);
+  if (match?.label) return match.label;
+  return CERT_TYPE_LABELS[code] || code;
+}
+
+function certTypeBadgeClass(code: string): string {
+  return CERT_TYPE_COLORS[code] || "bg-slate-100 text-slate-800";
+}
 
 interface CertTemplateStyle {
   layout: LayoutStyle;
@@ -196,23 +375,30 @@ interface CertTemplateStyle {
   bgImage?: string;
   bgPdf?: string;
   bgOverlayOpacity?: number;
-  /** Email compose uses these (placeholders like {{recipient_name}}, {{sync_id}}). */
+  /** Email compose uses these (placeholders like {{recipient_name}}, {{cert_id}}). */
   mail_subject?: string;
   mail_body?: string;
 }
 
-const DEFAULT_CERT_MAIL_SUBJECT = "Your Certificate is Ready — {{sync_id}}";
+const DEFAULT_CERT_MAIL_SUBJECT = "Your Certificate is Ready — {{cert_id}}";
 const DEFAULT_CERT_MAIL_BODY = `Dear {{recipient_name}},
 
 We are pleased to inform you that your certificate has been successfully issued.
 
 Please find the attached certificate (PDF) for your reference. You can also
-verify your certificate anytime using your unique SYNC ID: {{sync_id}}
+verify your certificate anytime using your unique certificate ID: {{cert_id}}
 
 If you have any questions or need assistance, please do not hesitate to reach out.
 
 Warm regards,
 The Certifications Team`;
+
+function rewriteCertMailText(text: string): string {
+  return String(text || "")
+    .replace(/\{\{\s*sync_id\s*\}\}/gi, "{{cert_id}}")
+    .replace(/\{\{\s*certificate_id\s*\}\}/gi, "{{cert_id}}")
+    .replace(/\bSYNC ID\b/g, "certificate ID");
+}
 
 function parseCertMailConfig(template: CertTemplate | null | undefined): {
   mail_subject: string;
@@ -222,8 +408,8 @@ function parseCertMailConfig(template: CertTemplate | null | undefined): {
   const subject = String(style.mail_subject || "").trim();
   const body = String(style.mail_body || "").trim();
   return {
-    mail_subject: subject || DEFAULT_CERT_MAIL_SUBJECT,
-    mail_body: body || DEFAULT_CERT_MAIL_BODY,
+    mail_subject: rewriteCertMailText(subject) || DEFAULT_CERT_MAIL_SUBJECT,
+    mail_body: rewriteCertMailText(body) || DEFAULT_CERT_MAIL_BODY,
   };
 }
 
@@ -278,6 +464,8 @@ interface CertTemplate {
   status: CertStatus;
   createdAt: string;
   certType: CertType;
+  /** Org-wide 2-letter prefix used in AA-CS-XXXXXX. Not stored on the template row. */
+  certPrefix?: string;
   style: CertTemplateStyle;
   fields: CertTemplateFields;
   layers: CertLayer[];
@@ -301,15 +489,16 @@ interface VerifyPayload {
   overrides: Partial<CertTemplateFields>;
 }
 
-const CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const ALPHA = "abcdefghijklmnopqrstuvwxyz";
 const CERT_USED_IDS_KEY = "cert_used_ids_v1";
 const MAX_SIGNATURE_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
 const MAX_TEMPLATE_IMAGE_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB
 const MAX_BG_IMAGE_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB — uploaded via multipart, not JSON
-const IMPORT_EDITABLE_LAYER_TYPES: CertLayerType[] = ["company", "name", "domain", "date", "certID", "qr", "logo"];
+const IMPORT_EDITABLE_LAYER_TYPES: CertLayerType[] = ["company", "name", "domain", "date", "certID", "qr", "logo", "text", "image", "signature"];
 
-/** Merge-field layers bound at issue time (one of each recommended). */
+/** Built-in boxes always present on a certificate (position editable). */
+const CERT_BUILTIN_LAYER_TYPES: Array<Extract<CertLayerType, "date" | "certID" | "qr">> = ["date", "certID", "qr"];
+
+/** Optional typed fields (prefer <<placeholders>> inside text boxes instead). */
 const TYPED_CERT_FIELD_TYPES: Array<{
   type: Extract<CertLayerType, "company" | "name" | "domain" | "date" | "certID">;
   label: string;
@@ -322,77 +511,72 @@ const TYPED_CERT_FIELD_TYPES: Array<{
   { type: "certID", label: "Cert ID", sample: "<<CertID>>" },
 ];
 
-function certOrgPrefix(org: { slug?: string | null; name?: string | null } | null | undefined): string {
-  const slug = String(org?.slug ?? "").trim().toLowerCase();
-  if (slug === "syncpedia") return "SYNC";
-  const fromSlug = slug.replace(/[^a-z0-9]/g, "").slice(0, 5).toUpperCase();
-  if (fromSlug.length >= 2) return fromSlug;
-  const fromName = String(org?.name ?? "")
-    .replace(/[^a-zA-Z0-9]/g, "")
-    .slice(0, 5)
+function normalizeCertPrefix(raw: unknown): string {
+  return String(raw ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "")
+    .slice(0, 2);
+}
+
+function certOrgPrefix(org: { slug?: string | null; name?: string | null; cert_prefix?: string | null } | null | undefined): string {
+  const claimed = normalizeCertPrefix(org?.cert_prefix);
+  if (claimed.length === 2) return claimed;
+  const fromSlug = String(org?.slug ?? "")
+    .replace(/[^a-zA-Z]/g, "")
+    .slice(0, 2)
     .toUpperCase();
-  return fromName.length >= 2 ? fromName : "ORG";
+  if (fromSlug.length === 2) return fromSlug;
+  const fromName = String(org?.name ?? "")
+    .replace(/[^a-zA-Z]/g, "")
+    .slice(0, 2)
+    .toUpperCase();
+  return fromName.length === 2 ? fromName : "OR";
 }
 
 function sampleCertIdPattern(certType: CertType, orgPrefix: string): string {
-  return `${orgPrefix}-${certType}-YYYYMMDD-XXXXX`;
+  const prefix = (normalizeCertPrefix(orgPrefix) || "OR").padEnd(2, "X").slice(0, 2);
+  return `${prefix}-${certType}-XXXXXX`;
 }
 
-function isAutoGeneratedCertId(id: string): boolean {
-  return /^[A-Z0-9]{2,6}-(CC|ACH|PRO|INT|WS)-\d{8}-/.test(id);
+function isCertIdSampleOrAuto(id: string): boolean {
+  const v = String(id || "").trim().toUpperCase();
+  return (
+    /^[A-Z]{2}-[A-Z]{2}-XXXXXX$/.test(v) ||
+    /^[A-Z]{2}-[A-Z]{2}-\d{6}$/.test(v) ||
+    /^[A-Z0-9]{2,6}-[A-Z]{2,3}-\d{8}-/.test(v) ||
+    v.includes("SYNC-") ||
+    v.includes("YYYYMMDD") ||
+    v.includes("XXXXX") ||
+    /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/.test(v) ||
+    /\bsync[_\s-]?id\b/i.test(String(id || ""))
+  );
+}
+
+function applyCertNumberToLayers(layers: CertLayer[] | undefined, certType: CertType, orgPrefix: string): CertLayer[] {
+  const sample = sampleCertIdPattern(certType, orgPrefix);
+  return (layers || []).map((layer) => {
+    if (layer.type !== "certID") {
+      // Rewrite any leftover Sync ID wording in free text
+      const content = String(layer.content || "")
+        .replace(/<<\s*sync[_\s-]?id\s*>>/gi, "<<CertID>>")
+        .replace(/\{\{\s*sync_id\s*\}\}/gi, "{{cert_id}}")
+        .replace(/\bSYNC ID\b/g, "Cert ID")
+        .replace(/\bSync ID\b/g, "Cert ID");
+      if (content !== layer.content) return { ...layer, content };
+      return layer;
+    }
+    const label = String(layer.label || "").replace(/\bsync\s*id\b/gi, "Cert ID") || "Certificate ID";
+    if (!String(layer.content || "").trim() || isCertIdSampleOrAuto(layer.content)) {
+      return { ...layer, label, content: sample };
+    }
+    return { ...layer, label };
+  });
 }
 
 function buildDefaultImportLayers(ctx: CertOrgContext, certType: CertType = "CC"): CertLayer[] {
   const idSample = sampleCertIdPattern(certType, ctx.orgPrefix);
+  // Built-ins only: Issue date, Cert ID, QR. Other fields go in text boxes via <<placeholders>>.
   return [
-    {
-      id: crypto.randomUUID(),
-      type: "company",
-      label: "Company Name",
-      content: ctx.orgName,
-      x: 50,
-      y: 12,
-      width: 50,
-      height: 8,
-      fontSize: 16,
-      fontWeight: "bold",
-      color: "#1A6B3C",
-      align: "center",
-      opacity: 1,
-      zIndex: 10,
-    },
-    {
-      id: crypto.randomUUID(),
-      type: "name",
-      label: "Recipient Name",
-      content: "<<Name>>",
-      x: 50,
-      y: 42,
-      width: 60,
-      height: 10,
-      fontSize: 28,
-      fontWeight: "bold",
-      color: "#1A6B3C",
-      align: "center",
-      opacity: 1,
-      zIndex: 11,
-    },
-    {
-      id: crypto.randomUUID(),
-      type: "domain",
-      label: "Course / Domain",
-      content: "<<Course>>",
-      x: 50,
-      y: 52,
-      width: 55,
-      height: 8,
-      fontSize: 18,
-      fontWeight: "bold",
-      color: "#111827",
-      align: "center",
-      opacity: 1,
-      zIndex: 12,
-    },
     {
       id: crypto.randomUUID(),
       type: "date",
@@ -400,7 +584,7 @@ function buildDefaultImportLayers(ctx: CertOrgContext, certType: CertType = "CC"
       content: "<<Date>>",
       x: 20,
       y: 88,
-      width: 20,
+      width: 22,
       height: 5,
       fontSize: 11,
       fontWeight: "normal",
@@ -408,16 +592,17 @@ function buildDefaultImportLayers(ctx: CertOrgContext, certType: CertType = "CC"
       align: "left",
       opacity: 1,
       zIndex: 13,
+      locked: false,
     },
     {
       id: crypto.randomUUID(),
       type: "certID",
       label: "Certificate ID",
       content: idSample,
-      x: 11,
-      y: 93,
-      width: 20,
-      height: 5,
+      x: 24,
+      y: 86,
+      width: 28,
+      height: 6,
       fontSize: 9,
       fontWeight: "normal",
       color: "#333333",
@@ -431,78 +616,52 @@ function buildDefaultImportLayers(ctx: CertOrgContext, certType: CertType = "CC"
       type: "qr",
       label: "QR Code",
       content: "",
-      x: 11,
-      y: 84,
-      width: 11,
-      height: 11,
+      x: 10,
+      y: 82,
+      width: 12,
+      height: 12,
+      color: DEFAULT_QR_FG,
       opacity: 1,
       zIndex: 15,
       locked: false,
     },
-    {
-      id: crypto.randomUUID(),
-      type: "logo",
-      label: "Logo",
-      content: ctx.logoUrl || "",
-      x: 12,
-      y: 9,
-      width: 14,
-      height: 14,
-      opacity: 1,
-      zIndex: 16,
-      align: "left",
-    },
   ];
+}
+
+function ensureBuiltinCertLayers(layers: CertLayer[] | undefined, ctx: CertOrgContext, certType: CertType): CertLayer[] {
+  const next = [...(layers || [])];
+  const defaults = buildDefaultImportLayers(ctx, certType);
+  for (const type of CERT_BUILTIN_LAYER_TYPES) {
+    if (next.some((l) => l.type === type)) continue;
+    const def = defaults.find((l) => l.type === type);
+    if (def) next.push({ ...def, id: crypto.randomUUID() });
+  }
+  return applyCertNumberToLayers(next, certType, ctx.orgPrefix);
 }
 
 function sanitizeImportLayers(layers: CertLayer[], ctx: CertOrgContext, certType: CertType = "CC"): CertLayer[] {
   const filtered = (layers || []).filter((l) => IMPORT_EDITABLE_LAYER_TYPES.includes(l.type));
-  const hasQr = filtered.some((l) => l.type === "qr");
-  const hasCertId = filtered.some((l) => l.type === "certID");
-  const hasName = filtered.some((l) => l.type === "name");
-  const hasCompany = filtered.some((l) => l.type === "company");
-  const hasDomain = filtered.some((l) => l.type === "domain");
-  const hasDate = filtered.some((l) => l.type === "date");
-  const hasLogo = filtered.some((l) => l.type === "logo");
-  const idSample = sampleCertIdPattern(certType, ctx.orgPrefix);
-  const defaults = buildDefaultImportLayers(ctx, certType);
-  const pickDefault = (type: CertLayerType) => defaults.find((l) => l.type === type)!;
-  const next = [...filtered];
-  if (!hasCompany) next.push(pickDefault("company"));
-  if (!hasName) next.push(pickDefault("name"));
-  if (!hasDomain) next.push(pickDefault("domain"));
-  if (!hasDate) next.push(pickDefault("date"));
-  if (!hasCertId) {
-    next.push({ ...pickDefault("certID"), content: idSample });
-  } else {
-    for (let i = 0; i < next.length; i += 1) {
-      if (next[i].type === "certID" && next[i].content.includes("SYNC-")) {
-        next[i] = { ...next[i], content: idSample };
-      }
-    }
-  }
-  if (!hasQr) next.push(pickDefault("qr"));
-  if (!hasLogo) {
-    next.push({ ...pickDefault("logo"), content: ctx.logoUrl || "" });
-  } else if (ctx.logoUrl) {
-    for (let i = 0; i < next.length; i += 1) {
-      if (next[i].type === "logo" && !next[i].content.trim()) {
-        next[i] = { ...next[i], content: ctx.logoUrl };
-      }
-    }
-  }
-  return next.map((l, idx) => ({ ...l, zIndex: idx + 10 }));
+  return ensureBuiltinCertLayers(filtered, ctx, certType).map((l, idx) => ({ ...l, zIndex: idx + 10 }));
 }
 
-function nextAlphaPair(): string {
-  // Cryptographic random pair — do not use localStorage sequences (multi-tab collisions).
-  const bytes = new Uint8Array(2);
-  crypto.getRandomValues(bytes);
-  return `${ALPHA[bytes[0] % 26]}${ALPHA[bytes[1] % 26]}`;
+function generateCertId(type: CertType = "CC", orgPrefix = "OR"): string {
+  const used = getUsedCertIds();
+  const prefix = normalizeCertPrefix(orgPrefix) || "OR";
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const n = crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000;
+    const candidate = `${prefix}-${type}-${String(n).padStart(6, "0")}`;
+    if (!used.has(candidate)) {
+      reserveCertId(candidate);
+      return candidate;
+    }
+  }
+  const fallback = `${prefix}-${type}-${String(Date.now() % 1_000_000).padStart(6, "0")}`;
+  reserveCertId(fallback);
+  return fallback;
 }
 
 function getUsedCertIds(): Set<string> {
-  // Soft client-side dedupe only; server sync_id uniqueness is the source of truth.
+  // Soft client-side dedupe only; server cert ID uniqueness is the source of truth.
   try {
     const raw = sessionStorage.getItem(CERT_USED_IDS_KEY);
     if (!raw) return new Set<string>();
@@ -523,37 +682,6 @@ function reserveCertId(id: string) {
   } catch {
     // no-op when storage is unavailable
   }
-}
-
-function generateCertId(type: CertType = "CC", orgPrefix = "SYNC"): string {
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const used = getUsedCertIds();
-  const prefix = orgPrefix.trim().toUpperCase() || "ORG";
-  const chars = CHARS;
-  const pick = (count: number) => {
-    const bytes = new Uint8Array(count);
-    crypto.getRandomValues(bytes);
-    return Array.from(bytes, (b) => chars[b % chars.length]).join("");
-  };
-
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const alphaHead = nextAlphaPair();
-    const randomTail = pick(4);
-    const suffix = `${alphaHead}${randomTail}`;
-    const candidate = `${prefix}-${type}-${date}-${suffix}`;
-    if (!used.has(candidate)) {
-      reserveCertId(candidate);
-      return candidate;
-    }
-  }
-
-  const fallback = `${prefix}-${type}-${date}-${Date.now().toString(36)}-${pick(6)}`;
-  reserveCertId(fallback);
-  return fallback;
-}
-
-function generateSyncID(type: CertType = "CC", orgPrefix = "SYNC"): string {
-  return generateCertId(type, orgPrefix);
 }
 
 function toBase64Url(input: string): string {
@@ -679,7 +807,7 @@ function generateOpaqueVerifyToken(): string {
 
 const templateSeeds: CertTemplate[] = [
   {
-    id: generateSyncID("CC"),
+    id: crypto.randomUUID(),
     name: "SYNCPedia Classic",
     status: "active",
     createdAt: "2024-01-15",
@@ -696,11 +824,11 @@ const templateSeeds: CertTemplate[] = [
     layers: [],
   },
   {
-    id: generateSyncID("PRO"),
+    id: crypto.randomUUID(),
     name: "Dark Pro",
     status: "active",
     createdAt: "2024-02-10",
-    certType: "PRO",
+    certType: "LR",
     style: { layout: "dark-pro", pageFormat: "a4-landscape", bgColor: "#0f172a", accentColor: "#f59e0b" },
     fields: {
       title: "Professional Certification",
@@ -713,11 +841,11 @@ const templateSeeds: CertTemplate[] = [
     layers: [],
   },
   {
-    id: generateSyncID("INT"),
+    id: crypto.randomUUID(),
     name: "Classic Elegant",
     status: "draft",
     createdAt: "2024-03-05",
-    certType: "INT",
+    certType: "IN",
     style: { layout: "elegant", pageFormat: "a4-portrait", bgColor: "#fefce8", accentColor: "#1e3a5f" },
     fields: {
       title: "Internship Certificate",
@@ -741,10 +869,6 @@ function issuedStatusBadgeVariant(status: IssuedStatus): "default" | "secondary"
   if (status === "issued") return "default";
   if (status === "expired") return "secondary";
   return "destructive";
-}
-
-function copyToClipboard(text: string) {
-  return navigator.clipboard.writeText(text);
 }
 
 function downloadTextFile(filename: string, content: string, mime = "application/json") {
@@ -827,7 +951,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isCertType(value: unknown): value is CertType {
-  return value === "CC" || value === "ACH" || value === "PRO" || value === "INT" || value === "WS";
+  return /^[A-Z]{2}$/.test(String(value ?? "").trim().toUpperCase());
+}
+
+function normalizeCertType(value: unknown): CertType {
+  const raw = String(value ?? "").trim().toUpperCase();
+  if (raw === "ACH") return "ID";
+  if (raw === "PRO") return "LR";
+  if (raw === "INT") return "IN";
+  return isCertType(raw) ? raw : "CC";
 }
 
 function isLayoutStyle(value: unknown): value is LayoutStyle {
@@ -844,7 +976,7 @@ function isCertTemplate(value: unknown): value is CertTemplate {
   if (typeof value.name !== "string") return false;
   if (!isCertStatus(value.status)) return false;
   if (typeof value.createdAt !== "string") return false;
-  if (!isCertType(value.certType)) return false;
+  if (!isCertType(normalizeCertType(value.certType))) return false;
   if (!isRecord(value.style)) return false;
   if (!isLayoutStyle(value.style.layout)) return false;
   if (value.style.pageFormat !== undefined && !isCertPageFormat(value.style.pageFormat)) return false;
@@ -897,6 +1029,11 @@ function isCertTemplate(value: unknown): value is CertTemplate {
   return true;
 }
 
+function asCertTemplate(value: unknown): CertTemplate | null {
+  if (!isCertTemplate(value)) return null;
+  return { ...value, certType: normalizeCertType(value.certType) };
+}
+
 function isIssuedStatus(value: unknown): value is IssuedStatus {
   return value === "issued" || value === "revoked" || value === "expired";
 }
@@ -908,32 +1045,53 @@ function isIssuedCertificate(value: unknown): value is IssuedCertificate {
   if (typeof value.templateName !== "string") return false;
   if (typeof value.recipientName !== "string") return false;
   if (typeof value.courseName !== "string") return false;
-  if (!isCertType(value.certType)) return false;
+  if (!isCertType(normalizeCertType(value.certType))) return false;
   if (typeof value.issueDate !== "string") return false;
   if (!isIssuedStatus(value.status)) return false;
   if (value.verifyToken !== undefined && typeof value.verifyToken !== "string") return false;
   return true;
 }
 
+function resolveQrFgColor(color: string | undefined, style?: CertTemplateStyle): string {
+  const c = String(color || "").trim();
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(c)) return c;
+  if (style?.layout === "dark-pro") return style.accentColor || DEFAULT_QR_FG;
+  return DEFAULT_QR_FG;
+}
+
+function qrLayerFgColor(layers: CertLayer[] | undefined, style?: CertTemplateStyle): string {
+  const qr = (layers || []).find((l) => l.type === "qr");
+  return resolveQrFgColor(qr?.color, style);
+}
+
 function QRCodeWidget({
   certID,
   size = 64,
-  fgColor = "#1A6B3C",
+  fgColor = DEFAULT_QR_FG,
   showUrlText = false,
   verifyUrl,
+  fill = false,
 }: {
   certID: string;
   size?: number;
   fgColor?: string;
   showUrlText?: boolean;
   verifyUrl?: string;
+  fill?: boolean;
 }) {
   // Always clamp — qrcode.react throws RangeError("Data too long") during render if the
   // payload exceeds QR capacity (common when draft verify URLs embed full templates).
   const url = qrSafeVerifyUrl(certID, verifyUrl);
   return (
-    <div className="flex flex-col items-center gap-1">
-      <QRCodeSVG value={url} size={size} fgColor={fgColor} bgColor="transparent" />
+    <div className={cn("flex flex-col items-center gap-1", fill && "h-full w-full")}>
+      <QRCodeSVG
+        value={url}
+        size={size}
+        fgColor={fgColor}
+        bgColor="transparent"
+        style={fill ? { width: "100%", height: "100%" } : undefined}
+        className={fill ? "h-full w-full" : undefined}
+      />
       {showUrlText && <span className="text-[10px] text-muted-foreground break-all text-center max-w-[160px]">{url}</span>}
     </div>
   );
@@ -985,9 +1143,11 @@ function CertificatePreview({
 }) {
   const fields: CertTemplateFields = { ...template.fields, ...(overrides || {}) };
   const resolvedCompanyName = companyName || fields.companyName || "";
-  const idForQr = certID || template.id;
+  // Never show template UUID — always a Cert ID sample (OR-CC-XXXXXX) unless a real issued id is passed.
+  const idForQr =
+    (certID && String(certID).trim()) ||
+    sampleCertIdPattern(template.certType, template.certPrefix || "OR");
   const layers = template.layers || [];
-  const certIdLayer = layers.find((l) => l.type === "certID");
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const editable = Boolean(onLayerMove || onLayerResize);
   const pageSpec = getCertPageSpec(template.style.pageFormat);
@@ -996,19 +1156,46 @@ function CertificatePreview({
   const isLayerPositionLocked = (layer: CertLayer) => {
     if (layer.locked) return true;
     if (!layoutLocked) return false;
-    // Free text/image boxes remain movable when layout is locked
-    return layer.type !== "text" && layer.type !== "image";
+    // Free text/image + built-in Date / Cert ID / QR stay movable when layout is locked
+    return !["text", "image", "date", "certID", "qr"].includes(layer.type);
   };
 
   const resolveLayerContent = (layer: CertLayer) => {
-    let content = layer.content;
-    if (layer.type === "company") content = resolvedCompanyName || layer.content;
-    if (layer.type === "name") content = recipientName || layer.content;
-    if (layer.type === "domain") content = domainName || layer.content;
-    if (layer.type === "date") content = date || layer.content;
-    if (layer.type === "certID") content = idForQr || layer.content;
+    let content = layer.content || "";
+    // Template builder: show the exact preview text / <<tokens>> from the editor
+    if (editable) {
+      return content;
+    }
+    const tokenValues: Record<string, string> = {
+      recipient_name: recipientName || "",
+      name: recipientName || "",
+      domain_name: domainName || "",
+      domain: domainName || "",
+      course: domainName || "",
+      course_name: domainName || "",
+      company_name: resolvedCompanyName || "",
+      company: resolvedCompanyName || "",
+      issue_date: date || "",
+      date: date || "",
+      ...(placeholderValues || {}),
+      // Always Cert ID (never template UUID / sync-id label)
+      cert_id: idForQr,
+      certID: idForQr,
+      CertID: idForQr,
+      sync_id: idForQr,
+    };
+    if (layer.type === "certID") {
+      return idForQr;
+    }
+    if (layerHasCertPlaceholderTokens(content)) {
+      return applyCertPlaceholders(content, tokenValues);
+    }
+    if (layer.type === "company") return resolvedCompanyName || content;
+    if (layer.type === "name") return recipientName || content;
+    if (layer.type === "domain") return domainName || content;
+    if (layer.type === "date") return date || content;
     if (placeholderValues && Object.keys(placeholderValues).length > 0) {
-      content = applyPlaceholders(content, placeholderValues);
+      return applyCertPlaceholders(content, tokenValues);
     }
     return content;
   };
@@ -1016,6 +1203,7 @@ function CertificatePreview({
   const bgImageSrc =
     bgImageOverride ||
     (template.style.bgImage ? resolveUploadSrc(template.style.bgImage) : "");
+  const bgPdfSrc = template.style.bgPdf ? resolveUploadSrc(template.style.bgPdf) : "";
   const overlayOpacity =
     typeof template.style.bgOverlayOpacity === "number" ? template.style.bgOverlayOpacity : 0;
 
@@ -1036,24 +1224,21 @@ function CertificatePreview({
       }}
       onClick={() => onLayerSelect?.(null)}
     >
-      {bgImageSrc ? (
-        <img
-          src={bgImageSrc}
-          alt=""
-          className="absolute inset-0 h-full w-full object-cover pointer-events-none select-none"
-          draggable={false}
+      {bgImageOverride || template.style.bgImage ? (
+        <ProtectedUploadImage
+          path={bgImageOverride || template.style.bgImage}
+          className="absolute inset-0 z-0 h-full w-full object-contain pointer-events-none select-none"
         />
       ) : null}
-      {template.style.bgPdf && renderPdfBackground && (
+      {bgPdfSrc && renderPdfBackground && (
         <object
-          data={`${template.style.bgPdf}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
+          data={`${bgPdfSrc}#toolbar=0&navpanes=0&scrollbar=0&view=FitH`}
           type="application/pdf"
           className="absolute inset-0 w-full h-full pointer-events-none"
           style={{ border: "none" }}
         >
-          <img
-            src={template.style.bgPdf}
-            alt="Certificate background"
+          <ProtectedUploadImage
+            path={template.style.bgPdf}
             className="absolute inset-0 w-full h-full object-fill pointer-events-none"
           />
         </object>
@@ -1118,17 +1303,17 @@ function CertificatePreview({
 
         <div className="w-full flex items-end justify-between gap-6">
           {showQr ? (
-            <div className="shrink-0 self-end">
-              <div className="flex flex-col items-center gap-1">
+            <div className="shrink-0 self-end flex items-end gap-2">
+              <div className="rounded-md border bg-white/80 p-1.5">
                 <QRCodeWidget
                   certID={idForQr}
                   size={64}
-                  fgColor={template.style.layout === "dark-pro" ? template.style.accentColor : "#1A6B3C"}
+                  fgColor={qrLayerFgColor(layers, template.style)}
                   verifyUrl={verifyUrl}
                 />
-                <div className="text-[10px] font-extrabold font-mono px-2 py-1 rounded-md border" style={{ borderColor: template.style.accentColor }}>
-                  {idForQr}
-                </div>
+              </div>
+              <div className="text-[10px] font-extrabold font-mono px-2 py-1 rounded-md border bg-white/80" style={{ borderColor: template.style.accentColor }}>
+                {idForQr}
               </div>
             </div>
           ) : (
@@ -1160,31 +1345,24 @@ function CertificatePreview({
               locked={isLayerPositionLocked(layer)}
               editable={editable}
               centerOrigin
+              contentOverflow="hidden"
               style={{ opacity: layer.opacity ?? 1, zIndex: layer.zIndex ?? 10 }}
               onSelect={() => onLayerSelect?.(layer.id)}
               onMove={(g) => onLayerMove?.(layer.id, g.x, g.y)}
               onResize={(g) => onLayerResize?.(layer.id, g.width, g.height)}
             >
-              <div className="flex h-full w-full flex-col items-start gap-1">
-                <QRCodeWidget certID={idForQr} size={96} verifyUrl={verifyUrl} />
-                <div
-                  className="font-mono"
-                  style={{
-                    color: certIdLayer?.color || "#333333",
-                    fontSize: `${certIdLayer?.fontSize ?? 10}px`,
-                    fontWeight: certIdLayer?.fontWeight ?? "normal",
-                    fontStyle: certIdLayer?.fontStyle ?? "normal",
-                    textAlign: certIdLayer?.align ?? "left",
-                    opacity: certIdLayer?.opacity ?? 1,
-                  }}
-                >
-                  {idForQr}
-                </div>
+              <div className="h-full w-full pointer-events-none">
+                <QRCodeWidget
+                  certID={idForQr}
+                  size={256}
+                  fill
+                  fgColor={resolveQrFgColor(layer.color, template.style)}
+                  verifyUrl={verifyUrl}
+                />
               </div>
             </CanvasTextBoxFrame>
           );
         }
-        if (layer.type === "certID") return null;
         if (layer.type === "logo" || layer.type === "image" || (layer.type === "signature" && layer.content.startsWith("data:image"))) {
           return (
             <CanvasTextBoxFrame
@@ -1194,14 +1372,15 @@ function CertificatePreview({
               locked={isLayerPositionLocked(layer)}
               editable={editable}
               centerOrigin
+              contentOverflow="hidden"
               style={{ opacity: layer.opacity ?? 1, zIndex: layer.zIndex ?? 10 }}
               onSelect={() => onLayerSelect?.(layer.id)}
               onMove={(g) => onLayerMove?.(layer.id, g.x, g.y)}
               onResize={(g) => onLayerResize?.(layer.id, g.width, g.height)}
             >
               {layer.content ? (
-                <img
-                  src={resolveUploadSrc(layer.content)}
+                <ProtectedUploadImage
+                  path={layer.content}
                   alt={layer.label}
                   className="w-full h-full object-contain pointer-events-none"
                 />
@@ -1217,6 +1396,7 @@ function CertificatePreview({
             locked={isLayerPositionLocked(layer)}
             editable={editable}
             centerOrigin
+            contentOverflow="hidden"
             divider={normalizeTextBoxDivider(layer.divider)}
             className="whitespace-pre-wrap"
             style={{
@@ -1228,7 +1408,6 @@ function CertificatePreview({
               opacity: layer.opacity ?? 1,
               textAlign: layer.align ?? "center",
               zIndex: layer.zIndex ?? 10,
-              overflow: "hidden",
             }}
             onSelect={() => onLayerSelect?.(layer.id)}
             onMove={(g) => onLayerMove?.(layer.id, g.x, g.y)}
@@ -1238,7 +1417,7 @@ function CertificatePreview({
             }}
           >
             <div
-              className="h-full w-full outline-none"
+              className="h-full w-full outline-none overflow-hidden"
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 onLayerSelect?.(layer.id);
@@ -1353,6 +1532,8 @@ function TemplateBuilderModal({
   onSave,
   orgPrefix,
   defaultCompanyName,
+  typeOptions,
+  onCreateType,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -1360,11 +1541,15 @@ function TemplateBuilderModal({
   onSave: (next: CertTemplate) => Promise<void>;
   orgPrefix: string;
   defaultCompanyName: string;
+  typeOptions: CertTypeOption[];
+  onCreateType: (code: string, label: string) => Promise<CertTypeOption>;
 }) {
   const { toast } = useToast();
   const [draft, setDraft] = useState<CertTemplate>(initial);
+  const [prefixDraft, setPrefixDraft] = useState(() => normalizeCertPrefix(initial.certPrefix || orgPrefix) || "OR");
   const [previewOverrides, setPreviewOverrides] = useState<Partial<CertTemplateFields>>({});
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const canvasPrintRef = useRef<HTMLDivElement | null>(null);
   const [selectedLayerID, setSelectedLayerID] = useState<string | null>(null);
   const [bgUploadError, setBgUploadError] = useState("");
   const [bgUploading, setBgUploading] = useState(false);
@@ -1373,10 +1558,25 @@ function TemplateBuilderModal({
   const [bgLocalPreview, setBgLocalPreview] = useState<string>("");
   const bgFileInputRef = useRef<HTMLInputElement | null>(null);
   const movableImageInputRef = useRef<HTMLInputElement | null>(null);
+  const [addTypeOpen, setAddTypeOpen] = useState(false);
+  const [newTypeCode, setNewTypeCode] = useState("");
+  const [newTypeLabel, setNewTypeLabel] = useState("");
+  const [savingType, setSavingType] = useState(false);
+  const [showPlaceholderPanel, setShowPlaceholderPanel] = useState(true);
 
   useEffect(() => {
+    const prefix = normalizeCertPrefix(initial.certPrefix || orgPrefix) || "OR";
+    const certType = normalizeCertType(initial.certType);
+    setPrefixDraft(prefix);
     setDraft({
       ...initial,
+      certType,
+      certPrefix: prefix,
+      layers: ensureBuiltinCertLayers(
+        applyCertNumberToLayers(initial.layers, certType, prefix),
+        { orgName: defaultCompanyName, orgPrefix: prefix, logoUrl: "" },
+        certType,
+      ),
       style: {
         ...initial.style,
         mail_subject: initial.style.mail_subject ?? DEFAULT_CERT_MAIL_SUBJECT,
@@ -1385,6 +1585,7 @@ function TemplateBuilderModal({
     });
     setPreviewOverrides({});
     setSelectedLayerID(null);
+    setShowPlaceholderPanel(true);
     setBgUploadError("");
     setBgUploading(false);
     setLayoutLocked(false);
@@ -1398,7 +1599,11 @@ function TemplateBuilderModal({
       }
       return "";
     });
-  }, [initial, open]);
+    setAddTypeOpen(false);
+    setNewTypeCode("");
+    setNewTypeLabel("");
+    setSavingType(false);
+  }, [initial, open, orgPrefix]);
 
   useEffect(() => {
     return () => {
@@ -1412,7 +1617,55 @@ function TemplateBuilderModal({
     };
   }, [bgLocalPreview]);
 
-  const verifyUrl = useMemo(() => buildDraftVerifyUrl(draft, draft.id), [draft]);
+  const applyCertType = (nextType: CertType) => {
+    setDraft((p) => ({
+      ...p,
+      certType: nextType,
+      certPrefix: prefixDraft,
+      layers: applyCertNumberToLayers(p.layers, nextType, prefixDraft),
+    }));
+  };
+
+  const submitNewCertType = async () => {
+    const code = normalizeCertPrefix(newTypeCode);
+    const label = newTypeLabel.trim();
+    if (code.length !== 2) {
+      toast({ variant: "destructive", title: "Type code required", description: "Enter exactly two letters (A–Z)." });
+      return;
+    }
+    if (!label) {
+      toast({ variant: "destructive", title: "Type name required", description: "Enter a name for this certificate type." });
+      return;
+    }
+    if (typeOptions.some((t) => t.code === code)) {
+      toast({ variant: "destructive", title: "Type exists", description: `${code} is already in the type list.` });
+      return;
+    }
+    setSavingType(true);
+    try {
+      const created = await onCreateType(code, label);
+      applyCertType(created.code);
+      setAddTypeOpen(false);
+      setNewTypeCode("");
+      setNewTypeLabel("");
+      toast({ title: "Type added", description: `${created.code} — ${created.label}` });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Could not add type", description: e?.message || "Try a different two-letter code." });
+    } finally {
+      setSavingType(false);
+    }
+  };
+
+  const certNumberSample = useMemo(
+    () => sampleCertIdPattern(draft.certType, prefixDraft),
+    [draft.certType, prefixDraft],
+  );
+  const visibleTypeOptions = useMemo(() => {
+    if (typeOptions.some((t) => t.code === draft.certType)) return typeOptions;
+    if (!isCertType(draft.certType)) return typeOptions;
+    return [...typeOptions, { code: draft.certType, label: certTypeLabel(draft.certType, typeOptions), builtin: false }];
+  }, [typeOptions, draft.certType]);
+  const verifyUrl = useMemo(() => buildDraftVerifyUrl(draft, certNumberSample), [draft, certNumberSample]);
   const generatedVerifyLink = verifyUrl;
 
   const accentPresets = useMemo(
@@ -1496,24 +1749,34 @@ function TemplateBuilderModal({
       layers: (p.layers || []).map((layer) => (layer.id === layerId ? { ...layer, ...patch } : layer)),
     }));
   };
-  const editableLayers = useMemo(
-    () =>
-      (draft.layers || []).filter((layer) =>
-        ["company", "name", "domain", "date", "certID", "text", "image", "logo", "signature"].includes(layer.type),
-      ),
-    [draft.layers],
-  );
-  const autoPlaceholderKeys = useMemo(
-    () =>
-      extractPlaceholderKeys(
-        ...(draft.layers || []).map((l) => String(l.content || "")),
-        String(draft.fields.bodyText || ""),
-        String(draft.fields.title || ""),
-      ),
-    [draft.layers, draft.fields.bodyText, draft.fields.title],
-  );
+  const placeholderSourceHtml = useMemo(() => {
+    return [
+      ...(draft.layers || []).map((l) => String(l.content || "")),
+      String(draft.fields.bodyText || ""),
+      String(draft.fields.title || ""),
+      String(draft.style.mail_subject || ""),
+      String(draft.style.mail_body || ""),
+      String(draft.style.pdf_filename_pattern || ""),
+    ].join("\n");
+  }, [
+    draft.layers,
+    draft.fields.bodyText,
+    draft.fields.title,
+    draft.style.mail_subject,
+    draft.style.mail_body,
+    draft.style.pdf_filename_pattern,
+  ]);
 
   const removeLayer = (layerId: string) => {
+    const layer = (draft.layers || []).find((l) => l.id === layerId);
+    if (layer && CERT_BUILTIN_LAYER_TYPES.includes(layer.type as "date" | "certID" | "qr")) {
+      toast({
+        variant: "destructive",
+        title: "Built-in field",
+        description: "Issue date, Cert ID, and QR stay on the template. Drag to move them instead.",
+      });
+      return;
+    }
     setDraft((p) => ({ ...p, layers: (p.layers || []).filter((l) => l.id !== layerId) }));
     setSelectedLayerID((id) => (id === layerId ? null : id));
   };
@@ -1523,19 +1786,20 @@ function TemplateBuilderModal({
       id: crypto.randomUUID(),
       type: "text",
       label: "Text",
-      content: "Type here…",
+      content: "Type here… insert <<placeholders>> from the panel",
       x: 50,
-      y: 35,
-      width: 40,
-      height: 8,
+      y: 40,
+      width: 55,
+      height: 10,
       color: "#111827",
-      fontSize: 16,
+      fontSize: 18,
       fontFamily: 'Georgia, "Times New Roman", serif',
       fontWeight: "normal",
       fontStyle: "normal",
       align: "center",
       opacity: 1,
       zIndex: (draft.layers || []).length + 10,
+      locked: false,
     };
     setDraft((p) => ({ ...p, layers: [...(p.layers || []), layer] }));
     setSelectedLayerID(layer.id);
@@ -1553,7 +1817,7 @@ function TemplateBuilderModal({
     }
     const meta = TYPED_CERT_FIELD_TYPES.find((t) => t.type === type)!;
     const defaults = buildDefaultImportLayers(
-      { orgName: defaultCompanyName, orgPrefix, logoUrl: "" },
+      { orgName: defaultCompanyName, orgPrefix: prefixDraft, logoUrl: "" },
       draft.certType,
     );
     const fromDefault = defaults.find((l) => l.type === type);
@@ -1566,7 +1830,7 @@ function TemplateBuilderModal({
           type === "company"
             ? defaultCompanyName
             : type === "certID"
-              ? sampleCertIdPattern(draft.certType, orgPrefix)
+              ? sampleCertIdPattern(draft.certType, prefixDraft)
               : meta.sample,
         locked: false,
       };
@@ -1595,18 +1859,112 @@ function TemplateBuilderModal({
     toast({ title: "Placeholder added", description: `${meta.label} fills automatically when you issue.` });
   };
 
-  const ensureTypedLayers = () => {
-    const next = sanitizeImportLayers(draft.layers || [], {
-      orgName: defaultCompanyName,
-      orgPrefix,
-      logoUrl: (draft.layers || []).find((l) => l.type === "logo" || l.type === "image")?.content || "",
-    }, draft.certType).map((l) => ({ ...l, locked: false }));
-    const extras = (draft.layers || []).filter(
-      (l) => l.type === "text" || l.type === "image" || l.type === "signature",
+  const addQrLayer = () => {
+    const existing = (draft.layers || []).find((l) => l.type === "qr");
+    if (existing) {
+      setSelectedLayerID(existing.id);
+      setLayoutLocked(false);
+      toast({ title: "Selected", description: "QR Code — drag on the canvas to move, pick a color in the toolbar." });
+      return;
+    }
+    const defaults = buildDefaultImportLayers(
+      { orgName: defaultCompanyName, orgPrefix: prefixDraft, logoUrl: "" },
+      draft.certType,
     );
-    setDraft((p) => ({ ...p, layers: [...next, ...extras] }));
+    const fromDefault = defaults.find((l) => l.type === "qr");
+    const layer: CertLayer = fromDefault
+      ? { ...fromDefault, id: crypto.randomUUID(), locked: false }
+      : {
+          id: crypto.randomUUID(),
+          type: "qr",
+          label: "QR Code",
+          content: "",
+          x: 10,
+          y: 82,
+          width: 12,
+          height: 12,
+          color: DEFAULT_QR_FG,
+          opacity: 1,
+          zIndex: (draft.layers || []).length + 10,
+          locked: false,
+        };
+    setDraft((p) => ({ ...p, layers: [...(p.layers || []), layer] }));
+    setSelectedLayerID(layer.id);
     setLayoutLocked(false);
-    toast({ title: "Placeholders ready", description: "Name, Domain, Date, Company, Cert ID, and QR are on the canvas — drag to place." });
+    toast({ title: "QR added", description: "Drag to place · resize with corners · choose QR color in the toolbar." });
+  };
+
+  const focusOrAddBuiltin = (type: "date" | "certID" | "qr") => {
+    const existing = (draft.layers || []).find((l) => l.type === type);
+    if (existing) {
+      setSelectedLayerID(existing.id);
+      setLayoutLocked(false);
+      toast({
+        title: "Selected",
+        description: `${existing.label || type} — drag on the canvas to reposition.`,
+      });
+      return;
+    }
+    if (type === "qr") {
+      addQrLayer();
+      return;
+    }
+    addTypedLayer(type);
+  };
+
+  const insertCertPlaceholder = (token: string) => {
+    const label = token.replace(/^<<\s*|\s*>>$/g, "").replace(/^\{\{\s*|\s*\}\}$/g, "").trim();
+    if (!label) return;
+
+    const selected = (draft.layers || []).find((l) => l.id === selectedLayerID);
+    // Only insert into free text boxes — builtins (date / certID / QR) stay dedicated boxes.
+    const canInsertInto = !!selected && selected.type === "text";
+
+    if (canInsertInto && selected) {
+      const current = String(selected.content || "");
+      const cleaned =
+        current === "Type here… insert <<placeholders>> from the panel" || current === "Type here…"
+          ? ""
+          : current;
+      const spacer = cleaned && !/\s$/.test(cleaned) ? " " : "";
+      const next = cleaned ? `${cleaned}${spacer}${token}` : token;
+      setLayer(selected.id, { content: next, label: selected.label || label });
+      setLayoutLocked(false);
+      toast({
+        title: "Placeholder inserted",
+        description: `${token} added to the selected text box.`,
+      });
+      return;
+    }
+
+    const offset = ((draft.layers || []).filter((l) => l.type === "text").length % 6) * 7;
+    const layer: CertLayer = {
+      id: crypto.randomUUID(),
+      type: "text",
+      label,
+      content: token.startsWith("<<") ? token : `<<${label}>>`,
+      x: 50,
+      y: 28 + offset,
+      width: 48,
+      height: 8,
+      color: "#111827",
+      fontSize: 16,
+      fontFamily: 'Georgia, "Times New Roman", serif',
+      fontWeight: "normal",
+      fontStyle: "normal",
+      align: "center",
+      opacity: 1,
+      zIndex: (draft.layers || []).length + 10,
+      locked: false,
+    };
+    setDraft((p) => ({ ...p, layers: [...(p.layers || []), layer] }));
+    setSelectedLayerID(layer.id);
+    setLayoutLocked(false);
+    setShowPlaceholderPanel(true);
+    toast({
+      title: "Text box added",
+      description: `Created a text box with ${token}. Select it and keep inserting placeholders into the same box.`,
+    });
   };
 
   const addImageLayer = async (file?: File) => {
@@ -1655,7 +2013,7 @@ function TemplateBuilderModal({
   const exportPdfViaPrint = async () => {
     setSelectedLayerID(null);
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    const target = previewRef.current;
+    const target = canvasPrintRef.current ?? previewRef.current;
     if (!target) return;
 
     const page = getCertPageSpec(draft.style.pageFormat);
@@ -1704,24 +2062,18 @@ function TemplateBuilderModal({
     }
   };
 
-  const copyId = async () => {
-    await copyToClipboard(draft.id);
-    toast({ title: "Copied", description: "SYNC ID copied to clipboard." });
-  };
-
-  const copyVerifyUrl = async () => {
-    await copyToClipboard(verifyUrl);
-    toast({ title: "Copied", description: "Verify URL copied to clipboard." });
-  };
-
   const generateCertificate = () => {
     window.open(generatedVerifyLink, "_blank", "noopener,noreferrer");
     toast({ title: "Generated", description: "Opened clean certificate view." });
   };
 
   const saveDraft = async () => {
+    if (normalizeCertPrefix(prefixDraft).length !== 2) {
+      toast({ variant: "destructive", title: "Prefix required", description: "Enter exactly two letters for the organization prefix." });
+      return;
+    }
     try {
-      await onSave({ ...draft, status: "draft" });
+      await onSave({ ...draft, certPrefix: prefixDraft, status: "draft" });
       onOpenChange(false);
       toast({ title: "Saved", description: "Template saved as draft." });
     } catch (e: any) {
@@ -1730,8 +2082,12 @@ function TemplateBuilderModal({
   };
 
   const saveAndActivate = async () => {
+    if (normalizeCertPrefix(prefixDraft).length !== 2) {
+      toast({ variant: "destructive", title: "Prefix required", description: "Enter exactly two letters for the organization prefix." });
+      return;
+    }
     try {
-      await onSave({ ...draft, status: "active" });
+      await onSave({ ...draft, certPrefix: prefixDraft, status: "active" });
       onOpenChange(false);
       toast({ title: "Saved", description: "Template saved and activated." });
     } catch (e: any) {
@@ -1742,6 +2098,7 @@ function TemplateBuilderModal({
   if (!open) return null;
 
   return (
+    <>
     <div className="fixed inset-0 z-50 bg-background flex flex-col overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b bg-background shrink-0">
         <div className="flex items-center gap-3 min-w-0">
@@ -1751,11 +2108,21 @@ function TemplateBuilderModal({
           <div className="min-w-0">
             <h1 className="text-sm font-bold truncate">Template Builder</h1>
             <p className="text-[10px] text-muted-foreground truncate">
-              Full page · drag text boxes · corner resize · like Google Slides
+              Like offer letters · Text box + {"<<placeholders>>"} · Date / Cert ID / QR are built-in (drag to place)
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+          <Button
+            type="button"
+            variant={showPlaceholderPanel ? "default" : "outline"}
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={() => setShowPlaceholderPanel((v) => !v)}
+          >
+            <Variable className="h-3.5 w-3.5" />
+            Placeholders
+          </Button>
           <Button variant="outline" size="sm" className="h-8 text-xs" onClick={saveDraft}>
             Save Draft
           </Button>
@@ -1773,12 +2140,19 @@ function TemplateBuilderModal({
       <div className="flex-1 min-h-0 overflow-hidden">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 h-full min-h-0">
           {/* LEFT: Preview stays put — does not scroll with right panel */}
-          <div className="flex flex-col p-4 sm:p-6 bg-muted/15 border-b lg:border-b-0 lg:border-r max-h-[42vh] lg:max-h-none lg:h-full min-h-0 overflow-hidden">
+          <div
+            className={cn(
+              "flex flex-col p-4 sm:p-6 bg-muted/15 border-b lg:border-b-0 lg:border-r lg:min-h-0 lg:h-full min-h-0 overflow-hidden",
+              certPageIsPortrait(draft.style.pageFormat)
+                ? "min-h-[min(62vh,820px)]"
+                : "min-h-[min(50vh,680px)]",
+            )}
+          >
             <div className="flex items-center justify-between mb-3 shrink-0">
               <div className="flex items-center gap-2">
                 <Badge variant={statusBadgeVariant(draft.status)} className="text-[10px]">{draft.status}</Badge>
-                <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[draft.certType])}>
-                  {draft.certType} · {CERT_TYPE_LABELS[draft.certType]}
+                <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(draft.certType))}>
+                  {draft.certType} · {certTypeLabel(draft.certType, visibleTypeOptions)}
                 </Badge>
               </div>
               <div className="flex items-center gap-2">
@@ -1793,20 +2167,53 @@ function TemplateBuilderModal({
               </div>
             </div>
 
-            <div ref={previewRef} className="max-w-[960px] mx-auto w-full flex-1 min-h-0 overflow-y-auto lg:overflow-hidden">
+            <div ref={previewRef} className="flex flex-1 min-h-0 w-full max-w-[960px] mx-auto flex-col">
               {/* Word / Slides-style formatting ribbon for selected text layer */}
               {(() => {
                 const selected = (draft.layers || []).find((l) => l.id === selectedLayerID);
                 const isText =
                   selected &&
                   ["text", "company", "name", "domain", "date", "certID"].includes(selected.type);
+                const isQr = selected?.type === "qr";
+                if (isQr && selected) {
+                  return (
+                    <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border bg-card px-2 py-1.5 shadow-sm">
+                      <Button
+                        type="button"
+                        variant={layoutLocked ? "default" : "outline"}
+                        size="sm"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => setLayoutLocked((v) => !v)}
+                      >
+                        {layoutLocked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                        {layoutLocked ? "Locked" : "Lock"}
+                      </Button>
+                      <QrCode className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-[11px] font-medium">QR color</span>
+                      <Input
+                        type="color"
+                        className="h-8 w-10 p-1 cursor-pointer"
+                        value={resolveQrFgColor(selected.color, draft.style)}
+                        onChange={(e) => setLayer(selected.id, { color: e.target.value })}
+                        title="QR code color"
+                      />
+                      <span className="text-[11px] text-muted-foreground">Drag this box independently of Cert ID</span>
+                      <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
+                        <Plus className="h-3 w-3" />Text box
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addImageLayer}>
+                        <ImageIcon className="h-3 w-3" />Image
+                      </Button>
+                    </div>
+                  );
+                }
                 if (!selected || !isText) {
                   return (
                     <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border bg-muted/30 px-2 py-1.5 text-[11px] text-muted-foreground">
                       <Type className="h-3.5 w-3.5" />
                       {layoutLocked
-                        ? "Layout locked · unlock to move placeholders · free text/image still movable"
-                        : "Drag boxes to move · corners to resize · click Name/Domain/Text to add placeholders"}
+                        ? "Layout locked · unlock to move built-in fields · text/image still movable"
+                        : "Add Text box → insert <<placeholders>> · drag Date / Cert ID / QR to place"}
                       <Button
                         type="button"
                         variant={layoutLocked ? "default" : "outline"}
@@ -1817,20 +2224,16 @@ function TemplateBuilderModal({
                         {layoutLocked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
                         {layoutLocked ? "Layout locked" : "Lock layout"}
                       </Button>
-                      {TYPED_CERT_FIELD_TYPES.map((t) => (
-                        <Button
-                          key={t.type}
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 text-xs gap-1"
-                          onClick={() => addTypedLayer(t.type)}
-                          title={`Typed merge field: ${t.type}`}
-                        >
-                          <Variable className="h-3 w-3" />
-                          {t.label}
-                        </Button>
-                      ))}
+                      <span className="text-[10px] uppercase tracking-wide text-muted-foreground px-1">Built-in</span>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => focusOrAddBuiltin("date")}>
+                        Issue date
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => focusOrAddBuiltin("certID")}>
+                        Cert ID
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => focusOrAddBuiltin("qr")}>
+                        <QrCode className="h-3 w-3" /> QR
+                      </Button>
                       <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
                         <Plus className="h-3 w-3" /> Text box
                       </Button>
@@ -1937,25 +2340,36 @@ function TemplateBuilderModal({
                   </div>
                 );
               })()}
-              <CertificatePreview
-                template={draft}
-                overrides={previewOverrides}
-                renderPdfBackground
-                verifyUrl={verifyUrl}
-                selectedLayerID={selectedLayerID}
-                onLayerSelect={setSelectedLayerID}
-                onLayerMove={(id, x, y) => setLayer(id, { x, y })}
-                onLayerResize={(id, width, height) => setLayer(id, { width, height })}
-                onLayerContentChange={(id, content) => {
-                  setLayer(id, { content });
-                }}
-                recipientName={draft.fields.recipientName}
-                domainName={draft.fields.domainName}
-                companyName={draft.fields.companyName || defaultCompanyName}
-                date={new Date().toISOString().slice(0, 10)}
-                layoutLocked={layoutLocked}
-                bgImageOverride={bgLocalPreview || undefined}
-              />
+              <CertificatePreviewFit
+                pageFormat={draft.style.pageFormat}
+                className={cn(
+                  "flex-1 min-h-0",
+                  certPageIsPortrait(draft.style.pageFormat) && "min-h-[280px]",
+                )}
+              >
+                <div ref={canvasPrintRef} className="w-full">
+                  <CertificatePreview
+                    template={draft}
+                    overrides={previewOverrides}
+                    renderPdfBackground
+                    verifyUrl={verifyUrl}
+                    selectedLayerID={selectedLayerID}
+                    onLayerSelect={setSelectedLayerID}
+                    onLayerMove={(id, x, y) => setLayer(id, { x, y })}
+                    onLayerResize={(id, width, height) => setLayer(id, { width, height })}
+                    onLayerContentChange={(id, content) => {
+                      setLayer(id, { content });
+                    }}
+                    recipientName={draft.fields.recipientName}
+                    domainName={draft.fields.domainName}
+                    companyName={draft.fields.companyName || defaultCompanyName}
+                    date={new Date().toISOString().slice(0, 10)}
+                    certID={certNumberSample}
+                    layoutLocked={layoutLocked}
+                    bgImageOverride={bgLocalPreview || undefined}
+                  />
+                </div>
+              </CertificatePreviewFit>
             </div>
           </div>
 
@@ -1973,25 +2387,49 @@ function TemplateBuilderModal({
                   <Select
                     value={draft.certType}
                     onValueChange={(v) => {
-                      const nextType = v as CertType;
-                      setDraft((p) => ({
-                        ...p,
-                        certType: nextType,
-                        id: isAutoGeneratedCertId(p.id) ? generateCertId(nextType, orgPrefix) : p.id,
-                      }));
+                      if (v === ADD_CERT_TYPE_VALUE) {
+                        setNewTypeCode("");
+                        setNewTypeLabel("");
+                        setAddTypeOpen(true);
+                        return;
+                      }
+                      applyCertType(normalizeCertType(v));
                     }}
                   >
                     <SelectTrigger className="h-10">
                       <SelectValue placeholder="Select type" />
                     </SelectTrigger>
                     <SelectContent>
-                      {(["CC", "ACH", "PRO", "INT", "WS"] as CertType[]).map((t) => (
-                        <SelectItem key={t} value={t}>
-                          {t} — {CERT_TYPE_LABELS[t]}
+                      {visibleTypeOptions.map((t) => (
+                        <SelectItem key={t.code} value={t.code}>
+                          {t.code} — {t.label}
                         </SelectItem>
                       ))}
+                      <SelectItem value={ADD_CERT_TYPE_VALUE}>
+                        + Add new type
+                      </SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+
+                <div>
+                  <Label className="text-xs">Org prefix</Label>
+                  <Input
+                    value={prefixDraft}
+                    maxLength={2}
+                    className="h-10 font-mono uppercase tracking-widest"
+                    placeholder="AA"
+                    onChange={(e) => {
+                      const nextPrefix = normalizeCertPrefix(e.target.value);
+                      setPrefixDraft(nextPrefix);
+                      setDraft((p) => ({
+                        ...p,
+                        certPrefix: nextPrefix,
+                        layers: applyCertNumberToLayers(p.layers, p.certType, nextPrefix),
+                      }));
+                    }}
+                  />
+                  <p className="mt-1 text-[11px] text-muted-foreground">Two letters. Unique across organizations.</p>
                 </div>
 
                 <div>
@@ -2020,6 +2458,20 @@ function TemplateBuilderModal({
                       </p>
                     );
                   })()}
+                </div>
+
+                <div className="sm:col-span-3">
+                  <Label className="text-xs">Certificate number</Label>
+                  <div className="flex h-10 items-center gap-1 rounded-md border bg-muted/30 px-3 font-mono text-sm tracking-wide">
+                    <span>{(prefixDraft || "AA").padEnd(2, "A").slice(0, 2)}</span>
+                    <span className="text-muted-foreground">-</span>
+                    <span>{draft.certType}</span>
+                    <span className="text-muted-foreground">-</span>
+                    <span className="text-muted-foreground">XXXXXX</span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Format AA-{draft.certType}-XXXXXX. Prefix is editable above. Type follows the dropdown. Last 6 digits are generated when issued.
+                  </p>
                 </div>
 
                 <div>
@@ -2112,8 +2564,8 @@ function TemplateBuilderModal({
                       </div>
                       {bgUploadError ? <p className="text-xs text-destructive">{bgUploadError}</p> : null}
                       {draft.style.bgImage || bgLocalPreview ? (
-                        <img
-                          src={bgLocalPreview || resolveUploadSrc(draft.style.bgImage)}
+                        <ProtectedUploadImage
+                          path={bgLocalPreview || draft.style.bgImage}
                           alt="Background preview"
                           className="max-h-20 w-full rounded border object-contain bg-muted/20"
                         />
@@ -2226,148 +2678,26 @@ function TemplateBuilderModal({
 
               <Card>
                 <CardHeader className="py-3 px-4">
-                  <CardTitle className="text-sm">Text & placeholders</CardTitle>
+                  <CardTitle className="text-sm">Placeholders</CardTitle>
                   <CardDescription className="text-xs">
-                    Add a box → drag on the canvas → edit text. Placeholders like Name fill when you issue.
+                    Same as offer letters: add a Text box on the canvas, then insert {"<<fields>>"} into that text. Issue date, Cert ID, and QR are built-in — only drag to reposition.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="px-4 pb-4 space-y-3">
-                  <div className="flex flex-wrap gap-1.5">
-                    {TYPED_CERT_FIELD_TYPES.map((t) => {
-                      const present = (draft.layers || []).some((l) => l.type === t.type);
-                      return (
-                        <Button
-                          key={t.type}
-                          type="button"
-                          variant={present ? "secondary" : "outline"}
-                          size="sm"
-                          className="h-7 text-xs gap-1"
-                          onClick={() => addTypedLayer(t.type)}
-                        >
-                          <Variable className="h-3 w-3" />
-                          {t.label}
-                          {present ? " ✓" : ""}
-                        </Button>
-                      );
-                    })}
-                    <Button type="button" variant="default" size="sm" className="h-7 text-xs gap-1" onClick={addTextLayer}>
-                      <Plus className="h-3 w-3" /> Text box
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs gap-1"
-                      onClick={() => movableImageInputRef.current?.click()}
-                    >
-                      <ImageIcon className="h-3 w-3" /> Image
-                    </Button>
-                    <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={ensureTypedLayers}>
-                      Add all placeholders
-                    </Button>
-                  </div>
-                  {autoPlaceholderKeys.length > 0 ? (
-                    <div className="rounded-md border bg-muted/20 p-2">
-                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
-                        Auto-detected {'{{...}}'} placeholders
-                      </p>
-                      <div className="flex flex-wrap gap-1">
-                        {autoPlaceholderKeys.map((k) => (
-                          <code key={k} className="rounded bg-background px-1.5 py-0.5 text-[10px]">{`{{${k}}}`}</code>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {editableLayers.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                      No text or images yet. Click <strong>Name</strong>, <strong>Domain</strong>, or <strong>Text box</strong> to start.
+                  <PlaceholderPalette
+                    tokenStyle="angle"
+                    documentHtml={placeholderSourceHtml}
+                    onInsert={insertCertPlaceholder}
+                    description="Select a text box first (or a new one is created) · type around <<tokens>> · they fill when you issue"
+                  />
+                  <div className="rounded-md border bg-muted/20 p-2 text-[11px] text-muted-foreground space-y-1">
+                    <p>
+                      <strong className="text-foreground">Built-in (always on canvas):</strong> Issue date · Cert ID · QR — click their toolbar buttons to select, then drag.
                     </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {editableLayers.map((layer) => {
-                        const isImage = layer.type === "image" || layer.type === "logo" || layer.type === "signature";
-                        const isPlaceholder = ["name", "domain", "date", "company", "certID"].includes(layer.type);
-                        return (
-                          <div
-                            key={layer.id}
-                            className={cn(
-                              "rounded-lg border p-3 space-y-2 cursor-pointer",
-                              selectedLayerID === layer.id && "border-primary ring-1 ring-primary",
-                            )}
-                            onClick={() => setSelectedLayerID(layer.id)}
-                          >
-                            <div className="flex items-center gap-2">
-                              <Badge variant="outline" className="text-[10px] shrink-0 capitalize">
-                                {isPlaceholder ? `Placeholder · ${layer.type}` : layer.type}
-                              </Badge>
-                              <Input
-                                value={layer.label}
-                                onChange={(e) => setLayer(layer.id, { label: e.target.value })}
-                                className="h-8 text-xs"
-                                placeholder="Label"
-                              />
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 shrink-0 text-destructive"
-                                title="Remove"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeLayer(layer.id);
-                                }}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                            {selectedLayerID === layer.id && !isImage ? (
-                              <div className="space-y-2">
-                                <div>
-                                  <Label className="text-[11px]">
-                                    {isPlaceholder ? "Preview text (replaced when issuing)" : "Text"}
-                                  </Label>
-                                  <Textarea
-                                    rows={2}
-                                    value={layer.content || ""}
-                                    onChange={(e) => {
-                                      const value = e.target.value;
-                                      setLayer(layer.id, { content: value });
-                                      if (layer.type === "company") setField("companyName", value);
-                                      if (layer.type === "name") setField("recipientName", value);
-                                      if (layer.type === "domain") setField("domainName", value);
-                                    }}
-                                    placeholder={
-                                      isPlaceholder
-                                        ? `e.g. ${TYPED_CERT_FIELD_TYPES.find((t) => t.type === layer.type)?.sample || "<<value>>"}`
-                                        : "Type any text…"
-                                    }
-                                  />
-                                </div>
-                                <p className="text-[10px] text-muted-foreground">
-                                  Drag on the left canvas to move · use corner handles to resize · toolbar for font/size.
-                                </p>
-                              </div>
-                            ) : null}
-                            {selectedLayerID === layer.id && isImage ? (
-                              <div className="space-y-2">
-                                <p className="text-[10px] text-muted-foreground">
-                                  Drag on the canvas to move this image. Corner handles resize it.
-                                </p>
-                                {layer.content ? (
-                                  <img
-                                    src={resolveUploadSrc(layer.content)}
-                                    alt={layer.label}
-                                    className="h-14 object-contain rounded border bg-muted/10 p-1"
-                                  />
-                                ) : null}
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                    <p>
+                      <strong className="text-foreground">Your text:</strong> use <strong>Text box</strong> / <strong>Image</strong> on the canvas toolbar. Double-click a text box to edit.
+                    </p>
+                  </div>
                 </CardContent>
               </Card>
 
@@ -2408,14 +2738,14 @@ function TemplateBuilderModal({
                 <CardHeader className="py-3 px-4">
                   <CardTitle className="text-sm">Email (compose)</CardTitle>
                   <CardDescription className="text-xs">
-                    Used on Issue → Compose Email. Placeholders like {"{{recipient_name}}"}, {"{{sync_id}}"} are filled when sending.
+                    Used on Issue → Compose Email. Placeholders like {"{{recipient_name}}"}, {"{{cert_id}}"} are filled when sending.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="px-4 pb-4 space-y-3">
                   <div>
                     <Label className="text-xs">Mail subject</Label>
                     <Input
-                      value={draft.style.mail_subject ?? DEFAULT_CERT_MAIL_SUBJECT}
+                      value={rewriteCertMailText(draft.style.mail_subject || "") || DEFAULT_CERT_MAIL_SUBJECT}
                       onChange={(e) => setStyle("mail_subject", e.target.value)}
                       placeholder={DEFAULT_CERT_MAIL_SUBJECT}
                     />
@@ -2425,32 +2755,9 @@ function TemplateBuilderModal({
                     <Textarea
                       rows={10}
                       className="text-sm min-h-[160px]"
-                      value={draft.style.mail_body ?? DEFAULT_CERT_MAIL_BODY}
+                      value={rewriteCertMailText(draft.style.mail_body || "") || DEFAULT_CERT_MAIL_BODY}
                       onChange={(e) => setStyle("mail_body", e.target.value)}
                     />
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader className="py-3 px-4">
-                  <CardTitle className="text-sm">SYNC ID</CardTitle>
-                  <CardDescription className="text-xs">Used for QR verification</CardDescription>
-                </CardHeader>
-                <CardContent className="px-4 pb-4 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <Input value={draft.id} onChange={(e) => setDraft((p) => ({ ...p, id: e.target.value }))} className="font-mono text-xs" />
-                    <Button variant="outline" size="sm" className="h-9 gap-1" onClick={copyId}>
-                      <Copy className="h-4 w-4" />
-                      Copy
-                    </Button>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs text-muted-foreground break-all">{verifyUrl}</div>
-                    <Button variant="ghost" size="sm" className="h-8 text-xs gap-1" onClick={copyVerifyUrl}>
-                      <Copy className="h-3.5 w-3.5" />
-                      Copy URL
-                    </Button>
                   </div>
                 </CardContent>
               </Card>
@@ -2459,23 +2766,69 @@ function TemplateBuilderModal({
         </div>
       </div>
     </div>
+
+    <Dialog open={addTypeOpen} onOpenChange={setAddTypeOpen}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Add certificate type</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label className="text-xs">Type code</Label>
+            <Input
+              value={newTypeCode}
+              maxLength={2}
+              className="h-10 font-mono uppercase tracking-widest"
+              placeholder="DS"
+              onChange={(e) => setNewTypeCode(normalizeCertPrefix(e.target.value))}
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">Exactly two letters. Used in the certificate number (AA-DS-XXXXXX).</p>
+          </div>
+          <div>
+            <Label className="text-xs">Type name</Label>
+            <Input
+              value={newTypeLabel}
+              maxLength={120}
+              className="h-10"
+              placeholder="Data Science"
+              onChange={(e) => setNewTypeLabel(e.target.value)}
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setAddTypeOpen(false)} disabled={savingType}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => void submitNewCertType()} disabled={savingType}>
+            {savingType ? "Saving…" : "Add type"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 
 function TemplateCard({
   template,
+  typeOptions,
   onEdit,
   onDuplicate,
   onArchive,
   onDelete,
   onIssue,
+  onPreview,
+  onBulk,
 }: {
   template: CertTemplate;
+  typeOptions?: CertTypeOption[];
   onEdit: () => void;
   onDuplicate: () => void;
   onArchive: () => void;
   onDelete: () => void;
   onIssue: () => void;
+  onPreview: () => void;
+  onBulk: () => void;
 }) {
   return (
     <Card className="group hover:shadow-md transition-shadow h-full flex flex-col">
@@ -2488,36 +2841,58 @@ function TemplateCard({
             </CardDescription>
           </div>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-9 w-9">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem onClick={onEdit} className="gap-2">
-                <Pencil className="h-4 w-4" /> Edit
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onDuplicate} className="gap-2">
-                <Copy className="h-4 w-4" /> Duplicate
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={onArchive} className="gap-2">
-                <Archive className="h-4 w-4" /> Archive
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onDelete} className="gap-2 text-destructive focus:text-destructive">
-                <Trash2 className="h-4 w-4" /> Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9"
+              title="Preview template"
+              onClick={onPreview}
+            >
+              <Eye className="h-4 w-4" />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-9 w-9">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem onClick={onPreview} className="gap-2">
+                  <Eye className="h-4 w-4" /> Preview
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onEdit} className="gap-2">
+                  <Pencil className="h-4 w-4" /> Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDuplicate} className="gap-2">
+                  <Copy className="h-4 w-4" /> Duplicate
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={onBulk}
+                  disabled={template.status !== "active"}
+                  className="gap-2"
+                >
+                  <Users className="h-4 w-4" /> Bulk issue
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={onArchive} className="gap-2">
+                  <Archive className="h-4 w-4" /> Archive
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onDelete} className="gap-2 text-destructive focus:text-destructive">
+                  <Trash2 className="h-4 w-4" /> Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
 
         <div className="mt-2 flex items-center gap-2 flex-wrap">
           <Badge variant={statusBadgeVariant(template.status)} className="text-[10px]">
             {template.status}
           </Badge>
-          <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[template.certType])}>
-            {template.certType} · {CERT_TYPE_LABELS[template.certType]}
+          <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(template.certType))}>
+            {template.certType} · {certTypeLabel(template.certType, typeOptions)}
           </Badge>
           <Badge variant="secondary" className="text-[10px]">
             {getCertPageSpec(template.style.pageFormat).shortLabel}
@@ -2526,29 +2901,29 @@ function TemplateCard({
       </CardHeader>
 
       <CardContent className="space-y-3 flex-1 flex flex-col">
-        <div
-          className="overflow-hidden rounded-md w-full bg-gray-100"
-          style={{ height: 140, position: "relative" }}
+        <button
+          type="button"
+          className="w-full text-left rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={onPreview}
+          title="Preview template"
         >
-          <div
-            style={{
-              transform: "scale(0.28)",
-              transformOrigin: "top left",
-              width: "357%",
-              pointerEvents: "none",
-              position: "absolute",
-              top: 0,
-              left: 0,
-            }}
-          >
-            <CertificatePreview template={template} renderPdfBackground />
-          </div>
-        </div>
+          <CertificatePreviewThumb template={template} height={140} />
+        </button>
 
         <div className="flex flex-wrap gap-2 mt-auto">
           <Button size="sm" className="h-8 text-xs gap-1.5" onClick={onIssue} disabled={template.status !== "active"}>
             <Award className="h-3.5 w-3.5" />
-            Issue Certificate
+            Issue
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-8 text-xs gap-1.5"
+            onClick={onBulk}
+            disabled={template.status !== "active"}
+          >
+            <Users className="h-3.5 w-3.5" />
+            Bulk
           </Button>
           <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={onEdit}>
             <Pencil className="h-3.5 w-3.5" />
@@ -2614,14 +2989,77 @@ type StudentRecipient = {
   email: string;
 };
 
-const fallbackStudents: StudentRecipient[] = [
-  { id: "s1", name: "Ananya Rao", email: "ananya.rao@example.com" },
-  { id: "s2", name: "Rahul Verma", email: "rahul.verma@example.com" },
-  { id: "s3", name: "Meera Nair", email: "meera.nair@example.com" },
-  { id: "s4", name: "Vikram Singh", email: "vikram.singh@example.com" },
-  { id: "s5", name: "Sara Khan", email: "sara.khan@example.com" },
-  { id: "s6", name: "Arjun Iyer", email: "arjun.iyer@example.com" },
-];
+type CertLeadOption = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  company: string;
+  college: string;
+  course_interest: string;
+};
+
+function mapLeadToCertPlaceholderValues(
+  lead: CertLeadOption,
+  keys: string[],
+): Record<string, string> {
+  const mapped: Record<string, string> = {};
+  const name = lead.name.trim();
+  const email = lead.email.trim();
+  const company = lead.company.trim();
+  const course = lead.course_interest.trim();
+  const college = lead.college.trim();
+  const phone = lead.phone.trim();
+
+  for (const key of keys) {
+    const canon = canonicalCertPlaceholderKey(key);
+    if (canon === "recipient_name" || key === "name") mapped[key] = name;
+    else if (canon === "recipient_email" || key === "email") mapped[key] = email;
+    else if (canon === "domain_name" || key === "domain" || key === "course" || key === "course_name") {
+      mapped[key] = course || mapped[key] || "";
+    } else if (canon === "company_name" || key === "company") mapped[key] = company;
+    else if (key === "college" || canon === "college") mapped[key] = college;
+    else if (key === "phone" || canon === "phone") mapped[key] = phone;
+  }
+
+  // Always seed common aliases if those keys exist on the form.
+  if (keys.includes("recipient_name") && name) mapped.recipient_name = name;
+  if (keys.includes("name") && name) mapped.name = name;
+  if (keys.includes("recipient_email") && email) mapped.recipient_email = email;
+  if (keys.includes("email") && email) mapped.email = email;
+  if (keys.includes("domain_name") && course) mapped.domain_name = course;
+  if (keys.includes("company_name") && company) mapped.company_name = company;
+
+  return mapped;
+}
+
+function normalizeLeadOption(row: any): CertLeadOption | null {
+  const id = String(row?.id || "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(row?.name || row?.full_name || "").trim(),
+    email: String(row?.email || "").trim(),
+    phone: String(row?.phone || "").trim(),
+    company: String(row?.company || "").trim(),
+    college: String(row?.college || "").trim(),
+    course_interest: String(row?.course_interest || row?.course || row?.domain || "").trim(),
+  };
+}
+
+function seedBulkRecipientRow(
+  keys: string[],
+  seed: Record<string, string> = {},
+  defaults: Record<string, string> = {},
+): Record<string, string> {
+  const row: Record<string, string> = {};
+  for (const k of keys) {
+    const fromSeed = seed[k];
+    const fromDefault = defaults[k];
+    row[k] = String(fromSeed != null && String(fromSeed) !== "" ? fromSeed : fromDefault ?? "");
+  }
+  return row;
+}
 
 /** Single-recipient issue: form fields = placeholders on the selected template only. */
 function SingleIssueCertDialog({
@@ -2644,10 +3082,14 @@ function SingleIssueCertDialog({
   const [isIssuing, setIsIssuing] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
+  const [leadSuggestionsOpen, setLeadSuggestionsOpen] = useState(false);
+  const [leadSearch, setLeadSearch] = useState("");
+  const [leads, setLeads] = useState<CertLeadOption[]>([]);
+  const [leadsLoading, setLeadsLoading] = useState(false);
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [issuePayload, setIssuePayload] = useState<{
     studentName: string;
     studentEmail: string;
-    syncId: string;
     certificateId: string;
     pdfUrl: string;
   } | null>(null);
@@ -2678,6 +3120,9 @@ function SingleIssueCertDialog({
     setSendingEmail(false);
     setEmailSent(false);
     setIssuePayload(null);
+    setLeadSuggestionsOpen(false);
+    setLeadSearch("");
+    setSelectedLeadId(null);
     setEmailDraft({ to: "", cc: "", bcc: "", subject: "", body: "", attachmentUrl: "", attachmentName: "" });
     const seed: Record<string, string> = {};
     for (const k of getCertificateTemplatePlaceholderKeys(template)) {
@@ -2689,8 +3134,54 @@ function SingleIssueCertDialog({
     setValues(seed);
   }, [open, template]);
 
+  useEffect(() => {
+    if (!open || step !== "details") return;
+    const q = leadSearch.trim();
+    if (!leadSuggestionsOpen || q.length < 1) {
+      setLeads([]);
+      setLeadsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setLeadsLoading(true);
+      try {
+        const res = await api.leads.list({
+          search: q,
+          limit: 50,
+          all: false,
+        });
+        const rows = Array.isArray((res as any)?.data) ? (res as any).data : [];
+        const next = rows
+          .map(normalizeLeadOption)
+          .filter((l: CertLeadOption | null): l is CertLeadOption => !!l && (!!l.name || !!l.email));
+        if (!cancelled) setLeads(next);
+      } catch {
+        if (!cancelled) setLeads([]);
+      } finally {
+        if (!cancelled) setLeadsLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, step, leadSearch, leadSuggestionsOpen]);
+
   const setValue = (key: string, value: string) => {
     setValues((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const applyLead = (lead: CertLeadOption) => {
+    const mapped = mapLeadToCertPlaceholderValues(lead, fillKeys);
+    setValues((prev) => ({ ...prev, ...mapped }));
+    setSelectedLeadId(lead.id);
+    setLeadSuggestionsOpen(false);
+    setLeadSearch(lead.name || lead.email);
+    toast({
+      title: "Lead selected",
+      description: `${lead.name || lead.email} — fields filled from lead.`,
+    });
   };
 
   const assertFilled = (): boolean => {
@@ -2779,11 +3270,11 @@ function SingleIssueCertDialog({
         verifyToken,
         pdf_base64: pdfBase64 || undefined,
       });
+      const issuedCertId = String((res as any)?.certificateId || (res as any)?.syncId || certId).trim();
       const payload = {
         studentName: String((res as any)?.studentName || recipientName).trim(),
         studentEmail: String((res as any)?.studentEmail || recipientEmail).trim(),
-        syncId: String((res as any)?.syncId || certId).trim(),
-        certificateId: String((res as any)?.certificateId || certId).trim(),
+        certificateId: issuedCertId,
         pdfUrl: String((res as any)?.pdfUrl || "").trim(),
       };
       const emailValues = {
@@ -2791,9 +3282,9 @@ function SingleIssueCertDialog({
         recipient_name: payload.studentName,
         candidate_name: payload.studentName,
         recipient_email: payload.studentEmail,
-        sync_id: payload.syncId,
-        cert_id: payload.syncId,
-        certificate_id: payload.syncId,
+        cert_id: payload.certificateId,
+        certificate_id: payload.certificateId,
+        CertID: payload.certificateId,
         course_name: domainName,
         issue_date: issueDate,
         date: issueDate,
@@ -2807,7 +3298,7 @@ function SingleIssueCertDialog({
         subject: applyPlaceholders(mailCfg.mail_subject, emailValues),
         body: applyPlaceholders(mailCfg.mail_body, emailValues),
         attachmentUrl: payload.pdfUrl,
-        attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.syncId}.pdf`,
+        attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.certificateId}.pdf`,
       });
       setStep("email");
       toast({ title: "Certificate issued" });
@@ -2849,7 +3340,7 @@ function SingleIssueCertDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
+      <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="text-base">Issue Certificate — {template.name}</DialogTitle>
         </DialogHeader>
@@ -2874,20 +3365,113 @@ function SingleIssueCertDialog({
               {fillKeys.length === 0 ? (
                 <p className="text-xs text-muted-foreground sm:col-span-2">No fillable placeholders on this template.</p>
               ) : (
-                fillKeys.map((key) => (
-                  <div key={key} className={key === "recipient_name" || key === "name" ? "sm:col-span-2" : undefined}>
-                    <Label className="text-xs">
-                      {certPlaceholderLabel(key)} *
-                      <span className="ml-1 font-mono text-[10px] text-muted-foreground">{`{{${key}}}`}</span>
-                    </Label>
-                    <Input
-                      type={key.includes("email") ? "email" : "text"}
-                      value={values[key] || ""}
-                      onChange={(e) => setValue(key, e.target.value)}
-                      placeholder={certPlaceholderLabel(key)}
-                    />
-                  </div>
-                ))
+                fillKeys.map((key) => {
+                  const isRecipientName = key === "recipient_name" || key === "name";
+                  if (isRecipientName) {
+                    return (
+                      <div key={key} className="sm:col-span-2 space-y-1.5">
+                        <Label className="text-xs">
+                          {certPlaceholderLabel(key)} *
+                          <span className="ml-1 font-mono text-[10px] text-muted-foreground">{`{{${key}}}`}</span>
+                        </Label>
+                        <Input
+                          value={values[key] || ""}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setSelectedLeadId(null);
+                            setValue(key, v);
+                            setLeadSearch(v);
+                            setLeadSuggestionsOpen(v.trim().length > 0);
+                          }}
+                          onFocus={() => {
+                            const v = values[key] || "";
+                            if (v.trim()) {
+                              setLeadSearch(v);
+                              setLeadSuggestionsOpen(true);
+                            }
+                          }}
+                          onBlur={() => {
+                            // Delay so click on a suggestion still registers
+                            window.setTimeout(() => setLeadSuggestionsOpen(false), 180);
+                          }}
+                          placeholder="Start typing to search all leads, or enter name manually"
+                          autoComplete="off"
+                        />
+                        {selectedLeadId ? (
+                          <p className="text-[10px] text-emerald-700">Filled from a portal lead — you can still edit any field.</p>
+                        ) : (
+                          <p className="text-[10px] text-muted-foreground">
+                            Matches appear only while you type. Pick a lead to auto-fill, or keep typing for a manual name.
+                          </p>
+                        )}
+                        {leadSuggestionsOpen && (values[key] || "").trim() ? (
+                          <div className="rounded-md border bg-background shadow-sm overflow-hidden">
+                            <div className="px-2.5 py-1.5 text-[10px] font-medium text-muted-foreground border-b bg-muted/40">
+                              {leadsLoading ? "Searching all leads…" : `Leads matching “${String(values[key] || "").trim()}”`}
+                            </div>
+                            <div className="max-h-48 overflow-y-auto overscroll-contain">
+                              {!leadsLoading && leads.length === 0 ? (
+                                <p className="px-3 py-3 text-xs text-muted-foreground">
+                                  No leads found. Keep typing to enter the name manually.
+                                </p>
+                              ) : (
+                                leads.map((lead) => {
+                                  const meta = [lead.email, lead.phone, lead.company, lead.course_interest]
+                                    .filter(Boolean)
+                                    .join(" · ");
+                                  return (
+                                    <button
+                                      key={lead.id}
+                                      type="button"
+                                      className={cn(
+                                        "flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-muted/60 transition-colors",
+                                        selectedLeadId === lead.id && "bg-primary/5",
+                                      )}
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={() => applyLead(lead)}
+                                    >
+                                      <Check
+                                        className={cn(
+                                          "mt-0.5 h-4 w-4 shrink-0",
+                                          selectedLeadId === lead.id ? "opacity-100 text-primary" : "opacity-0",
+                                        )}
+                                      />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="truncate text-sm font-medium">
+                                          {lead.name || lead.email || "Unnamed lead"}
+                                        </div>
+                                        {meta ? (
+                                          <div className="truncate text-[11px] text-muted-foreground">{meta}</div>
+                                        ) : null}
+                                      </div>
+                                    </button>
+                                  );
+                                })
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={key}>
+                      <Label className="text-xs">
+                        {certPlaceholderLabel(key)} *
+                        <span className="ml-1 font-mono text-[10px] text-muted-foreground">{`{{${key}}}`}</span>
+                      </Label>
+                      <Input
+                        type={key.includes("email") ? "email" : "text"}
+                        value={values[key] || ""}
+                        onChange={(e) => {
+                          setSelectedLeadId(null);
+                          setValue(key, e.target.value);
+                        }}
+                        placeholder={certPlaceholderLabel(key)}
+                      />
+                    </div>
+                  );
+                })
               )}
               <div>
                 <Label className="text-xs">Issue date *</Label>
@@ -2898,7 +3482,13 @@ function SingleIssueCertDialog({
         ) : null}
 
         {step === "preview" ? (
-          <div className="space-y-3">
+          <CertificatePreviewFit
+            pageFormat={template.style.pageFormat}
+            className={cn(
+              "rounded-lg border bg-muted/20 p-3",
+              certPageIsPortrait(template.style.pageFormat) ? "max-h-[min(72vh,920px)] min-h-[320px]" : "max-h-[60vh]",
+            )}
+          >
             <CertificatePreview
               template={template}
               recipientName={recipientName || template.fields.recipientName}
@@ -2909,7 +3499,7 @@ function SingleIssueCertDialog({
               overrides={{ domainName: domainName || template.fields.domainName }}
               renderPdfBackground
             />
-          </div>
+          </CertificatePreviewFit>
         ) : null}
 
         {step === "email" && issuePayload ? (
@@ -3002,11 +3592,15 @@ function IssueCertWizard({
   const [issueDate, setIssueDate] = useState(stableNowISODate());
   const [certIdsByRecipientId, setCertIdsByRecipientId] = useState<Record<string, string>>({});
   const [verifyTokensByRecipientId, setVerifyTokensByRecipientId] = useState<Record<string, string>>({});
-  const [courseByRecipientId, setCourseByRecipientId] = useState<Record<string, string>>({});
-  const [extraByRecipientId, setExtraByRecipientId] = useState<Record<string, Record<string, string>>>({});
+  const [rowValuesByRecipientId, setRowValuesByRecipientId] = useState<Record<string, Record<string, string>>>({});
   const [extraGlobalValues, setExtraGlobalValues] = useState<Record<string, string>>({});
-  const [students, setStudents] = useState<StudentRecipient[]>(fallbackStudents);
-  const [loadingStudents, setLoadingStudents] = useState(false);
+  const [students, setStudents] = useState<StudentRecipient[]>([]);
+  const [manualName, setManualName] = useState("");
+  const [manualEmail, setManualEmail] = useState("");
+  const [bulkLeadSuggestionsOpen, setBulkLeadSuggestionsOpen] = useState(false);
+  const [bulkLeadSearch, setBulkLeadSearch] = useState("");
+  const [bulkLeads, setBulkLeads] = useState<CertLeadOption[]>([]);
+  const [bulkLeadsLoading, setBulkLeadsLoading] = useState(false);
   const sheetInputRef = useRef<HTMLInputElement | null>(null);
   const [isIssuing, setIsIssuing] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
@@ -3015,7 +3609,6 @@ function IssueCertWizard({
   const [issuePayload, setIssuePayload] = useState<{
     studentName: string;
     studentEmail: string;
-    syncId: string;
     certificateId: string;
     pdfUrl: string;
     templateId: string;
@@ -3039,9 +3632,14 @@ function IssueCertWizard({
     setIssueDate(stableNowISODate());
     setCertIdsByRecipientId({});
     setVerifyTokensByRecipientId({});
-    setCourseByRecipientId({});
-    setExtraByRecipientId({});
+    setRowValuesByRecipientId({});
     setExtraGlobalValues({});
+    setStudents([]);
+    setManualName("");
+    setManualEmail("");
+    setBulkLeadSuggestionsOpen(false);
+    setBulkLeadSearch("");
+    setBulkLeads([]);
     setIsIssuing(false);
     setSendingEmail(false);
     setEmailSent(false);
@@ -3049,40 +3647,6 @@ function IssueCertWizard({
     setEmailDraft({ to: "", cc: "", bcc: "", subject: "", body: "", attachmentUrl: "", attachmentName: "" });
     setEmailLogRows([]);
   }, [open, initialTemplateId]);
-
-  useEffect(() => {
-    if (!open) return;
-    let mounted = true;
-
-    (async () => {
-      setLoadingStudents(true);
-      try {
-        const res = await api.students.list();
-        const rows = (res as any)?.data;
-        if (!Array.isArray(rows)) return;
-
-        const normalized: StudentRecipient[] = rows
-          .map((row: any) => ({
-            id: String(row?.id || "").trim(),
-            name: String(row?.name || "").trim(),
-            email: String(row?.email || "").trim(),
-          }))
-          .filter((s) => s.id && s.name);
-
-        if (mounted && normalized.length > 0) {
-          setStudents(normalized);
-        }
-      } catch {
-        // keep fallback list when API is unavailable
-      } finally {
-        if (mounted) setLoadingStudents(false);
-      }
-    })();
-
-    return () => {
-      mounted = false;
-    };
-  }, [open]);
 
   const activeTemplates = useMemo(() => templates.filter((t) => t.status !== "archived"), [templates]);
   const selectedTemplate = useMemo(
@@ -3094,39 +3658,159 @@ function IssueCertWizard({
     () => students.filter((r) => selectedRecipientIds.includes(r.id)),
     [selectedRecipientIds, students],
   );
-  const dynamicTemplateKeys = useMemo(() => {
-    if (!selectedTemplate) return [] as string[];
-    return getCertificateTemplatePlaceholderKeys(selectedTemplate).filter(
-      (k) => !["recipient_name", "recipient_email", "domain_name", "issue_date", "company_name"].includes(k),
-    );
-  }, [selectedTemplate]);
-
   const templateBulkKeys = useMemo(
     () => getCertificateTemplatePlaceholderKeys(selectedTemplate),
     [selectedTemplate],
   );
   const templateRowKeys = useMemo(() => getCertificateBulkRowKeys(templateBulkKeys), [templateBulkKeys]);
+  const templateSharedKeys = useMemo(() => getCertificateSharedKeys(templateBulkKeys), [templateBulkKeys]);
   const templateHasDomain = templateBulkKeys.includes("domain_name");
   const templateHasCompany = templateBulkKeys.includes("company_name");
-  const templateHasIssueDate = templateBulkKeys.includes("issue_date");
 
-  const toggleRecipient = (id: string) => {
-    setSelectedRecipientIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const rowDefaults = useMemo(() => {
+    const d: Record<string, string> = { ...extraGlobalValues };
+    if (templateHasDomain && courseName.trim()) d.domain_name = courseName.trim();
+    if (templateHasCompany) {
+      d.company_name = extraGlobalValues.company_name || selectedTemplate?.fields.companyName || "";
+    }
+    return d;
+  }, [extraGlobalValues, courseName, templateHasDomain, templateHasCompany, selectedTemplate]);
+
+  useEffect(() => {
+    if (!open || step !== 2) return;
+    const q = bulkLeadSearch.trim();
+    if (!bulkLeadSuggestionsOpen || q.length < 1) {
+      setBulkLeads([]);
+      setBulkLeadsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setBulkLeadsLoading(true);
+      try {
+        const res = await api.leads.list({
+          search: q,
+          limit: 50,
+          all: false,
+        });
+        const rows = Array.isArray((res as any)?.data) ? (res as any).data : [];
+        const next = rows
+          .map(normalizeLeadOption)
+          .filter((l: CertLeadOption | null): l is CertLeadOption => !!l && (!!l.name || !!l.email));
+        if (!cancelled) setBulkLeads(next);
+      } catch {
+        if (!cancelled) setBulkLeads([]);
+      } finally {
+        if (!cancelled) setBulkLeadsLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, step, bulkLeadSearch, bulkLeadSuggestionsOpen]);
+
+  const ensureRecipientSelected = (recipient: StudentRecipient, seed: Record<string, string> = {}) => {
+    setStudents((prev) => (prev.some((s) => s.id === recipient.id) ? prev : [recipient, ...prev]));
+    setSelectedRecipientIds((prev) => (prev.includes(recipient.id) ? prev : [...prev, recipient.id]));
+    setRowValuesByRecipientId((prev) => {
+      if (prev[recipient.id]) {
+        return {
+          ...prev,
+          [recipient.id]: {
+            ...prev[recipient.id],
+            ...Object.fromEntries(Object.entries(seed).filter(([, v]) => String(v || "").trim() !== "")),
+          },
+        };
+      }
+      const base = seedBulkRecipientRow(
+        templateRowKeys,
+        {
+          recipient_name: recipient.name,
+          recipient_email: recipient.email,
+          name: recipient.name,
+          email: recipient.email,
+          ...seed,
+        },
+        rowDefaults,
+      );
+      return { ...prev, [recipient.id]: base };
+    });
   };
+
+  const setRecipientRowValue = (recipientId: string, key: string, value: string) => {
+    setRowValuesByRecipientId((prev) => ({
+      ...prev,
+      [recipientId]: { ...(prev[recipientId] || seedBulkRecipientRow(templateRowKeys, {}, rowDefaults)), [key]: value },
+    }));
+    if (key === "recipient_name" || key === "name") {
+      setStudents((prev) => prev.map((s) => (s.id === recipientId ? { ...s, name: value } : s)));
+    }
+    if (key === "recipient_email" || key === "email") {
+      setStudents((prev) => prev.map((s) => (s.id === recipientId ? { ...s, email: value } : s)));
+    }
+  };
+
+  const removeSelectedRecipient = (id: string) => {
+    setSelectedRecipientIds((prev) => prev.filter((x) => x !== id));
+  };
+
+  const addManualRecipient = () => {
+    const name = manualName.trim();
+    const email = manualEmail.trim();
+    if (!name) {
+      toast({ variant: "destructive", title: "Name required", description: "Enter a recipient name to add manually." });
+      return;
+    }
+    const recipient: StudentRecipient = {
+      id: `manual-${crypto.randomUUID()}`,
+      name,
+      email,
+    };
+    ensureRecipientSelected(recipient, {
+      recipient_name: name,
+      recipient_email: email,
+      name,
+      email,
+    });
+    setManualName("");
+    setManualEmail("");
+    setBulkLeadSuggestionsOpen(false);
+    toast({ title: "Recipient added", description: name });
+  };
+
+  const addLeadAsRecipient = (lead: CertLeadOption) => {
+    const mapped = mapLeadToCertPlaceholderValues(lead, templateRowKeys);
+    const recipient: StudentRecipient = {
+      id: `lead-${lead.id}`,
+      name: lead.name || lead.email || "Recipient",
+      email: lead.email || "",
+    };
+    ensureRecipientSelected(recipient, mapped);
+    setManualName(lead.name || "");
+    setManualEmail(lead.email || "");
+    setBulkLeadSuggestionsOpen(false);
+    setBulkLeadSearch(lead.name || lead.email);
+    toast({ title: "Lead added", description: `${recipient.name} — placeholders filled where available.` });
+  };
+
   const applyGlobalExtrasToSelected = () => {
-    if (selectedRecipientIds.length === 0 || dynamicTemplateKeys.length === 0) return;
-    setExtraByRecipientId((prev) => {
+    if (selectedRecipientIds.length === 0 || templateRowKeys.length === 0) return;
+    setRowValuesByRecipientId((prev) => {
       const next = { ...prev };
       for (const rid of selectedRecipientIds) {
-        next[rid] = { ...(next[rid] || {}) };
-        for (const key of dynamicTemplateKeys) {
-          const v = extraGlobalValues[key];
-          if (v != null && String(v).trim() !== "") next[rid][key] = String(v);
+        const current = next[rid] || seedBulkRecipientRow(templateRowKeys, {}, rowDefaults);
+        const updated = { ...current };
+        for (const key of templateRowKeys) {
+          if (key === "recipient_name" || key === "name" || key === "recipient_email" || key === "email") continue;
+          const v = key === "domain_name" ? courseName || extraGlobalValues[key] : extraGlobalValues[key];
+          if (v != null && String(v).trim() !== "") updated[key] = String(v);
         }
+        next[rid] = updated;
       }
       return next;
     });
-    toast({ title: "Applied", description: `Filled ${selectedRecipientIds.length} selected recipient(s).` });
+    toast({ title: "Applied", description: `Filled defaults onto ${selectedRecipientIds.length} selected recipient(s).` });
   };
 
   const handleCertSheetImport = async (file: File) => {
@@ -3166,39 +3850,24 @@ function IssueCertWizard({
         name: row.recipient_name || row.candidate_name || row.name || "Recipient",
         email: row.recipient_email || row.email || "",
       }));
-      const courseMap: Record<string, string> = {};
-      const extraMap: Record<string, Record<string, string>> = {};
+      const rowMap: Record<string, Record<string, string>> = {};
       imported.forEach((s, i) => {
-        const course = rows[i].domain_name || rows[i].course_name || rows[i].domain || "";
-        if (course) courseMap[s.id] = course;
-        const extras: Record<string, string> = {};
-        Object.keys(rows[i]).forEach((k) => {
-          if (
-            ![
-              "recipient_name",
-              "candidate_name",
-              "name",
-              "recipient_email",
-              "email",
-              "domain_name",
-              "course_name",
-              "domain",
-              "issue_date",
-              "company_name",
-            ].includes(k)
-          ) {
-            if (rows[i][k] && templateBulkKeys.includes(k)) extras[k] = rows[i][k];
-          }
-        });
-        if (Object.keys(extras).length > 0) extraMap[s.id] = extras;
+        const raw = rows[i];
+        const seed: Record<string, string> = {
+          ...raw,
+          recipient_name: raw.recipient_name || raw.candidate_name || raw.name || s.name,
+          recipient_email: raw.recipient_email || raw.email || s.email,
+          domain_name: raw.domain_name || raw.course_name || raw.domain || "",
+        };
+        rowMap[s.id] = seedBulkRecipientRow(templateRowKeys, seed, rowDefaults);
       });
       const dateFromSheet = rows.find((r) => r.issue_date)?.issue_date;
-      if (dateFromSheet && templateHasIssueDate) setIssueDate(dateFromSheet);
+      if (dateFromSheet) setIssueDate(dateFromSheet);
       const companyFromSheet = rows.find((r) => r.company_name)?.company_name;
       if (companyFromSheet && templateHasCompany) {
         setExtraGlobalValues((prev) => ({ ...prev, company_name: companyFromSheet }));
       }
-      const firstCourse = Object.values(courseMap)[0];
+      const firstCourse = imported.map((s) => rowMap[s.id]?.domain_name).find((c) => String(c || "").trim());
       if (firstCourse && !courseName.trim() && templateHasDomain) setCourseName(firstCourse);
 
       setStudents((prev) => {
@@ -3206,11 +3875,10 @@ function IssueCertWizard({
         return [...imported, ...keep];
       });
       setSelectedRecipientIds(imported.map((s) => s.id));
-      setCourseByRecipientId((prev) => ({ ...prev, ...courseMap }));
-      setExtraByRecipientId((prev) => ({ ...prev, ...extraMap }));
+      setRowValuesByRecipientId((prev) => ({ ...prev, ...rowMap }));
       toast({
         title: `Imported ${imported.length} recipient(s)`,
-        description: `Matched columns to this template’s placeholders (${templateRowKeys.join(", ")}).`,
+        description: `Matched columns to this template’s placeholders (${templateRowKeys.join(", ") || "—"}).`,
       });
     } catch (e: any) {
       toast({ variant: "destructive", title: "Import failed", description: e?.message || "Could not read file" });
@@ -3248,16 +3916,54 @@ function IssueCertWizard({
         toast({ variant: "destructive", title: "Issue date required", description: "Select an issue date." });
         return;
       }
+      if (templateHasCompany) {
+        const company = String(extraGlobalValues.company_name || selectedTemplate.fields.companyName || "").trim();
+        if (!company) {
+          toast({
+            variant: "destructive",
+            title: "Company required",
+            description: "This template uses {{company_name}} — fill it before continuing.",
+          });
+          return;
+        }
+      }
+      for (const key of templateSharedKeys) {
+        if (key === "issue_date" || key === "company_name") continue;
+        if (!String(extraGlobalValues[key] || "").trim()) {
+          toast({
+            variant: "destructive",
+            title: "Fill shared placeholders",
+            description: `Missing: ${certPlaceholderLabel(key)}`,
+          });
+          return;
+        }
+      }
       setStep(2);
       return;
     }
     if (step === 2) {
       if (selectedRecipientIds.length === 0) {
-        toast({ variant: "destructive", title: "Select recipients", description: "Pick at least one recipient to continue." });
+        toast({ variant: "destructive", title: "Select recipients", description: "Add or pick at least one recipient to continue." });
         return;
       }
       if (!selectedTemplate) {
         toast({ variant: "destructive", title: "Select template", description: "Choose a certificate template." });
+        return;
+      }
+      const missing: string[] = [];
+      for (const r of selectedRecipients) {
+        const row = rowValuesByRecipientId[r.id] || {};
+        for (const key of templateRowKeys) {
+          const value = String(row[key] ?? "").trim();
+          if (!value) missing.push(`${r.name || "Recipient"} → ${certPlaceholderLabel(key)}`);
+        }
+      }
+      if (missing.length) {
+        toast({
+          variant: "destructive",
+          title: "Fill all template placeholders",
+          description: missing.slice(0, 6).join("; ") + (missing.length > 6 ? ` (+${missing.length - 6} more)` : ""),
+        });
         return;
       }
       const nextIds: Record<string, string> = {};
@@ -3286,6 +3992,15 @@ function IssueCertWizard({
   const confirm = async () => {
     if (!selectedTemplate) return;
     if (selectedRecipients.length === 0) return;
+    const resolveRecipientName = (r: StudentRecipient) =>
+      String(rowValuesByRecipientId[r.id]?.recipient_name || rowValuesByRecipientId[r.id]?.name || r.name || "").trim();
+    const resolveRecipientEmail = (r: StudentRecipient) =>
+      String(rowValuesByRecipientId[r.id]?.recipient_email || rowValuesByRecipientId[r.id]?.email || r.email || "").trim();
+    const resolveCourse = (r: StudentRecipient) =>
+      String(rowValuesByRecipientId[r.id]?.domain_name || courseName || selectedTemplate.fields.domainName || "").trim();
+    const resolveCompany = () =>
+      String(extraGlobalValues.company_name || selectedTemplate.fields.companyName || "").trim();
+
     const seenIds = new Set<string>();
     const seenTokens = new Set<string>();
     const issuedByRecipientId: Record<string, IssuedCertificate> = {};
@@ -3300,8 +4015,8 @@ function IssueCertWizard({
         id: certId,
         templateId: selectedTemplate.id,
         templateName: selectedTemplate.name,
-        recipientName: r.name,
-        courseName: (courseByRecipientId[r.id] || courseName).trim() || selectedTemplate.fields.domainName || "Certificate",
+        recipientName: resolveRecipientName(r),
+        courseName: resolveCourse(r) || "Certificate",
         certType: selectedTemplate.certType,
         issueDate,
         status: "issued",
@@ -3316,27 +4031,32 @@ function IssueCertWizard({
       const issueResults: Array<{ recipientId: string; res: any }> = [];
       for (const recipient of selectedRecipients) {
         const issued = issuedByRecipientId[recipient.id] || issuedList[0];
-        const course = (courseByRecipientId[recipient.id] || courseName).trim();
-        const extra = { ...extraGlobalValues, ...(extraByRecipientId[recipient.id] || {}) };
+        const name = resolveRecipientName(recipient);
+        const email = resolveRecipientEmail(recipient);
+        const course = resolveCourse(recipient);
+        const row = rowValuesByRecipientId[recipient.id] || {};
         const placeholderValues = {
-          ...extra,
-          recipient_name: recipient.name,
-          candidate_name: recipient.name,
-          recipient_email: recipient.email,
-          sync_id: issued.id,
+          ...extraGlobalValues,
+          ...row,
+          recipient_name: name,
+          candidate_name: name,
+          name,
+          recipient_email: email,
+          email,
           cert_id: issued.id,
           certificate_id: issued.id,
+          CertID: issued.id,
           course_name: course,
           domain_name: course,
           issue_date: issueDate,
           date: issueDate,
-          company_name: extra.company_name || selectedTemplate.fields.companyName || "",
+          company_name: resolveCompany(),
         };
         let pdfBase64 = "";
         try {
           pdfBase64 = await captureCertificatePdfBase64({
             template: selectedTemplate,
-            recipientName: recipient.name,
+            recipientName: name,
             domainName: course || selectedTemplate.fields.domainName,
             companyName: placeholderValues.company_name || selectedTemplate.fields.companyName,
             date: issueDate,
@@ -3350,8 +4070,8 @@ function IssueCertWizard({
           recipientId: recipient.id,
           templateId: selectedTemplate.id,
           syncId: issued.id,
-          recipientName: recipient.name,
-          recipientEmail: recipient.email,
+          recipientName: name,
+          recipientEmail: email,
           courseName: course,
           issueDate,
           verifyToken: issued.verifyToken,
@@ -3360,30 +4080,31 @@ function IssueCertWizard({
         issueResults.push({ recipientId: recipient.id, res });
       }
       const primary = selectedRecipients[0];
-      const primaryIssued = issuedList.find((i) => i.recipientName === primary.name) || issuedList[0];
+      const primaryIssued = issuedByRecipientId[primary.id] || issuedList[0];
       const firstRes = issueResults[0]?.res || {};
+      const issuedCertId = String(firstRes?.certificateId || firstRes?.syncId || primaryIssued.id || "").trim();
       const payload = {
-        studentName: String(firstRes?.studentName || primary.name || "").trim(),
-        studentEmail: String(firstRes?.studentEmail || primary.email || "").trim(),
-        syncId: String(firstRes?.syncId || primaryIssued.id || "").trim(),
-        certificateId: String(firstRes?.certificateId || primaryIssued.id || "").trim(),
+        studentName: String(firstRes?.studentName || resolveRecipientName(primary) || "").trim(),
+        studentEmail: String(firstRes?.studentEmail || resolveRecipientEmail(primary) || "").trim(),
+        certificateId: issuedCertId,
         pdfUrl: String(firstRes?.pdfUrl || "").trim(),
         templateId: selectedTemplate.id,
       };
-      const primaryExtra = { ...extraGlobalValues, ...(extraByRecipientId[primary.id] || {}) };
+      const primaryRow = rowValuesByRecipientId[primary.id] || {};
       const emailValues = {
-        ...primaryExtra,
+        ...extraGlobalValues,
+        ...primaryRow,
         recipient_name: payload.studentName,
         candidate_name: payload.studentName,
         recipient_email: payload.studentEmail,
-        sync_id: payload.syncId,
-        cert_id: payload.syncId,
-        certificate_id: payload.syncId,
-        course_name: (courseByRecipientId[primary.id] || courseName).trim(),
+        cert_id: payload.certificateId,
+        certificate_id: payload.certificateId,
+        CertID: payload.certificateId,
+        course_name: resolveCourse(primary),
         issue_date: issueDate,
         date: issueDate,
-        company_name: extraGlobalValues.company_name || selectedTemplate.fields.companyName || "",
-        domain_name: (courseByRecipientId[primary.id] || courseName).trim(),
+        company_name: resolveCompany(),
+        domain_name: resolveCourse(primary),
       };
       const mailCfg = parseCertMailConfig(selectedTemplate);
       setIssuePayload(payload);
@@ -3394,7 +4115,7 @@ function IssueCertWizard({
         subject: applyPlaceholders(mailCfg.mail_subject, emailValues),
         body: applyPlaceholders(mailCfg.mail_body, emailValues),
         attachmentUrl: payload.pdfUrl,
-        attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.syncId}.pdf`,
+        attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.certificateId}.pdf`,
       });
       setStep(4);
       toast({ title: "Issued certificates", description: `${issuedList.length} certificate(s) issued.` });
@@ -3450,8 +4171,11 @@ function IssueCertWizard({
     setIssueDate(stableNowISODate());
     setCertIdsByRecipientId({});
     setVerifyTokensByRecipientId({});
-    setExtraByRecipientId({});
+    setRowValuesByRecipientId({});
     setExtraGlobalValues({});
+    setManualName("");
+    setManualEmail("");
+    setStudents([]);
     setIssuePayload(null);
     setEmailSent(false);
     setEmailDraft({ to: "", cc: "", bcc: "", subject: "", body: "", attachmentUrl: "", attachmentName: "" });
@@ -3495,7 +4219,11 @@ function IssueCertWizard({
                             "rounded-xl border p-3 text-left transition-colors",
                             selected ? "border-primary ring-2 ring-primary/20 bg-primary/5" : "hover:bg-muted/20",
                           )}
-                          onClick={() => setSelectedTemplateId(t.id)}
+                          onClick={() => {
+                            setSelectedTemplateId(t.id);
+                            setSelectedRecipientIds([]);
+                            setRowValuesByRecipientId({});
+                          }}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0">
@@ -3504,7 +4232,7 @@ function IssueCertWizard({
                             </div>
                             <div className="flex items-center gap-2">
                               <Badge variant={statusBadgeVariant(t.status)} className="text-[10px]">{t.status}</Badge>
-                              <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[t.certType])}>{t.certType}</Badge>
+                              <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(t.certType))}>{t.certType}</Badge>
                             </div>
                           </div>
                           {keys.length > 0 ? (
@@ -3515,9 +4243,7 @@ function IssueCertWizard({
                             </div>
                           ) : null}
                           <div className="mt-2 overflow-hidden rounded-lg border bg-muted/10">
-                            <div className="p-2">
-                              <CertificatePreview template={t} scale={0.36} renderPdfBackground />
-                            </div>
+                            <CertificatePreviewThumb template={t} height={120} />
                           </div>
                         </button>
                       );
@@ -3538,19 +4264,13 @@ function IssueCertWizard({
                 </CardDescription>
               </CardHeader>
               <CardContent className="px-4 pb-4 space-y-3">
-                {templateHasDomain ? (
-                  <div>
-                    <Label className="text-xs">{certPlaceholderLabel("domain_name")} (optional default)</Label>
-                    <Input value={courseName} onChange={(e) => setCourseName(e.target.value)} placeholder="Leave empty for template default" />
-                  </div>
-                ) : null}
                 <div>
-                  <Label className="text-xs">Issue date</Label>
+                  <Label className="text-xs">Issue date *</Label>
                   <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
                 </div>
                 {templateHasCompany ? (
                   <div>
-                    <Label className="text-xs">{certPlaceholderLabel("company_name")}</Label>
+                    <Label className="text-xs">{certPlaceholderLabel("company_name")} *</Label>
                     <Input
                       value={extraGlobalValues.company_name || selectedTemplate?.fields.companyName || ""}
                       onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, company_name: e.target.value }))}
@@ -3558,25 +4278,45 @@ function IssueCertWizard({
                     />
                   </div>
                 ) : null}
-                {dynamicTemplateKeys.length > 0 ? (
-                  <div className="sm:col-span-2 rounded-md border p-3 space-y-2">
+                {templateHasDomain || templateRowKeys.some((k) => !["recipient_name", "recipient_email", "name", "email"].includes(k)) ? (
+                  <div className="rounded-md border p-3 space-y-2">
                     <div className="flex items-center justify-between gap-2">
-                      <Label className="text-xs">Additional template placeholders</Label>
+                      <div>
+                        <Label className="text-xs">Defaults for recipients</Label>
+                        <p className="text-[10px] text-muted-foreground">
+                          Optional — applied when you add/select recipients. You can still edit per person in step 2.
+                        </p>
+                      </div>
                       <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={applyGlobalExtrasToSelected}>
-                        Fill selected recipients
+                        Apply to selected
                       </Button>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {dynamicTemplateKeys.map((k) => (
-                        <div key={k}>
-                          <Label className="text-[11px] font-mono">{`{{${k}}}`}</Label>
+                      {templateHasDomain ? (
+                        <div>
+                          <Label className="text-[11px]">{certPlaceholderLabel("domain_name")}</Label>
                           <Input
-                            value={extraGlobalValues[k] || ""}
-                            onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, [k]: e.target.value }))}
-                            placeholder={`Value for ${k}`}
+                            value={courseName}
+                            onChange={(e) => setCourseName(e.target.value)}
+                            placeholder="Course / Domain default"
                           />
                         </div>
-                      ))}
+                      ) : null}
+                      {templateRowKeys
+                        .filter((k) => !["recipient_name", "recipient_email", "name", "email", "domain_name"].includes(k))
+                        .map((k) => (
+                          <div key={k}>
+                            <Label className="text-[11px]">
+                              {certPlaceholderLabel(k)}{" "}
+                              <span className="font-mono text-muted-foreground">{`{{${k}}}`}</span>
+                            </Label>
+                            <Input
+                              value={extraGlobalValues[k] || ""}
+                              onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, [k]: e.target.value }))}
+                              placeholder={certPlaceholderLabel(k)}
+                            />
+                          </div>
+                        ))}
                     </div>
                   </div>
                 ) : null}
@@ -3585,16 +4325,26 @@ function IssueCertWizard({
                   <Label className="text-xs">Preview (selected template)</Label>
                   <div className="mt-2">
                     {selectedTemplate ? (
-                      <CertificatePreview
-                        template={selectedTemplate}
-                        recipientName={selectedRecipients[0]?.name || selectedTemplate.fields.recipientName}
-                        domainName={courseName || selectedTemplate.fields.domainName}
-                        companyName={extraGlobalValues.company_name || selectedTemplate.fields.companyName}
-                        date={issueDate}
-                        placeholderValues={extraGlobalValues}
-                        overrides={{ domainName: courseName || selectedTemplate.fields.domainName }}
-                        renderPdfBackground
-                      />
+                      <CertificatePreviewFit
+                        pageFormat={selectedTemplate.style.pageFormat}
+                        className={cn(
+                          "rounded-lg border bg-muted/10 p-2",
+                          certPageIsPortrait(selectedTemplate.style.pageFormat)
+                            ? "max-h-[min(68vh,880px)] min-h-[300px]"
+                            : "max-h-[50vh]",
+                        )}
+                      >
+                        <CertificatePreview
+                          template={selectedTemplate}
+                          recipientName={selectedRecipients[0]?.name || selectedTemplate.fields.recipientName}
+                          domainName={courseName || selectedTemplate.fields.domainName}
+                          companyName={extraGlobalValues.company_name || selectedTemplate.fields.companyName}
+                          date={issueDate}
+                          placeholderValues={extraGlobalValues}
+                          overrides={{ domainName: courseName || selectedTemplate.fields.domainName }}
+                          renderPdfBackground
+                        />
+                      </CertificatePreviewFit>
                     ) : (
                       <div className="text-sm text-muted-foreground">Select a template to preview.</div>
                     )}
@@ -3606,108 +4356,185 @@ function IssueCertWizard({
         )}
 
         {step === 2 && (
-          <Card>
-            <CardHeader className="py-3 px-4">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <CardTitle className="text-sm">Select students</CardTitle>
-                  <CardDescription className="text-xs">
-                    Excel columns match this template only
-                    {templateRowKeys.length
-                      ? `: ${templateRowKeys.map((k) => `{{${k}}}`).join(", ")}`
-                      : selectedTemplate
-                        ? ""
-                        : " — pick a template in step 1 first"}
-                  </CardDescription>
+          <div className="space-y-4">
+            <Card>
+              <CardHeader className="py-3 px-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-sm">Recipients</CardTitle>
+                    <CardDescription className="text-xs">
+                      Type to search all portal leads, add manually, or import Excel. Every template placeholder must be filled per recipient
+                      {templateRowKeys.length ? `: ${templateRowKeys.map((k) => `{{${k}}}`).join(", ")}` : ""}.
+                    </CardDescription>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs gap-1"
+                      onClick={() => void downloadCertSheetTemplate()}
+                    >
+                      <Download className="h-3.5 w-3.5" /> Excel template
+                    </Button>
+                    <Button type="button" variant="default" size="sm" className="h-8 text-xs gap-1" onClick={() => sheetInputRef.current?.click()}>
+                      <FileSpreadsheet className="h-3.5 w-3.5" /> Import Excel
+                    </Button>
+                    <input
+                      ref={sheetInputRef}
+                      type="file"
+                      accept=".xlsx,.xls,.csv"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void handleCertSheetImport(f);
+                        e.target.value = "";
+                      }}
+                    />
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs gap-1"
-                    onClick={() => void downloadCertSheetTemplate()}
-                  >
-                    <Download className="h-3.5 w-3.5" /> Excel template
-                  </Button>
-                  <Button type="button" variant="default" size="sm" className="h-8 text-xs gap-1" onClick={() => sheetInputRef.current?.click()}>
-                    <FileSpreadsheet className="h-3.5 w-3.5" /> Import Excel
-                  </Button>
-                  <input
-                    ref={sheetInputRef}
-                    type="file"
-                    accept=".xlsx,.xls,.csv"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) void handleCertSheetImport(f);
-                      e.target.value = "";
-                    }}
-                  />
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="px-4 pb-4">
-              <ScrollArea className="h-[320px] pr-3">
-                <div className="space-y-2">
-                  {loadingStudents && (
-                    <div className="text-xs text-muted-foreground px-1 py-2">Loading students...</div>
-                  )}
-                  {!loadingStudents && students.map((r) => {
-                    const checked = selectedRecipientIds.includes(r.id);
-                    return (
-                      <button
-                        key={r.id}
-                        type="button"
-                        className={cn(
-                          "w-full flex items-center gap-3 rounded-lg border p-3 text-left transition-colors",
-                          checked ? "bg-primary/5 border-primary/30" : "bg-background hover:bg-muted/20",
+              </CardHeader>
+              <CardContent className="px-4 pb-4 space-y-3">
+                <div className="rounded-md border p-3 space-y-2">
+                  <Label className="text-xs">Recipient name — type to search all leads, or enter manually</Label>
+                  <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2">
+                    <Input
+                      value={manualName}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setManualName(v);
+                        setBulkLeadSearch(v);
+                        setBulkLeadSuggestionsOpen(v.trim().length > 0);
+                      }}
+                      onFocus={() => {
+                        if (manualName.trim()) {
+                          setBulkLeadSearch(manualName);
+                          setBulkLeadSuggestionsOpen(true);
+                        }
+                      }}
+                      onBlur={() => window.setTimeout(() => setBulkLeadSuggestionsOpen(false), 180)}
+                      placeholder="Start typing name, email, phone, or company…"
+                      autoComplete="off"
+                    />
+                    <Input
+                      type="email"
+                      value={manualEmail}
+                      onChange={(e) => setManualEmail(e.target.value)}
+                      placeholder="Recipient email (optional until Add)"
+                    />
+                    <Button type="button" className="gap-1" onClick={addManualRecipient}>
+                      <Plus className="h-4 w-4" /> Add
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    Matches appear only while you type. Click a lead to add and auto-fill, or press Add for a manual entry.
+                  </p>
+                  {bulkLeadSuggestionsOpen && manualName.trim() ? (
+                    <div className="rounded-md border bg-background overflow-hidden">
+                      <div className="px-2.5 py-1.5 text-[10px] font-medium text-muted-foreground border-b bg-muted/40">
+                        {bulkLeadsLoading
+                          ? "Searching all leads…"
+                          : `Leads matching “${manualName.trim()}”`}
+                      </div>
+                      <div className="max-h-48 overflow-y-auto">
+                        {!bulkLeadsLoading && bulkLeads.length === 0 ? (
+                          <p className="px-3 py-2 text-xs text-muted-foreground">
+                            No leads found. Keep typing and press Add for a manual recipient.
+                          </p>
+                        ) : (
+                          bulkLeads.map((lead) => {
+                            const meta = [lead.email, lead.phone, lead.company, lead.course_interest]
+                              .filter(Boolean)
+                              .join(" · ");
+                            return (
+                              <button
+                                key={lead.id}
+                                type="button"
+                                className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-muted/60"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => addLeadAsRecipient(lead)}
+                              >
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-medium">{lead.name || lead.email}</div>
+                                  {meta ? <div className="truncate text-[11px] text-muted-foreground">{meta}</div> : null}
+                                </div>
+                              </button>
+                            );
+                          })
                         )}
-                        onClick={() => toggleRecipient(r.id)}
-                      >
-                        <Checkbox checked={checked} onCheckedChange={() => toggleRecipient(r.id)} />
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold truncate">{r.name}</div>
-                          <div className="text-xs text-muted-foreground truncate">{r.email}</div>
-                          {checked && templateHasDomain ? (
-                            <div className="mt-1" onClick={(e) => e.stopPropagation()}>
-                              <Input
-                                className="h-7 text-xs"
-                                value={courseByRecipientId[r.id] || ""}
-                                onChange={(e) =>
-                                  setCourseByRecipientId((prev) => ({ ...prev, [r.id]: e.target.value }))
-                                }
-                                placeholder={certPlaceholderLabel("domain_name")}
-                              />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="py-3 px-4">
+                <CardTitle className="text-sm">
+                  Selected ({selectedRecipients.length}) — fill all placeholders
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Name and email are editable. All fields used by this template are required before Review.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="px-4 pb-4">
+                {selectedRecipients.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No recipients selected yet.</p>
+                ) : (
+                  <ScrollArea className="h-[360px] pr-3">
+                    <div className="space-y-3">
+                      {selectedRecipients.map((r, index) => {
+                        const row =
+                          rowValuesByRecipientId[r.id] ||
+                          seedBulkRecipientRow(
+                            templateRowKeys,
+                            { recipient_name: r.name, recipient_email: r.email, name: r.name, email: r.email },
+                            rowDefaults,
+                          );
+                        return (
+                          <div key={r.id} className="rounded-xl border p-3 space-y-2 bg-background">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs font-medium text-muted-foreground">Recipient {index + 1}</div>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs text-destructive"
+                                onClick={() => removeSelectedRecipient(r.id)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5 mr-1" /> Remove
+                              </Button>
                             </div>
-                          ) : null}
-                          {checked && dynamicTemplateKeys.length > 0 ? (
-                            <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-1" onClick={(e) => e.stopPropagation()}>
-                              {dynamicTemplateKeys.map((k) => (
-                                <Input
-                                  key={k}
-                                  className="h-7 text-xs"
-                                  value={extraByRecipientId[r.id]?.[k] || ""}
-                                  onChange={(e) =>
-                                    setExtraByRecipientId((prev) => ({
-                                      ...prev,
-                                      [r.id]: { ...(prev[r.id] || {}), [k]: e.target.value },
-                                    }))
-                                  }
-                                  placeholder={certPlaceholderLabel(k)}
-                                />
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {(templateRowKeys.length
+                                ? templateRowKeys
+                                : ["recipient_name", "recipient_email"]
+                              ).map((key) => (
+                                <div key={key} className={key === "recipient_name" || key === "name" ? "sm:col-span-2" : undefined}>
+                                  <Label className="text-[11px]">
+                                    {certPlaceholderLabel(key)} *
+                                    <span className="ml-1 font-mono text-muted-foreground">{`{{${key}}}`}</span>
+                                  </Label>
+                                  <Input
+                                    type={key.includes("email") ? "email" : "text"}
+                                    className="h-8 text-xs"
+                                    value={row[key] || ""}
+                                    onChange={(e) => setRecipientRowValue(r.id, key, e.target.value)}
+                                    placeholder={certPlaceholderLabel(key)}
+                                  />
+                                </div>
                               ))}
                             </div>
-                          ) : null}
-                        </div>
-                        <span className="ml-auto text-[10px] text-muted-foreground">{checked ? "Selected" : ""}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </ScrollArea>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         )}
 
         {step === 3 && (
@@ -3726,26 +4553,42 @@ function IssueCertWizard({
                       const id = certIdsByRecipientId[r.id] || generateCertId(selectedTemplate.certType, orgPrefix);
                       const token = verifyTokensByRecipientId[r.id] || "";
                       const verifyUrl = token ? getVerifyURL(id, token) : "";
-                      const mergedExtras = { ...extraGlobalValues, ...(extraByRecipientId[r.id] || {}) };
+                      const row = rowValuesByRecipientId[r.id] || {};
+                      const name = String(row.recipient_name || row.name || r.name || "").trim();
+                      const email = String(row.recipient_email || row.email || r.email || "").trim();
+                      const merged = {
+                        ...extraGlobalValues,
+                        ...row,
+                        issue_date: issueDate,
+                        company_name: extraGlobalValues.company_name || selectedTemplate.fields.companyName || "",
+                      };
                       return (
                         <div key={r.id} className="rounded-xl border p-4 bg-background">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <div className="text-sm font-semibold truncate">{r.name}</div>
-                              <div className="text-xs text-muted-foreground truncate">{r.email}</div>
+                              <div className="text-sm font-semibold truncate">{name}</div>
+                              <div className="text-xs text-muted-foreground truncate">{email || "No email"}</div>
                               <div className="mt-2 text-xs font-mono break-all">{id}</div>
                             </div>
                             <div className="shrink-0">
-                              <QRCodeWidget certID={id} size={72} fgColor={selectedTemplate.style.layout === "dark-pro" ? selectedTemplate.style.accentColor : "#1A6B3C"} verifyUrl={verifyUrl} />
+                              <QRCodeWidget certID={id} size={72} fgColor={qrLayerFgColor(selectedTemplate.layers, selectedTemplate.style)} verifyUrl={verifyUrl} />
                             </div>
                           </div>
-                          {Object.keys(mergedExtras).length > 0 ? (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {Object.entries(mergedExtras).map(([k, v]) => (
-                                <code key={k} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{`{{${k}}}: ${v}`}</code>
-                              ))}
-                            </div>
-                          ) : null}
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {templateBulkKeys.map((k) => {
+                              const v =
+                                k === "issue_date"
+                                  ? issueDate
+                                  : k === "company_name"
+                                    ? merged.company_name
+                                    : String(merged[k] || "").trim();
+                              return (
+                                <code key={k} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                                  {`{{${k}}}: ${v || "—"}`}
+                                </code>
+                              );
+                            })}
+                          </div>
                         </div>
                       );
                     })}
@@ -3760,7 +4603,7 @@ function IssueCertWizard({
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
             <div className="space-y-3">
               <div className="rounded-md border border-emerald-300 bg-emerald-50 text-emerald-900 px-3 py-2 text-sm">
-                Certificate issued successfully for {issuePayload.studentName} — {issuePayload.syncId}
+                Certificate issued successfully for {issuePayload.studentName} — Cert ID {issuePayload.certificateId}
               </div>
               {emailSent ? (
                 <Card>
@@ -3771,7 +4614,7 @@ function IssueCertWizard({
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="px-4 pb-4 space-y-3">
-                    <div className="text-xs font-mono">{issuePayload.syncId}</div>
+                    <div className="text-xs font-mono">Cert ID: {issuePayload.certificateId}</div>
                     <div className="flex flex-wrap gap-2">
                       <Button variant="outline" onClick={resetForAnother}>Issue another</Button>
                       <Button variant="outline" onClick={loadEmailLogs}>View email log</Button>
@@ -3951,7 +4794,7 @@ function IssuedCertificatesTable({
                     <TableCell>{c.recipientName}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{c.courseName}</TableCell>
                     <TableCell>
-                      <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[c.certType])}>
+                      <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(c.certType))}>
                         {c.certType}
                       </Badge>
                     </TableCell>
@@ -4005,19 +4848,28 @@ function IssuedCertificatesTable({
             <DialogTitle>Certificate Preview</DialogTitle>
           </DialogHeader>
           {previewCert && previewTemplate ? (
-            <div className="overflow-auto max-h-[70vh] flex flex-col items-center gap-4 p-4 bg-muted/30 rounded-lg">
-              <CertificatePreview
-                template={previewTemplate}
-                certID={previewCert.id}
-                verifyUrl={previewVerifyUrl}
-                recipientName={previewCert.recipientName}
-                domainName={previewCert.courseName}
-                date={previewCert.issueDate}
-                overrides={{
-                  recipientName: previewCert.recipientName,
-                  domainName: previewCert.courseName,
-                }}
-              />
+            <div className="flex flex-col gap-4 p-4 bg-muted/30 rounded-lg">
+              <CertificatePreviewFit
+                pageFormat={previewTemplate.style.pageFormat}
+                className={cn(
+                  certPageIsPortrait(previewTemplate.style.pageFormat)
+                    ? "max-h-[min(75vh,920px)] min-h-[320px]"
+                    : "max-h-[70vh]",
+                )}
+              >
+                <CertificatePreview
+                  template={previewTemplate}
+                  certID={previewCert.id}
+                  verifyUrl={previewVerifyUrl}
+                  recipientName={previewCert.recipientName}
+                  domainName={previewCert.courseName}
+                  date={previewCert.issueDate}
+                  overrides={{
+                    recipientName: previewCert.recipientName,
+                    domainName: previewCert.courseName,
+                  }}
+                />
+              </CertificatePreviewFit>
             </div>
           ) : (
             <div className="text-sm text-muted-foreground">Unable to load preview.</div>
@@ -4104,7 +4956,7 @@ function ImportModal({
         const defaultLayers = buildDefaultImportLayers(certOrgContext, "CC");
         const mergedLayers = sanitizeImportLayers(defaultLayers, certOrgContext, "CC");
         const importedTemplate: CertTemplate = {
-          id: generateCertId("CC", certOrgContext.orgPrefix),
+          id: crypto.randomUUID(),
           name: importedName,
           status: "draft",
           createdAt: stableNowISODate(),
@@ -4134,15 +4986,16 @@ function ImportModal({
 
       const raw = await file.text();
       const parsed: unknown = JSON.parse(raw);
-      if (!isCertTemplate(parsed)) {
+      const parsedTemplate = asCertTemplate(parsed);
+      if (!parsedTemplate) {
         throw new Error("JSON does not match CertTemplate shape.");
       }
-      // Simulate completion
-      const parsedTemplate = parsed as CertTemplate;
-      const certType = parsedTemplate.certType || "CC";
+      const certType = parsedTemplate.certType;
       setProgress(100);
       const normalized: CertTemplate = {
         ...parsedTemplate,
+        id: crypto.randomUUID(),
+        certType,
         status: "draft" as CertStatus,
         fields: {
           ...parsedTemplate.fields,
@@ -4307,16 +5160,25 @@ export function CertificateVerifyPage() {
             </CardContent>
           </Card>
         ) : (
-          <CertificatePreview
-            template={displayTemplate}
-            certID={displayId}
-            overrides={displayOverrides}
-            recipientName={displayOverrides.recipientName}
-            domainName={displayOverrides.domainName}
-            companyName={displayOverrides.companyName}
-            date={displayDate}
-            showQr={false}
-          />
+          <CertificatePreviewFit
+            pageFormat={displayTemplate.style.pageFormat}
+            className={cn(
+              certPageIsPortrait(displayTemplate.style.pageFormat)
+                ? "min-h-[min(80vh,1000px)]"
+                : "min-h-[40vh]",
+            )}
+          >
+            <CertificatePreview
+              template={displayTemplate}
+              certID={displayId}
+              overrides={displayOverrides}
+              recipientName={displayOverrides.recipientName}
+              domainName={displayOverrides.domainName}
+              companyName={displayOverrides.companyName}
+              date={displayDate}
+              showQr={false}
+            />
+          </CertificatePreviewFit>
         )}
       </div>
     </div>
@@ -4327,18 +5189,21 @@ export default function CertificatesPage() {
   const { toast } = useToast();
   const { organization } = useAuth();
 
+  const [claimedPrefix, setClaimedPrefix] = useState(() => normalizeCertPrefix(organization?.cert_prefix));
+
   const certOrgContext = useMemo<CertOrgContext>(
     () => ({
       orgName: organization?.name?.trim() || "Organization",
-      orgPrefix: certOrgPrefix(organization),
+      orgPrefix: claimedPrefix.length === 2 ? claimedPrefix : certOrgPrefix(organization),
       logoUrl: organization?.logo_url?.trim() || undefined,
     }),
-    [organization],
+    [organization, claimedPrefix],
   );
 
   const [templates, setTemplates] = useState<CertTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [templatesSyncError, setTemplatesSyncError] = useState<string | null>(null);
+  const [certTypeOptions, setCertTypeOptions] = useState<CertTypeOption[]>(BUILTIN_CERT_TYPE_OPTIONS);
   const [issuedCerts, setIssuedCerts] = useState<IssuedCertificate[]>([]);
   const [loadingIssued, setLoadingIssued] = useState(false);
   const [activeTab, setActiveTab] = useState<"templates" | "forms" | "issued" | "form_issued">("templates");
@@ -4347,9 +5212,15 @@ export default function CertificatesPage() {
   const [showWizard, setShowWizard] = useState(false);
   const [showSingleIssue, setShowSingleIssue] = useState(false);
   const [singleIssueTemplate, setSingleIssueTemplate] = useState<CertTemplate | null>(null);
+  const [previewTemplate, setPreviewTemplate] = useState<CertTemplate | null>(null);
   const prevWizardOpen = useRef(false);
   const [editingTemplate, setEditingTemplate] = useState<CertTemplate | null>(null);
   const [wizardInitialTemplateId, setWizardInitialTemplateId] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    const p = normalizeCertPrefix(organization?.cert_prefix);
+    if (p.length === 2) setClaimedPrefix(p);
+  }, [organization?.cert_prefix]);
 
   useEffect(() => {
     let mounted = true;
@@ -4359,9 +5230,12 @@ export default function CertificatesPage() {
         const res = await api.certificates.listTemplates();
         const rows = (res as any)?.data;
         if (!Array.isArray(rows)) return;
-        const valid = rows.filter((t: unknown) => isCertTemplate(t));
+        const claimed = normalizeCertPrefix((res as any)?.cert_prefix);
+        const valid = rows.map((t: unknown) => asCertTemplate(t)).filter((t): t is CertTemplate => t !== null);
         if (mounted) {
           setTemplates(valid);
+          setCertTypeOptions(parseCertTypeOptions((res as any)?.cert_types));
+          if (claimed.length === 2) setClaimedPrefix(claimed);
           setTemplatesSyncError(null);
         }
       } catch (e: any) {
@@ -4396,7 +5270,7 @@ export default function CertificatesPage() {
           templateName: String(row?.template_name || row?.templateName || "").trim(),
           recipientName: String(row?.recipient_name || row?.recipientName || "").trim(),
           courseName: String(row?.course_name || row?.courseName || "").trim(),
-          certType: (String(row?.cert_type || row?.certType || "CC").trim() as CertType),
+          certType: normalizeCertType(row?.cert_type || row?.certType || "CC"),
           issueDate: String(row?.issue_date || row?.issueDate || "").trim(),
           status: (String(row?.status || "issued").trim() as IssuedStatus),
           verifyToken: row?.verify_token || row?.verifyToken || undefined,
@@ -4425,11 +5299,12 @@ export default function CertificatesPage() {
   const openNewTemplate = () => {
     const seedLayers = buildDefaultImportLayers(certOrgContext, "CC").map((l) => ({ ...l, locked: false }));
     const seed: CertTemplate = {
-      id: generateCertId("CC", certOrgContext.orgPrefix),
+      id: crypto.randomUUID(),
       name: "New Template",
       status: "draft",
       createdAt: stableNowISODate(),
       certType: "CC",
+      certPrefix: certOrgContext.orgPrefix,
       style: { layout: "classic", pageFormat: "a4-landscape", bgColor: "#ffffff", accentColor: "#1A6B3C" },
       fields: {
         title: "Certificate of Completion",
@@ -4449,7 +5324,9 @@ export default function CertificatesPage() {
 
   const upsertTemplate = async (next: CertTemplate) => {
     const prepared = await prepareCertTemplateForSave(next);
-    await api.certificates.saveTemplate(prepared);
+    const res = await api.certificates.saveTemplate(prepared) as { cert_prefix?: string };
+    const savedPrefix = normalizeCertPrefix(res?.cert_prefix || prepared.certPrefix);
+    if (savedPrefix.length === 2) setClaimedPrefix(savedPrefix);
     setTemplates((prev) => {
       const idx = prev.findIndex((t) => t.id === prepared.id);
       if (idx >= 0) {
@@ -4469,7 +5346,7 @@ export default function CertificatesPage() {
   const duplicateTemplate = (t: CertTemplate) => {
     const next: CertTemplate = {
       ...t,
-      id: generateCertId(t.certType, certOrgContext.orgPrefix),
+      id: crypto.randomUUID(),
       name: `${t.name} (Copy)`,
       status: "draft",
       createdAt: stableNowISODate(),
@@ -4501,6 +5378,15 @@ export default function CertificatesPage() {
   const issueFromTemplate = (t: CertTemplate) => {
     setSingleIssueTemplate(t);
     setShowSingleIssue(true);
+  };
+
+  const bulkFromTemplate = (t: CertTemplate) => {
+    setWizardInitialTemplateId(t.id);
+    setShowWizard(true);
+  };
+
+  const previewFromTemplate = (t: CertTemplate) => {
+    setPreviewTemplate(t);
   };
 
   const addIssuedBatch = async (list: IssuedCertificate[]) => {
@@ -4603,11 +5489,14 @@ export default function CertificatesPage() {
                 <TemplateCard
                   key={t.id}
                   template={t}
+                  typeOptions={certTypeOptions}
                   onEdit={() => editTemplate(t)}
                   onDuplicate={() => duplicateTemplate(t)}
                   onArchive={() => archiveTemplate(t)}
                   onDelete={() => deleteTemplate(t)}
                   onIssue={() => issueFromTemplate(t)}
+                  onPreview={() => previewFromTemplate(t)}
+                  onBulk={() => bulkFromTemplate(t)}
                 />
               ))}
             </div>
@@ -4625,7 +5514,7 @@ export default function CertificatesPage() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-semibold truncate">{t.name}</span>
-                        <Badge variant="outline" className={cn("text-[10px]", CERT_TYPE_COLORS[t.certType])}>
+                        <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(t.certType))}>
                           {t.certType}
                         </Badge>
                       </div>
@@ -4679,6 +5568,14 @@ export default function CertificatesPage() {
         initial={editingTemplate || templateSeeds[0]}
         orgPrefix={certOrgContext.orgPrefix}
         defaultCompanyName={certOrgContext.orgName}
+        typeOptions={certTypeOptions}
+        onCreateType={async (code, label) => {
+          const res = await api.certificates.createType({ code, label }) as { data?: CertTypeOption; types?: unknown };
+          const next = parseCertTypeOptions(res?.types);
+          setCertTypeOptions(next);
+          const created = next.find((t) => t.code === code) || { code, label, builtin: false };
+          return created;
+        }}
         onSave={async (t) => {
           await upsertTemplate(t);
           setEditingTemplate(null);
@@ -4712,6 +5609,84 @@ export default function CertificatesPage() {
         orgPrefix={certOrgContext.orgPrefix}
         onConfirm={addIssuedBatch}
       />
+      <Dialog open={!!previewTemplate} onOpenChange={(o) => !o && setPreviewTemplate(null)}>
+        <DialogContent className="max-w-4xl max-h-[min(92dvh,100%)] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-base">
+              Preview — {previewTemplate?.name || "Template"}
+            </DialogTitle>
+          </DialogHeader>
+          {previewTemplate ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={statusBadgeVariant(previewTemplate.status)} className="text-[10px]">
+                  {previewTemplate.status}
+                </Badge>
+                <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(previewTemplate.certType))}>
+                  {previewTemplate.certType} · {certTypeLabel(previewTemplate.certType, certTypeOptions)}
+                </Badge>
+                <Badge variant="secondary" className="text-[10px]">
+                  {getCertPageSpec(previewTemplate.style.pageFormat).label}
+                </Badge>
+              </div>
+              <CertificatePreviewFit
+                pageFormat={previewTemplate.style.pageFormat}
+                className={cn(
+                  "rounded-lg border bg-muted/20 p-3",
+                  certPageIsPortrait(previewTemplate.style.pageFormat)
+                    ? "max-h-[min(72vh,920px)] min-h-[320px]"
+                    : "max-h-[60vh] min-h-[240px]",
+                )}
+              >
+                <CertificatePreview
+                  template={previewTemplate}
+                  certID={sampleCertIdPattern(
+                    previewTemplate.certType,
+                    previewTemplate.certPrefix || certOrgContext.orgPrefix,
+                  )}
+                  recipientName={previewTemplate.fields.recipientName}
+                  domainName={previewTemplate.fields.domainName}
+                  companyName={previewTemplate.fields.companyName || certOrgContext.orgName}
+                  date={stableNowISODate()}
+                  renderPdfBackground
+                />
+              </CertificatePreviewFit>
+            </div>
+          ) : null}
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => setPreviewTemplate(null)}>
+              Close
+            </Button>
+            {previewTemplate?.status === "active" ? (
+              <>
+                <Button
+                  variant="secondary"
+                  className="gap-1.5"
+                  onClick={() => {
+                    const t = previewTemplate;
+                    setPreviewTemplate(null);
+                    if (t) bulkFromTemplate(t);
+                  }}
+                >
+                  <Users className="h-3.5 w-3.5" />
+                  Bulk issue
+                </Button>
+                <Button
+                  className="gap-1.5"
+                  onClick={() => {
+                    const t = previewTemplate;
+                    setPreviewTemplate(null);
+                    if (t) issueFromTemplate(t);
+                  }}
+                >
+                  <Award className="h-3.5 w-3.5" />
+                  Issue
+                </Button>
+              </>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

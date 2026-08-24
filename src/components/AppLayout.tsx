@@ -9,12 +9,20 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
-  BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck
+  BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import syncpediaIcon from '@/assets/syncpedia-icon.webp';
-import syncpediaLogo from '@/assets/syncpedia-logo.webp';
+import syncpediaLogoTransparent from '@/assets/syncpedia-logo-transparent.png';
+import { resolveUploadSrc } from '@/lib/resumeHref';
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from '@/components/ui/sheet';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { NotificationBell } from '@/components/NotificationBell';
 import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from '@/lib/orgAccess';
 import { featureKeyForPath, isOrgFeatureEnabled } from '@/lib/orgFeatures';
@@ -24,7 +32,7 @@ import { useFresherSalaryAccess } from '@/hooks/useFresherSalaryAccess';
 import type { PageAccess } from '@/lib/orgAccess';
 
 /** Shell pages not stored in org_features — always on for admins; managers need page grants. */
-const ORG_SHELL_FEATURES = new Set(['team', 'settings', 'trash', 'my_doc_forms']);
+const ORG_SHELL_FEATURES = new Set(['team', 'settings', 'trash']);
 
 type AppRole = string;
 
@@ -40,6 +48,72 @@ interface SidebarProfile {
   full_name: string;
   email: string;
   avatar_url: string | null;
+}
+
+function profileInitials(profile: SidebarProfile | null | undefined): string {
+  const base = profile?.full_name || profile?.email || "U";
+  return base
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+function HeaderUserMenu({
+  profile,
+  role,
+  onSignOut,
+}: {
+  profile: SidebarProfile | null;
+  role: AppRole | null;
+  onSignOut: () => void;
+}) {
+  const displayName = profile?.full_name || profile?.email || "Account";
+  const roleLabel = role ? role.replace(/_/g, " ") : "";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9 rounded-full touch-target shrink-0"
+          aria-label="Open profile menu"
+        >
+          <Avatar className="h-8 w-8 border border-border">
+            {profile?.avatar_url ? (
+              <AvatarImage src={profile.avatar_url} alt={displayName} className="object-cover" />
+            ) : null}
+            <AvatarFallback className="bg-primary/10 text-xs font-semibold text-primary">
+              {profileInitials(profile)}
+            </AvatarFallback>
+          </Avatar>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuLabel className="font-normal">
+          <div className="flex flex-col gap-0.5">
+            <p className="truncate text-sm font-semibold leading-none">{displayName}</p>
+            {profile?.email && profile.full_name ? (
+              <p className="truncate text-xs text-muted-foreground">{profile.email}</p>
+            ) : null}
+            {roleLabel ? (
+              <p className="truncate text-xs capitalize text-muted-foreground">{roleLabel}</p>
+            ) : null}
+          </div>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="cursor-pointer text-destructive focus:text-destructive"
+          onSelect={() => onSignOut()}
+        >
+          <LogOut className="mr-2 h-4 w-4" />
+          Sign Out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 function storedAppearance(): { compactMode: boolean; collapsedSidebar: boolean } {
@@ -65,7 +139,6 @@ const navItems: NavItem[] = [
     ],
   },
   { to: '/form-management', icon: ClipboardList, label: 'Form Management', roles: ['super_admin', 'admin', 'org', 'marketing', 'manager'] },
-  { to: '/my-doc-forms', icon: ClipboardList, label: 'My Document Forms', roles: ['super_admin', 'admin', 'org', 'manager', 'hr', 'marketing', 'sales_representative'] },
   // Marketing home — only this Dashboard entry (not the main `/` CRM dashboard)
   { to: '/marketing/dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['marketing'] },
   { to: '/my-leads', icon: ClipboardList, label: 'My Leads', roles: ['marketing'] },
@@ -131,6 +204,7 @@ const navItems: NavItem[] = [
       { to: '/marketing-whatsapp', icon: MessageSquare, label: 'WhatsApp Templates', roles: ['super_admin', 'admin', 'org'] },
       { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['super_admin', 'admin', 'org'] },
       { to: '/marketing/whatsapp-analytics', icon: MessageSquare, label: 'WhatsApp Analytics', roles: ['super_admin', 'admin', 'org'] },
+      { to: '/marketing/meta-ads', icon: Megaphone, label: 'Meta Ads', roles: ['super_admin', 'admin', 'org'] },
     ],
   },
   {
@@ -147,6 +221,7 @@ const navItems: NavItem[] = [
   },
   { to: '/marketing/form-leads', icon: FileText, label: 'Form Leads', roles: ['marketing'] },
   { to: '/marketing/imported-leads', icon: Users, label: 'Imported Leads', roles: ['marketing'] },
+  { to: '/marketing/meta-ads', icon: Megaphone, label: 'Meta Ads', roles: ['marketing'] },
   { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'admin', 'manager'] },
   { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'admin', 'manager'] },
   { to: '/payslip', icon: Receipt, label: 'Payslip', roles: ['super_admin', 'admin', 'org'] },
@@ -318,16 +393,18 @@ function SidebarContent({
   role,
   organization,
   pageAccess,
-  onSignOut,
-  profile,
   onNavigate,
 }: {
   collapsed: boolean;
   role: AppRole | null;
-  organization: { slug?: string | null; features?: Record<string, boolean> | null } | null;
+  organization: {
+    id?: string;
+    name?: string | null;
+    logo_url?: string | null;
+    slug?: string | null;
+    features?: Record<string, boolean> | null;
+  } | null;
   pageAccess?: PageAccess | null;
-  onSignOut: () => void;
-  profile: SidebarProfile | null;
   onNavigate?: () => void;
 }) {
   const location = useLocation();
@@ -340,6 +417,13 @@ function SidebarContent({
     !localStorage.getItem("cert_nav_seen")
   );
 
+  const orgLogoSrc = organization?.logo_url ? resolveUploadSrc(organization.logo_url) : "";
+  const hasCustomLogo = Boolean(orgLogoSrc);
+  const brandLogoSrc = orgLogoSrc || syncpediaLogoTransparent;
+  const brandName = (organization?.name || "").trim() || "Syncpedia";
+  // Default Syncpedia mark already includes the wordmark — don't repeat the name.
+  const showBrandName = hasCustomLogo;
+
   useEffect(() => {
     if (location.pathname === "/certificates") {
       localStorage.setItem("cert_nav_seen", "true");
@@ -349,11 +433,39 @@ function SidebarContent({
 
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground">
-      <div className={cn("flex items-center gap-2.5 px-4 py-4 border-b border-sidebar-border", collapsed && "justify-center px-2")}>
+      <div
+        className={cn(
+          "flex shrink-0 flex-col items-center justify-center border-b border-sidebar-border",
+          collapsed ? "px-1.5" : "px-3",
+        )}
+        style={{ height: "var(--crm-brand-header-height)" }}
+      >
         {collapsed ? (
-          <img src={syncpediaIcon} alt="Syncpedia" className="h-9 w-9 object-contain brightness-0 invert" />
+          <img
+            src={brandLogoSrc}
+            alt={brandName}
+            className={cn(
+              "h-8 w-8 object-contain bg-transparent",
+              hasCustomLogo && "mix-blend-screen",
+            )}
+          />
         ) : (
-          <img src={syncpediaLogo} alt="Syncpedia Technologies" className="h-10 object-contain brightness-0 invert" />
+          <div className="flex w-full flex-col items-center justify-center gap-0.5 text-center">
+            <img
+              src={brandLogoSrc}
+              alt={showBrandName ? "" : brandName}
+              className={cn(
+                "max-w-full object-contain bg-transparent",
+                showBrandName ? "h-8 w-8 max-h-8" : "h-auto w-full max-h-9",
+                hasCustomLogo && "mix-blend-screen",
+              )}
+            />
+            {showBrandName ? (
+              <p className="w-full truncate px-1 text-xs font-semibold leading-tight tracking-wide text-sidebar-foreground">
+                {brandName}
+              </p>
+            ) : null}
+          </div>
         )}
       </div>
 
@@ -363,32 +475,11 @@ function SidebarContent({
         </div>
       )}
 
-      <nav className="flex-1 py-1 px-2 space-y-0.5 overflow-y-auto">
+      <nav className="flex-1 py-1 px-2 space-y-0.5 overflow-y-auto pb-3">
         {filteredNav.map(item => (
           <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} fresherEnrolled={fresherAccess.enrolled} />
         ))}
       </nav>
-
-      <div className={cn("border-t border-sidebar-border p-3", collapsed && "p-2")}>
-        {!collapsed && profile && (
-          <div className="mb-3 flex min-w-0 items-center gap-2.5 px-1">
-            <Avatar className="h-9 w-9 border border-sidebar-border">
-              {profile.avatar_url && <AvatarImage src={profile.avatar_url} alt={profile.full_name || "Profile"} className="object-cover" />}
-              <AvatarFallback className="bg-sidebar-accent text-xs font-semibold text-sidebar-foreground">
-                {(profile.full_name || profile.email || "U").split(/\s+/).map((part: string) => part[0]).join("").slice(0, 2).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-sidebar-foreground">{profile.full_name || profile.email}</p>
-              <p className="text-xs capitalize text-sidebar-foreground/50">{role?.replace(/_/g, ' ')}</p>
-            </div>
-          </div>
-        )}
-        <Button variant="ghost" size={collapsed ? "icon" : "default"} className="w-full justify-start gap-2 text-sidebar-foreground/60 hover:text-destructive hover:bg-destructive/10" onClick={onSignOut}>
-          <LogOut className="h-4 w-4" />
-          {!collapsed && <span>Sign Out</span>}
-        </Button>
-      </div>
     </div>
   );
 }
@@ -432,10 +523,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         "hidden md:flex flex-col transition-all duration-200 relative shrink-0",
         collapsed ? "w-16" : "w-60"
       )}>
-        <SidebarContent collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} onSignOut={handleSignOut} profile={profile} />
+        <SidebarContent collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} />
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="absolute -right-3 top-7 z-10 h-8 w-8 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground transition-all hidden md:flex shadow-sm touch-target"
+          className="absolute -right-3 z-10 h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground transition-all hidden md:flex shadow-sm"
+          style={{ top: "calc(var(--crm-brand-header-height) / 2)", transform: "translateY(-50%)" }}
         >
           {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />}
         </button>
@@ -458,22 +550,43 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 role={role}
                 organization={organization}
                 pageAccess={pageAccess}
-                onSignOut={handleSignOut}
-                profile={profile}
                 onNavigate={() => setSheetOpen(false)}
               />
             </SheetContent>
           </Sheet>
-          <img src={syncpediaLogo} alt="Syncpedia Technologies" className="h-7 object-contain min-w-0" />
+          <div className="flex min-w-0 items-center gap-2">
+            {organization?.logo_url ? (
+              <>
+                <img
+                  src={resolveUploadSrc(organization.logo_url)}
+                  alt={(organization?.name || "").trim() || "Organization"}
+                  className="h-9 w-9 shrink-0 object-contain bg-transparent"
+                />
+                <span className="truncate text-sm font-semibold">
+                  {(organization?.name || "").trim() || "Organization"}
+                </span>
+              </>
+            ) : (
+              <img
+                src={syncpediaLogoTransparent}
+                alt="Syncpedia"
+                className="h-9 w-auto max-w-[160px] shrink-0 object-contain bg-transparent"
+              />
+            )}
+          </div>
           <div className="ml-auto flex items-center gap-1 shrink-0">
             <NotificationBell />
+            <HeaderUserMenu profile={profile} role={role} onSignOut={handleSignOut} />
           </div>
         </div>
       </div>
 
       <main className="flex-1 min-w-0 overflow-auto">
-        {/* Desktop top bar */}
-        <div className="hidden md:flex items-center justify-between px-6 py-2 border-b border-border bg-card">
+        {/* Desktop top bar — height paired with sidebar brand via CSS vars */}
+        <div
+          className="hidden md:flex items-center justify-between px-6 border-b border-border bg-card shrink-0"
+          style={{ height: "var(--crm-desktop-topbar-height)" }}
+        >
           <div className="flex items-center gap-2">
             {showOrgViewingBadge && (
               <div className="inline-flex items-center gap-1.5 rounded-md border border-primary/20 bg-primary/5 px-2 py-1">
@@ -482,7 +595,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               </div>
             )}
           </div>
-          <NotificationBell />
+          <div className="flex items-center gap-1">
+            <NotificationBell />
+            <HeaderUserMenu profile={profile} role={role} onSignOut={handleSignOut} />
+          </div>
         </div>
         {/* Spacer matches mobile header content (~52px) + safe-area (already on header) */}
         <div

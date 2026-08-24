@@ -1,5 +1,7 @@
 import { api } from "@/lib/api";
 import { normalizeAppRole } from "@/lib/roleUtils";
+import { firstAllowedHrPath } from "@/lib/hrPageAccess";
+import type { PageAccess } from "@/lib/orgAccess";
 
 /** Roles that must use `/super_admin`. */
 export function isSuperAdminPortalRole(role?: string | null): boolean {
@@ -11,11 +13,11 @@ export function isLoginPortalRole(role?: string | null): boolean {
   return !isSuperAdminPortalRole(role);
 }
 
-export function getPostLoginPath(role?: string | null): string {
+export function getPostLoginPath(role?: string | null, pageAccess?: PageAccess | null): string {
   const n = normalizeAppRole(role);
   if (n === "super_admin") return "/";
   if (n === "marketing") return "/marketing/dashboard";
-  if (n === "hr") return "/hr/dashboard";
+  if (n === "hr") return firstAllowedHrPath(pageAccess);
   return "/";
 }
 

@@ -8,6 +8,10 @@ export const PEAKLYY_SOURCE_PREFIX = 'peaklyy:';
 export const PEAKLYY_TITLE_PREFIX = 'peaklyy_title:';
 export const PEAKLYY_ATTEMPTS_PREFIX = 'peaklyy_attempts:';
 export const FORM_SOURCE_PREFIX = 'form_';
+/** One Leads card per Meta ad (Lead Ads). */
+const META_AD_SOURCE_PREFIX = 'meta_ad:';
+const META_AD_NAME_PREFIX = 'meta_ad_name:';
+const META_LEAD_ID_PREFIX = 'meta_lead_id:';
 /** Tag stamped on CRM "Add Lead" / Create Lead rows so they share one source card. */
 export const ADDED_LEAD_TAG = 'entry:manual';
 export const ADDED_LEADS_BUCKET = 'added_leads';
@@ -56,6 +60,7 @@ const KNOWN_DIRECT: Record<string, LeadSourceBucket> = {
   college_seminar: 'college_seminar',
   facebook: 'meta_ads',
   instagram: 'meta_ads',
+  meta_ads: 'meta_ads',
   other: 'other',
   peaklyy: 'peaklyy',
 };
@@ -276,10 +281,58 @@ export function getPeaklyyAttemptCount(lead: { tags?: unknown }): number {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+/** Meta Lead Ads — one card per ad (tagged meta_ad: / meta_ad_name:). */
+function isMetaAdLead(lead: { source?: string | null; tags?: unknown }): boolean {
+  const tags = parseLeadTags(lead?.tags);
+  if (
+    tags.some(
+      (t) =>
+        t.startsWith(META_AD_SOURCE_PREFIX) ||
+        t.startsWith(META_AD_NAME_PREFIX) ||
+        t.startsWith(META_LEAD_ID_PREFIX) ||
+        t.startsWith('meta_ad_id:'),
+    )
+  ) {
+    return true;
+  }
+  const source = String(lead?.source || '').trim().toLowerCase();
+  return source.startsWith(META_AD_SOURCE_PREFIX);
+}
+
+function getMetaAdSourceKey(lead: { source?: string | null; tags?: unknown }): string {
+  const source = String(lead?.source || '').trim();
+  if (source.toLowerCase().startsWith(META_AD_SOURCE_PREFIX)) return source;
+  const tags = parseLeadTags(lead?.tags);
+  const idTag = tags.find((t) => t.startsWith(META_AD_SOURCE_PREFIX));
+  if (idTag) return idTag;
+  const legacy = tags.find((t) => t.startsWith('meta_ad_id:'));
+  if (legacy) return META_AD_SOURCE_PREFIX + legacy.slice('meta_ad_id:'.length);
+  return 'meta_ads';
+}
+
+function getMetaAdName(lead: { tags?: unknown; source?: string | null }): string {
+  const tags = parseLeadTags(lead?.tags);
+  const nameTag = tags.find((t) => t.startsWith(META_AD_NAME_PREFIX));
+  if (nameTag) {
+    const name = nameTag.slice(META_AD_NAME_PREFIX.length).trim();
+    if (name) return name;
+  }
+  const key = getMetaAdSourceKey(lead);
+  if (key.startsWith(META_AD_SOURCE_PREFIX) && key.length > META_AD_SOURCE_PREFIX.length) {
+    return key.slice(META_AD_SOURCE_PREFIX.length);
+  }
+  return 'Meta Ad';
+}
+
+function isMetaAdSourceBucket(bucket: string | null | undefined): boolean {
+  return !!bucket && (bucket.startsWith(META_AD_SOURCE_PREFIX) || bucket === 'meta_ads');
+}
+
 /**
  * Bucket key for a lead. Imported leads return their unique per-file import-set tag
  * (so each import file becomes its own source card); imports without a tag fall back to 'import'.
  * Peaklyy leads return peaklyy:{assessmentId} so each assessment is its own card.
+ * Meta Lead Ads return meta_ad:{adId} so each ad is its own card (label = ad name).
  * Form leads return form_{slug} so each form is its own card.
  */
 export function getLeadSourceBucket(lead: {
@@ -290,6 +343,7 @@ export function getLeadSourceBucket(lead: {
 }): string {
   if (isImportedLead(lead)) return getImportSetTag(lead) || 'import';
   if (isPeaklyyLead(lead)) return getPeaklyySourceKey(lead);
+  if (isMetaAdLead(lead)) return getMetaAdSourceKey(lead);
   if (isManuallyAddedLead(lead)) return ADDED_LEADS_BUCKET;
   if (isFormLead(lead)) return getFormSourceKey(lead);
 
@@ -308,6 +362,7 @@ export type SourceSummary = {
   isPeaklyy?: boolean;
   isForm?: boolean;
   isAdded?: boolean;
+  isMetaAd?: boolean;
   total: number;
   byStatus: SourceStatusCounts;
   unassigned: number;
@@ -340,6 +395,7 @@ export function buildSourceSummaries(
     isPeaklyy = false,
     isForm = false,
     isAdded = false,
+    isMetaAd = false,
   ): SourceSummary => {
     let row = map.get(key);
     if (!row) {
@@ -350,6 +406,7 @@ export function buildSourceSummaries(
         isPeaklyy,
         isForm,
         isAdded,
+        isMetaAd,
         total: 0,
         byStatus: {},
         unassigned: 0,
@@ -367,16 +424,25 @@ export function buildSourceSummaries(
     const isPeaklyy = key.startsWith(PEAKLYY_SOURCE_PREFIX) || key === 'peaklyy';
     const isForm = isFormSourceBucket(key);
     const isAdded = isAddedSourceBucket(key);
+    const isMetaAd = isMetaAdSourceBucket(key);
     const label = isImportSet
       ? formatImportSetLabel(key, getImportFileName(lead))
       : isPeaklyy
         ? getPeaklyyAssessmentTitle(lead)
-        : isForm
-          ? formatFormSourceLabel(key, formLabels)
-          : SOURCE_BUCKET_LABELS[key as LeadSourceBucket] || key;
-    const row = ensure(key, label, isImport, isPeaklyy, isForm, isAdded);
+        : isMetaAd
+          ? getMetaAdName(lead)
+          : isForm
+            ? formatFormSourceLabel(key, formLabels)
+            : SOURCE_BUCKET_LABELS[key as LeadSourceBucket] || key;
+    const row = ensure(key, label, isImport, isPeaklyy, isForm, isAdded, isMetaAd);
     if (isPeaklyy && row.label === 'Peaklyy Assessment') {
       row.label = getPeaklyyAssessmentTitle(lead);
+    }
+    if (isMetaAd) {
+      const nicer = getMetaAdName(lead);
+      if (nicer && (row.label === key || row.label === 'Meta Ad' || row.label === 'Meta Ads')) {
+        row.label = nicer;
+      }
     }
     if (isForm) {
       const nicer = formatFormSourceLabel(key, formLabels);

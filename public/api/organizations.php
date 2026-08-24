@@ -22,6 +22,13 @@ if ($method === 'GET') {
     // Own org profile (any authenticated role with an org) — used by Settings → Company Profile / Data Privacy.
     if (($_GET['action'] ?? '') === 'my_org') {
         $orgId = $tokenData['org_id'] ?? null;
+        // Super admin can inspect a specific org's full company profile from Settings.
+        if ($role === 'super_admin') {
+            $qOrg = trim((string) ($_GET['org_id'] ?? ''));
+            if ($qOrg !== '') {
+                $orgId = $qOrg;
+            }
+        }
         if (!$orgId) {
             respond(['data' => null]);
         }
@@ -124,6 +131,148 @@ if ($method === 'GET') {
     $org['features'] = $features;
     
     respond(['data' => $org]);
+}
+
+if ($method === 'POST' && ($_GET['action'] ?? '') === 'upload_logo') {
+    // Org admins may upload their own company logo (must run before the super_admin-only POST gate).
+    requireRole($tokenData, ['admin', 'org', 'super_admin']);
+    $orgId = $role === 'super_admin'
+        ? trim((string) ($_GET['org_id'] ?? $tokenData['org_id'] ?? ''))
+        : trim((string) ($tokenData['org_id'] ?? ''));
+    if ($orgId === '') {
+        respond(['error' => 'No organization found for this account'], 400);
+    }
+    $chk = $db->prepare('SELECT id FROM organizations WHERE id = ? LIMIT 1');
+    $chk->execute([$orgId]);
+    if (!$chk->fetchColumn()) {
+        respond(['error' => 'Organization not found'], 404);
+    }
+    if (empty($_FILES['file']) || !is_array($_FILES['file'])) {
+        respond(['error' => 'file is required'], 400);
+    }
+    $file = $_FILES['file'];
+    if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        respond(['error' => 'Upload failed'], 400);
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size <= 0 || $size > 2 * 1024 * 1024) {
+        respond(['error' => 'Logo must be PNG, JPG, or SVG up to 2MB'], 400);
+    }
+    $tmp = (string) ($file['tmp_name'] ?? '');
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = $tmp !== '' ? (string) $finfo->file($tmp) : '';
+    $extMap = [
+        'image/png' => 'png',
+        'image/jpeg' => 'jpg',
+        'image/svg+xml' => 'svg',
+        'image/webp' => 'webp',
+    ];
+    if (!isset($extMap[$mime])) {
+        respond(['error' => 'Only PNG, JPG, SVG, or WebP logos are allowed'], 400);
+    }
+    $ext = $extMap[$mime];
+    $dirRel = '/uploads/org_logos';
+    $candidates = [
+        dirname(__DIR__) . $dirRel,
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'public' . $dirRel,
+        dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'public' . $dirRel,
+    ];
+    $dirAbs = null;
+    foreach ($candidates as $candidate) {
+        if (!is_dir($candidate)) {
+            @mkdir($candidate, 0755, true);
+        }
+        if (is_dir($candidate) && is_writable($candidate)) {
+            $dirAbs = $candidate;
+            break;
+        }
+    }
+    if ($dirAbs === null) {
+        respond(['error' => 'Unable to store logo on server'], 500);
+    }
+    $safeOrg = preg_replace('/[^a-zA-Z0-9_-]/', '', $orgId) ?: 'org';
+    $name = $safeOrg . '_' . bin2hex(random_bytes(8)) . '.' . $ext;
+    $dest = rtrim($dirAbs, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
+    if (!move_uploaded_file($tmp, $dest)) {
+        respond(['error' => 'Unable to save logo'], 500);
+    }
+    $url = $dirRel . '/' . $name;
+    $db->prepare('UPDATE organizations SET logo_url = ? WHERE id = ?')->execute([$url, $orgId]);
+    syncpediaAuditLog($db, $tokenData, 'updated', 'organization_logo', $orgId, 'Updated organization logo');
+    respond(['logo_url' => $url, 'success' => true]);
+}
+
+if ($method === 'POST' && ($_GET['action'] ?? '') === 'upload_payment_qr') {
+    // Org admins upload payment QR shown on Payment Records.
+    requireRole($tokenData, ['admin', 'org', 'super_admin']);
+    $orgId = $role === 'super_admin'
+        ? trim((string) ($_GET['org_id'] ?? $tokenData['org_id'] ?? ''))
+        : trim((string) ($tokenData['org_id'] ?? ''));
+    if ($orgId === '') {
+        respond(['error' => 'No organization found for this account'], 400);
+    }
+    $chk = $db->prepare('SELECT id, profile_json FROM organizations WHERE id = ? LIMIT 1');
+    $chk->execute([$orgId]);
+    $orgRow = $chk->fetch(PDO::FETCH_ASSOC);
+    if (!$orgRow) {
+        respond(['error' => 'Organization not found'], 404);
+    }
+    if (empty($_FILES['file']) || !is_array($_FILES['file'])) {
+        respond(['error' => 'file is required'], 400);
+    }
+    $file = $_FILES['file'];
+    if (($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+        respond(['error' => 'Upload failed'], 400);
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size <= 0 || $size > 2 * 1024 * 1024) {
+        respond(['error' => 'QR image must be PNG, JPG, or WebP up to 2MB'], 400);
+    }
+    $tmp = (string) ($file['tmp_name'] ?? '');
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = $tmp !== '' ? (string) $finfo->file($tmp) : '';
+    $extMap = [
+        'image/png' => 'png',
+        'image/jpeg' => 'jpg',
+        'image/webp' => 'webp',
+    ];
+    if (!isset($extMap[$mime])) {
+        respond(['error' => 'Only PNG, JPG, or WebP QR images are allowed'], 400);
+    }
+    $ext = $extMap[$mime];
+    $dirRel = '/uploads/org_payment_qr';
+    $candidates = [
+        dirname(__DIR__) . $dirRel,
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'public' . $dirRel,
+        dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'public' . $dirRel,
+    ];
+    $dirAbs = null;
+    foreach ($candidates as $candidate) {
+        if (!is_dir($candidate)) {
+            @mkdir($candidate, 0755, true);
+        }
+        if (is_dir($candidate) && is_writable($candidate)) {
+            $dirAbs = $candidate;
+            break;
+        }
+    }
+    if ($dirAbs === null) {
+        respond(['error' => 'Unable to store QR image on server'], 500);
+    }
+    $safeOrg = preg_replace('/[^a-zA-Z0-9_-]/', '', $orgId) ?: 'org';
+    $name = $safeOrg . '_qr_' . bin2hex(random_bytes(8)) . '.' . $ext;
+    $dest = rtrim($dirAbs, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $name;
+    if (!move_uploaded_file($tmp, $dest)) {
+        respond(['error' => 'Unable to save QR image'], 500);
+    }
+    $url = $dirRel . '/' . $name;
+    ensureOrganizationsProfileColumn($db);
+    $current = organizationsDecodeProfile($orgRow['profile_json'] ?? null);
+    $current['payment_qr_url'] = $url;
+    $json = json_encode($current, JSON_UNESCAPED_UNICODE);
+    $db->prepare('UPDATE organizations SET profile_json = ? WHERE id = ?')->execute([$json, $orgId]);
+    syncpediaAuditLog($db, $tokenData, 'updated', 'organization_payment_qr', $orgId, 'Updated organization payment QR');
+    respond(['payment_qr_url' => $url, 'success' => true]);
 }
 
 if ($method === 'POST') {
@@ -421,15 +570,26 @@ if ($method === 'PUT' && ($_GET['action'] ?? '') === 'profile') {
         $db->prepare('UPDATE organizations SET name = ? WHERE id = ?')->execute([trim((string) $input['name']), $orgId]);
     }
 
+    if (array_key_exists('logo_url', $input)) {
+        $logoUrl = trim((string) ($input['logo_url'] ?? ''));
+        $db->prepare('UPDATE organizations SET logo_url = ? WHERE id = ?')->execute([$logoUrl !== '' ? $logoUrl : null, $orgId]);
+    }
+
     $current = organizationsDecodeProfile($row['profile_json'] ?? null);
     $allowedKeys = [
         'tagline', 'website', 'support_email', 'support_phone',
         'street', 'city', 'state', 'country', 'postal_code',
         'linkedin', 'twitter', 'instagram', 'retention',
+        'payment_qr_url', 'bank_account_name', 'bank_account_number',
+        'bank_ifsc', 'bank_name', 'bank_branch', 'bank_upi',
     ];
     foreach ($allowedKeys as $k) {
         if (array_key_exists($k, $input)) {
-            $current[$k] = $input[$k];
+            $val = $input[$k];
+            if (is_string($val)) {
+                $val = trim($val);
+            }
+            $current[$k] = $val;
         }
     }
     $json = json_encode($current, JSON_UNESCAPED_UNICODE);

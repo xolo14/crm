@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/document_storage.php';
+require_once __DIR__ . '/cert_ids.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -65,52 +66,13 @@ function certStorageDir(): string {
 }
 
 function certDecodePdfBase64(string $raw): ?string {
-    $raw = trim($raw);
-    if (str_starts_with($raw, 'data:')) {
-        $comma = strpos($raw, ',');
-        if ($comma === false) {
-            return null;
-        }
-        $raw = substr($raw, $comma + 1);
-    }
-    $bin = base64_decode($raw, true);
-    if ($bin === false || strlen($bin) < 100 || strncmp($bin, '%PDF', 4) !== 0) {
-        return null;
-    }
-    return $bin;
-}
-
-function certBuildSimplePdf(string $title, string $line1, string $line2): string {
-    $safe = static function (string $v): string {
-        return str_replace(['\\', '(', ')'], ['\\\\', '\(', '\)'], $v);
-    };
-    $t = $safe($title);
-    $l1 = $safe($line1);
-    $l2 = $safe($line2);
-    $content = "BT /F1 20 Tf 72 760 Td ($t) Tj ET\nBT /F1 13 Tf 72 730 Td ($l1) Tj ET\nBT /F1 13 Tf 72 708 Td ($l2) Tj ET\n";
-    $len = strlen($content);
-    $pdf = "%PDF-1.4\n";
-    $offsets = [];
-    $offsets[] = strlen($pdf);
-    $pdf .= "1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n";
-    $offsets[] = strlen($pdf);
-    $pdf .= "2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n";
-    $offsets[] = strlen($pdf);
-    $pdf .= "3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>endobj\n";
-    $offsets[] = strlen($pdf);
-    $pdf .= "4 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n";
-    $offsets[] = strlen($pdf);
-    $pdf .= "5 0 obj<< /Length $len >>stream\n$content" . "endstream\nendobj\n";
-    $xref = strlen($pdf);
-    $pdf .= "xref\n0 6\n0000000000 65535 f \n";
-    foreach ($offsets as $o) {
-        $pdf .= sprintf("%010d 00000 n \n", $o);
-    }
-    $pdf .= "trailer<< /Size 6 /Root 1 0 R >>\nstartxref\n$xref\n%%EOF";
-    return $pdf;
+    $decoded = syncpediaDecodePdfBase64($raw);
+    return (!empty($decoded['ok']) && isset($decoded['bytes'])) ? (string) $decoded['bytes'] : null;
 }
 
 certEnsureTables($db);
+certEnsureTypeColumns($db);
+certEnsureOrgPrefixColumn($db);
 
 if ($method === 'GET' && $action === 'email_logs') {
     requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
@@ -175,13 +137,28 @@ if ($method === 'POST' && $action === 'issue') {
 
     $tplOrg = orgFilter($tokenData, 'ct', $db);
     $tplParams = array_merge([$templateId], $tplOrg['params']);
-    $tplStmt = $db->prepare("SELECT ct.id FROM certificate_templates ct WHERE ct.id = ? AND {$tplOrg['where']} LIMIT 1");
+    $tplStmt = $db->prepare("SELECT ct.id, ct.cert_type FROM certificate_templates ct WHERE ct.id = ? AND {$tplOrg['where']} LIMIT 1");
     $tplStmt->execute($tplParams);
-    if (!$tplStmt->fetch()) {
+    $tplRow = $tplStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$tplRow) {
         respond(['error' => 'Certificate template not found in your organization'], 404);
     }
+    $certType = certNormalizeType($tplRow['cert_type'] ?? 'CC');
 
-    $writeOrgId = resolveWriteOrgId($db, $tokenData);
+    $writeOrgId = trim((string) resolveWriteOrgId($db, $tokenData));
+    $prefix = $writeOrgId !== '' ? certGetOrgPrefix($db, $writeOrgId) : null;
+    if ($prefix === null && $writeOrgId !== '') {
+        $fromId = certNormalizePrefix(explode('-', strtoupper($syncId))[0] ?? '');
+        $wanted = $fromId ?: certSuggestPrefix($db, $writeOrgId);
+        $claimed = certClaimOrgPrefix($db, $writeOrgId, $wanted);
+        if (empty($claimed['ok'])) {
+            respond(['error' => $claimed['error'] ?? 'Certificate prefix is not available.'], 409);
+        }
+        $prefix = $claimed['prefix'];
+    }
+    if ($prefix === null || !certIsValidIssuedId($syncId, $prefix, $certType)) {
+        respond(['error' => 'Certificate number must be PREFIX-TYPE-XXXXXX for this organization (e.g. SP-CS-482193)'], 400);
+    }
 
     $courseName = trim((string) ($input['courseName'] ?? ''));
     $issueDate = trim((string) ($input['issueDate'] ?? date('Y-m-d')));
@@ -189,10 +166,12 @@ if ($method === 'POST' && $action === 'issue') {
 
     $pdfName = 'Certificate_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $studentName) . '_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $syncId) . '.pdf';
     $pdfBase64 = trim((string) ($input['pdf_base64'] ?? $input['pdfBase64'] ?? ''));
-    $pdfBytes = $pdfBase64 !== '' ? certDecodePdfBase64($pdfBase64) : null;
+    if ($pdfBase64 === '') {
+        respond(['error' => 'pdf_base64 is required — generate the certificate PDF in the browser before issuing'], 400);
+    }
+    $pdfBytes = certDecodePdfBase64($pdfBase64);
     if ($pdfBytes === null) {
-        // Fallback stub only when browser did not send a real PDF
-        $pdfBytes = certBuildSimplePdf('Certificate Issued', "Student: $studentName", "SYNC ID: $syncId");
+        respond(['error' => 'Invalid pdf_base64 — expected a real certificate PDF'], 400);
     }
 
     $gcsKey = function_exists('syncpediaGcsObjectKey')
@@ -290,7 +269,6 @@ if ($method === 'POST' && $action === 'issue') {
         'syncId' => $syncId,
         'studentName' => $studentName,
         'studentEmail' => $studentEmail,
-        'gcs_object' => $gcsObject,
     ]);
 }
 

@@ -34,7 +34,6 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
-
 const PLAN_COLORS = [
   "hsl(162, 63%, 41%)",
   "hsl(200, 70%, 50%)",

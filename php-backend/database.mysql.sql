@@ -21,11 +21,13 @@ CREATE TABLE IF NOT EXISTS `organizations` (
   `plan` ENUM('free','starter','pro','enterprise') DEFAULT 'starter',
   `max_users` INT DEFAULT 10,
   `industry` VARCHAR(50) DEFAULT NULL,
+  `cert_prefix` CHAR(2) DEFAULT NULL,
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_org_slug` (`slug`),
+  UNIQUE KEY `uq_org_cert_prefix` (`cert_prefix`),
   INDEX `idx_org_active` (`is_active`),
   INDEX `idx_org_industry` (`industry`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -935,7 +937,7 @@ CREATE TABLE IF NOT EXISTS `certificate_templates` (
   `id` CHAR(36) NOT NULL DEFAULT (UUID()),
   `name` VARCHAR(255) NOT NULL,
   `status` ENUM('active','draft','archived') NOT NULL DEFAULT 'draft',
-  `cert_type` ENUM('CC','ACH','PRO','INT','WS') NOT NULL DEFAULT 'CC',
+  `cert_type` VARCHAR(8) NOT NULL DEFAULT 'CC',
   `layout_style` ENUM('classic','dark-pro','elegant') NOT NULL DEFAULT 'classic',
   `bg_color` VARCHAR(20) NOT NULL DEFAULT '#ffffff',
   `accent_color` VARCHAR(20) NOT NULL DEFAULT '#1A6B3C',
@@ -958,12 +960,12 @@ CREATE TABLE IF NOT EXISTS `certificate_templates` (
 -- --------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS `issued_certificates` (
-  `id` CHAR(36) NOT NULL,
+  `id` VARCHAR(80) NOT NULL,
   `template_id` CHAR(36) NOT NULL,
   `template_name` VARCHAR(255) NOT NULL,
   `recipient_name` VARCHAR(200) NOT NULL,
   `course_name` VARCHAR(255) NOT NULL,
-  `cert_type` ENUM('CC','ACH','PRO','INT','WS') NOT NULL DEFAULT 'CC',
+  `cert_type` VARCHAR(8) NOT NULL DEFAULT 'CC',
   `issue_date` DATE NOT NULL,
   `status` ENUM('issued','revoked','expired') NOT NULL DEFAULT 'issued',
   `verify_token` TEXT DEFAULT NULL,
@@ -1105,6 +1107,10 @@ CREATE TABLE IF NOT EXISTS `call_logs` (
   `attachment_path` VARCHAR(500) DEFAULT NULL,
   `call_date` DATE NOT NULL,
   `call_time` TIME DEFAULT NULL,
+  `device_call_id` VARCHAR(64) DEFAULT NULL,
+  `latitude` DECIMAL(10,7) DEFAULT NULL,
+  `longitude` DECIMAL(10,7) DEFAULT NULL,
+  `synced_at` TIMESTAMP NULL DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX `idx_calllog_rep_id` (`sales_rep_id`),
   INDEX `idx_calllog_date` (`call_date`),
@@ -1112,9 +1118,26 @@ CREATE TABLE IF NOT EXISTS `call_logs` (
   INDEX `idx_calllog_type` (`call_type`),
   INDEX `idx_calllog_rep_date` (`sales_rep_id`, `call_date`),
   INDEX `idx_calllog_org_date` (`org_id`, `call_date`),
+  UNIQUE KEY `uq_calllog_rep_device` (`sales_rep_id`, `device_call_id`),
   CONSTRAINT `fk_calllog_rep` FOREIGN KEY (`sales_rep_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_calllog_org` FOREIGN KEY (`org_id`) REFERENCES `organizations`(`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_calllog_lead` FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Mobile GPS pings (Android location sync)
+CREATE TABLE IF NOT EXISTS `user_locations` (
+  `id` CHAR(36) NOT NULL,
+  `user_id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) NOT NULL,
+  `latitude` DECIMAL(10,7) NOT NULL,
+  `longitude` DECIMAL(10,7) NOT NULL,
+  `recorded_at` DATETIME NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX (`user_id`),
+  INDEX (`org_id`),
+  CONSTRAINT `fk_user_locations_user` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_user_locations_org` FOREIGN KEY (`org_id`) REFERENCES `organizations`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Razorpay Payment Links (CRM-generated links; webhook: razorpay_webhook.php)

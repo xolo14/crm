@@ -16,6 +16,7 @@ import HRLayout from "@/layouts/HRLayout";
 import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from "@/lib/orgAccess";
 import { isPathAllowedByOrgFeatures, FEATURE_FORM_MANAGEMENT } from "@/lib/orgFeatures";
 import { managerFeatureKeyForPath, managerHasPageAccess } from "@/lib/managerPageAccess";
+import { firstAllowedHrPath, hrFeatureKeyForPath, hrHasPageAccess } from "@/lib/hrPageAccess";
 import { useFresherSalaryAccess } from "@/hooks/useFresherSalaryAccess";
 import {
   Apply,
@@ -36,7 +37,6 @@ import {
   FormLeads,
   FormsManagerPage,
   DocFormsHubPage,
-  MyDocFormsPage,
   PublicDocFormPage,
   FresherSalaryTrackerPage,
   Holidays,
@@ -55,6 +55,7 @@ import {
   MarketingDashboard,
   MarketingPortal,
   MarketingPortalDashboard,
+  MarketingMetaAdsPage,
   MetaPartnerPage,
   MyReferrals,
   NotFound,
@@ -108,7 +109,7 @@ function MainLayoutRoute() {
   }
   // HR must stay in the HR portal shell — never the main CRM sidebar.
   if (normalizeAppRole(user.role) === "hr") {
-    return <Navigate to="/hr/dashboard" replace />;
+    return <Navigate to={firstAllowedHrPath(user.page_access)} replace />;
   }
   return (
     <AppLayout>
@@ -129,7 +130,7 @@ function RootHome() {
     return <Navigate to="/marketing/dashboard" replace />;
   }
   if (role === "hr") {
-    return <Navigate to="/hr/dashboard" replace />;
+    return <Navigate to={firstAllowedHrPath(user.page_access)} replace />;
   }
   return (
     <AppLayout>
@@ -267,7 +268,7 @@ function AdminSuperOrOrgGate({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const role = String(user?.role || "").toLowerCase();
   const normalized = role === "superadmin" ? "super_admin" : role === "organisation" ? "org" : role;
-  if (normalized === "hr") return <Navigate to="/hr/dashboard" replace />;
+  if (normalized === "hr") return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
   if (!["super_admin", "admin", "org"].includes(normalized)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
@@ -283,7 +284,7 @@ function SettingsGate({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const role = normalizePlatformRole(user);
   // Keep HR inside the HR portal shell
-  if (role === "hr") return <Navigate to="/hr/settings" replace />;
+  if (role === "hr") return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
   return (
     <RoleGate
       allow={[
@@ -322,6 +323,28 @@ function HRProtectedRoute() {
       <Outlet />
     </HRLayout>
   );
+}
+
+/** Blocks HR portal child routes when admin did not grant that page. */
+function HRPageGate({ children }: { children: ReactNode }) {
+  const { user, organization } = useAuth();
+  const location = useLocation();
+  const key = hrFeatureKeyForPath(location.pathname);
+  if (key && !hrHasPageAccess(user?.page_access, key)) {
+    return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
+  }
+  if (key === "offer_letters") {
+    const role = normalizeAppRole(user?.role);
+    if (!canAccessOfferLetters(role, organization, user?.page_access)) {
+      return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
+    }
+  }
+  return <>{children}</>;
+}
+
+function HRIndexRedirect() {
+  const { user } = useAuth();
+  return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
 }
 
 const App = () => (
@@ -417,6 +440,7 @@ const App = () => (
               <Route path="/marketing/analytics" element={<MarketingGate><EmailAnalytics /></MarketingGate>} />
               <Route path="/marketing/whatsapp" element={<MarketingGate><WhatsAppPortal /></MarketingGate>} />
               <Route path="/marketing/whatsapp-analytics" element={<MarketingGate><WhatsAppAnalytics /></MarketingGate>} />
+              <Route path="/marketing/meta-ads" element={<MarketingGate><MarketingMetaAdsPage /></MarketingGate>} />
               <Route path="/holidays" element={<Holidays />} />
               <Route path="/assessments" element={<SuperAdminGate><AssessmentsAdminPage /></SuperAdminGate>} />
               <Route path="/trash" element={<TrashGate><Trash /></TrashGate>} />
@@ -425,22 +449,23 @@ const App = () => (
               <Route path="/payslip" element={<PayslipGate><PayslipPage /></PayslipGate>} />
               <Route path="/form-management" element={<FormManagementGate><FormsManagerPage /></FormManagementGate>} />
               <Route path="/form-management/doc-forms" element={<FormManagementGate><DocFormsHubPage /></FormManagementGate>} />
-              <Route path="/my-doc-forms" element={<MyDocFormsPage />} />
+              <Route path="/my-doc-forms" element={<Navigate to="/" replace />} />
               <Route path="/form-api-integrations" element={<FormManagementGate><FormApiIntegrationsPage /></FormManagementGate>} />
               <Route path="*" element={<NotFound />} />
             </Route>
 
             <Route path="/hr" element={<HRProtectedRoute />}>
-              <Route index element={<Navigate to="dashboard" replace />} />
-              <Route path="dashboard" element={<HRDashboard />} />
-              <Route path="my-leads" element={<HRMyLeads />} />
-              <Route path="assigned-leads" element={<HRAssignedLeads />} />
-              <Route path="tasks" element={<HRTasks />} />
-              <Route path="reports" element={<HRReports />} />
-              <Route path="notifications" element={<HRNotifications />} />
-              <Route path="communications" element={<HRCommunicationsPage />} />
-              <Route path="holidays" element={<HRHolidays />} />
-              <Route path="settings" element={<SettingsPage />} />
+              <Route index element={<HRIndexRedirect />} />
+              <Route path="dashboard" element={<HRPageGate><HRDashboard /></HRPageGate>} />
+              <Route path="my-leads" element={<HRPageGate><HRMyLeads /></HRPageGate>} />
+              <Route path="assigned-leads" element={<HRPageGate><HRAssignedLeads /></HRPageGate>} />
+              <Route path="tasks" element={<HRPageGate><HRTasks /></HRPageGate>} />
+              <Route path="reports" element={<HRPageGate><HRReports /></HRPageGate>} />
+              <Route path="notifications" element={<HRPageGate><HRNotifications /></HRPageGate>} />
+              <Route path="communications" element={<HRPageGate><HRCommunicationsPage /></HRPageGate>} />
+              <Route path="holidays" element={<HRPageGate><HRHolidays /></HRPageGate>} />
+              <Route path="offer-letters" element={<HRPageGate><OfferLetters /></HRPageGate>} />
+              <Route path="settings" element={<HRPageGate><SettingsPage /></HRPageGate>} />
             </Route>
           </Routes>
           </Suspense>

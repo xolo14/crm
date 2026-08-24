@@ -358,14 +358,7 @@ function hrLeadsApplyAssignment(PDO $db, string $currentRole, ?string $currentOr
     $upd = $db->prepare("UPDATE hr_leads SET hr_id = ?, is_assigned = 1, assigned_by = ? WHERE id = ? AND deleted_at IS NULL");
     $upd->execute([$hrId, $currentUserId, $leadId]);
 
-    try {
-        $n = $db->prepare("INSERT INTO notifications (id, user_id, title, message, type, is_read, org_id) VALUES (?, ?, ?, ?, 'lead_assigned', 0, ?)");
-        $n->execute([generateUUID(), $hrId, 'New lead assigned', 'A lead has been assigned to you in HR Leads.', $leadOrgId]);
-    } catch (Throwable $e) {
-        /* notification failure must not block the assignment */
-    }
-
-    return ['ok' => true, 'id' => $leadId, 'hr_id' => $hrId];
+    return ['ok' => true, 'id' => $leadId, 'hr_id' => $hrId, 'org_id' => $leadOrgId];
 }
 
 if ($action === 'assign_lead' && $method === 'PUT') {
@@ -389,6 +382,8 @@ if ($action === 'bulk_assign_leads' && $method === 'POST') {
     $results = [];
     $ok = 0;
     $failed = 0;
+    $hrCounts = [];
+    $notifyOrgId = $current_org_id;
     foreach ($assignments as $row) {
         $leadId = (int) ($row['id'] ?? 0);
         $hrId = trim((string) ($row['hr_id'] ?? ''));
@@ -396,9 +391,26 @@ if ($action === 'bulk_assign_leads' && $method === 'POST') {
         $results[] = $r;
         if (!empty($r['ok'])) {
             $ok++;
+            $hid = trim((string) ($r['hr_id'] ?? $hrId));
+            if ($hid !== '') {
+                $hrCounts[$hid] = ($hrCounts[$hid] ?? 0) + 1;
+            }
+            if (!empty($r['org_id'])) {
+                $notifyOrgId = (string) $r['org_id'];
+            }
         } else {
             $failed++;
         }
+    }
+    foreach ($hrCounts as $hid => $n) {
+        syncpediaNotifyBulkLeadAssign(
+            $db,
+            [(string) $hid],
+            (string) $current_user_id,
+            (int) $n,
+            $notifyOrgId ? (string) $notifyOrgId : null,
+            '/leads/hr-leads',
+        );
     }
     respond([
         'success' => $failed === 0,

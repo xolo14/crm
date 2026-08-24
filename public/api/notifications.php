@@ -8,6 +8,10 @@ $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 
 if ($method === 'GET') {
+    try {
+        syncpediaDispatchDueReminders($db, $tokenData);
+    } catch (Throwable $e) {
+    }
     $stmt = $db->prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 200");
     $stmt->execute([$userId]);
     respond($stmt->fetchAll());
@@ -15,6 +19,23 @@ if ($method === 'GET') {
 
 if ($method === 'POST') {
     $input = getInput();
+    $action = trim((string) ($_GET['action'] ?? $input['action'] ?? ''));
+    if ($action === 'org_bulk') {
+        $kind = trim((string) ($input['kind'] ?? ''));
+        $count = (int) ($input['count'] ?? 0);
+        $detail = trim((string) ($input['detail'] ?? ''));
+        $orgId = resolveWriteOrgId($db, $tokenData);
+        $allowed = ['offer_letters', 'certificates', 'payslips', 'lead_assign', 'leads_import', 'leads_delete', 'marketing_email', 'whatsapp'];
+        if (!in_array($kind, $allowed, true)) {
+            respond(['error' => 'Unknown bulk kind'], 400);
+        }
+        if ($count < 1) {
+            respond(['error' => 'count must be at least 1'], 400);
+        }
+        syncpediaNotifyOrgAdminsOfBulkKind($db, (string) $userId, $orgId ? (string) $orgId : null, $kind, $count, $detail);
+        respond(['ok' => true, 'message' => 'Admins notified']);
+    }
+
     $id = generateUUID();
     $targetUserId = trim((string) ($input['user_id'] ?? $userId));
     $orgId = resolveWriteOrgId($db, $tokenData);

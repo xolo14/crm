@@ -104,6 +104,13 @@ if ($method === 'PUT') {
             syncpediaNotifyTaskAssignee($db, $newAssignee, (string) $userId, $taskTitle, $orgId ? (string) $orgId : null);
         }
     }
+    if (array_key_exists('status', $input)) {
+        $newStatus = strtolower(trim((string) ($input['status'] ?? '')));
+        $oldStatus = strtolower(trim((string) ($existing['status'] ?? '')));
+        if ($newStatus === 'completed' && $oldStatus !== 'completed') {
+            syncpediaNotifyTaskCompleted($db, (string) $userId, is_array($existing) ? $existing : []);
+        }
+    }
 
     respond(['message' => 'Task updated']);
 }

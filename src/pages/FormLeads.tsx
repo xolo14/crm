@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-import { sendNotificationWithEmail } from '@/lib/notifications';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,7 +33,7 @@ import {
   resolveFormAssigneesForSourceKey,
 } from '@/lib/leadSources';
 import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
-import { filterAndSortAssignRoster } from '@/lib/assignRoster';
+import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 
 const MARKETING_RESUME_TYPES = [
   'application/pdf',
@@ -263,9 +262,10 @@ export default function FormLeads() {
       });
 
       setTeamMembers(
-        filterAndSortAssignRoster(Array.from(mergedById.values()), {
-          excludeUserId: user?.id,
-        }),
+        ensureAssignRosterIncludesSelf(
+          filterAndSortAssignRoster(Array.from(mergedById.values())),
+          user,
+        ),
       );
     } catch {}
   };
@@ -488,17 +488,8 @@ export default function FormLeads() {
       await api.leadAssignments.setAssignees(assignLeadId, repIds);
       setLeads(prev => prev.map(l => l.id === assignLeadId ? { ...l, assigned_to: primary } : l));
       if (detailLead?.id === assignLeadId) setDetailLead({ ...detailLead, assigned_to: primary });
-      const lead = leads.find(l => l.id === assignLeadId);
       const repNames = repIds.map(id => getAssignedName(id) || teamMembers.find(m => m.id === id)?.full_name || '').filter(Boolean).join(', ');
       toast({ title: `Lead assigned to ${repNames}` });
-      for (const repId of repIds) {
-        await sendNotificationWithEmail({
-          userId: repId, title: 'New Lead Assigned',
-          message: `Lead "${lead?.name || 'Unknown'}" has been assigned to you.`,
-          type: 'lead_assigned', link: '/leads',
-          leadName: lead?.name || 'Unknown', assignedByName: profile?.full_name || 'Manager',
-        });
-      }
       setAssignOpen(false); setAssignLeadId(null); setAssignSelectedReps(new Set());
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
@@ -521,16 +512,6 @@ export default function FormLeads() {
         description: failed > 0 ? `${failed} failed` : undefined,
         variant: failed > 0 && assigned === 0 ? 'destructive' : undefined,
       });
-      if (assigned > 0) {
-        for (const repId of repIds) {
-          await sendNotificationWithEmail({
-            userId: repId, title: `${assigned} Leads Assigned`,
-            message: `You have been assigned ${assigned} lead(s).`,
-            type: 'lead_assigned', link: '/leads',
-            leadName: `${assigned} leads`, assignedByName: profile?.full_name || 'Manager',
-          });
-        }
-      }
       setSelectedIds(new Set());
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Bulk assign failed', description: err?.message || 'Request failed' });
@@ -549,15 +530,8 @@ export default function FormLeads() {
     try {
       await api.leadAssignments.setAssignees(leadId, [repId]);
       const repName = getAssignedName(repId) || teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
-      const lead = leads.find(l => l.id === leadId);
       setLeads(prev => prev.map(l => l.id === leadId ? { ...l, assigned_to: repId } : l));
       toast({ title: `Lead assigned to ${repName}` });
-      await sendNotificationWithEmail({
-        userId: repId, title: 'New Lead Assigned',
-        message: `Lead "${lead?.name || 'Unknown'}" has been assigned to you.`,
-        type: 'lead_assigned', link: '/leads',
-        leadName: lead?.name || 'Unknown', assignedByName: profile?.full_name || 'Manager',
-      });
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };
 
@@ -612,15 +586,6 @@ export default function FormLeads() {
           const fail = typeof res?.failed === 'number' ? res.failed : 0;
           totalAssigned += ok;
           failed += fail;
-          if (ok > 0) {
-            const names = leadIds.map((lid) => leads.find((x) => x.id === lid)?.name).filter(Boolean) as string[];
-            await sendNotificationWithEmail({
-              userId: repId, title: `${ok} Leads Assigned`,
-              message: `You have been assigned ${ok} new leads: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '...' : ''}.`,
-              type: 'lead_assigned', link: '/leads',
-              leadName: names.slice(0, 3).join(', '), assignedByName: profile?.full_name || 'Manager',
-            });
-          }
         } catch {
           failed += leadIds.length;
         }

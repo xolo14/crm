@@ -390,6 +390,10 @@ export const api = {
       search?: string;
       referred_by?: string;
       form_leads?: boolean;
+      /** Super-admin: filter leads to one organisation */
+      org_id?: string;
+      /** Mobile/web: leads whose status you changed in a period */
+      status_changed?: 'yesterday' | 'last_7_days' | 'last_week' | 'this_month';
       limit?: number;
       offset?: number;
       /** When true (default), follow truncated pages until all visible leads are loaded. */
@@ -401,6 +405,8 @@ export const api = {
         if (params?.search) q.set('search', params.search);
         if (params?.referred_by) q.set('referred_by', params.referred_by);
         if (params?.form_leads) q.set('form_leads', '1');
+        if (params?.org_id) q.set('org_id', params.org_id);
+        if (params?.status_changed) q.set('status_changed', params.status_changed);
         q.set('limit', String(limit));
         if (offset > 0) q.set('offset', String(offset));
         return q.toString();
@@ -465,6 +471,40 @@ export const api = {
           body: JSON.stringify({ action: 'bulk_delete', ids }),
         },
       ),
+  },
+
+  // Lead Management — source-card folders
+  leadFolders: {
+    list: (orgId?: string) => {
+      const q = orgId ? `?org_id=${encodeURIComponent(orgId)}` : '';
+      return request(`/lead-folders.php${q}`);
+    },
+    create: (name: string, orgId?: string) => {
+      const q = new URLSearchParams({ action: 'create' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/lead-folders.php?${q}`, { method: 'POST', body: JSON.stringify({ name }) });
+    },
+    move: (source_key: string, folder_id: string | null, orgId?: string) => {
+      const q = new URLSearchParams({ action: 'move' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/lead-folders.php?${q}`, {
+        method: 'POST',
+        body: JSON.stringify({ source_key, folder_id }),
+      });
+    },
+    rename: (id: string, name: string, orgId?: string) => {
+      const q = new URLSearchParams({ action: 'rename', id });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/lead-folders.php?${q}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name }),
+      });
+    },
+    delete: (id: string, orgId?: string) => {
+      const q = new URLSearchParams({ id });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/lead-folders.php?${q}`, { method: 'DELETE' });
+    },
   },
 
   // Contacts
@@ -625,6 +665,23 @@ export const api = {
       request('/razorpay-settings.php?action=clear', { method: 'POST', body: '{}' }),
   },
 
+  // Meta Ads (org admin — OAuth + campaign insights)
+  metaAds: {
+    status: () => request('/meta-ads.php?action=status'),
+    oauthStart: () => request('/meta-ads.php?action=oauth_start'),
+    updateAccounts: (accounts: Array<{ ad_account_id: string; is_enabled: boolean }>) =>
+      request('/meta-ads.php?action=accounts', { method: 'PUT', body: JSON.stringify({ accounts }) }),
+    syncNow: () => request('/meta-ads.php?action=sync_now', { method: 'POST', body: '{}' }),
+    disconnect: () => request('/meta-ads.php?action=disconnect', { method: 'POST', body: '{}' }),
+    insights: (params: { from?: string; to?: string; ad_account_id?: string } = {}) => {
+      const qs = new URLSearchParams({ action: 'insights' });
+      if (params.from) qs.set('from', params.from);
+      if (params.to) qs.set('to', params.to);
+      if (params.ad_account_id) qs.set('ad_account_id', params.ad_account_id);
+      return request(`/meta-ads.php?${qs.toString()}`);
+    },
+  },
+
   // Daily Reports
   dailyReports: {
     list: (params?: { user_id?: string; date?: string; from?: string; to?: string }) => {
@@ -662,6 +719,8 @@ export const api = {
     delete: (id: string) => request(`/notifications.php?id=${id}`, { method: 'DELETE' }),
     markAllRead: (ids: string[]) => request('/notifications.php?action=mark_all_read', { method: 'PUT', body: JSON.stringify({ ids }) }),
     bulkDelete: (ids: string[]) => request('/notifications.php?action=bulk_delete', { method: 'DELETE', body: JSON.stringify({ ids }) }),
+    orgBulk: (data: { kind: string; count: number; detail?: string }) =>
+      request('/notifications.php?action=org_bulk', { method: 'POST', body: JSON.stringify(data) }),
   },
 
   // Organizations (Super Admin)
@@ -677,9 +736,50 @@ export const api = {
     update: (id: string, data: any) => request(`/organizations.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     updateFeatures: (id: string, features: Record<string, boolean>) => request(`/organizations.php?id=${id}&action=features`, { method: 'PUT', body: JSON.stringify({ features }) }),
     delete: (id: string) => request(`/organizations.php?id=${id}`, { method: 'DELETE' }),
-    myOrg: () => request('/organizations.php?action=my_org'),
-    updateProfile: (data: Record<string, unknown>) =>
-      request('/organizations.php?action=profile', { method: 'PUT', body: JSON.stringify(data) }),
+    myOrg: (orgId?: string) => {
+      const qs = new URLSearchParams({ action: 'my_org' });
+      if (orgId) qs.set('org_id', orgId);
+      return request(`/organizations.php?${qs.toString()}`);
+    },
+    updateProfile: (data: Record<string, unknown>, orgId?: string) => {
+      const qs = new URLSearchParams({ action: 'profile' });
+      if (orgId) qs.set('org_id', orgId);
+      return request(`/organizations.php?${qs.toString()}`, { method: 'PUT', body: JSON.stringify(data) });
+    },
+    uploadLogo: async (file: File, orgId?: string) => {
+      const qs = new URLSearchParams({ action: 'upload_logo' });
+      if (orgId) qs.set('org_id', orgId);
+      const fd = new FormData();
+      fd.append('file', file);
+      const headers: Record<string, string> = {};
+      const token = getToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`${API_BASE}/organizations.php?${qs.toString()}`, {
+        method: 'POST',
+        headers,
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any)?.error || 'Logo upload failed');
+      return data as { logo_url: string; success?: boolean };
+    },
+    uploadPaymentQr: async (file: File, orgId?: string) => {
+      const qs = new URLSearchParams({ action: 'upload_payment_qr' });
+      if (orgId) qs.set('org_id', orgId);
+      const fd = new FormData();
+      fd.append('file', file);
+      const headers: Record<string, string> = {};
+      const token = getToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const res = await fetch(`${API_BASE}/organizations.php?${qs.toString()}`, {
+        method: 'POST',
+        headers,
+        body: fd,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as any)?.error || 'QR upload failed');
+      return data as { payment_qr_url: string; success?: boolean };
+    },
   },
 
   // Audit Logs (Settings page)
@@ -1054,6 +1154,8 @@ export const api = {
       }
       return url;
     },
+    createType: (data: { code: string; label: string }) =>
+      request('/certificate-templates.php?action=types', { method: 'POST', body: JSON.stringify(data) }),
     deleteTemplate: (id: string) => request(`/certificate-templates.php?id=${id}`, { method: 'DELETE' }),
     listIssued: () => request('/issued-certificates.php'),
     verifyPublic: (id: string, token: string) =>

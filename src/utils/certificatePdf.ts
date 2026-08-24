@@ -1,8 +1,6 @@
 /**
  * Rasterise a certificate preview DOM node into a PDF (base64, no data-URL prefix).
  */
-import type { RefObject } from "react";
-
 export async function buildCertificatePdfBase64(
   el: HTMLElement,
   page: { widthMm: number; heightMm: number },
@@ -29,14 +27,4 @@ export async function buildCertificatePdfBase64(
   const dataUrl = pdf.output("datauristring") as string;
   const comma = dataUrl.indexOf(",");
   return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-}
-
-export async function buildCertificatePdfBase64FromRef(
-  ref: RefObject<HTMLElement | null>,
-  page: { widthMm: number; heightMm: number },
-): Promise<string> {
-  if (!ref.current) {
-    throw new Error("Certificate preview is not ready");
-  }
-  return buildCertificatePdfBase64(ref.current, page);
 }

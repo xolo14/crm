@@ -393,7 +393,7 @@ function syncpediaSmtpSendWithOrgFailover(
         : 'support';
     $candidates = syncpediaListTenantSmtpCandidates($account);
     if (!$candidates) {
-        return ['ok' => false, 'error' => 'Email not configured for your organization'];
+        return ['ok' => false, 'error' => 'Email Setup is missing. An organization admin must add SMTP in Settings before messages can be sent.'];
     }
     if (!syncpediaLoadComposerAutoload()) {
         return ['ok' => false, 'error' => 'PHPMailer is not installed'];

@@ -68,7 +68,7 @@ export function CanvasTextBoxFrame({
   showMoveHandle = false,
   moveHandleLabel = 'Move text',
   divider = 'none',
-  contentOverflow = 'auto',
+  contentOverflow = 'hidden',
   growWithContent = false,
   allowResize = true,
 }: Props) {

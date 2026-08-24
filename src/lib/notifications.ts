@@ -49,3 +49,16 @@ export async function sendNotificationWithEmail({
   // Email notifications can be handled server-side in PHP
   // The PHP notifications endpoint can trigger emails if configured
 }
+
+export async function notifyOrgAdminsBulkAction(
+  kind: 'offer_letters' | 'certificates' | 'payslips' | 'lead_assign' | 'leads_import' | 'leads_delete' | 'marketing_email' | 'whatsapp',
+  count: number,
+  detail?: string,
+) {
+  if (count < 1) return;
+  try {
+    await api.notifications.orgBulk({ kind, count, detail });
+  } catch (err) {
+    console.error('Failed to notify org admins of bulk action:', err);
+  }
+}

@@ -213,7 +213,7 @@ function syncpediaOrgSmtpRowToResolved(array $row): ?array
 /**
  * Ordered SMTP accounts for the current org/category.
  * Primary = category route (or default route / slot 1). Then other active slots.
- * Syncpedia without org accounts: preferred global mailbox, then the other.
+ * No platform SMTP fallback — the organization admin must configure Email Setup.
  *
  * @return list<array{ok:true,tenant:bool,user:string,pass:string,from_name:string,profiles:list<array{host:string,port:int,enc:string}>,slot?:int,account_id?:string}>
  */
@@ -274,37 +274,7 @@ function syncpediaListTenantSmtpCandidates(string $preferredGlobalAccount = 'sup
             $ordered[] = $resolved;
             $seenEmails[$resolved['user']] = true;
         }
-        if ($ordered) {
-            return $ordered;
-        }
-
-        if (syncpediaOrganizationSlug($db, $orgId) !== 'syncpedia') {
-            return [];
-        }
-
-        $globals = [];
-        $preferred = $preferredGlobalAccount === 'hr' ? 'hr' : 'support';
-        $other = $preferred === 'hr' ? 'support' : 'hr';
-        foreach ([$preferred, $other] as $acct) {
-            $creds = syncpediaSmtpCredentialsForAccount($acct);
-            if ($creds === null || !syncpediaSmtpEnabled()) {
-                continue;
-            }
-            $user = strtolower(trim((string) $creds['user']));
-            if ($user === '' || isset($seenEmails[$user])) {
-                continue;
-            }
-            $globals[] = [
-                'ok' => true,
-                'tenant' => false,
-                'user' => $user,
-                'pass' => (string) $creds['pass'],
-                'from_name' => '',
-                'profiles' => syncpediaSmtpTransportProfiles(),
-            ];
-            $seenEmails[$user] = true;
-        }
-        return $globals;
+        return $ordered;
     } catch (Throwable $e) {
         error_log('[org-smtp] list candidates: ' . $e->getMessage());
         return [];
@@ -321,11 +291,11 @@ function syncpediaResolveTenantSmtp(string $preferredGlobalAccount = 'support'):
 {
     $orgId = trim((string) ($GLOBALS['syncpedia_mail_org_id'] ?? ''));
     if ($orgId === '') {
-        return ['ok' => false, 'error' => 'Email not configured for your organization'];
+        return ['ok' => false, 'error' => 'Email Setup is missing. An organization admin must add SMTP in Settings before messages can be sent.'];
     }
     $candidates = syncpediaListTenantSmtpCandidates($preferredGlobalAccount);
     if (!$candidates) {
-        return ['ok' => false, 'error' => 'Email not configured for your organization'];
+        return ['ok' => false, 'error' => 'Email Setup is missing. An organization admin must add SMTP in Settings before messages can be sent.'];
     }
     return $candidates[0];
 }

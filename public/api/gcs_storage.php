@@ -46,6 +46,11 @@ function syncpediaGcsLoadServiceAccount(): ?array
     if ($path === '' || !is_file($path) || !is_readable($path)) {
         return null;
     }
+    // Soft warning: keys under the web tree are a deploy footgun (deny via .htaccess).
+    $norm = str_replace('\\', '/', $path);
+    if (stripos($norm, '/public_html/') !== false || stripos($norm, '/api/') !== false) {
+        error_log('[gcs_storage] SA JSON is under a web-accessible tree; prefer a path outside public_html');
+    }
     $raw = @file_get_contents($path);
     if (!is_string($raw) || $raw === '') {
         return null;
@@ -83,12 +88,19 @@ function syncpediaGcsAccessToken(): array
         return ['ok' => false, 'error' => 'GCS service account JSON missing or unreadable'];
     }
 
+    $tokenUri = 'https://oauth2.googleapis.com/token';
+    $saTokenUri = trim((string) ($sa['token_uri'] ?? ''));
+    if ($saTokenUri !== '' && $saTokenUri !== $tokenUri) {
+        // Prevent SSRF via attacker-controlled SA JSON
+        return ['ok' => false, 'error' => 'Invalid GCS token_uri'];
+    }
+
     $now = time();
     $header = syncpediaGcsBase64Url(json_encode(['alg' => 'RS256', 'typ' => 'JWT'], JSON_UNESCAPED_SLASHES));
     $claim = syncpediaGcsBase64Url(json_encode([
         'iss' => (string) $sa['client_email'],
         'scope' => 'https://www.googleapis.com/auth/devstorage.read_write',
-        'aud' => (string) ($sa['token_uri'] ?? 'https://oauth2.googleapis.com/token'),
+        'aud' => $tokenUri,
         'iat' => $now,
         'exp' => $now + 3600,
     ], JSON_UNESCAPED_SLASHES));
@@ -105,7 +117,6 @@ function syncpediaGcsAccessToken(): array
     }
     $jwt = $unsigned . '.' . syncpediaGcsBase64Url($signature);
 
-    $tokenUri = (string) ($sa['token_uri'] ?? 'https://oauth2.googleapis.com/token');
     $post = http_build_query([
         'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
         'assertion' => $jwt,

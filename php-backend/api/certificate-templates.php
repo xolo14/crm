@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/cert_ids.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -55,6 +56,9 @@ function certTemplateRejectOversizedEmbeddedImages(array &$style, array &$fields
 }
 
 certTemplatesEnsureColumns($db);
+certEnsureTypeColumns($db);
+certEnsureOrgPrefixColumn($db);
+certEnsureTypesTable($db);
 
 $action = trim((string) ($_GET['action'] ?? ''));
 
@@ -67,8 +71,39 @@ if ($action === 'upload_asset' && $method === 'POST') {
     if (empty($_FILES['file'])) {
         respond(['error' => 'file is required'], 400);
     }
-    $url = saveCertificateTemplateImageUpload($_FILES['file']);
+    $orgId = trim((string) (resolveCreatorOrgId($db, $tokenData) ?? ''));
+    if ($orgId === '') {
+        $orgId = trim((string) (getOrgId($tokenData) ?? ''));
+    }
+    $url = saveCertificateTemplateImageUpload($_FILES['file'], $orgId);
     respond(['url' => $url, 'success' => true]);
+}
+
+if ($action === 'types' && $method === 'GET') {
+    $orgId = trim((string) (getOrgId($tokenData) ?? ''));
+    respond(['data' => certListTypeOptions($db, $orgId)]);
+}
+
+if ($action === 'types' && $method === 'POST') {
+    requireRole($tokenData, ['admin', 'super_admin', 'manager']);
+    $input = getInput();
+    $orgId = trim((string) (getOrgId($tokenData) ?? ''));
+    $added = certAddOrgType(
+        $db,
+        $orgId,
+        (string) ($input['code'] ?? ''),
+        (string) ($input['label'] ?? $input['name'] ?? ''),
+        $userId
+    );
+    if (empty($added['ok'])) {
+        $msg = (string) ($added['error'] ?? 'Could not add certificate type.');
+        $status = str_contains($msg, 'already') ? 409 : 400;
+        respond(['error' => $msg], $status);
+    }
+    respond([
+        'data' => $added['type'],
+        'types' => certListTypeOptions($db, $orgId),
+    ], 201);
 }
 
 if ($method === 'GET' && $action === '') {
@@ -83,28 +118,16 @@ if ($method === 'GET' && $action === '') {
     $stmt->execute($org['params']);
     $rows = $stmt->fetchAll();
     foreach ($rows as &$r) {
-        $styleJson = [];
-        $fieldsJson = [];
-        $layersJson = [];
-        if (!empty($r['style_json'])) {
-            $tmp = json_decode((string)$r['style_json'], true);
-            if (is_array($tmp)) $styleJson = $tmp;
-        }
-        if (!empty($r['fields_json'])) {
-            $tmp = json_decode((string)$r['fields_json'], true);
-            if (is_array($tmp)) $fieldsJson = $tmp;
-        }
-        if (!empty($r['layers_json'])) {
-            $tmp = json_decode((string)$r['layers_json'], true);
-            if (is_array($tmp)) $layersJson = $tmp;
-        }
+        $styleJson = syncpediaDecodeAssocJson($r['style_json'] ?? null);
+        $fieldsJson = syncpediaDecodeAssocJson($r['fields_json'] ?? null);
+        $layersJson = syncpediaDecodeAssocJson($r['layers_json'] ?? null);
 
         $r['template'] = [
             'id' => (string)$r['id'],
             'name' => (string)$r['name'],
             'status' => (string)$r['status'],
             'createdAt' => substr((string)$r['created_at'], 0, 10),
-            'certType' => (string)$r['cert_type'],
+            'certType' => certNormalizeType($r['cert_type'] ?? 'CC'),
             'style' => array_merge([
                 'layout' => (string)$r['layout_style'],
                 'bgColor' => (string)$r['bg_color'],
@@ -115,7 +138,13 @@ if ($method === 'GET' && $action === '') {
         ];
     }
     $out = array_map(fn($x) => $x['template'], $rows);
-    respond(['data' => $out]);
+    $orgId = trim((string) (getOrgId($tokenData) ?? ''));
+    $certPrefix = $orgId !== '' ? certGetOrgPrefix($db, $orgId) : null;
+    respond([
+        'data' => $out,
+        'cert_prefix' => $certPrefix,
+        'cert_types' => certListTypeOptions($db, $orgId),
+    ]);
 }
 
 if ($method === 'POST' && $action === '') {
@@ -137,15 +166,21 @@ if ($method === 'POST' && $action === '') {
     if ($id === '') $id = generateUUID();
     $name = trim((string)($template['name'] ?? 'Untitled Template'));
     $status = trim((string)($template['status'] ?? 'draft'));
-    $certType = trim((string)($template['certType'] ?? 'CC'));
+    $certType = certNormalizeType($template['certType'] ?? 'CC');
     $style = is_array($template['style'] ?? null) ? $template['style'] : [];
     $fields = is_array($template['fields'] ?? null) ? $template['fields'] : [];
     $layers = is_array($template['layers'] ?? null) ? $template['layers'] : [];
     certTemplateRejectOversizedEmbeddedImages($style, $fields, $layers);
-    $orgId = getOrgId($tokenData);
+    $orgId = trim((string) (getOrgId($tokenData) ?? ''));
 
     if (!in_array($status, ['active', 'draft', 'archived'], true)) $status = 'draft';
-    if (!in_array($certType, ['CC', 'ACH', 'PRO', 'INT', 'WS'], true)) $certType = 'CC';
+    $wantedPrefix = trim((string) ($template['certPrefix'] ?? $template['cert_prefix'] ?? $input['cert_prefix'] ?? ''));
+    if ($wantedPrefix !== '' && $orgId !== '') {
+        $claimed = certClaimOrgPrefix($db, $orgId, $wantedPrefix);
+        if (empty($claimed['ok'])) {
+            respond(['error' => $claimed['error'] ?? 'Certificate prefix is not available.'], 409);
+        }
+    }
     $layoutStyle = (string)($style['layout'] ?? 'classic');
     if (!in_array($layoutStyle, ['classic', 'dark-pro', 'elegant'], true)) $layoutStyle = 'classic';
     $bgColor = (string)($style['bgColor'] ?? '#ffffff');
@@ -172,7 +207,7 @@ if ($method === 'POST' && $action === '') {
         }
         $stmt = $db->prepare($sql);
         $stmt->execute($params);
-        respond(['id' => $id, 'message' => 'Template updated']);
+        respond(['id' => $id, 'message' => 'Template updated', 'cert_prefix' => $orgId !== '' ? certGetOrgPrefix($db, $orgId) : null]);
     }
 
     $stmt = $db->prepare("
@@ -181,7 +216,7 @@ if ($method === 'POST' && $action === '') {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ");
     $stmt->execute([$id, $name, $status, $certType, $layoutStyle, $bgColor, $accentColor, $styleJson, $fieldsJson, $layersJson, $userId, $orgId]);
-    respond(['id' => $id, 'message' => 'Template created'], 201);
+    respond(['id' => $id, 'message' => 'Template created', 'cert_prefix' => $orgId !== '' ? certGetOrgPrefix($db, $orgId) : null], 201);
 }
 
 if ($method === 'DELETE') {

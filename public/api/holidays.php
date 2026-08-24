@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/holiday_calendar.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -8,7 +9,16 @@ $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 
 if ($method === 'GET') {
-    $year = $_GET['year'] ?? date('Y');
+    $year = (int) ($_GET['year'] ?? date('Y'));
+    if ($year < 1970 || $year > 2100) {
+        $year = (int) date('Y');
+    }
+    $orgId = resolveWriteOrgId($db, $tokenData);
+    try {
+        syncpediaSeedIndiaHolidayCalendar($db, $orgId ? (string) $orgId : null, $year);
+    } catch (Throwable $e) {
+        error_log('[holidays] calendar seed failed: ' . $e->getMessage());
+    }
     $org = orgFilter($tokenData, 'h', $db);
     $params = array_merge([$year], $org['params']);
     $stmt = $db->prepare("SELECT * FROM holidays h WHERE YEAR(h.date) = ? AND {$org['where']} ORDER BY h.date ASC");
@@ -21,6 +31,13 @@ if ($method === 'POST') {
     $input = getInput();
     $id = generateUUID();
     $orgId = resolveWriteOrgId($db, $tokenData);
+    $type = strtolower(trim((string) ($input['type'] ?? 'custom')));
+    if (!in_array($type, ['national', 'public', 'regional', 'festival', 'custom'], true)) {
+        $type = 'custom';
+    }
+    $isAdmin = in_array(syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')), ['admin', 'super_admin'], true);
+    $isSpecial = in_array($type, ['regional', 'festival'], true);
+    $approved = ($isAdmin && !$isSpecial) ? 1 : 0;
 
     try {
         $stmt = $db->prepare("INSERT INTO holidays (id, name, date, type, notes, is_approved, org_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
@@ -28,9 +45,9 @@ if ($method === 'POST') {
             $id,
             $input['name'],
             $input['date'],
-            $input['type'] ?? 'public',
+            $type,
             $input['notes'] ?? null,
-            in_array(syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')), ['admin', 'super_admin'], true) ? 1 : 0,
+            $approved,
             $orgId,
         ]);
     } catch (Throwable $e) {
@@ -40,14 +57,16 @@ if ($method === 'POST') {
                 $id,
                 $input['name'],
                 $input['date'],
-                $input['type'] ?? 'public',
+                $type,
                 $input['notes'] ?? null,
-                in_array(syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')), ['admin', 'super_admin'], true) ? 1 : 0,
+                $approved,
             ]);
         } else {
             throw $e;
         }
     }
+    $hName = trim((string) ($input['name'] ?? 'Holiday'));
+    syncpediaNotifyHolidayChange($db, (string) $userId, $orgId ? (string) $orgId : null, $hName, 'added');
     respond(['id' => $id, 'message' => 'Holiday created'], 201);
 }
 
@@ -112,15 +131,23 @@ if ($method === 'DELETE') {
 
     $orgAnd = orgFilterSqlAnd($tokenData, 'h', $db);
     $params = array_merge([$id], $orgAnd['params']);
-    $chk = $db->prepare('SELECT id FROM holidays h WHERE h.id = ?' . $orgAnd['sql'] . ' LIMIT 1');
+    $chk = $db->prepare('SELECT id, name, org_id FROM holidays h WHERE h.id = ?' . $orgAnd['sql'] . ' LIMIT 1');
     $chk->execute($params);
-    if (!$chk->fetch()) {
+    $holidayRow = $chk->fetch(PDO::FETCH_ASSOC);
+    if (!$holidayRow) {
         respond(['error' => 'Holiday not found'], 404);
     }
 
     trashArchiveRow($db, 'holiday', 'holidays', $id, $tokenData);
     $stmt = $db->prepare('DELETE FROM holidays h WHERE h.id = ?' . $orgAnd['sql']);
     $stmt->execute($params);
+    syncpediaNotifyHolidayChange(
+        $db,
+        (string) $userId,
+        isset($holidayRow['org_id']) ? (string) $holidayRow['org_id'] : resolveWriteOrgId($db, $tokenData),
+        (string) ($holidayRow['name'] ?? 'Holiday'),
+        'removed',
+    );
     respond(['message' => 'Holiday deleted']);
 }
 

@@ -13,6 +13,8 @@ export type PlaceholderDef = {
   category: string;
 };
 
+export type PlaceholderTokenStyle = 'mustache' | 'angle';
+
 /** Standard offer-letter merge fields (token = {{snake_case}}). */
 export const OFFER_PLACEHOLDER_DEFS: PlaceholderDef[] = [
   { key: 'candidate_name', label: 'Candidate name', token: '{{candidate_name}}', category: 'Candidate', hint: 'Full name' },
@@ -36,18 +38,53 @@ export const OFFER_PLACEHOLDER_DEFS: PlaceholderDef[] = [
   { key: 'ref_number', label: 'Reference no.', token: '{{ref_number}}', category: 'System', hint: 'Auto-generated on send' },
 ];
 
-export function toPlaceholderToken(raw: string): string {
+/** Certificate merge fields (token = <<Label>>). */
+export const CERT_PLACEHOLDER_DEFS: PlaceholderDef[] = [
+  { key: 'name', label: 'Recipient name', token: '<<Name>>', category: 'Recipient', hint: 'Maps to recipient_name' },
+  { key: 'email', label: 'Recipient email', token: '<<Email>>', category: 'Recipient', hint: 'Needed to email the certificate' },
+  { key: 'course', label: 'Course / Domain', token: '<<Course>>', category: 'Recipient', hint: 'Maps to domain_name' },
+  { key: 'company', label: 'Company', token: '<<Company>>', category: 'Company' },
+  { key: 'date', label: 'Issue date', token: '<<Date>>', category: 'Dates' },
+  { key: 'certid', label: 'Cert ID', token: '<<CertID>>', category: 'System', hint: 'Auto-generated when issuing' },
+];
+
+export function toPlaceholderToken(raw: string, style: PlaceholderTokenStyle = 'mustache'): string {
+  if (style === 'angle') {
+    const label = raw
+      .trim()
+      .replace(/<<|>>/g, '')
+      .replace(/^<+/, '')
+      .replace(/>+$/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return label ? `<<${label}>>` : '';
+  }
   const key = raw
     .trim()
     .toLowerCase()
     .replace(/\{\{|\}\}/g, '')
+    .replace(/<<|>>/g, '')
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_|_$/g, '');
   return key ? `{{${key}}}` : '';
 }
 
-export function extractPlaceholderTokens(html: string): string[] {
+export function extractPlaceholderTokens(html: string, style: PlaceholderTokenStyle = 'mustache'): string[] {
   const found = new Set<string>();
+  if (style === 'angle') {
+    const re = /<<\s*([^<>]+?)\s*>>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html))) {
+      const label = String(m[1] || '').trim();
+      if (label) found.add(`<<${label}>>`);
+    }
+    // Also surface {{snake}} if someone mixed styles in cert text
+    const mustache = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+    while ((m = mustache.exec(html))) {
+      found.add(`{{${m[1]}}}`);
+    }
+    return [...found];
+  }
   const re = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html))) {
@@ -62,18 +99,34 @@ type Props = {
   documentHtml?: string;
   className?: string;
   compact?: boolean;
+  /** Offer letters: mustache {{ }}; certificates: angle << >> */
+  tokenStyle?: PlaceholderTokenStyle;
+  /** Override preset list (defaults by tokenStyle) */
+  defs?: PlaceholderDef[];
+  title?: string;
+  description?: string;
 };
 
 /**
- * Merge-field palette: click chips to insert {{placeholders}}, plus custom field creator.
+ * Merge-field palette: click chips to insert placeholders, plus custom field creator.
  */
-export function PlaceholderPalette({ onInsert, documentHtml = '', className, compact }: Props) {
+export function PlaceholderPalette({
+  onInsert,
+  documentHtml = '',
+  className,
+  compact,
+  tokenStyle = 'mustache',
+  defs,
+  title,
+  description,
+}: Props) {
   const [customLabel, setCustomLabel] = useState('');
   const [customExtras, setCustomExtras] = useState<PlaceholderDef[]>([]);
 
-  const used = useMemo(() => new Set(extractPlaceholderTokens(documentHtml)), [documentHtml]);
+  const presetDefs = defs ?? (tokenStyle === 'angle' ? CERT_PLACEHOLDER_DEFS : OFFER_PLACEHOLDER_DEFS);
+  const used = useMemo(() => new Set(extractPlaceholderTokens(documentHtml, tokenStyle)), [documentHtml, tokenStyle]);
 
-  const allDefs = useMemo(() => [...OFFER_PLACEHOLDER_DEFS, ...customExtras], [customExtras]);
+  const allDefs = useMemo(() => [...presetDefs, ...customExtras], [presetDefs, customExtras]);
 
   const byCategory = useMemo(() => {
     const map = new Map<string, PlaceholderDef[]>();
@@ -85,13 +138,21 @@ export function PlaceholderPalette({ onInsert, documentHtml = '', className, com
     return [...map.entries()];
   }, [allDefs]);
 
-  const previewToken = toPlaceholderToken(customLabel);
+  const previewToken = toPlaceholderToken(customLabel, tokenStyle);
+
+  const tokenKey = (token: string) =>
+    token
+      .replace(/\{\{|\}\}/g, '')
+      .replace(/<<|>>/g, '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_');
 
   const addCustom = () => {
-    const token = toPlaceholderToken(customLabel);
+    const token = toPlaceholderToken(customLabel, tokenStyle);
     if (!token) return;
-    const key = token.replace(/\{\{|\}\}/g, '');
-    if (allDefs.some((d) => d.key === key)) {
+    const key = tokenKey(token);
+    if (allDefs.some((d) => d.key === key || tokenKey(d.token) === key)) {
       onInsert(token);
       setCustomLabel('');
       return;
@@ -101,23 +162,30 @@ export function PlaceholderPalette({ onInsert, documentHtml = '', className, com
       label: customLabel.trim() || key,
       token,
       category: 'Custom',
-      hint: 'Excel column = ' + key,
+      hint: tokenStyle === 'angle' ? 'Issue form / Excel column from this label' : `Excel column = ${key}`,
     };
     setCustomExtras((prev) => [...prev, def]);
     onInsert(token);
     setCustomLabel('');
   };
 
+  const heading =
+    title ||
+    (tokenStyle === 'angle' ? 'Placeholders (<<merge fields>>)' : 'Placeholders (merge fields)');
+  const sub =
+    description ||
+    (tokenStyle === 'angle'
+      ? 'Click to insert · anything inside << >> is filled when you issue'
+      : `Click to insert at cursor · Excel columns should match the name inside {{ }}`);
+
   return (
     <div className={cn('rounded-md border bg-card', className)}>
       <div className="flex items-center gap-2 px-3 py-2 border-b bg-muted/30">
         <Variable className="h-3.5 w-3.5 text-primary" />
         <div className="min-w-0">
-          <p className="text-xs font-semibold">Placeholders (merge fields)</p>
+          <p className="text-xs font-semibold">{heading}</p>
           {!compact ? (
-            <p className="text-[10px] text-muted-foreground truncate">
-              Click to insert at cursor · Excel columns should match the name inside {'{{ }}'}
-            </p>
+            <p className="text-[10px] text-muted-foreground truncate">{sub}</p>
           ) : null}
         </div>
       </div>
@@ -128,7 +196,7 @@ export function PlaceholderPalette({ onInsert, documentHtml = '', className, com
             <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">{cat}</p>
             <div className="flex flex-wrap gap-1.5">
               {items.map((d) => {
-                const isUsed = used.has(d.token);
+                const isUsed = used.has(d.token) || [...used].some((t) => tokenKey(t) === tokenKey(d.token));
                 return (
                   <button
                     key={d.key}
@@ -157,7 +225,7 @@ export function PlaceholderPalette({ onInsert, documentHtml = '', className, com
             <div className="flex-1 min-w-[140px]">
               <Input
                 className="h-8 text-xs"
-                placeholder="e.g. Bond period / Notice days"
+                placeholder={tokenStyle === 'angle' ? 'e.g. Grade / Duration / College' : 'e.g. Bond period / Notice days'}
                 value={customLabel}
                 onChange={(e) => setCustomLabel(e.target.value)}
                 onKeyDown={(e) => {
@@ -175,7 +243,9 @@ export function PlaceholderPalette({ onInsert, documentHtml = '', className, com
           {previewToken ? (
             <p className="text-[10px] text-muted-foreground">
               Will insert <code className="rounded bg-muted px-1">{previewToken}</code>
-              {' '}· use the same column name in Excel for bulk issue
+              {tokenStyle === 'angle'
+                ? ' · text before/after <<…>> stays on the certificate'
+                : ' · use the same column name in Excel for bulk issue'}
             </p>
           ) : null}
         </div>
@@ -187,7 +257,9 @@ export function PlaceholderPalette({ onInsert, documentHtml = '', className, com
             </p>
             <div className="flex flex-wrap gap-1">
               {[...used].map((t) => (
-                <code key={t} className="text-[10px] rounded bg-muted px-1.5 py-0.5">{t}</code>
+                <code key={t} className="text-[10px] rounded bg-muted px-1.5 py-0.5">
+                  {t}
+                </code>
               ))}
             </div>
           </div>

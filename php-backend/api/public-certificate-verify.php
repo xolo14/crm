@@ -4,6 +4,7 @@
  * GET /api/public-certificate-verify.php?id=CERT_ID&token=VERIFY_TOKEN
  */
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/cert_ids.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -44,33 +45,15 @@ if ($tplId !== '') {
     $tstmt->execute([$tplId]);
     $tpl = $tstmt->fetch(PDO::FETCH_ASSOC);
     if ($tpl) {
-        $styleJson = [];
-        $fieldsJson = [];
-        $layersJson = [];
-        if (!empty($tpl['style_json'])) {
-            $tmp = json_decode((string) $tpl['style_json'], true);
-            if (is_array($tmp)) {
-                $styleJson = $tmp;
-            }
-        }
-        if (!empty($tpl['fields_json'])) {
-            $tmp = json_decode((string) $tpl['fields_json'], true);
-            if (is_array($tmp)) {
-                $fieldsJson = $tmp;
-            }
-        }
-        if (!empty($tpl['layers_json'])) {
-            $tmp = json_decode((string) $tpl['layers_json'], true);
-            if (is_array($tmp)) {
-                $layersJson = $tmp;
-            }
-        }
+        $styleJson = syncpediaDecodeAssocJson($tpl['style_json'] ?? null);
+        $fieldsJson = syncpediaDecodeAssocJson($tpl['fields_json'] ?? null);
+        $layersJson = syncpediaDecodeAssocJson($tpl['layers_json'] ?? null);
         $template = [
             'id' => (string) $tpl['id'],
             'name' => (string) $tpl['name'],
             'status' => (string) ($tpl['status'] ?? 'active'),
             'createdAt' => substr((string) ($tpl['created_at'] ?? date('Y-m-d')), 0, 10),
-            'certType' => (string) ($tpl['cert_type'] ?? 'CC'),
+            'certType' => certNormalizeType($tpl['cert_type'] ?? 'CC'),
             'style' => array_merge([
                 'layout' => (string) ($tpl['layout_style'] ?? 'classic'),
                 'bgColor' => (string) ($tpl['bg_color'] ?? '#ffffff'),
@@ -87,7 +70,7 @@ respond([
     'certId' => $row['id'],
     'recipientName' => $row['recipient_name'],
     'courseName' => $row['course_name'],
-    'certType' => $row['cert_type'],
+    'certType' => certNormalizeType($row['cert_type'] ?? 'CC'),
     'issueDate' => $row['issue_date'],
     'templateName' => $row['template_name'],
     'template' => $template,

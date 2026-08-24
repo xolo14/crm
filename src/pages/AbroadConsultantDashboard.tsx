@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-import { sendNotificationWithEmail } from '@/lib/notifications';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -19,7 +18,6 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/hooks/use-toast';
 import { isSalesRepRole, normalizeAppRole } from '@/lib/roleUtils';
 import { computeLeadKpis, normalizeLeadsByStatus } from '@/lib/dashboardKpis';
-
 const COLORS = ['hsl(210, 70%, 50%)', 'hsl(162, 63%, 41%)', 'hsl(38, 92%, 50%)', 'hsl(0, 70%, 55%)', 'hsl(270, 60%, 55%)', 'hsl(330, 70%, 55%)', 'hsl(45, 80%, 50%)', 'hsl(180, 60%, 45%)'];
 const SOURCE_LABELS: Record<string, string> = { google_ads: 'Google Ads', instagram: 'Instagram', facebook: 'Facebook', youtube: 'YouTube', website: 'Website', google_forms: 'Google Forms', whatsapp: 'WhatsApp', referral: 'Referral', walkin: 'Walk-in', college_seminar: 'College Seminar', other: 'Other' };
 const STATUS_LABELS: Record<string, string> = { new: 'New Inquiry', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Counseling Scheduled', demo_attended: 'Counseling Done', considering: 'Application In Progress', enrolled: 'Enroll', converted: 'Visa Approved', lost: 'Dropped' };
@@ -157,11 +155,9 @@ export default function AbroadConsultantDashboard() {
     try {
       await api.leads.update(leadId, { assigned_to: repId });
       const repName = teamMembers.find(m => m.id === repId)?.full_name || 'Counselor';
-      const lead = leads.find(l => l.id === leadId);
       setUnassignedLeads(prev => prev.filter(l => l.id !== leadId));
       setLeads(prev => prev.map(l => l.id === leadId ? { ...l, assigned_to: repId } : l));
       toast({ title: `Inquiry assigned to ${repName}` });
-      await sendNotificationWithEmail({ userId: repId, title: 'New Inquiry Assigned', message: `Student "${lead?.name || 'Unknown'}" has been assigned to you.`, type: 'lead_assigned', link: '/leads', leadName: lead?.name || 'Unknown', assignedByName: profile?.full_name || 'Admin' });
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };
 

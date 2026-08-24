@@ -49,6 +49,23 @@ define('RAZORPAY_KEY_SECRET', '');
 define('RAZORPAY_WEBHOOK_SECRET', '');
 define('CRM_PUBLIC_URL', ''); // leave empty to auto-detect from your domain
 
+// ── Meta Ads Marketing API (Settings → Meta Ads; hourly cron sync) ───────────
+// Create a Meta App with Facebook Login for Business + Marketing API (ads_read).
+// Valid OAuth redirect (must match Meta App → Facebook Login → Settings):
+//   https://YOUR_DOMAIN/api/meta-ads.php?action=oauth_callback
+define('META_ADS_APP_ID', '');
+define('META_ADS_APP_SECRET', '');
+define('META_ADS_GRAPH_VERSION', 'v19.0');
+// OAuth scopes — start with ads_read only. After Meta App Review grants Advanced Access
+// for leads_retrieval, set:
+// define('META_ADS_OAUTH_SCOPES', 'ads_read,leads_retrieval');
+// Optional Login for Business configuration id:
+// define('META_ADS_LOGIN_CONFIG_ID', '');
+// Optional explicit redirect (defaults to CRM_PUBLIC_URL/api/meta-ads.php?action=oauth_callback):
+// define('META_ADS_OAUTH_REDIRECT_URI', 'https://YOUR_DOMAIN/api/meta-ads.php?action=oauth_callback');
+// Optional webhook verify token (account-level events stub):
+// define('META_ADS_WEBHOOK_VERIFY_TOKEN', '');
+
 // ── Website lead ingest (no CRM form required) ───────────────────────────────
 // Used by syncpedia.in / other sites: POST /api/lead-ingest.php with header X-Lead-Api-Key
 define('PUBLIC_LEAD_API_KEY', ''); // e.g. openssl rand -hex 24

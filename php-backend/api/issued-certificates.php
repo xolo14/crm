@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/cert_ids.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -7,6 +8,9 @@ $method = $_SERVER['REQUEST_METHOD'];
 
 $tokenData = verifyToken();
 $userId = $tokenData['user_id'] ?? null;
+
+certEnsureTypeColumns($db);
+certEnsureOrgPrefixColumn($db);
 
 function tableHasColumn(PDO $db, string $table, string $column): bool {
     return syncpediaColumnExists($db, $table, $column);
@@ -16,9 +20,17 @@ if ($method === 'GET') {
     requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
     $org = orgFilter($tokenData);
     $sql = 'SELECT id, template_id, template_name, recipient_name, course_name, cert_type, issue_date, status, verify_token, created_at';
-    $sql .= " FROM issued_certificates WHERE {$org['where']} ORDER BY created_at DESC LIMIT 2000";    $stmt = $db->prepare($sql);
+    $sql .= " FROM issued_certificates WHERE {$org['where']} ORDER BY created_at DESC LIMIT 2000";
+    $stmt = $db->prepare($sql);
     $stmt->execute($org['params']);
-    respond(['data' => $stmt->fetchAll()]);
+    $rows = $stmt->fetchAll();
+    foreach ($rows as &$row) {
+        if (isset($row['cert_type'])) {
+            $row['cert_type'] = certNormalizeType($row['cert_type']);
+        }
+    }
+    unset($row);
+    respond(['data' => $rows]);
 }
 
 if ($method === 'POST') {
@@ -56,27 +68,54 @@ if ($method === 'POST') {
         $templateName = trim((string)($item['templateName'] ?? ''));
         $recipientName = trim((string)($item['recipientName'] ?? ''));
         $courseName = trim((string)($item['courseName'] ?? ''));
-        $certType = trim((string)($item['certType'] ?? 'CC'));
+        $certType = certNormalizeType($item['certType'] ?? 'CC');
         $issueDate = trim((string)($item['issueDate'] ?? ''));
         $status = trim((string)($item['status'] ?? 'issued'));
         $verifyToken = isset($item['verifyToken']) ? (string)$item['verifyToken'] : null;
 
-        if ($id === '' || $templateId === '' || $templateName === '' || $recipientName === '' || $courseName === '' || $issueDate === '') {
+        if ($templateId === '' || $templateName === '' || $recipientName === '' || $courseName === '' || $issueDate === '') {
             $errors[] = ['id' => $id, 'error' => 'Missing required fields'];
             continue;
-        }
-        if (!in_array($certType, ['CC', 'ACH', 'PRO', 'INT', 'WS'], true)) {
-            $certType = 'CC';
         }
         if (!in_array($status, ['issued', 'revoked', 'expired'], true)) {
             $status = 'issued';
         }
 
         $tplParams = array_merge([$templateId], $tplOrg['params']);
-        $tplChk = $db->prepare("SELECT ct.id FROM certificate_templates ct WHERE ct.id = ? AND {$tplOrg['where']} LIMIT 1");
+        $tplChk = $db->prepare("SELECT ct.id, ct.cert_type FROM certificate_templates ct WHERE ct.id = ? AND {$tplOrg['where']} LIMIT 1");
         $tplChk->execute($tplParams);
-        if (!$tplChk->fetch()) {
+        $tplRow = $tplChk->fetch(PDO::FETCH_ASSOC);
+        if (!$tplRow) {
             $errors[] = ['id' => $id, 'error' => 'Template not in your organization'];
+            continue;
+        }
+        $certType = certNormalizeType($tplRow['cert_type'] ?? $certType);
+
+        $orgIdStr = trim((string) $orgId);
+        $prefix = $orgIdStr !== '' ? certGetOrgPrefix($db, $orgIdStr) : null;
+        if ($prefix === null && $orgIdStr !== '') {
+            $fromId = certNormalizePrefix(explode('-', strtoupper($id))[0] ?? '');
+            $wanted = $fromId ?: certSuggestPrefix($db, $orgIdStr);
+            $claimed = certClaimOrgPrefix($db, $orgIdStr, $wanted);
+            if (empty($claimed['ok'])) {
+                $errors[] = ['id' => $id, 'error' => $claimed['error'] ?? 'Certificate prefix is not available.'];
+                continue;
+            }
+            $prefix = $claimed['prefix'];
+        }
+        if ($prefix === null) {
+            $errors[] = ['id' => $id, 'error' => 'Organization prefix is required before issuing certificates.'];
+            continue;
+        }
+        if ($id === '') {
+            try {
+                $id = certGenerateIssuedId($db, $prefix, $certType);
+            } catch (Throwable $e) {
+                $errors[] = ['id' => $id, 'error' => 'Could not allocate a unique certificate number'];
+                continue;
+            }
+        } elseif (!certIsValidIssuedId($id, $prefix, $certType)) {
+            $errors[] = ['id' => $id, 'error' => 'Certificate number must be PREFIX-TYPE-XXXXXX for this organization (e.g. SP-CS-482193)'];
             continue;
         }
 
@@ -95,6 +134,16 @@ if ($method === 'POST') {
                 $errors[] = ['id' => $id, 'error' => $e->getMessage()];
             }
         }
+    }
+
+    if ($created >= 2) {
+        syncpediaNotifyOrgAdminsOfBulkKind(
+            $db,
+            (string) $userId,
+            $orgId ? (string) $orgId : null,
+            'certificates',
+            (int) $created,
+        );
     }
 
     respond(['created' => $created, 'ids' => $ids, 'errors' => $errors], $created > 0 ? 201 : 400);

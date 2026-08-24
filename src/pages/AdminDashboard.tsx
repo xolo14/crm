@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-import { sendNotificationWithEmail } from '@/lib/notifications';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,9 +13,8 @@ import { DateRangeFilter, DateRange } from '@/components/DateRangeFilter';
 import { parseServerDateTime, buildDailyLeadTrend } from '@/lib/dateTime';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/hooks/use-toast';
-import { filterAndSortAssignRoster } from '@/lib/assignRoster';
+import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import { computeLeadKpis, normalizeLeadsByStatus } from '@/lib/dashboardKpis';
-
 const COLORS = ['hsl(162, 63%, 41%)', 'hsl(200, 70%, 50%)', 'hsl(38, 92%, 50%)', 'hsl(0, 70%, 55%)', 'hsl(270, 60%, 55%)', 'hsl(330, 70%, 55%)', 'hsl(45, 80%, 50%)', 'hsl(180, 60%, 45%)'];
 const SOURCE_LABELS: Record<string, string> = { google_ads: 'Google Ads', instagram: 'Instagram', facebook: 'Facebook', youtube: 'YouTube', website: 'Website', google_forms: 'Google Forms', whatsapp: 'WhatsApp', referral: 'Referral', walkin: 'Walk-in', college_seminar: 'College Seminar', other: 'Other' };
 const STATUS_LABELS: Record<string, string> = { new: 'New', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Demo Scheduled', demo_attended: 'Demo Attended', considering: 'Considering', enrolled: 'Enroll', converted: 'Enroll', lost: 'Lost' };
@@ -49,9 +47,10 @@ export default function AdminDashboard() {
     try {
       const data = await api.team.list();
       setTeamMembers(
-        filterAndSortAssignRoster(data.data || [], {
-          excludeUserId: user?.id,
-        }),
+        ensureAssignRosterIncludesSelf(
+          filterAndSortAssignRoster(data.data || []),
+          user,
+        ),
       );
     } catch (err) {
       console.error(err);
@@ -137,19 +136,9 @@ export default function AdminDashboard() {
     try {
       await api.leads.update(leadId, { assigned_to: repId });
       const repName = teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
-      const lead = leads.find(l => l.id === leadId);
       setUnassignedLeads(prev => prev.filter(l => l.id !== leadId));
       setLeads(prev => prev.map(l => l.id === leadId ? { ...l, assigned_to: repId } : l));
       toast({ title: `Lead assigned to ${repName}` });
-      await sendNotificationWithEmail({
-        userId: repId,
-        title: 'New Lead Assigned',
-        message: `Lead "${lead?.name || 'Unknown'}" has been assigned to you.`,
-        type: 'lead_assigned',
-        link: '/leads',
-        leadName: lead?.name || 'Unknown',
-        assignedByName: profile?.full_name || 'Admin',
-      });
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };
 

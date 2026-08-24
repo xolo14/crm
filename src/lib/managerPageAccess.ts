@@ -26,7 +26,6 @@ export const MANAGER_PAGE_ACCESS_OPTIONS: ManagerPageOption[] = [
     description: f.description,
     section: f.section,
   })),
-  { key: "my_doc_forms", section: "CRM", label: "My Document Forms", description: "Fill assigned document forms" },
 ];
 
 export const MANAGER_PAGE_ACCESS_KEYS = MANAGER_PAGE_ACCESS_OPTIONS.map((o) => o.key);

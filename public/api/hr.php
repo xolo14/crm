@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/holiday_calendar.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -117,7 +118,7 @@ if ($action === 'hr_dashboard' && $method === 'GET') {
 
     $q3 = $db->prepare("SELECT COUNT(*) c FROM tasks WHERE assigned_to=? AND status <> 'completed'"); $q3->execute([$userId]); $c = $q3->fetch();
     $orgHolidays = orgFilter($tokenData, '', $db);
-    $q4 = $db->prepare("SELECT COUNT(*) c FROM holidays WHERE date >= CURDATE() AND {$orgHolidays['where']}");
+    $q4 = $db->prepare("SELECT COUNT(*) c FROM holidays WHERE date >= CURDATE() AND is_approved = 1 AND {$orgHolidays['where']}");
     $q4->execute($orgHolidays['params']);
     $d = $q4->fetch();
 
@@ -270,7 +271,16 @@ if ($action === 'notifications' && $method === 'GET') {
 }
 
 if ($action === 'holidays' && $method === 'GET') {
-    $year = $_GET['year'] ?? date('Y');
+    $year = (int) ($_GET['year'] ?? date('Y'));
+    if ($year < 1970 || $year > 2100) {
+        $year = (int) date('Y');
+    }
+    try {
+        $orgId = resolveWriteOrgId($db, $tokenData);
+        syncpediaSeedIndiaHolidayCalendar($db, $orgId ? (string) $orgId : null, $year);
+    } catch (Throwable $e) {
+        error_log('[hr holidays] calendar seed failed: ' . $e->getMessage());
+    }
     $orgHolidays = orgFilter($tokenData, '', $db);
     $stmt = $db->prepare("SELECT * FROM holidays WHERE YEAR(date)=? AND {$orgHolidays['where']} ORDER BY date ASC");
     $stmt->execute(array_merge([$year], $orgHolidays['params']));

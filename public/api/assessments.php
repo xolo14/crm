@@ -266,7 +266,7 @@ function peaklyySeedBank(PDO $db): void
     try {
         $activeCount = (int) $db->query('SELECT COUNT(*) FROM peaklyy_question_bank WHERE is_active = 1')->fetchColumn();
         $newDomainCount = (int) $db->query(
-            "SELECT COUNT(*) FROM peaklyy_question_bank WHERE domain_key = 'python' AND is_active = 1"
+            "SELECT COUNT(*) FROM peaklyy_question_bank WHERE domain_key = 'java' AND is_active = 1"
         )->fetchColumn();
     } catch (Throwable $e) {
         return;
@@ -318,18 +318,19 @@ function peaklyySeedBank(PDO $db): void
     }
 }
 
-/** Domain-bank assessments: 25 MCQ + 5 tasks, untimed (duration 0). */
+/** Domain-bank assessments: 15 beginner MCQs + 1 task, untimed (duration 0). */
 function peaklyyNormalizeDomainAssessments(PDO $db): void
 {
+    $qCount = (int) peaklyyDomainQuestionCount();
     try {
         $db->exec(
             "UPDATE peaklyy_assessments
-             SET duration_minutes = 0, question_count = 30
+             SET duration_minutes = 0, question_count = {$qCount}
              WHERE COALESCE(source_mode, 'domain_bank') = 'domain_bank'"
         );
     } catch (Throwable $e) {
         try {
-            $db->exec('UPDATE peaklyy_assessments SET duration_minutes = 0, question_count = 30');
+            $db->exec("UPDATE peaklyy_assessments SET duration_minutes = 0, question_count = {$qCount}");
         } catch (Throwable $e2) {
         }
     }
@@ -785,10 +786,11 @@ function peaklyyPublicQuestion(array $row): array
 }
 
 /**
- * Domain MCQ attempt: 25 random MCQs (easy/medium/hard mix).
+ * Domain MCQ attempt: all beginner MCQs for the selected domain.
  */
-function peaklyyPickMcqQuestions(PDO $db, string $domain, int $mcqCount = 25): array
+function peaklyyPickMcqQuestions(PDO $db, string $domain, ?int $mcqCount = null): array
 {
+    $mcqCount = $mcqCount ?? peaklyyDomainMcqCount();
     $mcqCount = max(1, $mcqCount);
     $stmt = $db->prepare(
         "SELECT * FROM peaklyy_question_bank
@@ -834,11 +836,11 @@ function peaklyyPickMcqQuestions(PDO $db, string $domain, int $mcqCount = 25): a
 }
 
 /**
- * Domain practical tasks (5) — notepad + upload, manual grading.
+ * Domain practical task — notepad + upload, manual grading.
  */
-function peaklyyPickTaskQuestions(PDO $db, string $domain, int $taskLimit = 5): array
+function peaklyyPickTaskQuestions(PDO $db, string $domain, ?int $taskLimit = null): array
 {
-    $taskLimit = max(1, $taskLimit);
+    $taskLimit = max(1, $taskLimit ?? peaklyyDomainTaskCount());
     $taskStmt = $db->prepare(
         "SELECT * FROM peaklyy_question_bank
          WHERE domain_key = ? AND is_active = 1 AND q_type = 'task'
@@ -852,7 +854,7 @@ function peaklyyPickTaskQuestions(PDO $db, string $domain, int $taskLimit = 5): 
 /** @deprecated Prefer peaklyyPickMcqQuestions + peaklyyPickTaskQuestions */
 function peaklyyPickQuestions(PDO $db, string $domain, int $count): array
 {
-    $taskLimit = 5;
+    $taskLimit = peaklyyDomainTaskCount();
     $mcqCount = max(1, $count > $taskLimit ? ($count - $taskLimit) : $count);
     return array_merge(
         peaklyyPickMcqQuestions($db, $domain, $mcqCount),
@@ -1160,7 +1162,7 @@ if ($action === 'create' && $method === 'POST') {
     $qCount = max(1, min(50, (int) ($input['question_count'] ?? 30)));
     if ($sourceMode === 'domain_bank') {
         $duration = 0;
-        $qCount = 30;
+        $qCount = peaklyyDomainQuestionCount();
     }
     if ($sourceMode === 'custom') {
         if (count($customQs) < 1) {
@@ -1640,12 +1642,12 @@ if ($action === 'public_get' && $method === 'GET') {
     $sourceMode = strtolower((string) ($row['source_mode'] ?? 'domain_bank'));
     if ($sourceMode === 'domain_bank') {
         $duration = 0;
-        $qCount = 30;
+        $qCount = peaklyyDomainQuestionCount();
         $row['duration_minutes'] = 0;
-        $row['question_count'] = 30;
+        $row['question_count'] = $qCount;
         $row['two_part'] = true;
-        $row['mcq_count'] = 25;
-        $row['task_count'] = 5;
+        $row['mcq_count'] = peaklyyDomainMcqCount();
+        $row['task_count'] = peaklyyDomainTaskCount();
     }
     if ($sourceMode === 'custom') {
         try {
@@ -1680,8 +1682,8 @@ if ($action === 'public_get' && $method === 'GET') {
         $instructions[] = 'No time limit — submit when you finish';
     }
     if ($sourceMode === 'domain_bank') {
-        $instructions[] = 'Part 1 — MCQ test: 25 random questions (auto-scored; results sent to the partner website)';
-        $instructions[] = 'Part 2 — Task test: 5 practical tasks with notepad and/or file upload (manual grading)';
+        $instructions[] = 'Part 1 — MCQ test: 15 beginner questions (auto-scored; results sent to the partner website)';
+        $instructions[] = 'Part 2 — Task test: 1 very basic practical task with notepad and/or file upload (manual grading)';
     } else {
         $instructions[] = $qCount . ' question' . ($qCount === 1 ? '' : 's');
     }
@@ -1834,7 +1836,7 @@ if ($action === 'start' && $method === 'POST') {
             }
         }
         if (!$questions) {
-            $picked = peaklyyPickTaskQuestions($db, (string) $attempt['domain_key'], 5);
+            $picked = peaklyyPickTaskQuestions($db, (string) $attempt['domain_key']);
             if (!$picked) {
                 respond(['error' => 'No practical tasks available for this domain'], 500);
             }
@@ -1900,7 +1902,7 @@ if ($action === 'start' && $method === 'POST') {
                         ->execute([$live, $attempt['assessment_id']]);
                 }
             } else {
-                $picked = peaklyyPickMcqQuestions($db, (string) $attempt['domain_key'], 25);
+                $picked = peaklyyPickMcqQuestions($db, (string) $attempt['domain_key']);
             }
             if (!$picked) {
                 respond(['error' => $mode === 'custom' ? 'No custom questions on this assessment' : 'No questions available for this domain'], 500);
@@ -2588,7 +2590,7 @@ if ($action === 'submit' && $method === 'POST') {
     $twoPart = $sourceMode === 'domain_bank' && $phase === 'mcq';
     if ($twoPart) {
         // Prepare task paper; keep status in_progress for part 2
-        $taskPicked = peaklyyPickTaskQuestions($db, (string) $attempt['domain_key'], 5);
+        $taskPicked = peaklyyPickTaskQuestions($db, (string) $attempt['domain_key']);
         $taskQuestions = array_map('peaklyyPublicQuestion', $taskPicked);
         try {
             $db->prepare(

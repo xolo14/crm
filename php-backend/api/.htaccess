@@ -1,7 +1,7 @@
 RewriteEngine On
 
-# Block sensitive config / schema from direct HTTP access
-<FilesMatch "^(config\.php|config\.example\.php|\.env|database\.sql|database\.mysql\.sql)$">
+# Block sensitive config / schema / keys from direct HTTP access
+<FilesMatch "^(config\.php|config\.example\.php|\.env|database\.sql|database\.mysql\.sql|.*\.json)$">
   <IfModule mod_authz_core.c>
     Require all denied
   </IfModule>
@@ -23,6 +23,12 @@ RewriteRule ^payment-links/webhook/?$ payment-links.php?action=webhook [L,QSA]
 RewriteRule ^payment-links/([A-Za-z0-9_]+)/cancel/?$ payment-links.php?action=cancel&id=$1 [L,QSA]
 RewriteRule ^payment-links/([A-Za-z0-9_]+)/remind/?$ payment-links.php?action=remind&id=$1 [L,QSA]
 RewriteRule ^payment-links/([A-Za-z0-9_]+)/?$ payment-links.php?action=fetch&id=$1 [L,QSA]
+
+# Mobile Android sync endpoints (also reachable as /api/calls.php, /api/location.php)
+RewriteRule ^calls/?$ calls.php [L,QSA]
+RewriteRule ^location/?$ location.php [L,QSA]
+RewriteRule ^meta-ads/?$ meta-ads.php [L,QSA]
+RewriteRule ^cron_meta_ads_sync/?$ cron_meta_ads_sync.php [L,QSA]
 
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d

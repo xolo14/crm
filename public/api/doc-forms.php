@@ -265,7 +265,7 @@ if ($method === 'GET') {
             $params[] = $userId;
             $params[] = $role;
         } else {
-            // My Document Forms / L1 fill list: assigned active forms only.
+            // Dashboard assigned-forms list: assigned active forms only.
             $where[] = $assignedSql;
             $params[] = $userId;
             $params[] = $role;

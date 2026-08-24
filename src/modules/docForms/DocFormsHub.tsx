@@ -53,7 +53,7 @@ import { PublicFormShell, builderBrandFromState } from "@/components/forms/Publi
 import { FormDescriptionEditor } from "@/components/forms/FormDescriptionEditor";
 import { descriptionPlainPreview } from "@/components/forms/formDescriptionHtml";
 import { normalizeFormColor } from "@/components/forms/publicFormTypes";
-import { buildHtmlDocumentPdfBase64 } from "@/utils/offerLetterPdf";
+import { fieldKeyToPlaceholder } from "@/lib/offerLetterPlaceholders";
 import { filterAndSortAssignRoster } from "@/lib/assignRoster";
 
 type TeamMember = {
@@ -518,7 +518,7 @@ export default function DocFormsHubPage({
             <Card className="h-fit lg:sticky lg:top-16">
               <CardHeader className="py-3 px-4">
                 <CardTitle className="text-sm">Access</CardTitle>
-                <CardDescription className="text-xs">Who can open this under My Document Forms.</CardDescription>
+                <CardDescription className="text-xs">Who can fill this from their dashboard.</CardDescription>
               </CardHeader>
               <CardContent className="px-4 pb-4 space-y-3 max-h-[70vh] overflow-y-auto">
                 <div>
@@ -859,7 +859,7 @@ export default function DocFormsHubPage({
           <DialogHeader>
             <DialogTitle>Assign form</DialogTitle>
             <DialogDescription>
-              Assigned people/roles see this under My Document Forms. Anyone with the public link can also fill it.
+              Assigned people/roles see this on their dashboard. Anyone with the public link can also fill it.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -1160,7 +1160,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
         const name = String(playValues.candidate_name || playValues.name || "Candidate");
         const filename = applyPlaceholders(mail.pdf_filename_pattern || "{{candidate_name}}_OfferLetter.pdf", playValues);
         if (!email) throw new Error("Recipient email is empty");
-        const pdfBase64 = await buildHtmlDocumentPdfBase64(html);
+        const pdfBase64 = await (await import("@/utils/offerLetterPdf")).buildHtmlDocumentPdfBase64(html);
         await api.offerLetters.send({
           template_id: tplId,
           recipient_name: name,
@@ -1283,7 +1283,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
               {submissions.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={columnMaps.length + 2} className="text-center text-sm text-muted-foreground py-8">
-                    No rows yet. Use <strong>Add row</strong> to enter details manually, or wait for submissions from My Document Forms.
+                    No rows yet. Use <strong>Add row</strong> to enter details manually, or wait for submissions from assigned dashboards.
                   </TableCell>
                 </TableRow>
               ) : (

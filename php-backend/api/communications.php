@@ -369,6 +369,20 @@ if (($action === 'test_whatsapp_connection' || $action === 'test_meta_connection
         respond(['error' => 'Connection check failed: ' . $e->getMessage()], 500);
     }
     if (!$test['ok']) {
+        try {
+            $db->prepare("UPDATE org_whatsapp_config SET connection_status = 'disconnected' WHERE org_id = ?")->execute([$orgId]);
+        } catch (Throwable $e) {
+        }
+        $today = (new DateTimeImmutable('now'))->format('Y-m-d');
+        syncpediaNotifyOrgAdminsOps(
+            $db,
+            (string) $orgId,
+            'WhatsApp disconnected',
+            'WhatsApp / Meta connection check failed: ' . trim((string) ($test['error'] ?? 'Connection failed')),
+            '/communications',
+            '/communications#wa-down-' . $today,
+            (string) $userId,
+        );
         respond(['error' => $test['error'] ?? 'Connection failed', 'details' => $test], 502);
     }
     $provider = 'meta';

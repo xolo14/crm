@@ -25,7 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCallDuration } from "@/lib/callDuration";
-import { openProtectedUpload } from "@/lib/resumeHref";
+import { ProtectedUploadPreviewDialog } from "@/components/ProtectedUploadPreviewDialog";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import type { CallLog, CallLogPeriod, CallLogStats } from "@/types/callLog";
@@ -165,6 +165,7 @@ function DailyLogsStrip({
 }) {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(25);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
   const { toast } = useToast();
   const delMut = useDeleteCallLog();
 
@@ -270,8 +271,10 @@ function DailyLogsStrip({
                         <button
                           type="button"
                           className="inline-flex items-center gap-1 text-teal-600 hover:underline text-xs bg-transparent border-0 p-0 cursor-pointer"
-                          onClick={() => {
-                            void openProtectedUpload(log.attachment_path).catch(() => {});
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setPreviewPath(String(log.attachment_path));
                           }}
                         >
                           <Paperclip className="h-3 w-3 shrink-0" />
@@ -319,6 +322,15 @@ function DailyLogsStrip({
           </Button>
         </div>
       )}
+
+      <ProtectedUploadPreviewDialog
+        path={previewPath}
+        open={Boolean(previewPath)}
+        onOpenChange={(open) => {
+          if (!open) setPreviewPath(null);
+        }}
+        title="Call recording"
+      />
     </div>
   );
 }

@@ -47,6 +47,9 @@ interface Organization {
 
   features?: Record<string, boolean>;
 
+  /** Globally unique 2-letter certificate prefix for this org. */
+  cert_prefix?: string | null;
+
 }
 
 

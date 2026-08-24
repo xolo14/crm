@@ -19,7 +19,7 @@ export type OrgAccessLite = {
 export type PageAccess = {
   payments?: boolean;
   offer_letters?: boolean;
-  /** Manager page toggles (feature keys). Empty/absent = unrestricted legacy access. */
+  /** Manager / HR page toggles (feature keys). Empty/absent = unrestricted legacy access. */
   pages?: Record<string, boolean>;
 };
 
@@ -68,7 +68,14 @@ export function canAccessOfferLetters(
     return isOrgFeatureEnabled(role, org, FEATURE_OFFER_LETTERS);
   }
   if (r === "hr") {
-    if (!normalizePageAccess(pageAccess).offer_letters) return false;
+    const normalized = normalizePageAccess(pageAccess);
+    const pages = normalized.pages;
+    const fromPages =
+      pages && Object.keys(pages).length > 0 && Object.prototype.hasOwnProperty.call(pages, "offer_letters")
+        ? pages.offer_letters === true
+        : null;
+    const allowed = fromPages === null ? normalized.offer_letters : fromPages;
+    if (!allowed) return false;
     return isOrgFeatureEnabled(role, org, FEATURE_OFFER_LETTERS);
   }
   return false;

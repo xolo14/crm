@@ -5,7 +5,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Bell, Check, CheckCheck, Trash2, UserPlus, Info, AlertTriangle, type LucideIcon } from 'lucide-react';
+import { Bell, Check, CheckCheck, Trash2, UserPlus, UserMinus, ClipboardList, Layers, GraduationCap, Info, AlertTriangle, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -21,6 +21,21 @@ interface Notification {
 
 const typeIcons: Record<string, LucideIcon> = {
   lead_assigned: UserPlus,
+  task_assigned: ClipboardList,
+  member_added: UserPlus,
+  member_removed: UserMinus,
+  bulk_action: Layers,
+  fresher_enrolled: GraduationCap,
+  role_changed: UserPlus,
+  task_completed: ClipboardList,
+  task_due: ClipboardList,
+  follow_up: Info,
+  holiday: AlertTriangle,
+  ops: AlertTriangle,
+  marketing_template: Info,
+  fresher_phase: GraduationCap,
+  fresher_policy: GraduationCap,
+  fresher_gate: GraduationCap,
   info: Info,
   warning: AlertTriangle,
 };

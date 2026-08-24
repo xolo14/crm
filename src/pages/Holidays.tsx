@@ -64,14 +64,30 @@ const HOLIDAY_REASONS: Record<string, string> = {
 };
 
 const HOLIDAY_EMOJIS: Record<string, string> = {
-  "public": "🏛️",
+  "public": "🇮🇳",
+  "national": "🇮🇳",
   "festival": "🎉",
   "custom": "📌",
-  "regional": "🌍",
+  "regional": "🪔",
+};
+
+const isDeclaredHoliday = (h: Holiday) => !!h.is_approved;
+const isSpecialDay = (h: Holiday) => !h.is_approved && (h.type === 'regional' || h.type === 'festival');
+
+const typeLabel = (type: string) => {
+  if (type === 'national' || type === 'public') return 'National holiday';
+  if (type === 'regional' || type === 'festival') return 'Regional festival';
+  if (type === 'custom') return 'Company holiday';
+  return type;
 };
 
 const getHolidayReason = (name: string, type: string): string => {
-  return HOLIDAY_REASONS[name] || (type === 'festival' ? 'Religious / Cultural festival' : type === 'custom' ? 'Company holiday' : 'National public holiday');
+  return HOLIDAY_REASONS[name]
+    || (type === 'festival' || type === 'regional'
+      ? 'Regional / cultural festival (special day until admin declares a holiday)'
+      : type === 'custom'
+        ? 'Company holiday'
+        : 'National public holiday');
 };
 
 export default function Holidays() {
@@ -104,7 +120,7 @@ export default function Holidays() {
     setLoading(false);
   };
 
-  useEffect(() => { fetchHolidays(); }, []);
+  useEffect(() => { fetchHolidays(); }, [currentMonth.getFullYear()]);
 
   const days = useMemo(() => {
     const start = startOfMonth(currentMonth);
@@ -172,7 +188,7 @@ export default function Holidays() {
         approved_at: new Date().toISOString(),
         notes,
       });
-      toast.success(approve ? 'Holiday approved!' : 'Holiday marked as working day');
+      toast.success(approve ? 'Declared as a holiday' : 'Kept as a special / working day');
       setDialogOpen(false);
       fetchHolidays();
     } catch {
@@ -186,7 +202,6 @@ export default function Holidays() {
     return d.getFullYear() === currentMonth.getFullYear();
   });
   const approvedCount = yearHolidays.filter(h => h.is_approved).length;
-  const totalCount = yearHolidays.length;
   const monthHolidays = holidays.filter(h => {
     const d = new Date(h.date);
     return isSameMonth(d, currentMonth);
@@ -205,20 +220,20 @@ export default function Holidays() {
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             {canManageHolidays
-              ? 'Approve, reject or add holidays for your organization'
+              ? 'National holidays are office holidays. Regional festivals are special days — declare a holiday only when you choose.'
               : isManager
-                ? 'View the holiday calendar and submit requests for admin approval'
-                : 'View approved company holidays and plan ahead'}
+                ? 'View holidays and special days. Submit extra dates for admin approval.'
+                : 'Office holidays and regional special days'}
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Badge variant="secondary" className="gap-1.5 py-1.5 px-3">
             <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
-            {approvedCount} Approved
+            {approvedCount} Holidays
           </Badge>
           <Badge variant="outline" className="gap-1.5 py-1.5 px-3">
-            <CalendarDays className="h-3.5 w-3.5" />
-            {totalCount} Total ({currentMonth.getFullYear()})
+            <PartyPopper className="h-3.5 w-3.5 text-purple-600" />
+            {yearHolidays.filter(isSpecialDay).length} Special days
           </Badge>
         </div>
       </div>
@@ -227,25 +242,25 @@ export default function Holidays() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Card className="bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 border-green-200/50 dark:border-green-800/30">
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-green-700 dark:text-green-400">{monthHolidays.filter(h => h.is_approved).length}</p>
-            <p className="text-xs text-green-600/80 dark:text-green-500/80 font-medium mt-1">This Month</p>
+            <p className="text-2xl font-bold text-green-700 dark:text-green-400">{monthHolidays.filter(isDeclaredHoliday).length}</p>
+            <p className="text-xs text-green-600/80 dark:text-green-500/80 font-medium mt-1">Holidays this month</p>
           </CardContent>
         </Card>
         <Card className="bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-blue-900/10 border-blue-200/50 dark:border-blue-800/30">
           <CardContent className="p-4 text-center">
             <p className="text-2xl font-bold text-blue-700 dark:text-blue-400">{approvedCount}</p>
-            <p className="text-xs text-blue-600/80 dark:text-blue-500/80 font-medium mt-1">This Year</p>
+            <p className="text-xs text-blue-600/80 dark:text-blue-500/80 font-medium mt-1">Holidays this year</p>
           </CardContent>
         </Card>
         <Card className="bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/30 dark:to-purple-900/10 border-purple-200/50 dark:border-purple-800/30">
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-purple-700 dark:text-purple-400">{yearHolidays.filter(h => h.type === 'festival').length}</p>
-            <p className="text-xs text-purple-600/80 dark:text-purple-500/80 font-medium mt-1">Festivals</p>
+            <p className="text-2xl font-bold text-purple-700 dark:text-purple-400">{yearHolidays.filter(isSpecialDay).length}</p>
+            <p className="text-xs text-purple-600/80 dark:text-purple-500/80 font-medium mt-1">Special days</p>
           </CardContent>
         </Card>
         <Card className="bg-gradient-to-br from-orange-50 to-orange-100/50 dark:from-orange-950/30 dark:to-orange-900/10 border-orange-200/50 dark:border-orange-800/30">
           <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-orange-700 dark:text-orange-400">{yearHolidays.filter(h => h.type === 'public').length}</p>
+            <p className="text-2xl font-bold text-orange-700 dark:text-orange-400">{yearHolidays.filter(h => h.type === 'public' || h.type === 'national').length}</p>
             <p className="text-xs text-orange-600/80 dark:text-orange-500/80 font-medium mt-1">National</p>
           </CardContent>
         </Card>
@@ -289,8 +304,9 @@ export default function Holidays() {
             {days.map((day, idx) => {
               const dayHolidays = getHolidaysForDay(day);
               const hasHoliday = dayHolidays.length > 0;
-              const hasApproved = dayHolidays.some(h => h.is_approved);
-              const hasPending = dayHolidays.some(h => !h.is_approved);
+              const hasApproved = dayHolidays.some(isDeclaredHoliday);
+              const hasSpecial = dayHolidays.some(isSpecialDay);
+              const hasPending = dayHolidays.some(h => !h.is_approved && !isSpecialDay(h));
               const today = isToday(day);
               const isSunday = getDay(day) === 0;
               const isSaturday = getDay(day) === 6;
@@ -304,7 +320,8 @@ export default function Holidays() {
                     (hasHoliday || canAddHoliday) && "cursor-pointer",
                     !hasHoliday && !today && "hover:bg-accent/30",
                     hasApproved && "bg-green-50/80 dark:bg-green-950/20 hover:bg-green-100/80 dark:hover:bg-green-950/30",
-                    hasPending && !hasApproved && "bg-amber-50/60 dark:bg-amber-950/15 hover:bg-amber-100/60",
+                    hasSpecial && !hasApproved && "bg-purple-50/60 dark:bg-purple-950/15 hover:bg-purple-100/60",
+                    hasPending && !hasApproved && !hasSpecial && "bg-amber-50/60 dark:bg-amber-950/15 hover:bg-amber-100/60",
                     today && !hasHoliday && "bg-primary/5",
                   )}
                 >
@@ -323,7 +340,9 @@ export default function Holidays() {
                         "text-[9px] sm:text-[11px] rounded-md px-1 py-0.5 mb-0.5 truncate font-medium leading-tight",
                         h.is_approved
                           ? "bg-green-200/80 text-green-900 dark:bg-green-800/50 dark:text-green-200"
-                          : "bg-amber-200/80 text-amber-900 dark:bg-amber-800/50 dark:text-amber-200"
+                          : isSpecialDay(h)
+                            ? "bg-purple-200/80 text-purple-900 dark:bg-purple-800/50 dark:text-purple-200"
+                            : "bg-amber-200/80 text-amber-900 dark:bg-amber-800/50 dark:text-amber-200"
                       )}
                       title={h.name}
                     >
@@ -347,6 +366,10 @@ export default function Holidays() {
               <span>Holiday</span>
             </div>
             <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-sm bg-purple-200 dark:bg-purple-800/50" />
+              <span>Special day</span>
+            </div>
+            <div className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded-sm bg-amber-200 dark:bg-amber-800/50" />
               <span>Pending</span>
             </div>
@@ -368,18 +391,18 @@ export default function Holidays() {
           <div className="flex items-center justify-between">
             <CardTitle className="text-base flex items-center gap-2">
               <Star className="h-4 w-4 text-primary" />
-              {format(currentMonth, 'MMMM yyyy')} Holidays
+              {format(currentMonth, 'MMMM yyyy')} Holidays & special days
             </CardTitle>
             <Badge variant="outline" className="text-xs">
-              {monthHolidays.filter(h => canViewAllHolidays || h.is_approved).length} holiday{monthHolidays.filter(h => canViewAllHolidays || h.is_approved).length !== 1 ? 's' : ''}
+              {monthHolidays.filter(h => canViewAllHolidays || h.is_approved || isSpecialDay(h)).length} date{monthHolidays.filter(h => canViewAllHolidays || h.is_approved || isSpecialDay(h)).length !== 1 ? 's' : ''}
             </Badge>
           </div>
         </CardHeader>
         <CardContent>
-          {monthHolidays.filter(h => canViewAllHolidays || h.is_approved).length === 0 ? (
+          {monthHolidays.filter(h => canViewAllHolidays || h.is_approved || isSpecialDay(h)).length === 0 ? (
             <div className="text-center py-8">
               <TreePalm className="h-10 w-10 text-muted-foreground/30 mx-auto mb-2" />
-              <p className="text-sm text-muted-foreground">No holidays this month</p>
+              <p className="text-sm text-muted-foreground">No holidays or special days this month</p>
               {canAddHoliday && (
                 <p className="text-xs text-muted-foreground/60 mt-1">Click on any date in the calendar to add one</p>
               )}
@@ -387,7 +410,7 @@ export default function Holidays() {
           ) : (
             <div className="space-y-2">
               {monthHolidays
-                .filter(h => canViewAllHolidays || h.is_approved)
+                .filter(h => canViewAllHolidays || h.is_approved || isSpecialDay(h))
                 .sort((a, b) => a.date.localeCompare(b.date))
                 .map(h => {
                   const holidayDate = new Date(h.date + 'T00:00:00');
@@ -411,7 +434,7 @@ export default function Holidays() {
                       <div className="flex items-center gap-3">
                         <div className={cn(
                           "h-11 w-11 rounded-xl flex flex-col items-center justify-center text-xs font-bold shrink-0",
-                          h.type === 'festival' ? "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
+                          h.type === 'festival' || h.type === 'regional' ? "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
                             : h.type === 'custom' ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
                             : "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
                         )}>
@@ -428,13 +451,16 @@ export default function Holidays() {
                         <Badge variant="outline" className={cn(
                           "text-[10px] capitalize",
                           h.type === 'festival' && "border-purple-200 text-purple-700",
-                          h.type === 'public' && "border-blue-200 text-blue-700",
+                          h.type === 'regional' && "border-purple-200 text-purple-700",
+                          (h.type === 'public' || h.type === 'national') && "border-blue-200 text-blue-700",
                           h.type === 'custom' && "border-indigo-200 text-indigo-700",
                         )}>
-                          {h.type}
+                          {typeLabel(h.type)}
                         </Badge>
                         {h.is_approved ? (
                           <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                        ) : isSpecialDay(h) ? (
+                          <Star className="h-4 w-4 text-purple-500 shrink-0" />
                         ) : (
                           <XCircle className="h-4 w-4 text-amber-500 shrink-0" />
                         )}
@@ -462,22 +488,30 @@ export default function Holidays() {
 
           <div className="space-y-4">
             <div className="bg-muted/50 rounded-lg p-3">
-              <p className="text-xs font-medium text-muted-foreground mb-1">About this holiday</p>
+              <p className="text-xs font-medium text-muted-foreground mb-1">
+                {selectedHoliday && isSpecialDay(selectedHoliday) ? 'About this special day' : 'About this holiday'}
+              </p>
               <p className="text-sm">{selectedHoliday ? getHolidayReason(selectedHoliday.name, selectedHoliday.type) : ''}</p>
             </div>
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">Type:</span>
-                <Badge variant="outline" className="capitalize">{selectedHoliday?.type}</Badge>
+                <Badge variant="outline" className="capitalize">{selectedHoliday ? typeLabel(selectedHoliday.type) : ''}</Badge>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium">Status:</span>
                 <Badge className={cn(
                   selectedHoliday?.is_approved
                     ? "bg-green-100 text-green-800 hover:bg-green-100"
-                    : "bg-amber-100 text-amber-800 hover:bg-amber-100"
+                    : selectedHoliday && isSpecialDay(selectedHoliday)
+                      ? "bg-purple-100 text-purple-800 hover:bg-purple-100"
+                      : "bg-amber-100 text-amber-800 hover:bg-amber-100"
                 )}>
-                  {selectedHoliday?.is_approved ? '✅ Holiday' : '⏳ Pending'}
+                  {selectedHoliday?.is_approved
+                    ? 'Holiday'
+                    : selectedHoliday && isSpecialDay(selectedHoliday)
+                      ? 'Special day'
+                      : 'Pending'}
                 </Badge>
               </div>
             </div>
@@ -501,7 +535,7 @@ export default function Holidays() {
                     onClick={() => handleApprove(false)}
                   >
                     <XCircle className="h-4 w-4 mr-1.5" />
-                    Working Day
+                    Working / special day
                   </Button>
                   <Button
                     className="flex-1 bg-green-600 hover:bg-green-700 text-white"
@@ -509,7 +543,7 @@ export default function Holidays() {
                     onClick={() => handleApprove(true)}
                   >
                     <CheckCircle2 className="h-4 w-4 mr-1.5" />
-                    Approve Holiday
+                    Declare holiday
                   </Button>
                 </DialogFooter>
               </>
@@ -553,10 +587,9 @@ export default function Holidays() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="custom">Custom / Company</SelectItem>
-                  <SelectItem value="public">Public Holiday</SelectItem>
-                  <SelectItem value="festival">Festival</SelectItem>
-                  <SelectItem value="regional">Regional</SelectItem>
+                  <SelectItem value="custom">Company holiday (declared)</SelectItem>
+                  <SelectItem value="national">National holiday</SelectItem>
+                  <SelectItem value="regional">Regional festival (special day)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

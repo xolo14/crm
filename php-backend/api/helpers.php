@@ -126,6 +126,22 @@ function getInput() {
     return json_decode(file_get_contents('php://input'), true) ?? [];
 }
 
+/** Decode a MySQL JSON/LONGTEXT column that may already be an array (PDO). */
+function syncpediaDecodeAssocJson($raw): array {
+    if (is_array($raw)) {
+        return $raw;
+    }
+    if (!is_string($raw)) {
+        return [];
+    }
+    $raw = trim($raw);
+    if ($raw === '' || $raw === 'null' || strcasecmp($raw, 'Array') === 0) {
+        return [];
+    }
+    $tmp = json_decode($raw, true);
+    return is_array($tmp) ? $tmp : [];
+}
+
 function generateUUID() {
     $bytes = random_bytes(16);
     $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
@@ -945,14 +961,19 @@ function taskFetchIfAccessible(PDO $db, array $tokenData, string $taskId): ?arra
 function orgFilterLeadsTenant(PDO $db, array $tokenData, string $alias = ''): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    if ($role === 'super_admin' && !getOrgId($tokenData)) {
+    // Prefer ?org_id= / JWT org (getOrgId) so super_admin can filter one tenant.
+    $orgId = getOrgId($tokenData);
+    if ($role === 'super_admin' && ($orgId === null || trim((string) $orgId) === '')) {
         return ['where' => '1=1', 'params' => []];
     }
-    $orgId = resolveCreatorOrgId($db, $tokenData);
+    if ($orgId === null || trim((string) $orgId) === '') {
+        $orgId = resolveCreatorOrgId($db, $tokenData);
+    }
     if (!$orgId) {
         // Fail closed — never expose null-org / orphan leads to callers without a tenant.
         return ['where' => '1=0', 'params' => []];
     }
+    $orgId = (string) $orgId;
     $col = $alias !== '' ? "{$alias}." : '';
     $sql = "({$col}org_id = ? OR (({$col}org_id IS NULL OR {$col}org_id = '') AND (
         {$col}assigned_to IN (SELECT id FROM users WHERE org_id = ?)
@@ -2952,6 +2973,96 @@ function leadsTryAttachStudentForEnrollment(PDO $db, array $tokenData, string $l
 }
 
 /**
+ * Best-effort: log a lead pipeline status change for mobile/web filters
+ * (GET leads.php?status_changed=yesterday|last_7_days|this_month).
+ *
+ * @param array<string,mixed> $tokenData
+ */
+function leadsRecordStatusChangeActivity(
+    PDO $db,
+    array $tokenData,
+    string $leadId,
+    string $userId,
+    string $oldStatus,
+    string $newStatus
+): void {
+    $oldStatus = leadsNormalizeStatus($oldStatus);
+    $newStatus = leadsNormalizeStatus($newStatus);
+    if ($oldStatus === $newStatus || $leadId === '' || $userId === '') {
+        return;
+    }
+    $subj = 'Status: ' . $oldStatus . ' → ' . $newStatus;
+    $desc = $subj;
+    $orgForAct = null;
+    try {
+        $orgForAct = function_exists('getOrgId') ? getOrgId($tokenData) : ($tokenData['org_id'] ?? null);
+    } catch (Throwable $ignored) {
+        $orgForAct = $tokenData['org_id'] ?? null;
+    }
+    $occurredAt = (new DateTimeImmutable('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d H:i:s');
+
+    try {
+        $aid = generateUUID();
+        $insAct = $db->prepare(
+            'INSERT INTO activities (id, type, subject, description, lead_id, contact_id, deal_id, user_id, duration_minutes, occurred_at, org_id)
+             VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)'
+        );
+        $insAct->execute([$aid, 'status_change', $subj, $desc, $leadId, $userId, $occurredAt, $orgForAct]);
+    } catch (Throwable $e) {
+        try {
+            $aid = generateUUID();
+            $insAct = $db->prepare(
+                'INSERT INTO activities (id, type, subject, description, lead_id, contact_id, deal_id, user_id, duration_minutes, occurred_at)
+                 VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?)'
+            );
+            $insAct->execute([$aid, 'status_change', $subj, $desc, $leadId, $userId, $occurredAt]);
+        } catch (Throwable $e2) {
+            try {
+                $aid = generateUUID();
+                $insAct = $db->prepare(
+                    'INSERT INTO activities (id, type, subject, description, lead_id, contact_id, deal_id, user_id, duration_minutes)
+                     VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, NULL)'
+                );
+                $insAct->execute([$aid, 'status_change', $subj, $desc, $leadId, $userId]);
+            } catch (Throwable $e3) {
+            }
+        }
+    }
+
+    try {
+        $laid = generateUUID();
+        $insLa = $db->prepare(
+            'INSERT INTO lead_activities (id, lead_id, user_id, type, description, org_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)'
+        );
+        $insLa->execute([$laid, $leadId, $userId, 'status_change', $desc, $orgForAct, $occurredAt]);
+    } catch (Throwable $e) {
+        try {
+            $laid = generateUUID();
+            $insLa = $db->prepare(
+                'INSERT INTO lead_activities (id, lead_id, user_id, type, description, org_id)
+                 VALUES (?, ?, ?, ?, ?, ?)'
+            );
+            $insLa->execute([$laid, $leadId, $userId, 'status_change', $desc, $orgForAct]);
+        } catch (Throwable $e2) {
+            try {
+                $laid = generateUUID();
+                $insLa = $db->prepare(
+                    'INSERT INTO lead_activities (id, lead_id, user_id, type, description)
+                     VALUES (?, ?, ?, ?, ?)'
+                );
+                $insLa->execute([$laid, $leadId, $userId, 'status_change', $desc]);
+            } catch (Throwable $e3) {
+            }
+        }
+    }
+
+    if (function_exists('syncpediaAuditLog')) {
+        syncpediaAuditLog($db, $tokenData, 'status_updated', 'lead', $leadId, $desc);
+    }
+}
+
+/**
  * Apply CRM pipeline status from Log Call flow.
  *
  * @return string|null error message, or null when OK
@@ -3024,6 +3135,8 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
         // Only drop students when leaving enrolled — never on unrelated status edits.
         leadsDropStudentForLead($db, $leadId);
     }
+
+    leadsRecordStatusChangeActivity($db, $tokenData, $leadId, $userId, $prevStatus, $newStatus);
 
     return null;
 }
@@ -3149,7 +3262,8 @@ function userAttachPageAccess(array &$user): void {
 
 /**
  * Normalize page_access from Team create/update. Defaults all OFF for L1 flags.
- * For managers, optional pages{} map stores per-page toggles.
+ * For managers and HR, optional pages{} map stores per-page toggles.
+ * For HR, pages.offer_letters is mirrored onto the top-level offer_letters flag.
  *
  * @param mixed $input
  * @return array{payments: bool, offer_letters: bool, pages: array<string,bool>}
@@ -3163,7 +3277,7 @@ function userNormalizePageAccessInput($input, string $memberRole): array {
         if (is_array($pagesIn)) {
             foreach ($pagesIn as $k => $v) {
                 $key = is_string($k) ? trim($k) : '';
-                // Only reserve the nested container key; "payments" / "offer_letters" are valid manager page keys.
+                // Only reserve the nested container key; "payments" / "offer_letters" are valid page keys.
                 if ($key === '' || $key === 'pages') {
                     continue;
                 }
@@ -3181,8 +3295,13 @@ function userNormalizePageAccessInput($input, string $memberRole): array {
     }
     if ($role !== 'hr') {
         $access['offer_letters'] = false;
+    } else {
+        // Keep top-level flag in sync with pages.offer_letters when a pages map is present.
+        if (array_key_exists('offer_letters', $access['pages'])) {
+            $access['offer_letters'] = !empty($access['pages']['offer_letters']);
+        }
     }
-    if ($role !== 'manager') {
+    if ($role !== 'manager' && $role !== 'hr') {
         $access['pages'] = [];
     }
     return $access;
@@ -3235,7 +3354,51 @@ function userCanAccessOfferLettersPage(array $tokenData, ?array $userRow = null,
             ? $userRow['page_access']
             : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
     }
+    if (!is_array($access)) {
+        return false;
+    }
+    // Prefer pages.offer_letters when a pages map exists; fall back to top-level flag.
+    $pages = isset($access['pages']) && is_array($access['pages']) ? $access['pages'] : [];
+    if (!empty($pages) && array_key_exists('offer_letters', $pages)) {
+        return !empty($pages['offer_letters']);
+    }
     return !empty($access['offer_letters']);
+}
+
+/** Ensure organizations.cert_prefix exists (globally unique 2-letter certificate org code). */
+function ensureOrganizationsCertPrefixColumn(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'organizations', 'cert_prefix')) {
+            $db->exec('ALTER TABLE organizations ADD COLUMN cert_prefix CHAR(2) DEFAULT NULL');
+        }
+        try {
+            $db->exec('CREATE UNIQUE INDEX uq_org_cert_prefix ON organizations (cert_prefix)');
+        } catch (Throwable $ignored) {
+        }
+    } catch (Throwable $ignored) {
+    }
+    $done = true;
+}
+
+/** @return array<string,mixed>|null */
+function syncpediaFetchOrganization(PDO $db, string $orgId, bool $requireActive = true): ?array {
+    $orgId = trim($orgId);
+    if ($orgId === '') {
+        return null;
+    }
+    ensureOrganizationsCertPrefixColumn($db);
+    $sql = 'SELECT id, name, slug, logo_url, plan, cert_prefix FROM organizations WHERE id = ?';
+    if ($requireActive) {
+        $sql .= ' AND is_active = 1';
+    }
+    $st = $db->prepare($sql);
+    $st->execute([$orgId]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
 }
 
 /** Ensure organizations.profile_json exists (company profile + data-retention settings storage). */
@@ -3915,12 +4078,12 @@ function certTemplateUploadErrorMessage(int $code): string {
 }
 
 /**
- * Store a certificate template image under uploads/certificate_assets/.
+ * Store a certificate template image under uploads/certificate_assets/{org_id}/.
  *
  * @param array|null $file $_FILES['file']
- * @return string Relative URL e.g. /uploads/certificate_assets/xxx.jpg
+ * @return string Relative URL e.g. /uploads/certificate_assets/{orgId}/xxx.jpg
  */
-function saveCertificateTemplateImageUpload(?array $file): string {
+function saveCertificateTemplateImageUpload(?array $file, string $orgId = ''): string {
     if ($file === null || !isset($file['error'])) {
         respond(['error' => 'file is required'], 400);
     }
@@ -3950,7 +4113,11 @@ function saveCertificateTemplateImageUpload(?array $file): string {
         'image/gif' => 'gif',
         default => 'jpg',
     };
-    $uploadParent = __DIR__ . '/../uploads/certificate_assets';
+    $orgFolder = strtolower(trim($orgId));
+    if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $orgFolder)) {
+        respond(['error' => 'Select an organization before uploading a certificate background'], 400);
+    }
+    $uploadParent = __DIR__ . '/../uploads/certificate_assets/' . $orgFolder;
     if (!is_dir($uploadParent)) {
         if (!mkdir($uploadParent, 0755, true)) {
             respond(['error' => 'Cannot create upload directory'], 500);
@@ -3965,7 +4132,103 @@ function saveCertificateTemplateImageUpload(?array $file): string {
     if (!move_uploaded_file($tmp, $destFs)) {
         respond(['error' => 'Failed to save image'], 500);
     }
-    return '/uploads/certificate_assets/' . $filename;
+    return '/uploads/certificate_assets/' . $orgFolder . '/' . $filename;
+}
+
+/**
+ * LIKE patterns for matching a certificate asset path inside JSON columns.
+ * json_encode() escapes slashes as \/ — the old single-pattern check missed those rows for org admins.
+ *
+ * @return list<string>
+ */
+function certificateAssetJsonLikePatterns(string $rawPath): array {
+    $rawPath = trim($rawPath);
+    if ($rawPath === '') {
+        return [];
+    }
+    $base = basename($rawPath);
+    $noLeadingSlash = ltrim($rawPath, '/');
+
+    // JSON strings often store paths with escaped slashes (\/) and/or without the leading slash.
+    $patterns = [
+        $rawPath,
+        $noLeadingSlash,
+        str_replace('/', '\\/', $rawPath),
+        str_replace('/', '\\/', $noLeadingSlash),
+        rawurlencode($rawPath),
+        rawurlencode($noLeadingSlash),
+    ];
+
+    if ($base !== '' && $base !== $rawPath) {
+        $patterns[] = 'certificate_assets/' . $base;
+        $patterns[] = 'certificate_assets\\/' . $base;
+        $patterns[] = $base;
+    }
+    $out = [];
+    foreach ($patterns as $p) {
+        $p = trim($p);
+        if ($p !== '') {
+            $out[$p] = true;
+        }
+    }
+    return array_keys($out);
+}
+
+/** Org id encoded in /uploads/certificate_assets/{org_uuid}/file */
+function certificateAssetOrgIdFromPath(string $rawPath): ?string {
+    if (!preg_match('#^/uploads/certificate_assets/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/#', $rawPath, $m)) {
+        return null;
+    }
+    return strtolower($m[1]);
+}
+
+/** Whether the caller's org may read a certificate template asset (super_admin always). */
+function certificateAssetAccessibleByUser(PDO $db, array $tokenData, string $rawPath): bool {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($role === 'super_admin') {
+        return true;
+    }
+    if (strpos($rawPath, '/uploads/certificate_assets/') !== 0) {
+        return false;
+    }
+
+    $callerOrg = strtolower(trim((string) (resolveCreatorOrgId($db, $tokenData) ?? '')));
+    $pathOrg = certificateAssetOrgIdFromPath($rawPath);
+    if ($pathOrg !== null) {
+        return $callerOrg !== '' && $pathOrg === $callerOrg;
+    }
+
+    $org = orgFilter($tokenData, 'ct', $db);
+    if ($org['where'] === '1=0' || $org['where'] === '1=1') {
+        return $org['where'] === '1=1';
+    }
+
+    $patterns = certificateAssetJsonLikePatterns($rawPath);
+    if ($patterns === []) {
+        return false;
+    }
+
+    foreach ($patterns as $pattern) {
+        $like = '%' . str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $pattern) . '%';
+        try {
+            $st = $db->prepare(
+                "SELECT ct.id FROM certificate_templates ct
+                 WHERE {$org['where']}
+                   AND (CAST(ct.style_json AS CHAR) LIKE ?
+                        OR CAST(ct.layers_json AS CHAR) LIKE ?
+                        OR CAST(ct.fields_json AS CHAR) LIKE ?)
+                 LIMIT 1"
+            );
+            $st->execute(array_merge($org['params'], [$like, $like, $like]));
+            if ($st->fetch(PDO::FETCH_ASSOC)) {
+                return true;
+            }
+        } catch (Throwable $e) {
+            // continue with next pattern
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -4715,12 +4978,91 @@ function callRecordingMaxBytes(): int {
 }
 
 /**
- * Ensure uploads/resumes and uploads/call_recordings exist beside api/ (idempotent).
- * Used on hosts where empty dirs are not deployed.
+ * Safe single path segment for recordings/{org_name}/{username}/.
+ */
+function callRecordingSanitizeFolderSegment(string $raw, string $fallback = 'unknown'): string
+{
+    $s = trim($raw);
+    // Letters/numbers (unicode) + space/dot/underscore/hyphen; then spaces → underscore.
+    $s = preg_replace('/[^\p{L}\p{N}\s._-]+/u', '', $s) ?? '';
+    $s = preg_replace('/\s+/', '_', $s) ?? '';
+    $s = trim($s, '._-');
+    if ($s === '') {
+        $fb = preg_replace('/[^a-zA-Z0-9_-]/', '', $fallback) ?? '';
+        $s = $fb !== '' ? $fb : 'unknown';
+    }
+    if (function_exists('mb_substr')) {
+        $s = mb_substr($s, 0, 80);
+    } else {
+        $s = substr($s, 0, 80);
+    }
+    return $s !== '' ? $s : 'unknown';
+}
+
+/**
+ * @return array{0:string,1:string} [org_folder, user_folder]
+ */
+function callRecordingOrgUserFolderNames(PDO $db, string $orgId, string $userId): array
+{
+    $orgName = '';
+    try {
+        $st = $db->prepare('SELECT name FROM organizations WHERE id = ? LIMIT 1');
+        $st->execute([$orgId]);
+        $orgName = trim((string) ($st->fetchColumn() ?: ''));
+    } catch (Throwable $ignored) {
+    }
+    $userName = '';
+    try {
+        $st = $db->prepare('SELECT full_name FROM users WHERE id = ? LIMIT 1');
+        $st->execute([$userId]);
+        $userName = trim((string) ($st->fetchColumn() ?: ''));
+    } catch (Throwable $ignored) {
+    }
+    return [
+        callRecordingSanitizeFolderSegment($orgName, $orgId !== '' ? $orgId : 'org'),
+        callRecordingSanitizeFolderSegment($userName, $userId !== '' ? $userId : 'user'),
+    ];
+}
+
+/** Relative directory: /uploads/recordings/{org_name}/{username} */
+function callRecordingRelativeDir(PDO $db, string $orgId, string $userId): string
+{
+    [$orgSeg, $userSeg] = callRecordingOrgUserFolderNames($db, $orgId, $userId);
+    return '/uploads/recordings/' . $orgSeg . '/' . $userSeg;
+}
+
+/**
+ * Resolve a writable absolute filesystem dir for a relative /uploads/... path.
+ */
+function callRecordingEnsureAbsoluteDir(string $dirRel): string
+{
+    $dirRel = '/' . ltrim(str_replace('\\', '/', $dirRel), '/');
+    $candidates = [
+        dirname(__DIR__) . $dirRel, // public/uploads/... when helpers is in public/api
+        __DIR__ . '/..' . $dirRel,
+        dirname(__DIR__, 2) . '/public' . $dirRel,
+    ];
+    foreach ($candidates as $candidate) {
+        if (!is_dir($candidate)) {
+            @mkdir($candidate, 0755, true);
+        }
+        if (is_dir($candidate) && is_writable($candidate)) {
+            $real = realpath($candidate);
+            if ($real !== false) {
+                return $real;
+            }
+        }
+    }
+    respond(['error' => 'Unable to store recording on server'], 500);
+    return ''; // unreachable
+}
+
+/**
+ * Ensure uploads/resumes, recordings, and legacy call_recordings exist (idempotent).
  */
 function ensureUploadDirectoriesExist(): void {
     $parent = __DIR__ . '/../uploads';
-    foreach (['resumes', 'call_recordings', 'form_leads'] as $sub) {
+    foreach (['resumes', 'recordings', 'call_recordings', 'form_leads'] as $sub) {
         $dir = $parent . DIRECTORY_SEPARATOR . $sub;
         if (!is_dir($dir)) {
             @mkdir($dir, 0755, true);
@@ -4729,12 +5071,13 @@ function ensureUploadDirectoriesExist(): void {
 }
 
 /**
- * Validate and store an uploaded call recording under uploads/call_recordings/.
+ * Validate and store an uploaded call recording under
+ * uploads/recordings/{org_name}/{username}/.
  *
  * @param array|null $file Single element from $_FILES
- * @return string|null Relative path e.g. /uploads/call_recordings/xxx.webm
+ * @return string|null Relative path e.g. /uploads/recordings/Syncpedia/Jahnavi_K/xxx.webm
  */
-function saveCallRecordingUpload(?array $file): ?string {
+function saveCallRecordingUpload(?array $file, ?PDO $db = null, ?string $orgId = null, ?string $userId = null): ?string {
     if ($file === null || !isset($file['error'])) {
         return null;
     }
@@ -4760,16 +5103,13 @@ function saveCallRecordingUpload(?array $file): ?string {
     if ($mime === '' || !in_array($mime, callRecordingAllowedMimeTypes(), true)) {
         respond(['error' => 'Recording must be audio (mp3, wav, m4a, webm, ogg) or PDF'], 400);
     }
-    $uploadParent = __DIR__ . '/../uploads/call_recordings';
-    if (!is_dir($uploadParent)) {
-        if (!mkdir($uploadParent, 0755, true)) {
-            respond(['error' => 'Cannot create upload directory'], 500);
-        }
+
+    $dirRel = '/uploads/recordings/unknown/unknown';
+    if ($db instanceof PDO && $orgId !== null && $orgId !== '' && $userId !== null && $userId !== '') {
+        $dirRel = callRecordingRelativeDir($db, $orgId, $userId);
     }
-    $baseDir = realpath($uploadParent);
-    if ($baseDir === false) {
-        respond(['error' => 'Upload directory unavailable'], 500);
-    }
+    $baseDir = callRecordingEnsureAbsoluteDir($dirRel);
+
     $orig = basename((string) ($file['name'] ?? 'recording'));
     $orig = preg_replace('/[^a-zA-Z0-9._-]/', '_', $orig) ?: 'recording';
     $filename = uniqid('', true) . '_' . $orig;
@@ -4777,10 +5117,12 @@ function saveCallRecordingUpload(?array $file): ?string {
     if (!move_uploaded_file($tmp, $destFs)) {
         respond(['error' => 'Failed to save recording'], 500);
     }
-    return '/uploads/call_recordings/' . $filename;
+    return rtrim($dirRel, '/') . '/' . $filename;
 }
 
-/** Remove a stored call recording file (safe path under uploads/call_recordings/). */
+/**
+ * Remove a stored call recording (safe under uploads/recordings or legacy call_recordings).
+ */
 function deleteCallRecordingIfExists(?string $relativePath): void {
     if ($relativePath === null || $relativePath === '') {
         return;
@@ -4790,8 +5132,14 @@ function deleteCallRecordingIfExists(?string $relativePath): void {
     if ($rel === '' || strpos($rel, '..') !== false) {
         return;
     }
-    $uploadRoot = realpath(__DIR__ . '/../uploads/call_recordings');
-    if ($uploadRoot === false) {
+    if (
+        strpos($rel, 'uploads/recordings/') !== 0
+        && strpos($rel, 'uploads/call_recordings/') !== 0
+    ) {
+        return;
+    }
+    $uploadsRoot = realpath(__DIR__ . '/../uploads');
+    if ($uploadsRoot === false) {
         return;
     }
     $candidate = __DIR__ . '/../' . str_replace('/', DIRECTORY_SEPARATOR, $rel);
@@ -4799,7 +5147,7 @@ function deleteCallRecordingIfExists(?string $relativePath): void {
     if ($full === false || !is_file($full)) {
         return;
     }
-    $uploadRootNorm = str_replace('\\', '/', $uploadRoot);
+    $uploadRootNorm = str_replace('\\', '/', $uploadsRoot);
     $fullNorm = str_replace('\\', '/', $full);
     if (strpos($fullNorm, rtrim($uploadRootNorm, '/')) !== 0) {
         return;
@@ -5685,7 +6033,714 @@ function syncpediaNotifyUser(
     }
 }
 
-/** Notify assignee when a task is created or reassigned to them. */
+function syncpediaUserDisplayName(PDO $db, string $userId): string {
+    try {
+        $st = $db->prepare('SELECT full_name FROM users WHERE id = ? LIMIT 1');
+        $st->execute([trim($userId)]);
+        return trim((string) ($st->fetchColumn() ?: ''));
+    } catch (Throwable $e) {
+        return '';
+    }
+}
+
+/** Active org admins (admin / org) in a tenant. */
+function syncpediaOrgAdminUserIds(PDO $db, ?string $orgId): array {
+    $orgId = trim((string) $orgId);
+    if ($orgId === '') {
+        return [];
+    }
+    try {
+        $st = $db->prepare("SELECT id FROM users WHERE org_id = ? AND is_active = 1 AND LOWER(TRIM(role)) IN ('admin', 'org')");
+        $st->execute([$orgId]);
+        $ids = [];
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN, 0) as $id) {
+            $id = trim((string) $id);
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+        return $ids;
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+function syncpediaManagerIdOfUser(PDO $db, string $userId): ?string {
+    try {
+        $st = $db->prepare('SELECT reports_to_id FROM users WHERE id = ? LIMIT 1');
+        $st->execute([trim($userId)]);
+        $mid = trim((string) ($st->fetchColumn() ?: ''));
+        return $mid !== '' ? $mid : null;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
+/**
+ * Org admins (and the member's manager) when a teammate is added or removed.
+ * Skips the acting user.
+ */
+function syncpediaNotifyMemberLifecycle(
+    PDO $db,
+    string $actorUserId,
+    string $memberName,
+    string $memberRole,
+    ?string $reportsToId,
+    ?string $orgId,
+    string $kind,
+): void {
+    $memberName = trim($memberName) !== '' ? trim($memberName) : 'A team member';
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
+    }
+    $role = trim($memberRole) !== '' ? trim($memberRole) : 'member';
+    if ($kind === 'removed') {
+        $title = 'Team member removed';
+        $message = $actorName . ' removed ' . $memberName . ' (' . $role . ') from the team.';
+        $type = 'member_removed';
+    } else {
+        $title = 'Team member added';
+        $message = $actorName . ' added ' . $memberName . ' (' . $role . ') to the team.';
+        $type = 'member_added';
+    }
+    $ids = syncpediaOrgAdminUserIds($db, $orgId);
+    $adminIds = $ids;
+    $mgr = trim((string) $reportsToId);
+    if ($mgr !== '') {
+        $ids[] = $mgr;
+    }
+    $actorUserId = trim($actorUserId);
+    $seen = [];
+    foreach ($ids as $uid) {
+        $uid = trim((string) $uid);
+        if ($uid === '' || $uid === $actorUserId || isset($seen[$uid])) {
+            continue;
+        }
+        $seen[$uid] = true;
+        syncpediaNotifyUser($db, $uid, $title, $message, $type, '/team', $orgId);
+    }
+
+    $h = static function (string $s): string {
+        return htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    };
+    $legal = $h(function_exists('syncpediaMailLegalEntityName') ? syncpediaMailLegalEntityName() : 'Syncpedia');
+    $crmUrl = $h((function_exists('syncpediaCrmAppBaseUrl') ? syncpediaCrmAppBaseUrl() : '') . '/team');
+    $html = '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#eceff1;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eceff1;"><tr><td align="center" style="padding:24px 12px;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;">'
+        . '<tr><td style="background:#0f2318;padding:24px;font-family:Arial,Helvetica,sans-serif;font-size:20px;font-weight:700;color:#ffffff;text-align:center;">'
+        . $h($title)
+        . '</td></tr>'
+        . '<tr><td style="background:#ffffff;padding:28px;font-family:Arial,Helvetica,sans-serif;">'
+        . '<p style="margin:0 0 16px 0;font-size:15px;line-height:1.55;color:#334155;">' . $h($message) . '</p>'
+        . '<p style="margin:22px 0 0 0;text-align:center;"><a href="' . $crmUrl . '" style="display:inline-block;padding:14px 26px;background:#0f2318;color:#ffffff;text-decoration:none;font-size:13px;font-weight:700;letter-spacing:0.05em;">OPEN TEAM</a></p>'
+        . '</td></tr>'
+        . '<tr><td align="center" style="padding:12px;font-size:12px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">' . $legal . '</td></tr>'
+        . '</table></td></tr></table></body></html>';
+
+    if (function_exists('syncpediaSetMailContext')) {
+        syncpediaSetMailContext($orgId ? (string) $orgId : null, 'notifications');
+    }
+    $adminSeen = [];
+    foreach ($adminIds as $adminId) {
+        $adminId = trim((string) $adminId);
+        if ($adminId === '' || $adminId === $actorUserId || isset($adminSeen[$adminId])) {
+            continue;
+        }
+        $adminSeen[$adminId] = true;
+        $to = '';
+        try {
+            $st = $db->prepare('SELECT email FROM users WHERE id = ? AND is_active = 1 LIMIT 1');
+            $st->execute([$adminId]);
+            $to = strtolower(trim((string) ($st->fetchColumn() ?: '')));
+        } catch (Throwable $e) {
+            continue;
+        }
+        if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
+            continue;
+        }
+        try {
+            syncpediaSendHtmlEmail($to, $title, $html, 'notifications');
+        } catch (Throwable $e) {
+        }
+    }
+}
+
+/**
+ * One notification per person for bulk lead assign (not per lead).
+ * Recipients: each assignee (L1) and that assignee's manager.
+ */
+function syncpediaNotifyBulkLeadAssign(
+    PDO $db,
+    array $assigneeIds,
+    string $actorUserId,
+    int $leadCount,
+    ?string $orgId,
+    string $link = '/leads',
+): void {
+    if ($leadCount < 1) {
+        return;
+    }
+    $actorUserId = trim($actorUserId);
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
+    }
+    $countLabel = $leadCount === 1 ? '1 lead' : ($leadCount . ' leads');
+    $seen = [];
+    $notify = static function (string $uid, string $title, string $message) use ($db, $actorUserId, &$seen, $orgId, $link): void {
+        $uid = trim($uid);
+        if ($uid === '' || $uid === $actorUserId || isset($seen[$uid])) {
+            return;
+        }
+        $seen[$uid] = true;
+        syncpediaNotifyUser($db, $uid, $title, $message, 'lead_assigned', $link, $orgId);
+    };
+    foreach ($assigneeIds as $aid) {
+        $aid = trim((string) $aid);
+        if ($aid === '') {
+            continue;
+        }
+        $aname = syncpediaUserDisplayName($db, $aid);
+        $notify($aid, $leadCount . ' leads assigned', $actorName . ' assigned you ' . $countLabel . '.');
+        $mgr = syncpediaManagerIdOfUser($db, $aid);
+        if ($mgr) {
+            $who = $aname !== '' ? $aname : 'A team member';
+            $notify($mgr, 'Team bulk assignment', $who . ' was assigned ' . $countLabel . ' by ' . $actorName . '.');
+        }
+    }
+    syncpediaNotifyOrgAdminsOfBulkKind($db, $actorUserId, $orgId, 'lead_assign', $leadCount);
+}
+
+/**
+ * Notify org admins (except the actor) about a bulk org action.
+ * Known kinds: offer_letters, certificates, payslips, lead_assign, leads_import,
+ * leads_delete, marketing_email, whatsapp.
+ */
+function syncpediaNotifyOrgAdminsOfBulkKind(
+    PDO $db,
+    string $actorUserId,
+    ?string $orgId,
+    string $kind,
+    int $count,
+    string $detail = '',
+): void {
+    if ($count < 1) {
+        return;
+    }
+    $kind = trim($kind);
+    $catalog = [
+        'offer_letters' => ['title' => 'Bulk offer letters', 'link' => '/offer-letters', 'label' => 'offer letter(s)'],
+        'certificates' => ['title' => 'Bulk certificates issued', 'link' => '/certificates', 'label' => 'certificate(s)'],
+        'payslips' => ['title' => 'Bulk payslips generated', 'link' => '/payslip', 'label' => 'payslip(s)'],
+        'lead_assign' => ['title' => 'Bulk lead assignment', 'link' => '/leads', 'label' => 'lead(s) assigned'],
+        'leads_import' => ['title' => 'Bulk leads imported', 'link' => '/leads', 'label' => 'lead(s) imported'],
+        'leads_delete' => ['title' => 'Bulk leads deleted', 'link' => '/leads', 'label' => 'lead(s) deleted'],
+        'marketing_email' => ['title' => 'Bulk email campaign', 'link' => '/marketing-email', 'label' => 'email(s) sent'],
+        'whatsapp' => ['title' => 'Bulk WhatsApp campaign', 'link' => '/marketing-whatsapp', 'label' => 'message(s) sent'],
+    ];
+    if (!isset($catalog[$kind])) {
+        return;
+    }
+    $actorUserId = trim($actorUserId);
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
+    }
+    $meta = $catalog[$kind];
+    $message = $actorName . ' completed a bulk action: ' . $count . ' ' . $meta['label'] . '.';
+    $detail = trim($detail);
+    if ($detail !== '') {
+        $message .= ' ' . $detail;
+    }
+    $seen = [];
+    foreach (syncpediaOrgAdminUserIds($db, $orgId) as $adminId) {
+        $adminId = trim((string) $adminId);
+        if ($adminId === '' || $adminId === $actorUserId || isset($seen[$adminId])) {
+            continue;
+        }
+        $seen[$adminId] = true;
+        syncpediaNotifyUser($db, $adminId, $meta['title'], $message, 'bulk_action', $meta['link'], $orgId);
+    }
+}
+
+/**
+ * Notify org admins (and the trainee + their manager) when someone is added
+ * to the fresher salary training tracker.
+ */
+function syncpediaNotifyFresherTrainingAdded(
+    PDO $db,
+    string $actorUserId,
+    string $memberName,
+    ?string $traineeUserId,
+    ?string $orgId,
+): void {
+    $actorUserId = trim($actorUserId);
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
+    }
+    $memberName = trim($memberName) !== '' ? trim($memberName) : 'A team member';
+    $link = '/fresher-salary-tracker';
+    $type = 'fresher_enrolled';
+    $seen = [];
+    $notify = static function (string $uid, string $title, string $message) use ($db, $actorUserId, &$seen, $orgId, $link, $type): void {
+        $uid = trim($uid);
+        if ($uid === '' || $uid === $actorUserId || isset($seen[$uid])) {
+            return;
+        }
+        $seen[$uid] = true;
+        syncpediaNotifyUser($db, $uid, $title, $message, $type, $link, $orgId);
+    };
+    $adminMsg = $actorName . ' added ' . $memberName . ' to fresher salary training.';
+    foreach (syncpediaOrgAdminUserIds($db, $orgId) as $adminId) {
+        $notify((string) $adminId, 'Fresher salary training', $adminMsg);
+    }
+    $tid = trim((string) $traineeUserId);
+    if ($tid !== '') {
+        $notify($tid, 'Added to fresher salary training', $actorName . ' enrolled you in the fresher salary training track.');
+        $mgr = syncpediaManagerIdOfUser($db, $tid);
+        if ($mgr) {
+            $notify($mgr, 'Team fresher training', $memberName . ' was added to fresher salary training by ' . $actorName . '.');
+        }
+    }
+}
+
+function syncpediaOrgActiveUserIdsByRoles(PDO $db, ?string $orgId, array $roles): array {
+    $orgId = trim((string) $orgId);
+    if ($orgId === '' || $roles === []) {
+        return [];
+    }
+    $clean = [];
+    foreach ($roles as $r) {
+        $r = strtolower(trim((string) $r));
+        if ($r !== '') {
+            $clean[$r] = $r;
+        }
+    }
+    $clean = array_values($clean);
+    if ($clean === []) {
+        return [];
+    }
+    try {
+        $in = implode(',', array_fill(0, count($clean), '?'));
+        $st = $db->prepare("SELECT id FROM users WHERE org_id = ? AND is_active = 1 AND LOWER(TRIM(role)) IN ($in)");
+        $st->execute(array_merge([$orgId], $clean));
+        $ids = [];
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN, 0) as $id) {
+            $id = trim((string) $id);
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+        return $ids;
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+function syncpediaNotificationExists(PDO $db, string $userId, string $type, string $link, bool $todayOnly = false): bool {
+    $userId = trim($userId);
+    if ($userId === '') {
+        return false;
+    }
+    try {
+        $sql = 'SELECT id FROM notifications WHERE user_id = ? AND type = ? AND link = ?';
+        $params = [$userId, $type, $link];
+        if ($todayOnly) {
+            $sql .= ' AND created_at >= CURDATE()';
+        }
+        $sql .= ' LIMIT 1';
+        $st = $db->prepare($sql);
+        $st->execute($params);
+        return (bool) $st->fetchColumn();
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+function syncpediaNotifyUserOnce(
+    PDO $db,
+    string $userId,
+    string $title,
+    string $message,
+    string $type,
+    string $link,
+    ?string $orgId,
+    bool $todayOnly = false,
+    string $skipActor = '',
+): void {
+    $userId = trim($userId);
+    if ($userId === '' || ($skipActor !== '' && $userId === trim($skipActor))) {
+        return;
+    }
+    if (syncpediaNotificationExists($db, $userId, $type, $link, $todayOnly)) {
+        return;
+    }
+    syncpediaNotifyUser($db, $userId, $title, $message, $type, $link, $orgId);
+}
+
+function syncpediaNotifyIdList(
+    PDO $db,
+    array $userIds,
+    string $actorUserId,
+    string $title,
+    string $message,
+    string $type,
+    string $link,
+    ?string $orgId,
+    bool $skipActor = true,
+): void {
+    $actorUserId = trim($actorUserId);
+    $seen = [];
+    foreach ($userIds as $uid) {
+        $uid = trim((string) $uid);
+        if ($uid === '' || isset($seen[$uid])) {
+            continue;
+        }
+        if ($skipActor && $uid === $actorUserId) {
+            continue;
+        }
+        $seen[$uid] = true;
+        syncpediaNotifyUser($db, $uid, $title, $message, $type, $link, $orgId);
+    }
+}
+
+function syncpediaNotifyRoleChanged(
+    PDO $db,
+    string $actorUserId,
+    string $memberId,
+    string $memberName,
+    string $prevRole,
+    string $newRole,
+    ?string $orgId,
+): void {
+    if ($prevRole === $newRole) {
+        return;
+    }
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
+    }
+    $memberName = trim($memberName) !== '' ? trim($memberName) : 'A team member';
+    $msg = $actorName . ' changed ' . $memberName . "'s role from " . $prevRole . ' to ' . $newRole . '.';
+    $ids = syncpediaOrgAdminUserIds($db, $orgId);
+    $ids[] = $memberId;
+    $mgr = syncpediaManagerIdOfUser($db, $memberId);
+    if ($mgr) {
+        $ids[] = $mgr;
+    }
+    syncpediaNotifyIdList($db, $ids, $actorUserId, 'Role updated', $msg, 'role_changed', '/team', $orgId);
+}
+
+function syncpediaNotifyTaskCompleted(
+    PDO $db,
+    string $actorUserId,
+    array $task,
+): void {
+    $title = trim((string) ($task['title'] ?? 'Untitled'));
+    $orgId = isset($task['org_id']) ? (string) $task['org_id'] : null;
+    $assignee = trim((string) ($task['assigned_to'] ?? ''));
+    $creator = trim((string) ($task['created_by'] ?? ''));
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
+    }
+    $msg = $actorName . ' completed the task: ' . ($title !== '' ? $title : 'Untitled');
+    $ids = [];
+    if ($creator !== '') {
+        $ids[] = $creator;
+    }
+    if ($assignee !== '') {
+        $mgr = syncpediaManagerIdOfUser($db, $assignee);
+        if ($mgr) {
+            $ids[] = $mgr;
+        }
+    }
+    syncpediaNotifyIdList($db, $ids, $actorUserId, 'Task completed', $msg, 'task_completed', '/tasks', $orgId);
+}
+
+function syncpediaNotifyFresherPhaseMoved(
+    PDO $db,
+    string $memberName,
+    ?string $traineeUserId,
+    string $fromPhase,
+    string $toPhase,
+    ?string $orgId,
+): void {
+    $tid = trim((string) $traineeUserId);
+    if ($tid === '' || $fromPhase === $toPhase) {
+        return;
+    }
+    $memberName = trim($memberName) !== '' ? trim($memberName) : 'You';
+    $link = '/fresher-salary-tracker#phase-' . $tid . '-' . $toPhase;
+    $msg = $memberName . ' moved from ' . $fromPhase . ' to ' . $toPhase . ' on the fresher salary track.';
+    syncpediaNotifyUserOnce($db, $tid, 'Training phase updated', 'You moved to ' . $toPhase . ' on the fresher salary track.', 'fresher_phase', $link, $orgId, false, '');
+    $mgr = syncpediaManagerIdOfUser($db, $tid);
+    if ($mgr) {
+        syncpediaNotifyUserOnce($db, $mgr, 'Team training phase', $msg, 'fresher_phase', $link, $orgId, false, '');
+    }
+}
+
+function syncpediaNotifyFresherPolicyChanged(
+    PDO $db,
+    string $actorUserId,
+    ?string $orgId,
+): void {
+    $orgId = trim((string) $orgId);
+    if ($orgId === '') {
+        return;
+    }
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
+    }
+    $msg = $actorName . ' updated fresher salary training policy / targets.';
+    $ids = [];
+    try {
+        $st = $db->prepare("SELECT payload FROM fresher_salary_members WHERE org_id = ?");
+        $st->execute([$orgId]);
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN, 0) as $raw) {
+            $p = json_decode((string) $raw, true);
+            $tid = is_array($p) ? trim((string) ($p['trainee_user_id'] ?? '')) : '';
+            if ($tid === '') {
+                continue;
+            }
+            $ids[] = $tid;
+            $mgr = syncpediaManagerIdOfUser($db, $tid);
+            if ($mgr) {
+                $ids[] = $mgr;
+            }
+        }
+    } catch (Throwable $e) {
+        return;
+    }
+    syncpediaNotifyIdList($db, $ids, $actorUserId, 'Fresher policy updated', $msg, 'fresher_policy', '/fresher-salary-tracker', $orgId);
+}
+
+function syncpediaNotifyHolidayChange(
+    PDO $db,
+    string $actorUserId,
+    ?string $orgId,
+    string $holidayName,
+    string $kind,
+): void {
+    $roles = array_merge(['admin', 'org', 'manager'], syncpediaL1AssignableRoles());
+    $ids = syncpediaOrgActiveUserIdsByRoles($db, $orgId, $roles);
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
+    }
+    $name = trim($holidayName) !== '' ? trim($holidayName) : 'a holiday';
+    $title = $kind === 'removed' ? 'Holiday removed' : 'Holiday added';
+    $message = $actorName . ' ' . ($kind === 'removed' ? 'removed' : 'added') . ' holiday: ' . $name . '.';
+    syncpediaNotifyIdList($db, $ids, $actorUserId, $title, $message, 'holiday', '/holidays', $orgId);
+}
+
+function syncpediaNotifyMarketingTemplateChange(
+    PDO $db,
+    string $actorUserId,
+    ?string $orgId,
+    string $templateName,
+    string $channel,
+    string $verb,
+): void {
+    $name = trim($templateName) !== '' ? trim($templateName) : 'a template';
+    $title = $verb === 'deleted' ? 'Marketing template deleted' : 'Marketing template created';
+    $message = syncpediaUserDisplayName($db, $actorUserId);
+    if ($message === '') {
+        $message = 'A teammate';
+    }
+    $message .= ' ' . $verb . ' ' . $channel . ' template: ' . $name . '.';
+    $link = $channel === 'whatsapp' ? '/marketing-whatsapp' : '/marketing-email';
+    syncpediaNotifyIdList(
+        $db,
+        syncpediaOrgAdminUserIds($db, $orgId),
+        $actorUserId,
+        $title,
+        $message,
+        'marketing_template',
+        $link,
+        $orgId,
+    );
+}
+
+function syncpediaNotifyOrgAdminsOps(
+    PDO $db,
+    ?string $orgId,
+    string $title,
+    string $message,
+    string $link,
+    string $dedupeLink,
+    string $actorUserId = '',
+): void {
+    $actorUserId = trim($actorUserId);
+    foreach (syncpediaOrgAdminUserIds($db, $orgId) as $adminId) {
+        $adminId = trim((string) $adminId);
+        if ($adminId === '' || ($actorUserId !== '' && $adminId === $actorUserId)) {
+            continue;
+        }
+        syncpediaNotifyUserOnce($db, $adminId, $title, $message, 'ops', $dedupeLink, $orgId, true, $actorUserId);
+    }
+}
+
+function syncpediaDispatchDueReminders(PDO $db, array $tokenData): void {
+    $orgId = resolveWriteOrgId($db, $tokenData);
+    $orgId = $orgId ? trim((string) $orgId) : '';
+    if ($orgId === '') {
+        return;
+    }
+    $today = (new DateTimeImmutable('now'))->format('Y-m-d');
+    $tomorrow = (new DateTimeImmutable('now'))->modify('+1 day')->format('Y-m-d');
+    $nowTs = time();
+
+    try {
+        $st = $db->prepare("SELECT id, title, assigned_to, due_date, org_id FROM tasks WHERE org_id = ? AND (status IS NULL OR LOWER(TRIM(status)) NOT IN ('completed', 'done', 'cancelled')) AND assigned_to IS NOT NULL AND assigned_to <> '' AND due_date IS NOT NULL");
+        $st->execute([$orgId]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $task) {
+            $dueRaw = trim((string) ($task['due_date'] ?? ''));
+            if ($dueRaw === '') {
+                continue;
+            }
+            $dueTs = strtotime($dueRaw);
+            if ($dueTs === false) {
+                continue;
+            }
+            $dueDay = date('Y-m-d', $dueTs);
+            $assignee = trim((string) ($task['assigned_to'] ?? ''));
+            $taskTitle = trim((string) ($task['title'] ?? 'Untitled'));
+            $tid = (string) ($task['id'] ?? '');
+            if ($assignee === '' || $tid === '') {
+                continue;
+            }
+            if ($dueDay === $tomorrow) {
+                syncpediaNotifyUserOnce(
+                    $db,
+                    $assignee,
+                    'Task due tomorrow',
+                    '“' . $taskTitle . '” is due tomorrow.',
+                    'task_due',
+                    '/tasks#due-tomorrow-' . $tid,
+                    $orgId,
+                    true,
+                    '',
+                );
+            }
+            if ($dueTs > $nowTs && ($dueTs - $nowTs) <= 3600) {
+                syncpediaNotifyUserOnce(
+                    $db,
+                    $assignee,
+                    'Task due in 1 hour',
+                    '“' . $taskTitle . '” is due within the next hour.',
+                    'task_due',
+                    '/tasks#due-1h-' . $tid . '-' . $today,
+                    $orgId,
+                    true,
+                    '',
+                );
+            }
+        }
+    } catch (Throwable $e) {
+    }
+
+    try {
+        $st = $db->prepare('SELECT id, recipient_name, sent_by FROM offer_letters_sent WHERE org_id = ? AND DATE(sent_at) = DATE_SUB(CURDATE(), INTERVAL 2 DAY)');
+        $st->execute([$orgId]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $sender = trim((string) ($row['sent_by'] ?? ''));
+            $oid = (string) ($row['id'] ?? '');
+            if ($sender === '' || $oid === '') {
+                continue;
+            }
+            $who = trim((string) ($row['recipient_name'] ?? 'a candidate'));
+            $link = '/offer-letters#followup-' . $oid;
+            $msg = 'Follow up on offer letter sent to ' . $who . ' (2 days ago).';
+            syncpediaNotifyUserOnce($db, $sender, 'Offer letter follow-up', $msg, 'follow_up', $link, $orgId, false, '');
+            $mgr = syncpediaManagerIdOfUser($db, $sender);
+            if ($mgr) {
+                $sname = syncpediaUserDisplayName($db, $sender);
+                syncpediaNotifyUserOnce($db, $mgr, 'Offer letter follow-up', ($sname !== '' ? $sname : 'A team member') . ': ' . $msg, 'follow_up', $link, $orgId, false, '');
+            }
+        }
+    } catch (Throwable $e) {
+    }
+
+    try {
+        $st = $db->prepare('SELECT id, recipient_name, issued_by FROM issued_certificates WHERE org_id = ? AND DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 2 DAY)');
+        $st->execute([$orgId]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $issuer = trim((string) ($row['issued_by'] ?? ''));
+            $cid = (string) ($row['id'] ?? '');
+            if ($issuer === '' || $cid === '') {
+                continue;
+            }
+            $who = trim((string) ($row['recipient_name'] ?? 'a recipient'));
+            $link = '/certificates#followup-' . $cid;
+            $msg = 'Follow up on certificate issued to ' . $who . ' (2 days ago).';
+            syncpediaNotifyUserOnce($db, $issuer, 'Certificate follow-up', $msg, 'follow_up', $link, $orgId, false, '');
+            $mgr = syncpediaManagerIdOfUser($db, $issuer);
+            if ($mgr) {
+                $sname = syncpediaUserDisplayName($db, $issuer);
+                syncpediaNotifyUserOnce($db, $mgr, 'Certificate follow-up', ($sname !== '' ? $sname : 'A team member') . ': ' . $msg, 'follow_up', $link, $orgId, false, '');
+            }
+        }
+    } catch (Throwable $e) {
+    }
+
+    try {
+        $st = $db->prepare('SELECT payload FROM fresher_salary_members WHERE org_id = ?');
+        $st->execute([$orgId]);
+        $policy = function_exists('fresherLoadOrgPolicy') ? fresherLoadOrgPolicy($db, $orgId) : [];
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN, 0) as $raw) {
+            $p = json_decode((string) $raw, true);
+            if (!is_array($p)) {
+                continue;
+            }
+            $tid = trim((string) ($p['trainee_user_id'] ?? ''));
+            $join = substr(trim((string) ($p['joiningDate'] ?? '')), 0, 10);
+            if ($tid === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $join)) {
+                continue;
+            }
+            if ($join === $tomorrow) {
+                syncpediaNotifyUserOnce($db, $tid, 'Training starts tomorrow', 'Your fresher salary training joining date is tomorrow.', 'fresher_gate', '/fresher-salary-tracker#join-tomorrow-' . $tid, $orgId, true, '');
+            }
+            if ($join === $today) {
+                syncpediaNotifyUserOnce($db, $tid, 'Training starts today', 'Your fresher salary training joining date is today.', 'fresher_gate', '/fresher-salary-tracker#join-today-' . $tid, $orgId, true, '');
+            }
+            if (is_array($policy) && $policy !== [] && function_exists('fresherComputePhaseFromJoinPolicy')) {
+                $cal = fresherComputePhaseFromJoinPolicy($join, $policy);
+                $start = is_array($cal) ? (string) ($cal['window_start'] ?? '') : '';
+                $phase = is_array($cal) ? (string) ($cal['phase_key'] ?? '') : '';
+                if ($start === $today && in_array($phase, ['training', 'month1', 'month2', 'month3'], true)) {
+                    $label = (string) ($cal['label'] ?? $phase);
+                    syncpediaNotifyUserOnce($db, $tid, 'Training month gate', 'Your fresher track window starts today: ' . $label . '.', 'fresher_gate', '/fresher-salary-tracker#gate-' . $tid . '-' . $phase, $orgId, true, '');
+                }
+            }
+        }
+    } catch (Throwable $e) {
+    }
+
+    try {
+        $st = $db->prepare("SELECT connection_status FROM org_whatsapp_config WHERE org_id = ? LIMIT 1");
+        $st->execute([$orgId]);
+        $status = strtolower(trim((string) ($st->fetchColumn() ?: '')));
+        if (in_array($status, ['disconnected', 'error', 'expired', 'failed'], true)) {
+            syncpediaNotifyOrgAdminsOps(
+                $db,
+                $orgId,
+                'WhatsApp disconnected',
+                'WhatsApp / Meta connection is ' . $status . '. Reconnect in Communications setup.',
+                '/communications',
+                '/communications#wa-down-' . $today,
+                (string) ($tokenData['user_id'] ?? ''),
+            );
+        }
+    } catch (Throwable $e) {
+    }
+}
+
+/** Notify assignee (and their manager) when a task is created or reassigned. */
 function syncpediaNotifyTaskAssignee(
     PDO $db,
     string $assigneeId,
@@ -5694,22 +6749,31 @@ function syncpediaNotifyTaskAssignee(
     ?string $orgId = null,
 ): void {
     $assigneeId = trim($assigneeId);
-    if ($assigneeId === '' || $assigneeId === $actorUserId) {
+    $actorUserId = trim($actorUserId);
+    if ($assigneeId === '') {
         return;
     }
-    $actorName = 'A teammate';
-    try {
-        $st = $db->prepare('SELECT full_name FROM users WHERE id = ? LIMIT 1');
-        $st->execute([$actorUserId]);
-        $name = trim((string) ($st->fetchColumn() ?: ''));
-        if ($name !== '') {
-            $actorName = $name;
-        }
-    } catch (Throwable $e) {
+    $actorName = syncpediaUserDisplayName($db, $actorUserId);
+    if ($actorName === '') {
+        $actorName = 'A teammate';
     }
-    $title = 'New task assigned';
-    $message = $actorName . ' assigned you a task: ' . (trim($taskTitle) !== '' ? trim($taskTitle) : 'Untitled');
-    syncpediaNotifyUser($db, $assigneeId, $title, $message, 'task_assigned', '/tasks', $orgId);
+    $taskLabel = trim($taskTitle) !== '' ? trim($taskTitle) : 'Untitled';
+    $seen = [];
+    $notify = static function (string $uid, string $title, string $message) use ($db, $actorUserId, &$seen, $orgId): void {
+        $uid = trim($uid);
+        if ($uid === '' || $uid === $actorUserId || isset($seen[$uid])) {
+            return;
+        }
+        $seen[$uid] = true;
+        syncpediaNotifyUser($db, $uid, $title, $message, 'task_assigned', '/tasks', $orgId);
+    };
+    $notify($assigneeId, 'New task assigned', $actorName . ' assigned you a task: ' . $taskLabel);
+    $mgr = syncpediaManagerIdOfUser($db, $assigneeId);
+    if ($mgr) {
+        $assigneeName = syncpediaUserDisplayName($db, $assigneeId);
+        $who = $assigneeName !== '' ? $assigneeName : 'A team member';
+        $notify($mgr, 'Task assigned to your team', $actorName . ' assigned "' . $taskLabel . '" to ' . $who . '.');
+    }
 }
 
 /** In-app notification for payment link events (webhook). */

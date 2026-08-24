@@ -437,7 +437,7 @@ export default function AssessmentsAdminPage() {
           Peaklyy Assessments
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Keep domain-bank assessments (25 MCQ + 5 tasks, untimed), or create timed custom MCQ assessments. Pass 70★ ·
+          Keep domain-bank assessments (15 beginner MCQs + 1 task, untimed), or create timed custom MCQ assessments. Pass 70★ ·
           80★★ · 90★★★ · 100★★★★
         </p>
       </div>
@@ -512,7 +512,7 @@ export default function AssessmentsAdminPage() {
                 <div className="space-y-1.5">
                   <Label>Questions per attempt</Label>
                   <Input type="number" readOnly value={30} />
-                  <p className="text-[11px] text-muted-foreground">25 random MCQs + 5 practical tasks · untimed</p>
+                  <p className="text-[11px] text-muted-foreground">15 beginner MCQs + 1 practical task · untimed</p>
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -669,8 +669,8 @@ export default function AssessmentsAdminPage() {
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Domains: {Object.values(domains).join(" · ") || "…"} — Part 1: 25 MCQs (website score) · Part 2: 5
-                tasks (notepad/upload, manual grading)
+                Domains: {Object.values(domains).join(" · ") || "…"} — Part 1: 15 beginner MCQs (website score) · Part 2: 1
+                task (notepad/upload, manual grading)
               </p>
             )}
 

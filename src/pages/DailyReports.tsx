@@ -40,6 +40,8 @@ export default function DailyReports() {
     loading,
     selectedRep,
     setSelectedRep,
+    timeline,
+    setTimeline,
     teamMembers,
     isManager,
     isSalesRep,
@@ -175,10 +177,29 @@ export default function DailyReports() {
 
       <Card className="border-border/50 shadow-none">
         <CardHeader className="px-3 sm:px-4">
-          <CardTitle className="text-sm font-semibold flex items-center gap-2">
-            <FileText className="h-4 w-4" />
-            Report History ({filteredReports.length})
-          </CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2 min-w-0">
+              <FileText className="h-4 w-4 shrink-0" />
+              <span className="truncate">Report History ({filteredReports.length})</span>
+            </CardTitle>
+            <Select
+              value={timeline}
+              onValueChange={(v) =>
+                setTimeline(v as 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'all')
+              }
+            >
+              <SelectTrigger className="w-[140px] sm:w-[160px] h-8 text-xs shrink-0">
+                <SelectValue placeholder="Timeline" />
+              </SelectTrigger>
+              <SelectContent align="end">
+                <SelectItem value="today">Today</SelectItem>
+                <SelectItem value="yesterday">Yesterday</SelectItem>
+                <SelectItem value="last_7_days">Last 7 days</SelectItem>
+                <SelectItem value="this_month">This month</SelectItem>
+                <SelectItem value="all">All reports</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </CardHeader>
         <CardContent className="px-0 sm:px-4">
           {isMobile ? (

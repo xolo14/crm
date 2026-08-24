@@ -28,6 +28,7 @@ export const MarketingPortalDashboard = lazyWithRetry(() => import("@/pages/Mark
 export const EmailAnalytics = lazyWithRetry(() => import("@/pages/EmailAnalytics"));
 export const WhatsAppPortal = lazyWithRetry(() => import("@/pages/WhatsAppPortal"));
 export const WhatsAppAnalytics = lazyWithRetry(() => import("@/pages/WhatsAppAnalytics"));
+export const MarketingMetaAdsPage = lazyWithRetry(() => import("@/pages/MarketingMetaAdsPage"));
 export const Holidays = lazyWithRetry(() => import("@/pages/Holidays"));
 export const Trash = lazyWithRetry(() => import("@/pages/Trash"));
 export const OfferLetters = lazyWithRetry(() => import("@/pages/OfferLetters"));
@@ -35,7 +36,6 @@ export const CertificatesPage = lazyWithRetry(() => import("@/pages/Certificates
 export const PayslipPage = lazyWithRetry(() => import("@/pages/payslip/PayslipPage"));
 export const FormsManagerPage = lazyWithRetry(() => import("@/pages/FormsManagerPage"));
 export const DocFormsHubPage = lazyWithRetry(() => import("@/pages/DocFormsHubPage"));
-export const MyDocFormsPage = lazyWithRetry(() => import("@/pages/MyDocFormsPage"));
 export const PublicDocFormPage = lazyWithRetry(() => import("@/pages/PublicDocFormPage"));
 export const FormApiIntegrationsPage = lazyWithRetry(() => import("@/pages/FormApiIntegrationsPage"));
 export const SuperAdminPanel = lazyWithRetry(() => import("@/pages/SuperAdminPanel"));

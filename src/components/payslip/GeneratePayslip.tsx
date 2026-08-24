@@ -318,6 +318,55 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
     }
   };
 
+  const handleGenerateAll = async () => {
+    if (employees.length === 0) {
+      toast({ title: "No employees", variant: "destructive" });
+      return;
+    }
+    setSubmitting(true);
+    let created = 0;
+    let skipped = 0;
+    try {
+      for (const emp of employees) {
+        const comps = calculateSalaryComponents(
+          emp.ctc,
+          paidDays,
+          workingDays,
+          emp.pfApplicable,
+          emp.ptApplicable,
+          0,
+          0,
+        );
+        if (comps.grossEarnings <= 0) {
+          skipped++;
+          continue;
+        }
+        const slip = buildPayslip({
+          employee: emp,
+          month: payMonth,
+          workingDays,
+          paidDays,
+          components: comps,
+          generatedBy,
+          status: "generated",
+        });
+        try {
+          await Promise.resolve(onGenerate(slip));
+          created++;
+        } catch {
+          skipped++;
+        }
+      }
+      toast({
+        title: created > 0 ? `${created} payslip(s) generated` : "No payslips generated",
+        description: skipped > 0 ? `${skipped} skipped (exists, empty CTC, or error)` : monthLabelFromYm(payMonth),
+        variant: created === 0 ? "destructive" : undefined,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handlePreview = () => {
     toast({ title: "Preview updated", description: "The live preview reflects your latest inputs." });
   };
@@ -589,6 +638,15 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
               disabled={submitting || !employee}
             >
               {submitting ? "Generating…" : "Generate Payslip"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-lg border-gray-200"
+              onClick={handleGenerateAll}
+              disabled={submitting || employees.length < 2}
+            >
+              Generate all ({employees.length})
             </Button>
           </div>
         </CardContent>

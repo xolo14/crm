@@ -151,9 +151,7 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
 
     $org = null;
     if ($normalizedRole !== 'super_admin' && !empty($user['org_id'])) {
-        $ostmt = $db->prepare("SELECT id, name, slug, logo_url, plan FROM organizations WHERE id = ? AND is_active = 1");
-        $ostmt->execute([$user['org_id']]);
-        $org = $ostmt->fetch();
+        $org = syncpediaFetchOrganization($db, (string) $user['org_id'], true);
 
         if ($org) {
             $fstmt = $db->prepare("SELECT feature, enabled FROM org_features WHERE org_id = ?");
@@ -173,8 +171,12 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
     ];
 }
 
-if ($method === 'POST' && isset($_GET['action'])) {
-    $action = $_GET['action'];
+if ($method === 'POST') {
+    // Prefer query for backward compatibility; accept action in JSON body (Android app).
+    $action = $_GET['action'] ?? ($input['action'] ?? '');
+    if ($action === '' || $action === null) {
+        respond(['error' => 'Invalid action'], 400);
+    }
 
     if ($action === 'forgot_password') {
         syncpediaRateLimitConsume('auth_forgot', 5, 3600);
@@ -548,9 +550,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
 
         $org = null;
         if ($effectiveOrgId !== '') {
-            $ostmt = $db->prepare("SELECT id, name, slug, logo_url, plan FROM organizations WHERE id = ? AND is_active = 1");
-            $ostmt->execute([$effectiveOrgId]);
-            $org = $ostmt->fetch();
+            $org = syncpediaFetchOrganization($db, $effectiveOrgId, true);
             if ($org) {
                 $fstmt = $db->prepare("SELECT feature, enabled FROM org_features WHERE org_id = ?");
                 $fstmt->execute([$effectiveOrgId]);
@@ -577,9 +577,7 @@ if ($method === 'POST' && isset($_GET['action'])) {
         
         $org = null;
         if ($targetOrgId) {
-            $ostmt = $db->prepare("SELECT id, name, slug, logo_url, plan FROM organizations WHERE id = ?");
-            $ostmt->execute([$targetOrgId]);
-            $org = $ostmt->fetch();
+            $org = syncpediaFetchOrganization($db, (string) $targetOrgId, false);
             if ($org) {
                 $fstmt = $db->prepare("SELECT feature, enabled FROM org_features WHERE org_id = ?");
                 $fstmt->execute([$targetOrgId]);

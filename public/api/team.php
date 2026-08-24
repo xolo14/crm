@@ -381,6 +381,15 @@ if ($method === 'POST') {
     }
 
     syncpediaAuditLog($db, $tokenData, 'created', 'team_member', $id, 'Created team member: ' . $fullName . ' (' . $memberRole . ')');
+    syncpediaNotifyMemberLifecycle(
+        $db,
+        (string) $userId,
+        $fullName,
+        $memberRole,
+        $reportsToId ? (string) $reportsToId : null,
+        $orgId !== '' ? (string) $orgId : null,
+        'added',
+    );
 
     $emailSent = false;
     $emailFrom = null;
@@ -478,7 +487,7 @@ if ($method === 'PUT') {
     }
     if (array_key_exists('role', $input)) {
         $newRole = normalizeRoleValue((string) $input['role']);
-        $usrStmt = $db->prepare('SELECT org_id, role FROM users WHERE id = ? LIMIT 1');
+        $usrStmt = $db->prepare('SELECT org_id, role, full_name FROM users WHERE id = ? LIMIT 1');
         $usrStmt->execute([$id]);
         $uRow = $usrStmt->fetch();
         $prevRole = normalizeRoleValue((string) ($uRow['role'] ?? ''));
@@ -599,6 +608,28 @@ if ($method === 'PUT') {
     $changedFields = array_key_exists('role', $input) ? 'role → ' . normalizeRoleValue((string) $input['role']) : implode(', ', array_keys($input));
     syncpediaAuditLog($db, $tokenData, 'updated', 'team_member', $id, 'Updated team member (' . $changedFields . ')');
 
+    if (array_key_exists('role', $input) && isset($prevRole, $newRole) && $prevRole !== $newRole) {
+        $memberName = '';
+        try {
+            $nm = $db->prepare('SELECT full_name, org_id FROM users WHERE id = ? LIMIT 1');
+            $nm->execute([$id]);
+            $nr = $nm->fetch(PDO::FETCH_ASSOC) ?: [];
+            $memberName = (string) ($nr['full_name'] ?? '');
+            $nOrg = isset($nr['org_id']) ? (string) $nr['org_id'] : null;
+        } catch (Throwable $e) {
+            $nOrg = null;
+        }
+        syncpediaNotifyRoleChanged(
+            $db,
+            (string) $userId,
+            (string) $id,
+            $memberName,
+            (string) $prevRole,
+            (string) $newRole,
+            $nOrg ?? (isset($uRow['org_id']) ? (string) $uRow['org_id'] : null),
+        );
+    }
+
     $resp = ['message' => 'Team member updated'];
     if ($pageAccessSaved !== null) {
         $resp['page_access'] = $pageAccessSaved;
@@ -617,9 +648,15 @@ if ($method === 'DELETE') {
         respond(['error' => 'You cannot remove your own account'], 400);
     }
 
-    $chk = $db->prepare("SELECT id, role, org_id, full_name FROM users WHERE id = ? LIMIT 1");
-    $chk->execute([$id]);
-    $target = $chk->fetch();
+    try {
+        $chk = $db->prepare("SELECT id, role, org_id, full_name, reports_to_id FROM users WHERE id = ? LIMIT 1");
+        $chk->execute([$id]);
+        $target = $chk->fetch();
+    } catch (Throwable $e) {
+        $chk = $db->prepare("SELECT id, role, org_id, full_name FROM users WHERE id = ? LIMIT 1");
+        $chk->execute([$id]);
+        $target = $chk->fetch();
+    }
     if (!$target) {
         respond(['error' => 'User not found'], 404);
     }
@@ -655,6 +692,16 @@ if ($method === 'DELETE') {
     $stmt = $db->prepare("DELETE FROM users WHERE id = ?");
     $stmt->execute([$id]);
     syncpediaAuditLog($db, $tokenData, 'deleted', 'team_member', $id, 'Removed team member: ' . ($target['full_name'] ?? $id));
+    $reportsTo = trim((string) ($target['reports_to_id'] ?? ''));
+    syncpediaNotifyMemberLifecycle(
+        $db,
+        (string) $userId,
+        (string) ($target['full_name'] ?? 'A team member'),
+        (string) ($target['role'] ?? 'member'),
+        $reportsTo !== '' ? $reportsTo : null,
+        isset($target['org_id']) && $target['org_id'] !== '' ? (string) $target['org_id'] : null,
+        'removed',
+    );
     respond(['message' => 'Team member removed and moved to trash']);
 }
 

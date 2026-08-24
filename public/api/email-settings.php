@@ -264,7 +264,19 @@ if ($method === 'POST' && $action === 'test') {
     $safeError = $ok ? null : substr((string) ($result['error'] ?? 'SMTP test failed'), 0, 500);
     $db->prepare('UPDATE org_smtp_accounts SET last_tested_at = NOW(), last_test_status = ?, last_error = ? WHERE id = ? AND org_id = ?')
         ->execute([$ok ? 'success' : 'failed', $safeError, $account['id'], $orgId]);
-    if (!$ok) respond(['error' => $safeError], 502);
+    if (!$ok) {
+        $today = (new DateTimeImmutable('now'))->format('Y-m-d');
+        syncpediaNotifyOrgAdminsOps(
+            $db,
+            (string) $orgId,
+            'Email SMTP failed',
+            'Email setup test failed: ' . ($safeError ?: 'SMTP test failed'),
+            '/settings',
+            '/settings#smtp-fail-' . $today,
+            (string) $userId,
+        );
+        respond(['error' => $safeError], 502);
+    }
     respond(['message' => 'Test email sent', 'to' => $recipient]);
 }
 

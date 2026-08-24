@@ -9,10 +9,11 @@ import { ChangePassword } from "@/components/settings/sections/ChangePassword";
 import { CompanyProfile } from "@/components/settings/sections/CompanyProfile";
 import { DataPrivacy } from "@/components/settings/sections/DataPrivacy";
 import { GeneralSettings } from "@/components/settings/sections/GeneralSettings";
-import { Localization } from "@/components/settings/sections/Localization";
 import { Security } from "@/components/settings/sections/Security";
 import { EmailSetup } from "@/components/settings/sections/EmailSetup";
 import { RazorpaySetup } from "@/components/settings/sections/RazorpaySetup";
+import { BankPaymentDetails } from "@/components/settings/sections/BankPaymentDetails";
+import { MetaAdsSetup } from "@/components/settings/sections/MetaAdsSetup";
 
 function PersonalProfileSettings() {
   return <GeneralSettings personalOnly />;
@@ -21,7 +22,7 @@ function PersonalProfileSettings() {
 const adminSectionComponents: Record<string, React.FC> = {
   general: GeneralSettings,
   "company-profile": CompanyProfile,
-  localization: Localization,
+  "bank-payment": BankPaymentDetails,
   security: Security,
   "audit-logs": AuditLogs,
   "data-privacy": DataPrivacy,
@@ -50,6 +51,7 @@ export default function SettingsPage() {
   const canSeeEmailSetup =
     !limited && (normalizedRole === "super_admin" || isL3AdminRole(normalizedRole));
   const canSeeRazorpaySetup = canSeeEmailSetup;
+  const canSeeMetaAdsSetup = canSeeEmailSetup;
   const sectionComponents = useMemo(
     () =>
       limited
@@ -58,10 +60,18 @@ export default function SettingsPage() {
             ...adminSectionComponents,
             ...(canSeeEmailSetup ? { "email-setup": EmailSetup } : {}),
             ...(canSeeRazorpaySetup ? { "razorpay-setup": RazorpaySetup } : {}),
+            ...(canSeeMetaAdsSetup ? { "meta-ads": MetaAdsSetup } : {}),
           },
-    [limited, canSeeEmailSetup, canSeeRazorpaySetup],
+    [limited, canSeeEmailSetup, canSeeRazorpaySetup, canSeeMetaAdsSetup],
   );
   const [activeSection, setActiveSection] = useState<string>("general");
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.has("meta_ads") && canSeeMetaAdsSetup) {
+      setActiveSection("meta-ads");
+    }
+  }, [location.search, canSeeMetaAdsSetup]);
 
   useEffect(() => {
     if (!(activeSection in sectionComponents)) {
@@ -74,8 +84,14 @@ export default function SettingsPage() {
     (limited ? PersonalProfileSettings : GeneralSettings);
 
   return (
-    <div className="min-w-0">
-      <div className="mb-4 md:mb-6">
+    <div
+      className={cn(
+        "min-w-0",
+        !inHrPortal &&
+          "md:flex md:h-[calc(100dvh-var(--crm-desktop-topbar-height)-3rem)] md:min-h-0 md:flex-col md:overflow-hidden",
+      )}
+    >
+      <div className={cn("crm-page-header mb-4 md:mb-6", !inHrPortal && "md:shrink-0")}>
         <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {limited ? "Manage your account preferences" : "Manage your CRM configuration"}
@@ -84,9 +100,9 @@ export default function SettingsPage() {
 
       <div
         className={cn(
-          "flex flex-col gap-4 md:gap-6",
+          "flex flex-col gap-4 md:gap-0",
           !inHrPortal &&
-            "md:flex-row md:min-h-[calc(100dvh-160px)] md:rounded-lg md:border md:border-border md:bg-card md:overflow-hidden",
+            "md:flex-1 md:min-h-0 md:flex-row md:rounded-lg md:border md:border-border md:bg-card md:overflow-hidden",
         )}
       >
         <SettingsNav
@@ -95,9 +111,16 @@ export default function SettingsPage() {
           limited={limited}
           showEmailSetup={canSeeEmailSetup}
           showRazorpaySetup={canSeeRazorpaySetup}
+          showMetaAdsSetup={canSeeMetaAdsSetup}
+          isSuperAdmin={normalizedRole === "super_admin"}
           pillsOnly={inHrPortal}
         />
-        <div className={cn("min-w-0 flex-1", !inHrPortal && "md:overflow-y-auto md:p-6")}>
+        <div
+          className={cn(
+            "min-w-0 flex-1",
+            !inHrPortal && "md:min-h-0 md:overflow-y-auto md:p-6",
+          )}
+        >
           <ActiveSection />
         </div>
       </div>

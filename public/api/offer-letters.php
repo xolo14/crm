@@ -205,22 +205,11 @@ function offerLetterRenderHtmlToPdf(string $html, string $destAbsPath): array {
  * @return array{ok:bool,error?:string,bytes?:string}
  */
 function offerLetterPersistPdfBase64(string $raw, string $destAbsPath): array {
-    $raw = trim($raw);
-    if (str_starts_with($raw, 'data:')) {
-        $comma = strpos($raw, ',');
-        if ($comma === false) {
-            return ['ok' => false, 'error' => 'Invalid pdf_base64 data URL'];
-        }
-        $raw = substr($raw, $comma + 1);
+    $decoded = syncpediaDecodePdfBase64($raw);
+    if (empty($decoded['ok']) || empty($decoded['bytes'])) {
+        return ['ok' => false, 'error' => $decoded['error'] ?? 'Invalid pdf_base64'];
     }
-    $bin = base64_decode($raw, true);
-    if ($bin === false || strlen($bin) < 100) {
-        return ['ok' => false, 'error' => 'Invalid pdf_base64'];
-    }
-    // Basic PDF magic
-    if (strncmp($bin, '%PDF', 4) !== 0) {
-        return ['ok' => false, 'error' => 'pdf_base64 is not a PDF'];
-    }
+    $bin = (string) $decoded['bytes'];
     $dir = dirname($destAbsPath);
     if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
         return ['ok' => false, 'error' => 'Cannot create storage/offer_letters'];
@@ -235,19 +224,8 @@ function offerLetterPersistPdfBase64(string $raw, string $destAbsPath): array {
  * Decode pdf_base64 without writing (for GCS upload after Dompdf path).
  */
 function offerLetterDecodePdfBase64(string $raw): ?string {
-    $raw = trim($raw);
-    if (str_starts_with($raw, 'data:')) {
-        $comma = strpos($raw, ',');
-        if ($comma === false) {
-            return null;
-        }
-        $raw = substr($raw, $comma + 1);
-    }
-    $bin = base64_decode($raw, true);
-    if ($bin === false || strlen($bin) < 100 || strncmp($bin, '%PDF', 4) !== 0) {
-        return null;
-    }
-    return $bin;
+    $decoded = syncpediaDecodePdfBase64($raw);
+    return (!empty($decoded['ok']) && isset($decoded['bytes'])) ? (string) $decoded['bytes'] : null;
 }
 
 $actionGet = $_GET['action'] ?? '';
@@ -579,7 +557,6 @@ if ($method === 'POST') {
             'message' => 'Offer letter sent',
             'pdf_url' => $pdfUrl,
             'pdf_path' => $pdfPathRelative,
-            'gcs_object' => $gcsObject,
             'email_sent' => true,
             'from' => (string)($mail['from'] ?? syncpediaHrMailAddress()),
             'to' => $recipientEmail,

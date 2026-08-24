@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import { formatCallDuration } from "@/lib/callDuration";
 import { useAddCallLog, useUpdateCallLog } from "@/hooks/useCallLogs";
 import { useToast } from "@/hooks/use-toast";
-import { openProtectedUpload } from "@/lib/resumeHref";
+import { ProtectedUploadPreviewDialog } from "@/components/ProtectedUploadPreviewDialog";
 import { APP_TIMEZONE } from "@/lib/dateTime";
 import type { CallLog, CreateCallLogInput } from "@/types/callLog";
 
@@ -103,6 +103,7 @@ export default function LogCallDialog({
   const addMut = useAddCallLog();
   const updMut = useUpdateCallLog();
   const [recordingFile, setRecordingFile] = useState<File | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
   /** Portal selects into dialog root so dropdown aligns with triggers inside transformed / scrollable modals */
   const [dialogContentEl, setDialogContentEl] = useState<HTMLElement | null>(null);
   const form = useForm<FormValues>({
@@ -244,6 +245,7 @@ export default function LogCallDialog({
   const previewSec = form.watch("duration_min") * 60 + form.watch("duration_sec");
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         ref={(node) => setDialogContentEl(node)}
@@ -392,11 +394,9 @@ export default function LogCallDialog({
                   <button
                     type="button"
                     className="text-teal-600 hover:underline bg-transparent border-0 p-0 cursor-pointer"
-                    onClick={() => {
-                      void openProtectedUpload(editLog.attachment_path).catch(() => {});
-                    }}
+                    onClick={() => setPreviewOpen(true)}
                   >
-                    Open
+                    Play / preview
                   </button>
                 </p>
               ) : null}
@@ -413,5 +413,13 @@ export default function LogCallDialog({
         </form>
       </DialogContent>
     </Dialog>
+
+      <ProtectedUploadPreviewDialog
+        path={editLog?.attachment_path ?? null}
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        title="Call recording"
+      />
+    </>
   );
 }

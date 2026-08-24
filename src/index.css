@@ -52,6 +52,10 @@
     --sidebar-accent-foreground: 160 15% 90%;
     --sidebar-border: 162 20% 20%;
     --sidebar-ring: 162 63% 50%;
+
+    /* Sidebar brand band */
+    --crm-brand-header-height: 4rem;
+    --crm-desktop-topbar-height: 2.75rem;
   }
 
   .dark {
@@ -143,6 +147,13 @@
   }
   .scrollbar-none::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Page title block under the desktop top bar */
+  .crm-page-header {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
 
   /* Mobile touch-friendly tap targets */

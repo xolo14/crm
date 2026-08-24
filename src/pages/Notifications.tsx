@@ -10,7 +10,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow, format, isAfter, isBefore, startOfDay, endOfDay } from 'date-fns';
-import { Bell, Check, CheckCheck, Trash2, UserPlus, Info, AlertTriangle, Search, Calendar } from 'lucide-react';
+import { Bell, Check, CheckCheck, Trash2, UserPlus, UserMinus, ClipboardList, Layers, GraduationCap, Info, AlertTriangle, Search, Calendar } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-mobile';
 
 interface Notification {
@@ -25,18 +25,63 @@ interface Notification {
 
 const typeIcons: Record<string, any> = {
   lead_assigned: UserPlus,
+  task_assigned: ClipboardList,
+  member_added: UserPlus,
+  member_removed: UserMinus,
+  bulk_action: Layers,
+  fresher_enrolled: GraduationCap,
+  role_changed: UserPlus,
+  task_completed: ClipboardList,
+  task_due: ClipboardList,
+  follow_up: Info,
+  holiday: Calendar,
+  ops: AlertTriangle,
+  marketing_template: Info,
+  fresher_phase: GraduationCap,
+  fresher_policy: GraduationCap,
+  fresher_gate: GraduationCap,
   info: Info,
   warning: AlertTriangle,
 };
 
 const typeLabels: Record<string, string> = {
-  lead_assigned: 'Lead Assigned',
+  lead_assigned: 'Bulk assigned',
+  task_assigned: 'Task',
+  member_added: 'Member added',
+  member_removed: 'Member removed',
+  bulk_action: 'Bulk action',
+  fresher_enrolled: 'Fresher training',
+  role_changed: 'Role change',
+  task_completed: 'Task completed',
+  task_due: 'Task due',
+  follow_up: 'Follow-up',
+  holiday: 'Holiday',
+  ops: 'System',
+  marketing_template: 'Marketing',
+  fresher_phase: 'Training phase',
+  fresher_policy: 'Training policy',
+  fresher_gate: 'Training reminder',
   info: 'Info',
   warning: 'Warning',
 };
 
 const typeBadgeColors: Record<string, string> = {
   lead_assigned: 'bg-primary/10 text-primary border-primary/20',
+  task_assigned: 'bg-info/10 text-info border-info/20',
+  member_added: 'bg-primary/10 text-primary border-primary/20',
+  member_removed: 'bg-warning/10 text-warning border-warning/20',
+  bulk_action: 'bg-primary/10 text-primary border-primary/20',
+  fresher_enrolled: 'bg-primary/10 text-primary border-primary/20',
+  role_changed: 'bg-primary/10 text-primary border-primary/20',
+  task_completed: 'bg-info/10 text-info border-info/20',
+  task_due: 'bg-warning/10 text-warning border-warning/20',
+  follow_up: 'bg-info/10 text-info border-info/20',
+  holiday: 'bg-primary/10 text-primary border-primary/20',
+  ops: 'bg-warning/10 text-warning border-warning/20',
+  marketing_template: 'bg-info/10 text-info border-info/20',
+  fresher_phase: 'bg-primary/10 text-primary border-primary/20',
+  fresher_policy: 'bg-primary/10 text-primary border-primary/20',
+  fresher_gate: 'bg-warning/10 text-warning border-warning/20',
   info: 'bg-info/10 text-info border-info/20',
   warning: 'bg-warning/10 text-warning border-warning/20',
 };

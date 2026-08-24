@@ -2,7 +2,7 @@
  * Certificate bulk/issue helpers: columns = placeholders actually present on the template.
  */
 
-import { extractPlaceholderKeys } from "@/modules/docForms/types";
+import { applyPlaceholders, extractPlaceholderKeys } from "@/modules/docForms/types";
 
 /** Auto-filled at issue time — never shown as manual bulk columns. */
 export const CERT_AUTO_PLACEHOLDER_KEYS = new Set([
@@ -37,6 +37,87 @@ export function certPlaceholderLabel(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** Map <<Name>> / Date / certID tokens onto the issue-form keys. */
+export function canonicalCertPlaceholderKey(raw: string): string {
+  const compact = String(raw || "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9_]/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+  const lower = compact.toLowerCase();
+  const aliases: Record<string, string> = {
+    name: "recipient_name",
+    recipient_name: "recipient_name",
+    candidate_name: "recipient_name",
+    date: "issue_date",
+    issue_date: "issue_date",
+    domain: "domain_name",
+    course: "domain_name",
+    course_name: "domain_name",
+    domain_name: "domain_name",
+    company: "company_name",
+    company_name: "company_name",
+    certid: "cert_id",
+    cert_id: "cert_id",
+    certificate_id: "cert_id",
+    sync_id: "cert_id",
+    email: "recipient_email",
+    recipient_email: "recipient_email",
+  };
+  return aliases[lower] || lower || compact;
+}
+
+export function lookupCertPlaceholderValue(raw: string, values: Record<string, string>): string | undefined {
+  const token = String(raw || "").trim();
+  if (!token) return undefined;
+  const canonical = canonicalCertPlaceholderKey(token);
+  const keysToTry = [token, canonical, token.replace(/\s+/g, "_"), token.toLowerCase()];
+  for (const k of keysToTry) {
+    if (!k || !Object.prototype.hasOwnProperty.call(values, k)) continue;
+    const v = values[k];
+    if (v != null && String(v) !== "") return String(v);
+  }
+  return undefined;
+}
+
+export function layerHasCertPlaceholderTokens(text: string): boolean {
+  return /<<\s*[^<>]+?\s*>>/.test(text) || /\{\{\s*[a-zA-Z0-9_]+\s*\}\}/.test(text);
+}
+
+/** Replace <<Date>> and {{date}} tokens; leave any surrounding text in place. */
+export function applyCertPlaceholders(text: string, values: Record<string, string>): string {
+  const withAngle = String(text || "").replace(/<<\s*([^<>]+?)\s*>>/g, (full, raw: string) => {
+    const v = lookupCertPlaceholderValue(raw, values);
+    return v !== undefined ? v : full;
+  });
+  const withMustache = withAngle.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (full, key: string) => {
+    const v = lookupCertPlaceholderValue(key, values);
+    return v !== undefined ? v : full;
+  });
+  return applyPlaceholders(withMustache, values);
+}
+
+export function extractAnglePlaceholderLabels(...chunks: string[]): string[] {
+  const found: string[] = [];
+  const seen = new Set<string>();
+  for (const chunk of chunks) {
+    if (!chunk) continue;
+    const text = String(chunk);
+    const re = /<<\s*([^<>]+?)\s*>>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      const label = String(m[1] || "").trim();
+      if (!label) continue;
+      const key = canonicalCertPlaceholderKey(label).toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      found.push(label);
+    }
+  }
+  return found;
+}
+
 type CertLike = {
   layers?: Array<{ type?: string; content?: string }>;
   fields?: { title?: string; bodyText?: string; companyName?: string; domainName?: string };
@@ -46,7 +127,7 @@ type CertLike = {
 /**
  * Placeholders used by a certificate template:
  * - typed layers present on the canvas (name/domain/date/company)
- * - {{...}} tokens in layer/field text
+ * - {{...}} and <<...>> tokens in layer/field text
  * - mail subject/body/filename if stored on style
  * Always includes recipient_email so certificates can be emailed.
  * Excludes auto cert ID.
@@ -66,14 +147,20 @@ export function getCertificateTemplatePlaceholderKeys(template: CertLike | null 
     if (col) found.add(col);
   }
 
-  for (const key of extractPlaceholderKeys(
+  const tokenChunks = [
     ...layers.map((l) => String(l?.content || "")),
     String(fields.title || ""),
     String(fields.bodyText || ""),
     String(style.mail_subject || ""),
     String(style.mail_body || ""),
     String(style.pdf_filename_pattern || ""),
-  )) {
+  ];
+  const fromTokens = [
+    ...extractPlaceholderKeys(...tokenChunks),
+    ...extractAnglePlaceholderLabels(...tokenChunks).map((label) => canonicalCertPlaceholderKey(label)),
+  ];
+
+  for (const key of fromTokens) {
     if (CERT_AUTO_PLACEHOLDER_KEYS.has(key)) continue;
     if (key === "name") found.add("recipient_name");
     else if (key === "domain" || key === "course_name") found.add("domain_name");

@@ -7,6 +7,7 @@ import {
   Bell,
   Calendar,
   CheckSquare,
+  FileCheck,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -16,33 +17,51 @@ import {
   Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
+import { hrHasPageAccess } from "@/lib/hrPageAccess";
+import { canAccessOfferLetters } from "@/lib/orgAccess";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import type { PageAccess } from "@/lib/orgAccess";
 
-const navItems = [
-  { to: "/hr/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/hr/my-leads", label: "My Leads", icon: UserPlus },
-  { to: "/hr/assigned-leads", label: "Assigned Leads", icon: Users },
-  { to: "/hr/tasks", label: "Tasks", icon: CheckSquare },
-  { to: "/hr/reports", label: "Reports", icon: BarChart2 },
-  { to: "/hr/notifications", label: "Notifications", icon: Bell },
-  { to: "/hr/communications", label: "Communications", icon: PhoneCall },
-  { to: "/hr/holidays", label: "Holidays", icon: Calendar },
-  { to: "/hr/settings", label: "Settings", icon: Settings },
+const navItems: { to: string; label: string; icon: typeof LayoutDashboard; accessKey: string }[] = [
+  { to: "/hr/dashboard", label: "Dashboard", icon: LayoutDashboard, accessKey: "dashboard" },
+  { to: "/hr/my-leads", label: "My Leads", icon: UserPlus, accessKey: "my_leads" },
+  { to: "/hr/assigned-leads", label: "Assigned Leads", icon: Users, accessKey: "assigned_leads" },
+  { to: "/hr/tasks", label: "Tasks", icon: CheckSquare, accessKey: "tasks" },
+  { to: "/hr/reports", label: "Reports", icon: BarChart2, accessKey: "reports" },
+  { to: "/hr/notifications", label: "Notifications", icon: Bell, accessKey: "notifications" },
+  { to: "/hr/communications", label: "Communications", icon: PhoneCall, accessKey: "communications" },
+  { to: "/hr/holidays", label: "Holidays", icon: Calendar, accessKey: "holidays" },
+  { to: "/hr/offer-letters", label: "Offer Letters", icon: FileCheck, accessKey: "offer_letters" },
+  { to: "/hr/settings", label: "Settings", icon: Settings, accessKey: "settings" },
 ];
 
 function NavLinks({
   unreadCount,
+  pageAccess,
+  organization,
+  role,
   onNavigate,
 }: {
   unreadCount: number;
+  pageAccess?: PageAccess | null;
+  organization?: { slug?: string | null; features?: Record<string, boolean> | null } | null;
+  role?: string | null;
   onNavigate?: () => void;
 }) {
+  const visible = navItems.filter((item) => {
+    if (!hrHasPageAccess(pageAccess, item.accessKey)) return false;
+    if (item.accessKey === "offer_letters" && !canAccessOfferLetters(role ?? null, organization ?? null, pageAccess)) {
+      return false;
+    }
+    return true;
+  });
   return (
     <nav className="flex-1 space-y-1 px-2 py-2 overflow-y-auto">
-      {navItems.map((item) => (
+      {visible.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
@@ -70,12 +89,15 @@ function NavLinks({
 
 export default function HRLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
-  const hrUser = api.hr.getStoredUser();
+  const { user, organization } = useAuth();
+  const hrUser = api.hr.getStoredUser() || user;
+  const pageAccess = (user?.page_access ?? (hrUser as { page_access?: PageAccess } | null)?.page_access) ?? null;
   const [sheetOpen, setSheetOpen] = useState(false);
   const { data } = useQuery({
     queryKey: ["hr", "notifications"],
     queryFn: api.hr.notifications,
     refetchInterval: 30000,
+    enabled: hrHasPageAccess(pageAccess, "notifications"),
   });
   const unreadCount =
     (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []).filter(
@@ -91,7 +113,7 @@ export default function HRLayout({ children }: { children: ReactNode }) {
     <div className="flex h-dvh max-h-dvh bg-background overflow-hidden">
       <aside className="hidden w-60 border-r bg-sidebar text-sidebar-foreground md:flex md:flex-col shrink-0">
         <div className="border-b border-sidebar-border px-4 py-4 text-lg font-bold">HR Portal</div>
-        <NavLinks unreadCount={unreadCount} />
+        <NavLinks unreadCount={unreadCount} pageAccess={pageAccess} organization={organization} role={user?.role} />
       </aside>
 
       {/* Mobile header — owns safe-area-inset-top */}
@@ -109,7 +131,13 @@ export default function HRLayout({ children }: { children: ReactNode }) {
             <SheetContent side="left" className="p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
               <SheetTitle className="sr-only">HR navigation</SheetTitle>
               <div className="border-b border-sidebar-border px-4 py-4 text-lg font-bold">HR Portal</div>
-              <NavLinks unreadCount={unreadCount} onNavigate={() => setSheetOpen(false)} />
+              <NavLinks
+                unreadCount={unreadCount}
+                pageAccess={pageAccess}
+                organization={organization}
+                role={user?.role}
+                onNavigate={() => setSheetOpen(false)}
+              />
             </SheetContent>
           </Sheet>
           <span className="font-semibold text-sm truncate">HR Portal</span>

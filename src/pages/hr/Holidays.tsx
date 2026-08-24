@@ -11,7 +11,10 @@ export default function HRHolidays() {
   const { data } = useQuery({ queryKey: ["hr", "holidays", year], queryFn: () => api.hr.holidays(year) });
   const holidays = data?.data || data || [];
   const today = new Date();
-  const upcoming = useMemo(() => holidays.filter((h: any) => new Date(h.date) >= today), [holidays]);
+  const upcoming = useMemo(
+    () => holidays.filter((h: any) => new Date(h.date) >= today && h.is_approved),
+    [holidays],
+  );
 
   return (
     <div className="space-y-4">
@@ -20,7 +23,7 @@ export default function HRHolidays() {
           <CalendarDays className="h-5 w-5 text-primary" />
           Holidays
         </h1>
-        <p className="text-xs sm:text-sm text-muted-foreground">Company holiday list (read-only)</p>
+        <p className="text-xs sm:text-sm text-muted-foreground">Declared office holidays and regional special days</p>
       </div>
       <Card>
         <CardHeader><CardTitle className="text-sm">Company Holidays</CardTitle></CardHeader>
@@ -36,7 +39,13 @@ export default function HRHolidays() {
                     <TableCell>{holiday.name}</TableCell>
                     <TableCell>{d.toLocaleDateString()}</TableCell>
                     <TableCell>{d.toLocaleDateString(undefined, { weekday: "long" })}</TableCell>
-                    <TableCell><Badge variant="outline">{holiday.type || "Public"}</Badge></TableCell>
+                    <TableCell>
+                      <Badge variant="outline">
+                        {holiday.is_approved
+                          ? (holiday.type === 'regional' || holiday.type === 'festival' ? 'Holiday (declared)' : 'Holiday')
+                          : (holiday.type === 'regional' || holiday.type === 'festival' ? 'Special day' : (holiday.type || 'Public'))}
+                      </Badge>
+                    </TableCell>
                   </TableRow>
                 );
               })}

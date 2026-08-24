@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
+import { notifyOrgAdminsBulkAction } from '@/lib/notifications';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
-import { buildHtmlDocumentPdfBase64, buildMultiPagePrintableHtml, OFFER_PAGE_BREAK, splitOfferHtmlPages } from '@/utils/offerLetterPdf';
+import { buildMultiPagePrintableHtml, OFFER_PAGE_BREAK, splitOfferHtmlPages } from '@/utils/offerLetterPdf';
 import {
   DocumentTemplateEditor,
   extractContentAreaHtml,
@@ -1118,6 +1119,7 @@ export default function OfferLetters() {
 
       let pdfBase64 = '';
       try {
+        const { buildHtmlDocumentPdfBase64 } = await import('@/utils/offerLetterPdf');
         pdfBase64 = await buildHtmlDocumentPdfBase64(finalHtml);
       } catch (pdfErr: any) {
         console.error(pdfErr);
@@ -1493,6 +1495,7 @@ export default function OfferLetters() {
 
           let pdfBase64 = '';
           try {
+            const { buildHtmlDocumentPdfBase64 } = await import('@/utils/offerLetterPdf');
             pdfBase64 = await buildHtmlDocumentPdfBase64(finalHtml);
           } catch (pdfErr: any) {
             throw new Error(pdfErr?.message || 'PDF generation failed');
@@ -1536,6 +1539,10 @@ export default function OfferLetters() {
         }
       }
       const total = valid.length;
+      const okCount = succeeded.length + sentUnrecorded.length;
+      if (okCount > 0) {
+        void notifyOrgAdminsBulkAction('offer_letters', okCount, bulkTemplate.template_name || undefined);
+      }
       if (failed.length === 0 && sentUnrecorded.length === 0) {
         toast({ title: `${succeeded.length} offer letter(s) generated!`, description: 'Records saved. You can preview/print from Sent Letters tab.' });
         setShowBulk(false);

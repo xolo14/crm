@@ -189,6 +189,7 @@ if (strtolower(trim((string) ($_GET['action'] ?? ''))) === 'policy') {
         $input = getInput();
         $policy = is_array($input['policy'] ?? null) ? $input['policy'] : $input;
         $saved = fresherSaveOrgPolicy($db, (string) $orgId, is_array($policy) ? $policy : [], (string) $userId);
+        syncpediaNotifyFresherPolicyChanged($db, (string) $userId, (string) $orgId);
         respond(['data' => $saved, 'message' => 'Policy saved']);
     }
     respond(['error' => 'Method not allowed'], 405);
@@ -214,7 +215,19 @@ if ($method === 'GET') {
             continue;
         }
         $rowOrg = trim((string) ($row['org_id'] ?? '')) ?: $orgId;
+        $prevPhase = strtolower(trim((string) ($p['currentPhase'] ?? '')));
         $synced = fresherAutoSyncMemberPayload($db, $p, $policy, $rowOrg);
+        $nextPhase = strtolower(trim((string) ($synced['currentPhase'] ?? '')));
+        if ($prevPhase !== '' && $nextPhase !== '' && $prevPhase !== $nextPhase) {
+            syncpediaNotifyFresherPhaseMoved(
+                $db,
+                (string) ($synced['name'] ?? ''),
+                isset($synced['trainee_user_id']) ? (string) $synced['trainee_user_id'] : null,
+                $prevPhase,
+                $nextPhase,
+                $rowOrg ? (string) $rowOrg : null,
+            );
+        }
         $enc = json_encode($synced, JSON_UNESCAPED_UNICODE);
         if ($enc !== false && $enc !== (string) ($row['payload'] ?? '')) {
             try {
@@ -315,6 +328,14 @@ if ($method === 'POST') {
         fsmSyncTraineeJoinDate($db, $tid, $jd);
     }
 
+    syncpediaNotifyFresherTrainingAdded(
+        $db,
+        (string) $userId,
+        $name,
+        $tid !== '' ? $tid : null,
+        $orgId ? (string) $orgId : null,
+    );
+
     respond(['data' => $member, 'message' => 'Created'], 201);
 }
 
@@ -361,7 +382,19 @@ if ($method === 'PUT') {
     $orgId = trim((string) ($existing['org_id'] ?? '')) ?: resolveWriteOrgId($db, $tokenData);
     $policy = fresherLoadOrgPolicy($db, $orgId);
     // Re-sync after merge so phase stays calendar-driven; respect manual_overrides.
+    $prevPhase = strtolower(trim((string) ($prev['currentPhase'] ?? '')));
     $member = fresherAutoSyncMemberPayload($db, $member, $policy, $orgId);
+    $nextPhase = strtolower(trim((string) ($member['currentPhase'] ?? '')));
+    if ($prevPhase !== '' && $nextPhase !== '' && $prevPhase !== $nextPhase) {
+        syncpediaNotifyFresherPhaseMoved(
+            $db,
+            (string) ($member['name'] ?? ''),
+            isset($member['trainee_user_id']) ? (string) $member['trainee_user_id'] : null,
+            $prevPhase,
+            $nextPhase,
+            $orgId ? (string) $orgId : null,
+        );
+    }
 
     $payload = json_encode($member, JSON_UNESCAPED_UNICODE);
     if ($payload === false) {

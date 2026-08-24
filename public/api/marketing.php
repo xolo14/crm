@@ -48,7 +48,7 @@ function marketingOrgScope(PDO $db, array $tokenData, string $alias): array {
     if ($orgId !== null && $orgId !== '') {
         return ["{$prefix}org_id = ?", [$orgId]];
     }
-    return ["({$prefix}org_id IS NULL OR {$prefix}org_id = '')", []];
+    return ['1=0', []];
 }
 
 function marketingResolveOrgId(array $tokenData, array $input, ?PDO $db = null): ?string {
@@ -64,6 +64,14 @@ function marketingResolveOrgId(array $tokenData, array $input, ?PDO $db = null):
     }
     $orgId = $tokenData['org_id'] ?? null;
     return ($orgId !== null && $orgId !== '') ? (string) $orgId : null;
+}
+
+function marketingRequireOrgId(array $tokenData, array $input, PDO $db): string {
+    $orgId = trim((string) (marketingResolveOrgId($tokenData, $input, $db) ?? ''));
+    if ($orgId === '') {
+        respond(['error' => 'Organization is required. Switch to an organization before creating marketing drafts.'], 400);
+    }
+    return $orgId;
 }
 
 /** @return array<string,mixed> */
@@ -83,14 +91,11 @@ function marketingAssertRowInScope(PDO $db, string $table, string $id, array $to
         return $row;
     }
     $orgId = resolveCreatorOrgId($db, $tokenData);
-    $rowOrg = $row['org_id'] ?? null;
+    $rowOrg = trim((string) ($row['org_id'] ?? ''));
     if ($orgId !== null && $orgId !== '') {
-        if ($rowOrg !== $orgId) {
+        if ($rowOrg === '' || $rowOrg !== $orgId) {
             respond(['error' => 'Forbidden'], 403);
         }
-        return $row;
-    }
-    if ($rowOrg === null || $rowOrg === '') {
         return $row;
     }
     respond(['error' => 'Forbidden'], 403);
@@ -117,7 +122,7 @@ if ($action === 'members') {
         requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
-        $orgId = marketingResolveOrgId($tokenData, $input, $db);
+        $orgId = marketingRequireOrgId($tokenData, $input, $db);
         $stmt = $db->prepare('INSERT INTO marketing_members (id, user_id, name, email, phone, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $stmt->execute([
             $id, $input['user_id'], $input['name'], $input['email'],
@@ -169,9 +174,10 @@ if ($action === 'email_drafts') {
         requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
-        $orgId = marketingResolveOrgId($tokenData, $input, $db);
+        $orgId = marketingRequireOrgId($tokenData, $input, $db);
         $stmt = $db->prepare('INSERT INTO email_drafts (id, name, subject, html_body, plain_text, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $stmt->execute([$id, $input['name'] ?? '', $input['subject'] ?? '', $input['html_body'] ?? '', $input['plain_text'] ?? null, $input['status'] ?? 'draft', $userId, $orgId]);
+        syncpediaNotifyMarketingTemplateChange($db, (string) $userId, $orgId ? (string) $orgId : null, (string) ($input['name'] ?? ''), 'email', 'created');
         respond(['id' => $id, 'message' => 'Draft created'], 201);
     }
     if ($method === 'PUT') {
@@ -195,8 +201,19 @@ if ($action === 'email_drafts') {
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
         marketingAssertRowInScope($db, 'email_drafts', $id, $tokenData);
+        $nm = '';
+        $orgForN = null;
+        try {
+            $row = $db->prepare('SELECT name, org_id FROM email_drafts WHERE id = ? LIMIT 1');
+            $row->execute([$id]);
+            $er = $row->fetch(PDO::FETCH_ASSOC) ?: [];
+            $nm = (string) ($er['name'] ?? '');
+            $orgForN = isset($er['org_id']) ? (string) $er['org_id'] : null;
+        } catch (Throwable $e) {
+        }
         $stmt = $db->prepare('DELETE FROM email_drafts WHERE id = ?');
         $stmt->execute([$id]);
+        syncpediaNotifyMarketingTemplateChange($db, (string) $userId, $orgForN, $nm, 'email', 'deleted');
         respond(['message' => 'Draft deleted']);
     }
 }
@@ -224,7 +241,7 @@ if ($action === 'email_campaigns') {
         requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
-        $orgId = marketingResolveOrgId($tokenData, $input, $db);
+        $orgId = marketingRequireOrgId($tokenData, $input, $db);
         $stmt = $db->prepare('INSERT INTO email_campaigns (id, subject, draft_id, recipient_count, pending_count, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $pending = (int) ($input['pending_count'] ?? $input['recipient_count'] ?? 0);
         $stmt->execute([$id, $input['subject'], $input['draft_id'] ?? null, $input['recipient_count'] ?? 0, $pending, $input['status'] ?? 'draft', $userId, $orgId]);
@@ -273,9 +290,10 @@ if ($action === 'whatsapp_drafts') {
         requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
-        $orgId = marketingResolveOrgId($tokenData, $input, $db);
+        $orgId = marketingRequireOrgId($tokenData, $input, $db);
         $stmt = $db->prepare('INSERT INTO whatsapp_drafts (id, name, subject, body, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?)');
         $stmt->execute([$id, $input['name'] ?? '', $input['subject'] ?? '', $input['body'] ?? '', $input['status'] ?? 'draft', $userId, $orgId]);
+        syncpediaNotifyMarketingTemplateChange($db, (string) $userId, $orgId ? (string) $orgId : null, (string) ($input['name'] ?? ''), 'whatsapp', 'created');
         respond(['id' => $id, 'message' => 'Draft created'], 201);
     }
     if ($method === 'PUT') {
@@ -299,8 +317,19 @@ if ($action === 'whatsapp_drafts') {
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
         marketingAssertRowInScope($db, 'whatsapp_drafts', $id, $tokenData);
+        $nm = '';
+        $orgForN = null;
+        try {
+            $row = $db->prepare('SELECT name, org_id FROM whatsapp_drafts WHERE id = ? LIMIT 1');
+            $row->execute([$id]);
+            $er = $row->fetch(PDO::FETCH_ASSOC) ?: [];
+            $nm = (string) ($er['name'] ?? '');
+            $orgForN = isset($er['org_id']) ? (string) $er['org_id'] : null;
+        } catch (Throwable $e) {
+        }
         $stmt = $db->prepare('DELETE FROM whatsapp_drafts WHERE id = ?');
         $stmt->execute([$id]);
+        syncpediaNotifyMarketingTemplateChange($db, (string) $userId, $orgForN, $nm, 'whatsapp', 'deleted');
         respond(['message' => 'Draft deleted']);
     }
 }
@@ -328,7 +357,7 @@ if ($action === 'whatsapp_campaigns') {
         requireRole($tokenData, marketingGateRoles());
         $input = getInput();
         $id = generateUUID();
-        $orgId = marketingResolveOrgId($tokenData, $input, $db);
+        $orgId = marketingRequireOrgId($tokenData, $input, $db);
         $stmt = $db->prepare('INSERT INTO whatsapp_campaigns (id, subject, draft_id, recipient_count, pending_count, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $pending = (int) ($input['pending_count'] ?? $input['recipient_count'] ?? 0);
         $stmt->execute([$id, $input['subject'], $input['draft_id'] ?? null, $input['recipient_count'] ?? 0, $pending, $input['status'] ?? 'draft', $userId, $orgId]);
@@ -531,7 +560,7 @@ if ($action === 'dispatch_email_campaign' && $method === 'POST') {
     $draft = marketingAssertRowInScope($db, 'email_drafts', $draftId, $tokenData);
     $orgId = trim((string) ($draft['org_id'] ?? ''));
     if ($orgId === '') {
-        $orgId = trim((string) (marketingResolveOrgId($tokenData, $input, $db) ?? ''));
+        respond(['error' => 'This draft is not linked to an organization. Create a new draft for your organization.'], 400);
     }
 
     $emails = [];
@@ -625,6 +654,28 @@ if ($action === 'dispatch_email_campaign' && $method === 'POST') {
         ]);
         curl_exec($ch);
         curl_close($ch);
+    }
+
+    if ($sent >= 2) {
+        syncpediaNotifyOrgAdminsOfBulkKind(
+            $db,
+            (string) $userId,
+            $orgId !== '' ? $orgId : null,
+            'marketing_email',
+            (int) $sent,
+        );
+    }
+    if ($sent === 0 && $failed > 0) {
+        $today = (new DateTimeImmutable('now'))->format('Y-m-d');
+        syncpediaNotifyOrgAdminsOps(
+            $db,
+            $orgId !== '' ? $orgId : null,
+            'Email SMTP failed',
+            'Bulk email campaign sent 0 messages. Check Email Setup / SMTP.',
+            '/settings',
+            '/settings#smtp-fail-' . $today,
+            (string) $userId,
+        );
     }
 
     respond([
@@ -877,6 +928,16 @@ if ($action === 'dispatch_whatsapp_campaign' && $method === 'POST') {
     $hint = '';
     if ($source !== 'communications' && $failed > 0) {
         $hint = ' Free-text drafts only work inside the 24-hour customer care window. Use Setup step 2 templates for cold outreach.';
+    }
+
+    if ($sent >= 2) {
+        syncpediaNotifyOrgAdminsOfBulkKind(
+            $db,
+            (string) $userId,
+            $orgId !== '' ? $orgId : null,
+            'whatsapp',
+            (int) $sent,
+        );
     }
 
     respond([

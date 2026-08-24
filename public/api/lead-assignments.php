@@ -231,6 +231,18 @@ if ($method === 'POST') {
             }
         }
 
+        if ($ok > 0) {
+            $orgId = resolveWriteOrgId($db, $tokenData);
+            syncpediaNotifyBulkLeadAssign(
+                $db,
+                $assigneeIds,
+                (string) $userId,
+                $ok,
+                $orgId ? (string) $orgId : null,
+                '/leads',
+            );
+        }
+
         respond([
             'message' => "$ok leads assigned",
             'assigned' => $ok,

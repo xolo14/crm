@@ -70,6 +70,7 @@ function syncpediaDocumentStorageRelativePath(string $absPath): string
 
 /**
  * Resolve DB path (relative or legacy absolute) to readable file path.
+ * Only allows files under site storage/ (blocks path traversal / absolute escapes).
  */
 function syncpediaDocumentStorageResolvePath(?string $stored): ?string
 {
@@ -80,19 +81,83 @@ function syncpediaDocumentStorageResolvePath(?string $stored): ?string
     if ($stored === '') {
         return null;
     }
-
-    $normalized = str_replace('\\', '/', $stored);
-    if (is_file($stored)) {
-        return $stored;
+    if (str_contains($stored, "\0") || str_contains($stored, '..')) {
+        return null;
     }
 
     $root = syncpediaDocumentStorageBackendRoot();
-    $candidate = $root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, ltrim($normalized, '/'));
-    if (is_file($candidate)) {
-        return $candidate;
+    $storageRoot = realpath($root . DIRECTORY_SEPARATOR . 'storage');
+    if ($storageRoot === false || !is_dir($storageRoot)) {
+        return null;
+    }
+    $storageRootNorm = rtrim(str_replace('\\', '/', $storageRoot), '/');
+
+    $normalized = str_replace('\\', '/', $stored);
+    $candidates = [];
+
+    // Relative: storage/offer_letters/x.pdf
+    if (!preg_match('#^[A-Za-z]:/#', $normalized) && !str_starts_with($normalized, '/')) {
+        $candidates[] = $root . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, ltrim($normalized, '/'));
+    } else {
+        // Legacy absolute — only accept if it resolves under storage/
+        $candidates[] = $stored;
+    }
+
+    // Basename fallback under known subdirs when only a filename was stored
+    $base = basename($normalized);
+    if ($base !== '' && $base !== '.' && $base !== '..') {
+        foreach (['offer_letters', 'certificates', 'payslips', 'payment_invoices', 'tmp'] as $subdir) {
+            $candidates[] = $storageRoot . DIRECTORY_SEPARATOR . $subdir . DIRECTORY_SEPARATOR . $base;
+        }
+    }
+
+    foreach ($candidates as $candidate) {
+        $resolved = realpath($candidate);
+        if ($resolved === false || !is_file($resolved)) {
+            continue;
+        }
+        $resolvedNorm = str_replace('\\', '/', $resolved);
+        if (!str_starts_with($resolvedNorm, $storageRootNorm . '/') && $resolvedNorm !== $storageRootNorm) {
+            continue;
+        }
+        return $resolved;
     }
 
     return null;
+}
+
+/**
+ * Decode client pdf_base64 (optional data-URL) with size + magic-byte checks.
+ * @return array{ok:bool,bytes?:string,error?:string}
+ */
+function syncpediaDecodePdfBase64(string $raw, int $maxBytes = 12582912): array
+{
+    $raw = trim($raw);
+    if ($raw === '') {
+        return ['ok' => false, 'error' => 'Empty pdf_base64'];
+    }
+    // ~4/3 expansion; reject oversized payloads before decode
+    if (strlen($raw) > (int) ($maxBytes * 1.4) + 128) {
+        return ['ok' => false, 'error' => 'pdf_base64 too large'];
+    }
+    if (str_starts_with($raw, 'data:')) {
+        $comma = strpos($raw, ',');
+        if ($comma === false) {
+            return ['ok' => false, 'error' => 'Invalid pdf_base64 data URL'];
+        }
+        $raw = substr($raw, $comma + 1);
+    }
+    $bin = base64_decode($raw, true);
+    if ($bin === false || strlen($bin) < 100) {
+        return ['ok' => false, 'error' => 'Invalid pdf_base64'];
+    }
+    if (strlen($bin) > $maxBytes) {
+        return ['ok' => false, 'error' => 'PDF exceeds size limit'];
+    }
+    if (strncmp($bin, '%PDF', 4) !== 0) {
+        return ['ok' => false, 'error' => 'pdf_base64 is not a PDF'];
+    }
+    return ['ok' => true, 'bytes' => $bin];
 }
 
 /** @return array{ok: bool, path: string, writable: bool, message: string} */

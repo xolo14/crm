@@ -5,7 +5,7 @@ import { useDailyReportsList } from '@/hooks/useDailyReportsList';
 
 export default function DailyReportsAnalytics() {
   const { loading, salesReports, byRep, selectedRep, setSelectedRep, teamMembers, isManager } =
-    useDailyReportsList();
+    useDailyReportsList({ initialTimeline: 'all' });
 
   if (loading) {
     return (

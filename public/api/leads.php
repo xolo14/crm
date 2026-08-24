@@ -125,6 +125,81 @@ if ($method === 'GET') {
         $params[] = $_GET['status'];
     }
 
+    // Leads whose status was changed by the current user in a time window.
+    // Prefers activities.type = status_change; falls back to updated_at + assignee/creator.
+    $statusChangedPeriod = isset($_GET['status_changed']) ? trim((string) $_GET['status_changed']) : '';
+    if ($statusChangedPeriod !== '') {
+        $tz = new DateTimeZone('Asia/Kolkata');
+        $tzNow = new DateTimeImmutable('now', $tz);
+        $from = null;
+        $to = null;
+        if ($statusChangedPeriod === 'yesterday') {
+            $y = $tzNow->modify('yesterday');
+            $from = $y->setTime(0, 0, 0);
+            $to = $y->setTime(23, 59, 59);
+        } elseif ($statusChangedPeriod === 'last_7_days' || $statusChangedPeriod === 'last_week') {
+            $from = $tzNow->modify('-7 days')->setTime(0, 0, 0);
+            $to = $tzNow;
+        } elseif ($statusChangedPeriod === 'this_month') {
+            $from = $tzNow->modify('first day of this month')->setTime(0, 0, 0);
+            $to = $tzNow;
+        }
+        if ($from !== null && $to !== null) {
+            $fromStr = $from->format('Y-m-d H:i:s');
+            $toStr = $to->format('Y-m-d H:i:s');
+            $uid = (string) $userId;
+            $leadIds = [];
+            try {
+                $actSql = "SELECT DISTINCT lead_id FROM activities
+                    WHERE user_id = ?
+                      AND type = 'status_change'
+                      AND lead_id IS NOT NULL AND lead_id != ''
+                      AND COALESCE(occurred_at, created_at) >= ?
+                      AND COALESCE(occurred_at, created_at) <= ?";
+                $act = $db->prepare($actSql);
+                $act->execute([$uid, $fromStr, $toStr]);
+                while ($lid = $act->fetchColumn()) {
+                    $lid = trim((string) $lid);
+                    if ($lid !== '') {
+                        $leadIds[$lid] = true;
+                    }
+                }
+            } catch (Throwable $e) {
+                // activities table / columns may differ on older DBs
+            }
+            try {
+                $laSql = "SELECT DISTINCT lead_id FROM lead_activities
+                    WHERE user_id = ?
+                      AND type = 'status_change'
+                      AND lead_id IS NOT NULL AND lead_id != ''
+                      AND created_at >= ? AND created_at <= ?";
+                $la = $db->prepare($laSql);
+                $la->execute([$uid, $fromStr, $toStr]);
+                while ($lid = $la->fetchColumn()) {
+                    $lid = trim((string) $lid);
+                    if ($lid !== '') {
+                        $leadIds[$lid] = true;
+                    }
+                }
+            } catch (Throwable $e) {
+            }
+            if ($leadIds !== []) {
+                $ids = array_keys($leadIds);
+                $ph = implode(',', array_fill(0, count($ids), '?'));
+                $where .= " AND id IN ($ph)";
+                $params = array_merge($params, $ids);
+            } else {
+                // Fallback: lead updated in window and owned/assigned to this user
+                $where .= " AND updated_at >= ? AND updated_at <= ?
+                    AND (assigned_to = ? OR created_by = ?)";
+                $params[] = $fromStr;
+                $params[] = $toStr;
+                $params[] = $uid;
+                $params[] = $uid;
+            }
+        }
+    }
+
     if (!empty($_GET['search'])) {
         $where .= " AND (name LIKE ? OR email LIKE ? OR phone LIKE ? OR company LIKE ? OR college LIKE ?)";
         $s = '%' . $_GET['search'] . '%';
@@ -547,6 +622,15 @@ if ($method === 'POST') {
                 $orgName = (string) ($n->fetchColumn() ?: '');
             } catch (Throwable $ignored) {
             }
+        }
+        if ($created > 0) {
+            syncpediaNotifyOrgAdminsOfBulkKind(
+                $db,
+                (string) $userId,
+                is_string($bulkOrgId) && $bulkOrgId !== '' ? (string) $bulkOrgId : null,
+                'leads_import',
+                (int) $created,
+            );
         }
         respond([
             'message' => 'Bulk create complete',
@@ -1111,6 +1195,14 @@ if ($method === 'PUT') {
                 respond(['error' => 'Lead updated but assignment sync failed: ' . $e->getMessage()], 500);
             }
         }
+        leadsRecordStatusChangeActivity(
+            $db,
+            $tokenData,
+            $id,
+            (string) $userId,
+            $prevStatus,
+            (string) ($input['status'] ?? $prevStatus)
+        );
         respond(['message' => 'Lead updated']);
     }
 
@@ -1179,6 +1271,14 @@ if ($method === 'PUT') {
                 respond(['error' => 'Lead updated but assignment sync failed: ' . $e->getMessage()], 500);
             }
         }
+        leadsRecordStatusChangeActivity(
+            $db,
+            $tokenData,
+            $id,
+            (string) $userId,
+            $prevStatus,
+            (string) ($input['status'] ?? $prevStatus)
+        );
         respond(['message' => 'Lead updated']);
     }
 
@@ -1241,6 +1341,18 @@ if ($method === 'PUT') {
                 ], 500);
             }
         }
+    }
+
+    // Record who changed status (mobile: status_changed=yesterday|last_7_days|this_month).
+    if (array_key_exists('status', $input)) {
+        leadsRecordStatusChangeActivity(
+            $db,
+            $tokenData,
+            $id,
+            (string) $userId,
+            $prevStatus,
+            (string) $input['status']
+        );
     }
 
     // Keep lead_assignments in sync with primary assigned_to.

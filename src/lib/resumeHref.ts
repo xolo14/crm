@@ -3,7 +3,35 @@ import { getApiBase } from "@/lib/apiBase";
 /** Normalize stored upload path to `/uploads/...`. */
 export function resumeStoragePath(path?: string | null): string | null {
   if (!path) return null;
-  const normalized = path.startsWith("/") ? path : `/${path}`;
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+
+  let candidate = trimmed;
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const u = new URL(trimmed);
+      const qp = u.searchParams.get("path");
+      if (qp && qp.trim()) {
+        candidate = decodeURIComponent(qp.trim());
+      } else {
+        candidate = u.pathname || "";
+      }
+    } catch {
+      // Fall back to raw value below.
+    }
+  }
+
+  const uploadsIdx = candidate.indexOf("/uploads/");
+  if (uploadsIdx >= 0) {
+    candidate = candidate.slice(uploadsIdx);
+  } else if (
+    candidate.startsWith("uploads/") ||
+    candidate.startsWith("recordings/") ||
+    candidate.startsWith("call_recordings/")
+  ) {
+    candidate = candidate.startsWith("uploads/") ? `/${candidate}` : `/uploads/${candidate}`;
+  }
+  const normalized = candidate.startsWith("/") ? candidate : `/${candidate}`;
   if (!normalized.startsWith("/uploads/")) return null;
   if (normalized.includes("..")) return null;
   return normalized;
@@ -17,11 +45,7 @@ export function resolveUploadSrc(path?: string | null): string {
   if (!path) return "";
   const trimmed = path.trim();
   if (!trimmed) return "";
-  if (
-    trimmed.startsWith("data:") ||
-    trimmed.startsWith("blob:") ||
-    /^https?:\/\//i.test(trimmed)
-  ) {
+  if (trimmed.startsWith("data:") || trimmed.startsWith("blob:")) {
     return trimmed;
   }
   const storage = resumeStoragePath(trimmed);
@@ -29,16 +53,6 @@ export function resolveUploadSrc(path?: string | null): string {
     return `${getApiBase()}/files.php?path=${encodeURIComponent(storage)}`;
   }
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-}
-
-/**
- * @deprecated Direct public URLs are blocked. Use openProtectedUpload().
- * Kept as alias that returns authenticated API URL (requires Authorization — prefer openProtectedUpload).
- */
-export function resumePublicHref(path?: string | null): string {
-  const p = resumeStoragePath(path);
-  if (!p) return "#";
-  return `${getApiBase()}/files.php?path=${encodeURIComponent(p)}`;
 }
 
 /** Open a private upload via cookie-authenticated API (blob URL). */

@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-import { sendNotificationWithEmail } from '@/lib/notifications';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,6 +20,7 @@ import {
   UserPlus, Users, Target, Clock, Eye, History, CalendarDays, Building2, GraduationCap,
   StickyNote, XCircle, ChevronLeft, ChevronRight, Megaphone, Globe2,
   MessageCircle, MapPin, School, CircleHelp, Youtube, FileText, Upload as UploadIcon, ClipboardCheck,
+  Menu, FolderPlus, Folder, MoreVertical,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { LeadActivityTimeline } from '@/components/LeadActivityTimeline';
@@ -29,7 +29,7 @@ import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails'
 import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
 import * as perms from '@/lib/permissions';
 import { isMarketingFamilyRole, isSalesRepRole } from '@/lib/roleUtils';
-import { filterAndSortAssignRoster } from '@/lib/assignRoster';
+import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import {
   downloadLeadImportTemplate,
   downloadLeadImportTemplateExcel,
@@ -161,6 +161,23 @@ export default function Leads() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [unassignedOnly, setUnassignedOnly] = useState(false);
+  /** My status changes: yesterday | last_7_days | this_month (matches Android). */
+  const [statusChangedPeriod, setStatusChangedPeriod] = useState<
+    '' | 'yesterday' | 'last_7_days' | 'this_month'
+  >('');
+  const showSourceCards = useSourceCards && !statusChangedPeriod;
+  /** Lead source-card folders (org-scoped). '' = All sources. */
+  const [leadFolders, setLeadFolders] = useState<
+    Array<{ id: string; name: string; source_keys: string[]; card_count: number }>
+  >([]);
+  const [activeFolderId, setActiveFolderId] = useState<string>('');
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [folderBusy, setFolderBusy] = useState(false);
+  const [moveCardKey, setMoveCardKey] = useState<string | null>(null);
+  /** Super-admin: which org's source cards + folders to show */
+  const [viewOrgId, setViewOrgId] = useState('');
+  const [viewOrgs, setViewOrgs] = useState<{ id: string; name: string }[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingLead, setEditingLead] = useState<any>(null);
@@ -200,11 +217,15 @@ export default function Leads() {
   const hasImport = perms.canImport(role);
   const isManager =
     role === 'admin' || role === 'org' || role === 'super_admin' || role === 'manager';
+  /** Source-card folders: admin/org only — not visible to managers. */
+  const canManageLeadFolders =
+    role === 'admin' || role === 'org' || role === 'super_admin';
   const normalizedLeadRole = String(role || '')
     .trim()
     .toLowerCase()
     .replace(/^superadmin$/, 'super_admin')
     .replace(/^organisation$/, 'org');
+  const isSuperAdmin = normalizedLeadRole === 'super_admin';
   /** Leads export: super_admin / admin only (not manager / org / L1). */
   const canExportLeads = normalizedLeadRole === 'super_admin' || normalizedLeadRole === 'admin';
   const [exportCardsOpen, setExportCardsOpen] = useState(false);
@@ -218,8 +239,10 @@ export default function Leads() {
     isManager ||
     rosterMarketingLike ||
     normalizedLeadRole === 'hr';
-  const scopeLabel = normalizedLeadRole === 'super_admin'
-    ? 'Scope: all leads'
+  const scopeLabel = isSuperAdmin
+    ? viewOrgId
+      ? `Scope: ${viewOrgs.find((o) => o.id === viewOrgId)?.name || 'selected organisation'}`
+      : 'Scope: select an organisation'
     : normalizedLeadRole === 'admin' || normalizedLeadRole === 'org' || normalizedLeadRole === 'manager'
       ? 'Scope: organization leads'
       : isSalesRepMyLeadsPage
@@ -229,11 +252,45 @@ export default function Leads() {
             : 'Scope: own leads';
 
   useEffect(() => {
+    if (!isSuperAdmin) return;
+    void (async () => {
+      try {
+        const res = (await api.organizations.list()) as { data?: Array<{ id?: string; name?: string }> };
+        const rows = Array.isArray(res?.data) ? res.data : [];
+        const opts = rows
+          .map((o) => ({ id: String(o.id || '').trim(), name: String(o.name || 'Unnamed').trim() }))
+          .filter((o) => o.id)
+          .sort((a, b) => a.name.localeCompare(b.name));
+        setViewOrgs(opts);
+        setImportOrgs(opts);
+        setViewOrgId((prev) => {
+          const preferred = String(organization?.id || prev || '').trim();
+          if (preferred && opts.some((o) => o.id === preferred)) return preferred;
+          return opts[0]?.id || '';
+        });
+        setImportOrgId((prev) => {
+          const preferred = String(organization?.id || prev || '').trim();
+          if (preferred && opts.some((o) => o.id === preferred)) return preferred;
+          return opts[0]?.id || prev;
+        });
+      } catch {
+        setViewOrgs([]);
+      }
+    })();
+  }, [isSuperAdmin, organization?.id]);
+
+  useEffect(() => {
     fetchLeads();
     if (needsAssignmentRoster) {
       fetchTeam();
       fetchProfiles();
       fetchAssignments();
+    }
+    if (canManageLeadFolders && (!isSuperAdmin || !!viewOrgId)) {
+      void fetchLeadFolders();
+    } else {
+      setLeadFolders([]);
+      setActiveFolderId('');
     }
     api.forms.list()
       .then(async (res) => {
@@ -265,7 +322,7 @@ export default function Leads() {
         setFormAssignmentsByFormId(next);
       })
       .catch(() => {});
-  }, [isFormLeadsPage, isSalesRepMyLeadsPage, role, profile?.referral_code]);
+  }, [isFormLeadsPage, isSalesRepMyLeadsPage, role, profile?.referral_code, statusChangedPeriod, canManageLeadFolders, viewOrgId]);
 
   const fetchAssignments = async () => {
     try {
@@ -290,7 +347,10 @@ export default function Leads() {
   const fetchLeads = async () => {
     setLoading(true);
     try {
-      const data = await api.leads.list();
+      const data = await api.leads.list({
+        ...(statusChangedPeriod ? { status_changed: statusChangedPeriod } : {}),
+        ...(isSuperAdmin && viewOrgId ? { org_id: viewOrgId } : {}),
+      });
       const allLeads = data.data || [];
 
       if (isFormLeadsPage) {
@@ -311,6 +371,96 @@ export default function Leads() {
       }
     } catch (err) { console.error('Failed to load leads:', err); }
     finally { setLoading(false); }
+  };
+
+  const fetchLeadFolders = async () => {
+    try {
+      const res = (await api.leadFolders.list(isSuperAdmin ? viewOrgId || undefined : undefined)) as {
+        data?: { folders?: Array<{ id: string; name: string; source_keys?: string[]; card_count?: number }> };
+      };
+      const list = (res?.data?.folders ?? []).map((f) => ({
+        id: String(f.id),
+        name: String(f.name || 'Folder'),
+        source_keys: Array.isArray(f.source_keys) ? f.source_keys.map(String) : [],
+        card_count: Number(f.card_count ?? (f.source_keys?.length ?? 0)),
+      }));
+      setLeadFolders(list);
+      if (activeFolderId && !list.some((f) => f.id === activeFolderId)) {
+        setActiveFolderId('');
+      }
+    } catch {
+      /* folders optional — page still works */
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name) {
+      toast({ variant: 'destructive', title: 'Enter a folder name' });
+      return;
+    }
+    if (isSuperAdmin && !viewOrgId) {
+      toast({ variant: 'destructive', title: 'Select an organisation first' });
+      return;
+    }
+    setFolderBusy(true);
+    try {
+      const res = (await api.leadFolders.create(name, isSuperAdmin ? viewOrgId : undefined)) as {
+        data?: { folders?: Array<{ id: string; name: string; source_keys?: string[]; card_count?: number }> };
+        id?: string;
+      };
+      const list = (res?.data?.folders ?? []).map((f) => ({
+        id: String(f.id),
+        name: String(f.name || 'Folder'),
+        source_keys: Array.isArray(f.source_keys) ? f.source_keys.map(String) : [],
+        card_count: Number(f.card_count ?? (f.source_keys?.length ?? 0)),
+      }));
+      setLeadFolders(list);
+      setNewFolderOpen(false);
+      setNewFolderName('');
+      if (res?.id) setActiveFolderId(String(res.id));
+      toast({ title: 'Folder created' });
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Could not create folder',
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setFolderBusy(false);
+    }
+  };
+
+  const handleMoveCardToFolder = async (sourceKey: string, folderId: string | null) => {
+    setFolderBusy(true);
+    try {
+      const res = (await api.leadFolders.move(
+        sourceKey,
+        folderId,
+        isSuperAdmin ? viewOrgId : undefined,
+      )) as {
+        data?: { folders?: Array<{ id: string; name: string; source_keys?: string[]; card_count?: number }> };
+      };
+      const list = (res?.data?.folders ?? []).map((f) => ({
+        id: String(f.id),
+        name: String(f.name || 'Folder'),
+        source_keys: Array.isArray(f.source_keys) ? f.source_keys.map(String) : [],
+        card_count: Number(f.card_count ?? (f.source_keys?.length ?? 0)),
+      }));
+      setLeadFolders(list);
+      setMoveCardKey(null);
+      toast({
+        title: folderId ? 'Moved to folder' : 'Removed from folder',
+      });
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Could not move card',
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setFolderBusy(false);
+    }
   };
 
   const fetchTeam = async () => {
@@ -351,9 +501,10 @@ export default function Leads() {
       });
 
       setTeamMembers(
-        filterAndSortAssignRoster(Array.from(mergedById.values()), {
-          excludeUserId: user?.id,
-        }),
+        ensureAssignRosterIncludesSelf(
+          filterAndSortAssignRoster(Array.from(mergedById.values())),
+          user,
+        ),
       );
     } catch {}
   };
@@ -418,35 +569,17 @@ export default function Leads() {
     setExportCardsOpen(false);
   };
 
-  const isSuperAdmin = normalizedLeadRole === 'super_admin';
   const importTargetOrgName = useMemo(() => {
     if (isSuperAdmin) {
-      return importOrgs.find((o) => o.id === importOrgId)?.name || '';
+      return importOrgs.find((o) => o.id === importOrgId)?.name || viewOrgs.find((o) => o.id === importOrgId)?.name || '';
     }
     return organization?.name || '';
-  }, [isSuperAdmin, importOrgs, importOrgId, organization?.name]);
+  }, [isSuperAdmin, importOrgs, importOrgId, organization?.name, viewOrgs]);
 
   useEffect(() => {
     if (!hasImport) return;
     if (isSuperAdmin) {
-      void (async () => {
-        try {
-          const res = (await api.organizations.list()) as { data?: Array<{ id?: string; name?: string }> };
-          const rows = Array.isArray(res?.data) ? res.data : [];
-          const opts = rows
-            .map((o) => ({ id: String(o.id || '').trim(), name: String(o.name || 'Unnamed').trim() }))
-            .filter((o) => o.id);
-          setImportOrgs(opts);
-          const preferred = String(organization?.id || '').trim();
-          if (preferred && opts.some((o) => o.id === preferred)) {
-            setImportOrgId(preferred);
-          } else if (opts[0] && !importOrgId) {
-            setImportOrgId(opts[0].id);
-          }
-        } catch {
-          setImportOrgs([]);
-        }
-      })();
+      // Orgs already loaded into viewOrgs / importOrgs for the page dropdown.
       return;
     }
     const orgId = String(organization?.id || '').trim();
@@ -729,20 +862,8 @@ export default function Leads() {
         if (detailLead?.id === assignLeadId) {
           setDetailLead({ ...detailLead, assigned_to: primary });
         }
-        const lead = leads.find(l => l.id === assignLeadId);
         const repNames = repIds.map(id => getAssignedName(id)).filter(Boolean).join(', ');
         toast({ title: `Lead assigned to ${repNames}` });
-        for (const repId of repIds) {
-          await sendNotificationWithEmail({
-            userId: repId,
-            title: 'New Lead Assigned',
-            message: `Lead "${lead?.name || 'Unknown'}" has been assigned to you.`,
-            type: 'lead_assigned',
-            link: '/leads',
-            leadName: lead?.name || 'Unknown',
-            assignedByName: profile?.full_name || 'Manager',
-          });
-        }
       } else {
         const ids = Array.from(selectedIds);
         if (ids.length === 0) {
@@ -769,17 +890,6 @@ export default function Leads() {
           description: failed > 0 ? `${failed} failed` : undefined,
           variant: failed > 0 && assigned === 0 ? 'destructive' : undefined,
         });
-        for (const repId of repIds) {
-          await sendNotificationWithEmail({
-            userId: repId,
-            title: `${assigned} Leads Assigned`,
-            message: `You have been assigned ${assigned} lead(s) (with ${repIds.length} teammate(s) on each).`,
-            type: 'lead_assigned',
-            link: '/leads',
-            leadName: `${assigned} leads`,
-            assignedByName: profile?.full_name || 'Manager',
-          });
-        }
         setSelectedIds(new Set());
       }
       setAssignOpen(false);
@@ -795,15 +905,10 @@ export default function Leads() {
   const handleBulkAssign = async (repId: string, leadIds?: string[]) => {
     const ids = leadIds ?? Array.from(selectedIds);
     if (ids.length === 0) return;
-    const assignedLeadNames: string[] = [];
     try {
       const res = await api.leadAssignments.bulkAssign(ids, repId);
       const assigned = typeof res?.assigned === 'number' ? res.assigned : ids.length;
       const failed = typeof res?.failed === 'number' ? res.failed : 0;
-      for (const id of ids) {
-        const lead = leads.find(l => l.id === id);
-        if (lead) assignedLeadNames.push(lead.name);
-      }
       setLeads((prev) =>
         prev.map((l) => (ids.includes(l.id) ? { ...l, assigned_to: repId } : l)),
       );
@@ -815,17 +920,6 @@ export default function Leads() {
         description: failed > 0 ? `${failed} failed` : undefined,
         variant: failed > 0 && assigned === 0 ? 'destructive' : undefined,
       });
-      if (assigned > 0) {
-        await sendNotificationWithEmail({
-          userId: repId,
-          title: `${assigned} Leads Assigned`,
-          message: `You have been assigned ${assigned} new leads: ${assignedLeadNames.slice(0, 3).join(', ')}${assignedLeadNames.length > 3 ? '...' : ''}.`,
-          type: 'lead_assigned',
-          link: '/leads',
-          leadName: assignedLeadNames.slice(0, 3).join(', '),
-          assignedByName: profile?.full_name || 'Manager',
-        });
-      }
       setSelectedIds(new Set());
     } catch (err: any) {
       toast({
@@ -867,7 +961,6 @@ export default function Leads() {
       const errorHints: string[] = [];
       for (const [repId, leadIds] of Object.entries(repAssignments)) {
         if (leadIds.length === 0) continue;
-        const names: string[] = [];
         try {
           const res = await api.leadAssignments.bulkAssign(leadIds, repId);
           const ok = typeof res?.assigned === 'number' ? res.assigned : leadIds.length;
@@ -877,24 +970,9 @@ export default function Leads() {
           if (Array.isArray(res?.errors) && res.errors.length) {
             errorHints.push(...res.errors.slice(0, 3));
           }
-          for (const lid of leadIds) {
-            const l = leads.find((x) => x.id === lid);
-            if (l) names.push(l.name);
-          }
         } catch (err: any) {
           failed += leadIds.length;
           if (err?.message) errorHints.push(String(err.message));
-        }
-        if (names.length > 0) {
-          await sendNotificationWithEmail({
-            userId: repId,
-            title: `${names.length} Leads Assigned`,
-            message: `You have been assigned ${names.length} new leads: ${names.slice(0, 3).join(', ')}${names.length > 3 ? '...' : ''}.`,
-            type: 'lead_assigned',
-            link: '/leads',
-            leadName: names.slice(0, 3).join(', '),
-            assignedByName: profile?.full_name || 'Manager',
-          });
         }
       }
       await fetchLeads();
@@ -1085,6 +1163,22 @@ export default function Leads() {
     () => buildSourceSummaries(leads, { formLabels }),
     [leads, formLabels],
   );
+
+  const sourceKeyToFolderId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const f of leadFolders) {
+      for (const k of f.source_keys) map.set(k, f.id);
+    }
+    return map;
+  }, [leadFolders]);
+
+  const visibleSourceSummaries = useMemo(() => {
+    if (!activeFolderId) return sourceSummaries;
+    const folder = leadFolders.find((f) => f.id === activeFolderId);
+    if (!folder) return sourceSummaries;
+    const allow = new Set(folder.source_keys);
+    return sourceSummaries.filter((s) => allow.has(s.key));
+  }, [sourceSummaries, leadFolders, activeFolderId]);
 
   const sourceDialogLeads = useMemo(() => {
     if (!sourceDialogKey) return [];
@@ -1303,6 +1397,65 @@ export default function Leads() {
               <Download className="h-3.5 w-3.5" /><span className="hidden sm:inline">Export</span>
             </Button>
           )}
+          {showSourceCards && canManageLeadFolders && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 h-8"
+              onClick={() => {
+                setNewFolderName('');
+                setNewFolderOpen(true);
+              }}
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">New folder</span>
+            </Button>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className={`gap-1.5 h-8 ${statusChangedPeriod ? 'border-primary text-primary' : ''}`}
+                title="My status changes"
+              >
+                <Menu className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">
+                  {statusChangedPeriod === 'yesterday'
+                    ? 'Yesterday'
+                    : statusChangedPeriod === 'last_7_days'
+                      ? 'Last week'
+                      : statusChangedPeriod === 'this_month'
+                        ? 'This month'
+                        : 'My changes'}
+                </span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem
+                onClick={() => setStatusChangedPeriod('yesterday')}
+                className={statusChangedPeriod === 'yesterday' ? 'bg-accent' : ''}
+              >
+                Yesterday
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setStatusChangedPeriod('last_7_days')}
+                className={statusChangedPeriod === 'last_7_days' ? 'bg-accent' : ''}
+              >
+                Last week
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setStatusChangedPeriod('this_month')}
+                className={statusChangedPeriod === 'this_month' ? 'bg-accent' : ''}
+              >
+                This month
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => setStatusChangedPeriod('')}>
+                Clear / All leads
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {isManager && (
             <Button variant="outline" size="sm" className="gap-1.5 h-8" onClick={() => navigate('/leads/history')}>
               <History className="h-3.5 w-3.5" /><span className="hidden sm:inline">History</span>
@@ -1343,12 +1496,12 @@ export default function Leads() {
           { label: 'Lost', value: lostLeads, icon: XCircle, color: 'text-red-600', bg: 'bg-red-500/10', sub: 'Dropped' },
           { label: 'Unassigned', value: unassignedCount, icon: UserPlus, color: 'text-amber-600', bg: 'bg-amber-500/10', sub: 'Need action' },
         ].map(c => (
-          <Card key={c.label} className={`border-border/50 shadow-none ${useSourceCards ? '' : 'hover:shadow-md transition-shadow cursor-pointer'} ${
-            !useSourceCards && c.label === 'Unassigned' && unassignedOnly
+          <Card key={c.label} className={`border-border/50 shadow-none ${showSourceCards ? '' : 'hover:shadow-md transition-shadow cursor-pointer'} ${
+            !showSourceCards && c.label === 'Unassigned' && unassignedOnly
               ? 'ring-2 ring-primary/40'
               : ''
           }`} onClick={() => {
-            if (useSourceCards) return;
+            if (showSourceCards) return;
             if (c.label === 'Unassigned') {
               setUnassignedOnly((v) => !v);
               setStatusFilter('all');
@@ -1373,36 +1526,113 @@ export default function Leads() {
         ))}
       </div>
 
-      {useSourceCards ? (
+      {showSourceCards ? (
         <>
-          <div className="mb-2">
-            <h2 className="text-sm font-semibold tracking-tight">
-              {isFormLeadsPage || isSalesRepMyLeadsPage ? 'Leads by form' : 'Leads by source'}
-            </h2>
-            <p className="text-xs text-muted-foreground">
-              {isFormLeadsPage || isSalesRepMyLeadsPage
-                ? 'Each form has its own card. Open a card to view leads, filter, and assign.'
-                : 'Open a source or form card to view leads, filter by status, and bulk assign.'}
-            </p>
+          <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold tracking-tight">
+                {isFormLeadsPage || isSalesRepMyLeadsPage ? 'Leads by form' : 'Leads by source'}
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                {isFormLeadsPage || isSalesRepMyLeadsPage
+                  ? 'Each form has its own card. Open a card to view leads, filter, and assign.'
+                  : canManageLeadFolders
+                    ? 'Open a source or form card to view leads, filter by status, and bulk assign. Use folders on the left to organize cards.'
+                    : 'Open a source or form card to view leads, filter by status, and bulk assign.'}
+              </p>
+            </div>
+            {isSuperAdmin && !isFormLeadsPage && !isSalesRepMyLeadsPage ? (
+              <Select
+                value={viewOrgId || undefined}
+                onValueChange={(v) => {
+                  setViewOrgId(v);
+                  setImportOrgId(v);
+                  setActiveFolderId('');
+                  setSelectedIds(new Set());
+                }}
+              >
+                <SelectTrigger className="h-9 w-full sm:w-[240px] shrink-0">
+                  <SelectValue placeholder="Select organisation" />
+                </SelectTrigger>
+                <SelectContent>
+                  {viewOrgs.map((o) => (
+                    <SelectItem key={o.id} value={o.id}>
+                      {o.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
           </div>
-          {sourceSummaries.length === 0 ? (
+          <div className="flex flex-col md:flex-row gap-3 md:gap-4 items-stretch">
+            {canManageLeadFolders ? (
+            <aside className="w-full md:w-48 shrink-0 md:border-r md:border-border/60 md:pr-3">
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mb-2">Folders</p>
+              <div className="flex md:flex-col gap-1 overflow-x-auto md:overflow-visible pb-1 md:pb-0">
+                <button
+                  type="button"
+                  onClick={() => setActiveFolderId('')}
+                  className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors shrink-0 md:w-full min-h-9 ${
+                    activeFolderId === ''
+                      ? 'bg-primary/10 text-primary font-medium'
+                      : 'hover:bg-muted/60 text-foreground'
+                  }`}
+                >
+                  <Folder className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                  <span className="truncate flex-1">All sources</span>
+                  <span className="tabular-nums text-muted-foreground">{sourceSummaries.length}</span>
+                </button>
+                {leadFolders.map((folder) => (
+                  <button
+                    key={folder.id}
+                    type="button"
+                    onClick={() => setActiveFolderId(folder.id)}
+                    className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors shrink-0 md:w-full min-h-9 ${
+                      activeFolderId === folder.id
+                        ? 'bg-primary/10 text-primary font-medium'
+                        : 'hover:bg-muted/60 text-foreground'
+                    }`}
+                  >
+                    <Folder className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                    <span className="truncate flex-1" title={folder.name}>{folder.name}</span>
+                    <span className="tabular-nums text-muted-foreground">{folder.card_count}</span>
+                  </button>
+                ))}
+                {leadFolders.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground px-2 py-1 hidden md:block">
+                    No folders yet. Use New folder.
+                  </p>
+                ) : null}
+              </div>
+            </aside>
+            ) : null}
+            <div className="min-w-0 flex-1">
+          {visibleSourceSummaries.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 rounded-lg border border-dashed border-border/60">
               <Users className="h-12 w-12 text-muted-foreground/20 mb-4" />
-              <p className="text-sm font-medium text-muted-foreground">No leads yet</p>
-              <p className="text-xs text-muted-foreground mt-1">Import a CSV or Excel file, or add a lead to get started</p>
+              <p className="text-sm font-medium text-muted-foreground">
+                {canManageLeadFolders && activeFolderId ? 'No cards in this folder' : 'No leads yet'}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {canManageLeadFolders && activeFolderId
+                  ? 'Move a source card into this folder using ⋮ → Move to folder'
+                  : 'Import a CSV or Excel file, or add a lead to get started'}
+              </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
-              {sourceSummaries.map((summary) => {
+              {visibleSourceSummaries.map((summary) => {
                 const Icon = summary.isImport
                   ? UploadIcon
                   : summary.isPeaklyy || isPeaklyySourceBucket(summary.key)
                     ? ClipboardCheck
-                    : summary.isAdded || summary.key === 'added_leads'
-                      ? UserPlus
-                      : summary.isForm || isFormSourceBucket(summary.key)
-                        ? FileText
-                        : SOURCE_BUCKET_ICONS[summary.key as LeadSourceBucket] || CircleHelp;
+                    : summary.isMetaAd
+                      ? Megaphone
+                      : summary.isAdded || summary.key === 'added_leads'
+                        ? UserPlus
+                        : summary.isForm || isFormSourceBucket(summary.key)
+                          ? FileText
+                          : SOURCE_BUCKET_ICONS[summary.key as LeadSourceBucket] || CircleHelp;
                 const statusChips = SOURCE_STATUS_CHIP_ORDER.filter((s) => (summary.byStatus[s] || 0) > 0);
                 const visibleChips = statusChips.slice(0, 4);
                 const hiddenChipCount = statusChips.length - visibleChips.length;
@@ -1423,11 +1653,40 @@ export default function Leads() {
                             <p className="text-xs text-muted-foreground">{summary.total} lead{summary.total === 1 ? '' : 's'}</p>
                           </div>
                         </div>
-                        {summary.unassigned > 0 && (
-                          <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-200 bg-amber-500/10 shrink-0">
-                            {summary.unassigned} unassigned
-                          </Badge>
-                        )}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {summary.unassigned > 0 && (
+                            <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-200 bg-amber-500/10">
+                              {summary.unassigned} unassigned
+                            </Badge>
+                          )}
+                          {canManageLeadFolders ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={(e) => e.stopPropagation()}
+                                title="Card actions"
+                              >
+                                <MoreVertical className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44" onClick={(e) => e.stopPropagation()}>
+                              <DropdownMenuItem
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMoveCardKey(summary.key);
+                                }}
+                              >
+                                <Folder className="h-3.5 w-3.5 mr-2" />
+                                Move to folder
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                          ) : null}
+                        </div>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         {visibleChips.map((status) => (
@@ -1456,6 +1715,8 @@ export default function Leads() {
               })}
             </div>
           )}
+            </div>
+          </div>
 
         </>
       ) : (
@@ -1485,9 +1746,19 @@ export default function Leads() {
       </div>
 
       {/* Active Filters Display */}
-      {(statusFilter !== 'all' || sourceFilter !== 'all' || search || unassignedOnly) && (
+      {(statusFilter !== 'all' || sourceFilter !== 'all' || search || unassignedOnly || statusChangedPeriod) && (
         <div className="flex items-center gap-2 mb-3 flex-wrap">
           <span className="text-xs text-muted-foreground">Filters:</span>
+          {statusChangedPeriod && (
+            <Badge variant="secondary" className="text-xs gap-1 cursor-pointer" onClick={() => setStatusChangedPeriod('')}>
+              {statusChangedPeriod === 'yesterday'
+                ? 'Yesterday'
+                : statusChangedPeriod === 'last_7_days'
+                  ? 'Last week'
+                  : 'This month'}{' '}
+              <XCircle className="h-3 w-3" />
+            </Badge>
+          )}
           {statusFilter !== 'all' && (
             <Badge variant="secondary" className="text-xs gap-1 cursor-pointer" onClick={() => setStatusFilter('all')}>
               Status: {formatLeadStatus(statusFilter)} <XCircle className="h-3 w-3" />
@@ -1514,6 +1785,7 @@ export default function Leads() {
               setSourceFilter('all');
               setSearch('');
               setUnassignedOnly(false);
+              setStatusChangedPeriod('');
             }}
             className="text-xs text-primary hover:underline"
           >
@@ -1559,7 +1831,17 @@ export default function Leads() {
       {isMobile ? (
         <div className="space-y-2.5">
           {filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16"><Users className="h-12 w-12 text-muted-foreground/20 mb-4" /><p className="text-sm font-medium text-muted-foreground">No leads found</p><p className="text-xs text-muted-foreground mt-1">Try adjusting your filters</p></div>
+            <div className="flex flex-col items-center justify-center py-16">
+              <Users className="h-12 w-12 text-muted-foreground/20 mb-4" />
+              <p className="text-sm font-medium text-muted-foreground">
+                {statusChangedPeriod
+                  ? 'No status changes by you in this period'
+                  : 'No leads found'}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {statusChangedPeriod ? 'Try another period or Clear / All leads' : 'Try adjusting your filters'}
+              </p>
+            </div>
           ) : paginatedLeads.map((lead, i) => (
             <div key={lead.id} className="mobile-card p-4 cursor-pointer" onClick={() => openDetail(lead)}>
               <div className="flex items-start justify-between gap-3">
@@ -1648,8 +1930,16 @@ export default function Leads() {
               {filtered.length === 0 ? (
                 <TableRow><TableCell colSpan={isManager ? 10 : 8} className="text-center py-12">
                   <Users className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
-                  <p className="text-sm text-muted-foreground">No leads found</p>
-                  <p className="text-xs text-muted-foreground mt-1">Try adjusting your filters or add a new lead</p>
+                  <p className="text-sm text-muted-foreground">
+                    {statusChangedPeriod
+                      ? 'No status changes by you in this period'
+                      : 'No leads found'}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {statusChangedPeriod
+                      ? 'Try another period or Clear / All leads'
+                      : 'Try adjusting your filters or add a new lead'}
+                  </p>
                 </TableCell></TableRow>
               ) : paginatedLeads.map((lead: any, index: number) => (
                 <TableRow key={lead.id} className={`cursor-pointer transition-colors ${selectedIds.has(lead.id) ? 'bg-primary/5' : 'hover:bg-muted/50'}`} onClick={() => openDetail(lead)}>
@@ -2165,6 +2455,103 @@ export default function Leads() {
             >
               <Download className="h-4 w-4" />
               Export selected
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={canManageLeadFolders && newFolderOpen} onOpenChange={setNewFolderOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>New folder</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 py-1">
+            <Label htmlFor="lead-folder-name">Folder name</Label>
+            <Input
+              id="lead-folder-name"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder="e.g. Hot campaigns"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void handleCreateFolder();
+                }
+              }}
+            />
+          </div>
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="outline" onClick={() => setNewFolderOpen(false)} disabled={folderBusy}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void handleCreateFolder()} disabled={folderBusy || !newFolderName.trim()}>
+              {folderBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={canManageLeadFolders && Boolean(moveCardKey)}
+        onOpenChange={(open) => {
+          if (!open) setMoveCardKey(null);
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Move to folder</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            Choose a folder for this source card. A card can only be in one folder.
+          </p>
+          <div className="space-y-1.5 max-h-[50vh] overflow-y-auto py-1">
+            {leadFolders.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">
+                No folders yet. Create one with New folder.
+              </p>
+            ) : (
+              leadFolders.map((folder) => {
+                const current = moveCardKey ? sourceKeyToFolderId.get(moveCardKey) === folder.id : false;
+                return (
+                  <button
+                    key={folder.id}
+                    type="button"
+                    disabled={folderBusy || !moveCardKey}
+                    className={`flex w-full items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/50 ${
+                      current ? 'border-primary bg-primary/5' : 'border-border/60'
+                    }`}
+                    onClick={() => {
+                      if (!moveCardKey) return;
+                      void handleMoveCardToFolder(moveCardKey, folder.id);
+                    }}
+                  >
+                    <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="flex-1 truncate font-medium">{folder.name}</span>
+                    {current ? (
+                      <Badge variant="secondary" className="text-[10px]">Current</Badge>
+                    ) : null}
+                  </button>
+                );
+              })
+            )}
+            {moveCardKey && sourceKeyToFolderId.has(moveCardKey) ? (
+              <button
+                type="button"
+                disabled={folderBusy}
+                className="flex w-full items-center gap-2 rounded-lg border border-dashed border-border/60 px-3 py-2.5 text-left text-sm text-muted-foreground hover:bg-muted/40"
+                onClick={() => {
+                  if (!moveCardKey) return;
+                  void handleMoveCardToFolder(moveCardKey, null);
+                }}
+              >
+                Remove from folder
+              </button>
+            ) : null}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setMoveCardKey(null)}>
+              Cancel
             </Button>
           </DialogFooter>
         </DialogContent>

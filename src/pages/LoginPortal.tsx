@@ -18,6 +18,7 @@ import {
   resolveMarketingLoginUser,
   syncHrLocalSession,
 } from "@/lib/postLoginRoute";
+import type { PageAccess } from "@/lib/orgAccess";
 import loginHero from "@/assets/login-hero.webp";
 import syncpediaLogo from "@/assets/syncpedia-logo.webp";
 
@@ -47,7 +48,7 @@ export default function LoginPortal() {
   }
 
   if (user && isLoginPortalRole(user.role)) {
-    return <Navigate to={getPostLoginPath(user.role)} replace />;
+    return <Navigate to={getPostLoginPath(user.role, user.page_access)} replace />;
   }
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -69,7 +70,10 @@ export default function LoginPortal() {
 
       storedUser = await resolveMarketingLoginUser(storedUser);
       syncHrLocalSession(storedUser);
-      navigate(getPostLoginPath(String(storedUser?.role ?? role)), { replace: true });
+      navigate(
+        getPostLoginPath(String(storedUser?.role ?? role), (storedUser?.page_access as PageAccess | null | undefined) ?? null),
+        { replace: true },
+      );
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Something went wrong";
       toast({ variant: "destructive", title: "Login failed", description: message });

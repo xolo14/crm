@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { UserPlus } from "lucide-react";
 import { getCurrentWeekKeyIST } from "@/lib/hrLeadsWeek";
-
 const WEEKLY_TARGET = 20;
 
 export default function HRDashboard() {

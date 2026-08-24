@@ -463,7 +463,7 @@ if ($method === 'POST' && $action === 'add_log') {
     if ($multipart) {
         foreach (['call_recording', 'recording'] as $fk) {
             if (!empty($_FILES[$fk]) && is_array($_FILES[$fk])) {
-                $tryAttach = saveCallRecordingUpload($_FILES[$fk]);
+                $tryAttach = saveCallRecordingUpload($_FILES[$fk], $db, (string) $orgId, (string) $repId);
                 if ($tryAttach !== null) {
                     $attachPath = $tryAttach;
                     break;
@@ -844,7 +844,12 @@ if (($method === 'PUT' && $action === 'update_log') || ($method === 'POST' && $a
             if (empty($_FILES[$fk]) || !is_array($_FILES[$fk])) {
                 continue;
             }
-            $saved = saveCallRecordingUpload($_FILES[$fk]);
+            $saved = saveCallRecordingUpload(
+                $_FILES[$fk],
+                $db,
+                (string) ($row['org_id'] ?? $orgId ?? ''),
+                (string) ($row['sales_rep_id'] ?? $userId ?? '')
+            );
             if ($saved !== null) {
                 deleteCallRecordingIfExists($row['attachment_path'] ?? null);
                 $fields[] = 'attachment_path = ?';

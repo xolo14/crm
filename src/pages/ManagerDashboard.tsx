@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-import { sendNotificationWithEmail } from '@/lib/notifications';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -18,9 +17,8 @@ import { isSameAppCalendarDay, parseServerDateTime } from '@/lib/dateTime';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/hooks/use-toast';
 import { useCallLogStats } from '@/hooks/useCallLogs';
-import { filterAndSortAssignRoster } from '@/lib/assignRoster';
+import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import { computeLeadKpis, normalizeLeadsByStatus } from '@/lib/dashboardKpis';
-
 const STATUS_LABELS: Record<string, string> = { new: 'New', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Demo Sched.', demo_attended: 'Demo Attend.', considering: 'Considering', enrolled: 'Enroll', converted: 'Enroll', lost: 'Lost' };
 
 export default function ManagerDashboard() {
@@ -48,9 +46,10 @@ export default function ManagerDashboard() {
     try {
       const data = await api.team.list();
       setTeamMembers(
-        filterAndSortAssignRoster(data.data || [], {
-          excludeUserId: user?.id,
-        }),
+        ensureAssignRosterIncludesSelf(
+          filterAndSortAssignRoster(data.data || []),
+          user,
+        ),
       );
     } catch (err) {
       console.error(err);
@@ -203,19 +202,9 @@ export default function ManagerDashboard() {
     try {
       await api.leads.update(leadId, { assigned_to: repId });
       const repName = teamMembers.find(m => m.id === repId)?.full_name || 'Rep';
-      const lead = leads.find(l => l.id === leadId);
       setUnassignedLeads(prev => prev.filter(l => l.id !== leadId));
       setLeads(prev => prev.map(l => l.id === leadId ? { ...l, assigned_to: repId } : l));
       toast({ title: `Lead assigned to ${repName}` });
-      await sendNotificationWithEmail({
-        userId: repId,
-        title: 'New Lead Assigned',
-        message: `Lead "${lead?.name || 'Unknown'}" has been assigned to you.`,
-        type: 'lead_assigned',
-        link: '/leads',
-        leadName: lead?.name || 'Unknown',
-        assignedByName: profile?.full_name || 'Manager',
-      });
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };
 

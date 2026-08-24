@@ -25,6 +25,7 @@ import PaymentRecordsTable, {
 } from "@/components/paymentLinks/PaymentRecordsTable";
 import ManualPaymentDialog from "@/components/paymentLinks/ManualPaymentDialog";
 import ManualPaymentApprovalsTab from "@/components/paymentLinks/ManualPaymentApprovalsTab";
+import PaymentBankDetailsChip from "@/components/paymentLinks/PaymentBankDetailsChip";
 import { Button } from "@/components/ui/button";
 
 const initialFilters: RecordsTableFilters = {
@@ -180,16 +181,19 @@ export default function PaymentLinksRecordsPage() {
             {memberCount > 0 ? ` · ${memberCount} member(s) in period` : ""}
           </p>
         </div>
-        {showPaymentsBtn ? (
-          <Button
-            type="button"
-            onClick={() => setDialogOpen(true)}
-            className="shrink-0 gap-1.5 bg-[#2ed573] hover:bg-[#25c066] text-[#0f2318]"
-          >
-            <Plus size={16} />
-            Payments
-          </Button>
-        ) : null}
+        <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+          <PaymentBankDetailsChip />
+          {showPaymentsBtn ? (
+            <Button
+              type="button"
+              onClick={() => setDialogOpen(true)}
+              className="shrink-0 gap-1.5 bg-[#2ed573] hover:bg-[#25c066] text-[#0f2318]"
+            >
+              <Plus size={16} />
+              Payments
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       <div className="flex items-center gap-1 mb-5 border-b border-gray-200">

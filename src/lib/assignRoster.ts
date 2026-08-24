@@ -1,6 +1,7 @@
 /**
  * Assign pickers: show all active org / downline members (team.list already scopes managers).
  * Excludes platform admins and students — not typical lead/form assignees.
+ * Callers should use ensureAssignRosterIncludesSelf() so manager/admin can assign to themselves.
  */
 
 const EXCLUDED_ASSIGN_ROLES = new Set(["super_admin", "admin", "org", "student"]);
@@ -60,4 +61,43 @@ export function filterAndSortAssignRoster<T extends AssignRosterMember>(
     .filter((m) => !placed.has(m.id))
     .sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || "")));
   return [...managers, ...underManager, ...rest];
+}
+
+/**
+ * Ensure the logged-in manager/admin/org appears in bulk/single assign pickers
+ * so they can assign leads to themselves.
+ */
+export function ensureAssignRosterIncludesSelf<T extends AssignRosterMember>(
+  members: T[],
+  self?: {
+    id?: string | null;
+    full_name?: string | null;
+    name?: string | null;
+    role?: string | null;
+    email?: string | null;
+  } | null,
+): T[] {
+  const id = String(self?.id || "").trim();
+  if (!id) return members;
+  if (members.some((m) => String(m.id) === id)) return members;
+
+  const role = String(self?.role || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^superadmin$/, "super_admin")
+    .replace(/^organisation$/, "org");
+  const canSelfAssign = ["manager", "admin", "org", "super_admin"].includes(role);
+  if (!canSelfAssign) return members;
+
+  const fullName =
+    String(self?.full_name || self?.name || "").trim() || "Me (self)";
+  const selfRow = {
+    id,
+    full_name: fullName,
+    email: self?.email ? String(self.email) : undefined,
+    role: role || "manager",
+    is_active: 1,
+  } as T;
+
+  return [selfRow, ...members];
 }
