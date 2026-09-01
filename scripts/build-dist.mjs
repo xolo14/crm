@@ -46,6 +46,27 @@ function ensureDir(dir) {
 // .env.production sets VITE_API_URL= so the built app uses same-origin /api (no Hostinger env vars).
 run("npm run build:vite");
 
+// ── 1b. DECOY Layer 1 SPA → dist/legacy (isolated from main app) ─
+try {
+  run("npm run build:decoy");
+  log("Built decoy SPA → dist/legacy");
+} catch (e) {
+  log("WARN: decoy build failed — /legacy will be missing until fixed");
+}
+
+// Copy decoy API (never merge into dist/api)
+copyDir(path.join(root, "public", "api-decoy"), path.join(dist, "api-decoy"));
+// Decoy keeps config.example.php only (edit on server; never ship a live config.php)
+const decoyCfg = path.join(dist, "api-decoy", "config.php");
+if (fs.existsSync(decoyCfg)) {
+  fs.unlinkSync(decoyCfg);
+  log("Removed dist/api-decoy/config.php — decoy uses config.example.php on the server");
+}
+const decoyExample = path.join(dist, "api-decoy", "config.example.php");
+if (fs.existsSync(decoyExample)) {
+  log("Shipped dist/api-decoy/config.example.php — set Neon DECOY_* there (do not overwrite on redeploy if filled in)");
+}
+
 // ── 2. PHP API (source of truth: php-backend/) ─────────────
 log("Syncing PHP api → dist/api + public/api");
 run("node scripts/sync-api.mjs");

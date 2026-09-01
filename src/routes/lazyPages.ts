@@ -5,6 +5,7 @@ export const Leads = lazyWithRetry(() => import("@/pages/Leads"));
 export const Students = lazyWithRetry(() => import("@/pages/Students"));
 export const Courses = lazyWithRetry(() => import("@/pages/Courses"));
 export const Batches = lazyWithRetry(() => import("@/pages/Batches"));
+export const Timetables = lazyWithRetry(() => import("@/pages/Timetables"));
 export const PaymentLinksPage = lazyWithRetry(() => import("@/pages/payment-links/PaymentLinksPage"));
 export const PaymentLinksRecordsPage = lazyWithRetry(() => import("@/pages/payment-links/PaymentLinksRecordsPage"));
 export const Team = lazyWithRetry(() => import("@/pages/Team"));
@@ -60,6 +61,7 @@ export const FresherSalaryTrackerPage = lazyWithRetry(() => import("@/pages/Fres
 export const CallLogPage = lazyWithRetry(() => import("@/pages/sales/CallLogPage"));
 export const AssessmentsAdminPage = lazyWithRetry(() => import("@/pages/AssessmentsAdminPage"));
 export const PeaklyyAssessmentPage = lazyWithRetry(() => import("@/pages/PeaklyyAssessmentPage"));
+export const SyncpediaFresherAssessmentPage = lazyWithRetry(() => import("@/pages/SyncpediaFresherAssessmentPage"));
 
 /** Certificate verify is a named export on CertificatesPage. */
 export const CertificateVerifyPage = lazyWithRetry(() =>

@@ -38,9 +38,10 @@ export default function FormApiIntegrationsPage({ embedded = false }: { embedded
   const normalizedRole = normalizeAppRole(role);
   const canAccess =
     normalizedRole === "super_admin" ||
-    normalizedRole === "admin" ||
+    normalizedRole === "org" ||
     isL3AdminRole(normalizedRole) ||
-    isMarketingFamilyRole(normalizedRole);
+    isMarketingFamilyRole(normalizedRole) ||
+    normalizedRole === "hr";
   const [forms, setForms] = useState<LeadForm[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyFormId, setBusyFormId] = useState<string>("");

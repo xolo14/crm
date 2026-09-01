@@ -144,12 +144,12 @@ export default function FormLeads() {
   const [importingLeads, setImportingLeads] = useState(false);
 
   const isManager =
-    role === 'admin' || role === 'org' || role === 'super_admin' || role === 'manager';
+    role === 'org' || role === 'super_admin' || role === 'manager';
   const hasEditAll = perms.canEditAll(role);
   const hasDelete = perms.canDelete(role);
   const hasBulkDelete = perms.canBulkDelete(role);
   const rl = String(role || '').trim().toLowerCase().replace(/^superadmin$/, 'super_admin');
-  const canExportLeads = rl === 'super_admin' || rl === 'admin';
+  const canExportLeads = rl === 'super_admin' || rl === 'org';
   const [exportCardsOpen, setExportCardsOpen] = useState(false);
   const [exportCardKeys, setExportCardKeys] = useState<Set<string>>(new Set());
   const formLeadsAssignmentRoster =

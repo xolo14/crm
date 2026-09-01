@@ -66,11 +66,21 @@ foreach (['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS', 'JWT_SECRET'] as $constant
 
 $placeholderDbNames = ['your_database_name', 'your_db_name', 'database_name', ''];
 $placeholderDbUsers = ['your_database_user', 'your_db_user', 'database_user', ''];
-if (in_array((string) DB_NAME, $placeholderDbNames, true) || in_array((string) DB_USER, $placeholderDbUsers, true)) {
+$placeholderDbPasses = ['your_mysql_password', 'your_db_password', 'your_password', ''];
+$dbName = (string) DB_NAME;
+$dbUser = (string) DB_USER;
+$dbPass = (string) DB_PASS;
+if (
+    in_array($dbName, $placeholderDbNames, true)
+    || in_array($dbUser, $placeholderDbUsers, true)
+    || in_array($dbPass, $placeholderDbPasses, true)
+    || preg_match('/^u123456789_/i', $dbName)
+    || preg_match('/^u123456789_/i', $dbUser)
+) {
     syncpedia_json_die([
         'error' => 'Database not configured',
         'message' => 'Edit api/config.php with Hostinger MySQL credentials (then import database.mysql.sql in phpMyAdmin).',
-        'hint' => 'DB_HOST is usually localhost on Hostinger.',
+        'hint' => 'Do not upload dist/api/config.php — copy config.example.php once, fill DB_NAME/DB_USER/DB_PASS from hPanel → Databases, then keep that file on the server.',
     ], 503);
 }
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import { callLogsApi } from '@/services/callLogs';
+import { useAuth } from '@/hooks/useAuth';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -35,6 +36,7 @@ const EMPTY_FORM = () => ({
 export default function DailyReports() {
   const { toast } = useToast();
   const isMobile = useIsMobile();
+  const { user } = useAuth();
   const {
     filteredReports,
     loading,
@@ -42,9 +44,14 @@ export default function DailyReports() {
     setSelectedRep,
     timeline,
     setTimeline,
+    customFrom,
+    setCustomFrom,
+    customTo,
+    setCustomTo,
     teamMembers,
     isManager,
     isSalesRep,
+    canSubmit,
     refetch,
   } = useDailyReportsList();
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -67,10 +74,14 @@ export default function DailyReports() {
 
   const loadCallLogMetrics = useCallback(
     async (reportDate: string) => {
-      if (!isSalesRep || !reportDate) return;
+      if (!canSubmit || !reportDate) return;
       setPrefillLoading(true);
       try {
-        const res = await callLogsApi.getDailyReportMetrics(reportDate);
+        // Managers see team-scoped call logs by default — pin to self for own daily update.
+        const res = await callLogsApi.getDailyReportMetrics(
+          reportDate,
+          canSubmit && !isSalesRep ? user?.id : undefined,
+        );
         if (res.metrics) applyMetricsToForm(res.metrics as Record<string, number>);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : 'Could not load call log counts';
@@ -79,14 +90,14 @@ export default function DailyReports() {
         setPrefillLoading(false);
       }
     },
-    [isSalesRep, applyMetricsToForm, toast],
+    [canSubmit, isSalesRep, user?.id, applyMetricsToForm, toast],
   );
 
   useEffect(() => {
-    if (submitOpen && isSalesRep && form.report_date) {
+    if (submitOpen && canSubmit && form.report_date) {
       void loadCallLogMetrics(form.report_date);
     }
-  }, [submitOpen, isSalesRep, form.report_date, loadCallLogMetrics]);
+  }, [submitOpen, canSubmit, form.report_date, loadCallLogMetrics]);
 
   const handleSubmit = async () => {
     try {
@@ -129,10 +140,14 @@ export default function DailyReports() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Daily Reports</h1>
           <p className="text-xs sm:text-sm text-muted-foreground">
-            {isSalesRep ? 'Submit your daily conversation updates' : 'View team daily activity reports'}
+            {canSubmit && isManager
+              ? 'Submit your daily update and review team activity reports'
+              : isSalesRep
+                ? 'Submit your daily conversation updates'
+                : 'View team daily activity reports'}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           {isManager && teamMembers.length > 0 && (
             <Select value={selectedRep} onValueChange={setSelectedRep}>
               <SelectTrigger className="w-[180px] h-9">
@@ -148,7 +163,7 @@ export default function DailyReports() {
               </SelectContent>
             </Select>
           )}
-          {isSalesRep && (
+          {canSubmit && (
             <Button size="sm" className="gap-1.5" onClick={() => setSubmitOpen(true)}>
               <Plus className="h-3.5 w-3.5" />
               Submit Report
@@ -182,23 +197,53 @@ export default function DailyReports() {
               <FileText className="h-4 w-4 shrink-0" />
               <span className="truncate">Report History ({filteredReports.length})</span>
             </CardTitle>
-            <Select
-              value={timeline}
-              onValueChange={(v) =>
-                setTimeline(v as 'today' | 'yesterday' | 'last_7_days' | 'this_month' | 'all')
-              }
-            >
-              <SelectTrigger className="w-[140px] sm:w-[160px] h-8 text-xs shrink-0">
-                <SelectValue placeholder="Timeline" />
-              </SelectTrigger>
-              <SelectContent align="end">
-                <SelectItem value="today">Today</SelectItem>
-                <SelectItem value="yesterday">Yesterday</SelectItem>
-                <SelectItem value="last_7_days">Last 7 days</SelectItem>
-                <SelectItem value="this_month">This month</SelectItem>
-                <SelectItem value="all">All reports</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="flex flex-col items-end gap-2 shrink-0">
+              <Select
+                value={timeline}
+                onValueChange={(v) =>
+                  setTimeline(
+                    v as
+                      | 'today'
+                      | 'yesterday'
+                      | 'last_7_days'
+                      | 'this_month'
+                      | 'all'
+                      | 'custom',
+                  )
+                }
+              >
+                <SelectTrigger className="w-[140px] sm:w-[160px] h-8 text-xs">
+                  <SelectValue placeholder="Timeline" />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="today">Today</SelectItem>
+                  <SelectItem value="yesterday">Yesterday</SelectItem>
+                  <SelectItem value="last_7_days">Last 7 days</SelectItem>
+                  <SelectItem value="this_month">This month</SelectItem>
+                  <SelectItem value="all">All reports</SelectItem>
+                  <SelectItem value="custom">Custom range</SelectItem>
+                </SelectContent>
+              </Select>
+              {timeline === 'custom' && (
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="date"
+                    className="h-8 w-[130px] text-xs"
+                    value={customFrom}
+                    onChange={(e) => setCustomFrom(e.target.value)}
+                    aria-label="From date"
+                  />
+                  <span className="text-xs text-muted-foreground">–</span>
+                  <Input
+                    type="date"
+                    className="h-8 w-[130px] text-xs"
+                    value={customTo}
+                    onChange={(e) => setCustomTo(e.target.value)}
+                    aria-label="To date"
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent className="px-0 sm:px-4">
@@ -250,7 +295,7 @@ export default function DailyReports() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  {isManager && <TableHead>Sales Rep</TableHead>}
+                  {isManager && <TableHead>Submitted by</TableHead>}
                   <TableHead>Date</TableHead>
                   <TableHead className="text-center">Calls</TableHead>
                   <TableHead className="text-center">Follow-ups</TableHead>
@@ -311,7 +356,7 @@ export default function DailyReports() {
             <DialogTitle>Submit Daily Report</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            {isSalesRep && (
+            {canSubmit && (
               <p className="text-[11px] text-muted-foreground">
                 Numbers below are prefilled from your <strong>call logs</strong> for the selected date (linked lead status for demos, enroll, lost, new contacted). You can edit before submitting.
               </p>
@@ -324,7 +369,7 @@ export default function DailyReports() {
                   value={form.report_date}
                   onChange={(e) => setForm((p) => ({ ...p, report_date: e.target.value }))}
                 />
-                {isSalesRep && prefillLoading && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />}
+                {canSubmit && prefillLoading && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />}
               </div>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -432,7 +477,7 @@ export default function DailyReports() {
             <div className="space-y-4 py-2">
               {isManager && (
                 <div>
-                  <Label className="text-xs text-muted-foreground">Sales Rep</Label>
+                  <Label className="text-xs text-muted-foreground">Submitted by</Label>
                   <p className="text-sm font-medium">{viewReport.user_name}</p>
                 </div>
               )}

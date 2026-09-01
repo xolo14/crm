@@ -9,6 +9,7 @@
  * POST ?action=reject&id=  — reject with optional review_notes
  */
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/lib/PaymentCandidates.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -20,6 +21,7 @@ $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 $orgId = resolveCreatorOrgId($db, $tokenData);
 
 manualPaymentsEnsureSchema($db);
+paymentCandidatesEnsureSchema($db);
 
 if ($method === 'GET' && ($action === '' || $action === 'list')) {
     $status = strtolower(trim((string) ($_GET['status'] ?? 'approved')));
@@ -100,6 +102,36 @@ if ($method === 'POST' && ($action === '' || $action === 'create')) {
         respond(['error' => 'Payment mode is required'], 400);
     }
 
+    if ($orgId === null || $orgId === '') {
+        respond(['error' => 'Organization context is required'], 400);
+    }
+
+    $candidateIdInput = trim((string) ($input['candidate_id'] ?? ''));
+    $pitchPriceRaw = $input['pitch_price'] ?? null;
+    $pitchPrice = $pitchPriceRaw !== null && $pitchPriceRaw !== ''
+        ? (float) $pitchPriceRaw
+        : null;
+    $leadId = trim((string) ($input['lead_id'] ?? ''));
+
+    try {
+        $resolved = paymentCandidatesResolveForPayment(
+            $db,
+            (string) $orgId,
+            $userId,
+            $customerName,
+            $customerEmail,
+            $customerPhone,
+            $pitchPrice,
+            $candidateIdInput !== '' ? $candidateIdInput : null,
+            $leadId !== '' ? $leadId : null,
+        );
+    } catch (InvalidArgumentException $e) {
+        respond(['error' => $e->getMessage()], 400);
+    }
+
+    $candidateId = $resolved['id'];
+    $installmentNumber = $resolved['installment_number'];
+
     $proofPath = null;
     if ($multipart) {
         foreach (['proof', 'file', 'image', 'attachment'] as $fk) {
@@ -126,8 +158,8 @@ if ($method === 'POST' && ($action === '' || $action === 'create')) {
         INSERT INTO manual_payments (
             id, org_id, submitted_by, amount, currency, payment_method,
             customer_name, customer_email, customer_phone, paid_at, notes, proof_path,
-            status, reviewed_by, reviewed_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            status, reviewed_by, reviewed_at, candidate_id, installment_number
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ");
     $st->execute([
         $id,
@@ -145,6 +177,8 @@ if ($method === 'POST' && ($action === '' || $action === 'create')) {
         $status,
         $reviewedBy,
         $reviewedAt,
+        $candidateId,
+        $installmentNumber,
     ]);
 
     $row = manualPaymentsFetchById($db, $id);
@@ -297,7 +331,7 @@ function manualPaymentsListScope(PDO $db, array $tokenData): array
     if ($role === 'super_admin' && ($orgId === null || $orgId === '')) {
         return ['sql' => '', 'params' => []];
     }
-    if (in_array($role, ['admin', 'org', 'super_admin'], true) && $orgId) {
+    if (in_array($role, ['admin', 'org', 'super_admin', 'operational_manager'], true) && $orgId) {
         return ['sql' => ' AND mp.org_id = ?', 'params' => [$orgId]];
     }
     if ($role === 'manager') {

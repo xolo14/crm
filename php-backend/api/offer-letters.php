@@ -17,26 +17,32 @@ $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 $role = $tokenData['role'];
 
-/** Admins/managers always; HR only when page_access.offer_letters is enabled. */
+/** Org/super_admin/manager always; operational_manager when page grant on; HR when enabled. */
 function offerLettersRequireCallerAccess(PDO $db, array $tokenData): void {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    if (in_array($role, ['super_admin', 'admin', 'manager', 'org'], true)) {
+    if (in_array($role, ['super_admin', 'org', 'manager'], true)) {
         return;
     }
-    if ($role === 'hr') {
+    if ($role === 'operational_manager' || $role === 'hr') {
         ensureUsersPageAccessColumn($db);
         try {
             $st = $db->prepare('SELECT role, page_access_json FROM users WHERE id = ? LIMIT 1');
             $st->execute([(string) ($tokenData['user_id'] ?? '')]);
-            $row = $st->fetch(PDO::FETCH_ASSOC) ?: ['role' => 'hr', 'page_access_json' => null];
+            $row = $st->fetch(PDO::FETCH_ASSOC) ?: ['role' => $role, 'page_access_json' => null];
         } catch (Throwable $e) {
-            $row = ['role' => 'hr', 'page_access_json' => null];
+            $row = ['role' => $role, 'page_access_json' => null];
         }
         if (userCanAccessOfferLettersPage($tokenData, is_array($row) ? $row : null)) {
             return;
         }
     }
     respond(['error' => 'Forbidden — Offer Letters access is disabled for this account'], 403);
+}
+
+/** Roles allowed for template CRUD / send after offerLettersRequireCallerAccess. */
+function offerLettersMutatorRoles(): array
+{
+    return ['admin', 'super_admin', 'manager', 'org', 'hr', 'operational_manager'];
 }
 
 offerLettersRequireCallerAccess($db, $tokenData);
@@ -232,7 +238,7 @@ $actionGet = $_GET['action'] ?? '';
 
 // GET — stream stored PDF (same auth as list; JS uses fetch + Bearer token)
 if ($method === 'GET' && $actionGet === 'pdf') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'hr']);
+    requireRole($tokenData, offerLettersMutatorRoles());
     offerLettersEnsurePdfPathColumn($db);
     $id = trim((string) ($_GET['id'] ?? ''));
     if ($id === '') {
@@ -268,7 +274,7 @@ if ($method === 'GET') {
     $action = $_GET['action'] ?? 'templates';
 
     if ($action === 'templates') {
-        requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org', 'hr']);
+        requireRole($tokenData, offerLettersMutatorRoles());
         $org = offerLetterTemplateOrgFilter($tokenData, 't');
         $stmt = $db->prepare("SELECT t.* FROM offer_letter_templates t WHERE {$org['where']} ORDER BY t.created_at DESC");
         $stmt->execute($org['params']);
@@ -289,7 +295,7 @@ if ($method === 'GET') {
     }
 
     if ($action === 'template' && !empty($_GET['id'])) {
-        requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org', 'hr']);
+        requireRole($tokenData, offerLettersMutatorRoles());
         $template = offerLettersFetchTemplateInScope($db, $tokenData, (string) $_GET['id']);
         if (!$template) {
             respond(['error' => 'Template not found'], 404);
@@ -302,7 +308,7 @@ if ($method === 'GET') {
 
 // POST - Create template or send letter
 if ($method === 'POST') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'hr']);
+    requireRole($tokenData, offerLettersMutatorRoles());
     $input = getInput();
     $action = $_GET['action'] ?? 'create_template';
 
@@ -574,7 +580,7 @@ if ($method === 'POST') {
 
 // PUT - Update template
 if ($method === 'PUT') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
+    requireRole($tokenData, offerLettersMutatorRoles());
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
 

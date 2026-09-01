@@ -208,6 +208,8 @@ export interface MemberPaymentSummary {
   partialCount: number;
   /** Links that received at least one payment (amount_paid > 0). */
   paymentsReceivedCount: number;
+  /** Sum of candidate pitch prices (rupees → paise). */
+  totalPitchPaise: number;
   totalCollectedPaise: number;
 }
 
@@ -226,6 +228,7 @@ export function buildMemberPaymentSummaries(
         paidCount: 0,
         partialCount: 0,
         paymentsReceivedCount: 0,
+        totalPitchPaise: 0,
         totalCollectedPaise: 0,
       } satisfies MemberPaymentSummary);
 
@@ -247,6 +250,108 @@ export function buildMemberPaymentSummaries(
   });
 }
 
+/** Candidate row shape for team summary (payment_candidates API). */
+export interface PaymentCandidateSummaryInput {
+  id: string;
+  owner_user_id?: string | null;
+  owner_name?: string | null;
+  pitch_price?: number | string | null;
+  total_paid?: number | string | null;
+  installment_count?: number | null;
+  status?: string | null;
+}
+
+/** Aggregated stats per owner from payment_candidates (includes managers & all roles). */
+export function buildMemberSummariesFromCandidates(
+  candidates: PaymentCandidateSummaryInput[],
+  team: TeamMemberLookup[],
+): MemberPaymentSummary[] {
+  const byId = new Map(team.map((m) => [String(m.id), m]));
+  const map = new Map<string, MemberPaymentSummary>();
+
+  for (const c of candidates) {
+    const uid = String(c.owner_user_id || "").trim();
+    if (!uid) continue;
+    const member = byId.get(uid);
+    const key = uid;
+    const cur =
+      map.get(key) ??
+      ({
+        creator: {
+          id: uid,
+          full_name: member?.full_name || String(c.owner_name || "Team member"),
+          email: member?.email ?? "",
+          referral_code: member?.referral_code ?? "",
+          role: member?.role ?? "",
+        },
+        totalLinks: 0,
+        paidCount: 0,
+        partialCount: 0,
+        paymentsReceivedCount: 0,
+        totalPitchPaise: 0,
+        totalCollectedPaise: 0,
+      } satisfies MemberPaymentSummary);
+
+    cur.totalLinks += 1;
+    const status = String(c.status || "").toLowerCase();
+    if (status === "cleared") cur.paidCount += 1;
+    else if (status === "in_progress") cur.partialCount += 1;
+    const pitchRupees = Number(c.pitch_price || 0);
+    if (Number.isFinite(pitchRupees) && pitchRupees > 0) {
+      cur.totalPitchPaise += Math.round(pitchRupees * 100);
+    }
+    const paidRupees = Number(c.total_paid || 0);
+    const inst = Number(c.installment_count || 0);
+    if (paidRupees > 0) {
+      cur.paymentsReceivedCount += Math.max(1, inst);
+      cur.totalCollectedPaise += Math.round(paidRupees * 100);
+    }
+    map.set(key, cur);
+  }
+
+  return [...map.values()].sort((a, b) => {
+    if (b.totalCollectedPaise !== a.totalCollectedPaise) {
+      return b.totalCollectedPaise - a.totalCollectedPaise;
+    }
+    return b.totalLinks - a.totalLinks;
+  });
+}
+
+/** Merge two member summary lists by creator id (second wins on collected counts when from candidates). */
+export function mergeMemberPaymentSummaries(
+  primary: MemberPaymentSummary[],
+  secondary: MemberPaymentSummary[],
+): MemberPaymentSummary[] {
+  const map = new Map<string, MemberPaymentSummary>();
+  for (const s of secondary) {
+    const key = s.creator.id || s.creator.full_name || "unknown";
+    map.set(key, { ...s, creator: { ...s.creator } });
+  }
+  for (const s of primary) {
+    const key = s.creator.id || s.creator.full_name || "unknown";
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, { ...s, creator: { ...s.creator } });
+      continue;
+    }
+    map.set(key, {
+      creator: { ...existing.creator, ...s.creator },
+      totalLinks: Math.max(existing.totalLinks, s.totalLinks),
+      paidCount: Math.max(existing.paidCount, s.paidCount),
+      partialCount: Math.max(existing.partialCount, s.partialCount),
+      paymentsReceivedCount: Math.max(existing.paymentsReceivedCount, s.paymentsReceivedCount),
+      totalPitchPaise: Math.max(existing.totalPitchPaise ?? 0, s.totalPitchPaise ?? 0),
+      totalCollectedPaise: Math.max(existing.totalCollectedPaise, s.totalCollectedPaise),
+    });
+  }
+  return [...map.values()].sort((a, b) => {
+    if (b.totalCollectedPaise !== a.totalCollectedPaise) {
+      return b.totalCollectedPaise - a.totalCollectedPaise;
+    }
+    return b.totalLinks - a.totalLinks;
+  });
+}
+
 /** Approved manual payment row from API (amount in rupees). */
 export interface ManualPaymentRow {
   id: string;
@@ -255,6 +360,7 @@ export interface ManualPaymentRow {
   status: string;
   paid_at?: string | null;
   created_at?: string | null;
+  reviewed_at?: string | null;
   submitted_by_name?: string | null;
   submitted_by_email?: string | null;
   submitted_by_referral?: string | null;
@@ -297,6 +403,7 @@ export function mergeManualPaymentsIntoSummaries(
         paidCount: 0,
         partialCount: 0,
         paymentsReceivedCount: 0,
+        totalPitchPaise: 0,
         totalCollectedPaise: 0,
       } satisfies MemberPaymentSummary);
 

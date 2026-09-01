@@ -16,7 +16,12 @@ class Database {
             try {
                 $this->conn = syncpediaCreatePdo();
             } catch (PDOException $e) {
-                respond(['error' => 'Database connection failed'], 500);
+                error_log('[Database] connect failed: ' . $e->getMessage());
+                $msg = 'Database connection failed';
+                if (stripos($e->getMessage(), 'too many connections') !== false) {
+                    $msg = 'Database busy — too many concurrent requests. Retry in a moment.';
+                }
+                respond(['error' => $msg], 500);
             }
         }
         return $this->conn;
@@ -563,6 +568,7 @@ function syncpediaImplementedOrgFeatures(): array
         'certificates',
         'offer_letters',
         'fresher_salary',
+        'timetables',
     ];
 }
 
@@ -1012,7 +1018,7 @@ function syncpediaNormalizeRoleKey(string $role): string
     if ($r === 'superadmin') {
         return 'super_admin';
     }
-    if ($r === 'organisation') {
+    if ($r === 'organisation' || $r === 'admin') {
         return 'org';
     }
     if ($r === 'sales_executive') {
@@ -1020,6 +1026,12 @@ function syncpediaNormalizeRoleKey(string $role): string
     }
     if (in_array($r, ['team_lead', 'sales_manager'], true)) {
         return 'manager';
+    }
+    if (in_array($r, ['ops_manager', 'l2_operational_manager', 'operational manager'], true)) {
+        return 'operational_manager';
+    }
+    if ($r === 'trainer' || $r === 'finance') {
+        return '__removed__';
     }
     if (strpos($r, 'marketing') === 0) {
         return 'marketing';
@@ -1070,20 +1082,18 @@ function syncpediaStoreUserLoginPassword(PDO $db, string $userId, ?string $plain
     unset($plainPassword);
 }
 
-/** Higher number = more authority: L4 super_admin, L3 admin/org, L2 manager, L1 field roles. */
+/** Higher number = more authority: L4 super_admin, L3 org, L2 manager, L1 field roles. */
 function syncpediaRoleLevel(string $role): int
 {
     $r = syncpediaNormalizeRoleKey($role);
     $levels = [
         'super_admin' => 4,
-        'admin' => 3,
         'org' => 3,
         'manager' => 2,
+        'operational_manager' => 2,
         'sales_representative' => 1,
         'hr' => 1,
         'marketing' => 1,
-        'trainer' => 1,
-        'finance' => 1,
         'student' => 0,
     ];
     return $levels[$r] ?? 0;
@@ -1821,16 +1831,15 @@ function syncpediaRoleLoginPath(string $roleKey): string
 }
 
 function syncpediaTeamWelcomeRoleLabel(string $roleKey): string {
-    $k = strtolower(trim($roleKey));
+    $k = syncpediaNormalizeRoleKey($roleKey);
     $map = [
         'super_admin' => 'Super Admin',
-        'admin' => 'Admin',
+        'org' => 'Org Admin',
         'manager' => 'Manager',
+        'operational_manager' => 'Operational Manager',
         'sales_representative' => 'Sales Rep',
         'marketing' => 'Marketing',
         'hr' => 'HR',
-        'trainer' => 'Trainer',
-        'finance' => 'Finance',
         'student' => 'Student',
     ];
     return $map[$k] ?? ucfirst(str_replace('_', ' ', $k));
@@ -3301,10 +3310,43 @@ function userNormalizePageAccessInput($input, string $memberRole): array {
             $access['offer_letters'] = !empty($access['pages']['offer_letters']);
         }
     }
-    if ($role !== 'manager' && $role !== 'hr') {
+    if ($role !== 'manager' && $role !== 'operational_manager' && $role !== 'hr') {
         $access['pages'] = [];
     }
+    if ($role === 'operational_manager') {
+        $filtered = [];
+        foreach (userOperationalManagerOptionalPageKeys() as $key) {
+            $filtered[$key] = !empty($access['pages'][$key]);
+        }
+        $access['pages'] = $filtered;
+    }
     return $access;
+}
+
+function userOperationalManagerOptionalPageKeys(): array
+{
+    return ['communications', 'courses', 'batches', 'daily_reports', 'leads'];
+}
+
+/** HR portal page grant — communications / form_management / offer_letters are opt-in. */
+function userHrHasPageAccess(?array $access, string $featureKey): bool
+{
+    if ($featureKey === '') {
+        return true;
+    }
+    $pages = is_array($access) && isset($access['pages']) && is_array($access['pages'])
+        ? $access['pages']
+        : [];
+    if (empty($pages)) {
+        if ($featureKey === 'offer_letters') {
+            return !empty($access['offer_letters']);
+        }
+        if (in_array($featureKey, ['form_management', 'communications'], true)) {
+            return false;
+        }
+        return true;
+    }
+    return !empty($pages[$featureKey]);
 }
 
 function userSavePageAccess(PDO $db, string $userId, array $access): void {
@@ -3339,13 +3381,118 @@ function userCanAccessPaymentsPage(array $tokenData, ?array $userRow = null): bo
     return !empty($access['payments']);
 }
 
-/** True when this user may open Offer Letters (admins/managers always; HR when toggled on). */
+/** True when this user may open Offer Letters (org/super_admin/manager always when org feature on;
+ *  operational_manager when page grant on; HR when toggled on). */
 function userCanAccessOfferLettersPage(array $tokenData, ?array $userRow = null, $org = null): bool {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ($userRow['role'] ?? '')));
-    if (in_array($role, ['super_admin', 'admin', 'manager'], true)) {
+    if (in_array($role, ['super_admin', 'org', 'manager'], true)) {
+        return true;
+    }
+    $access = null;
+    if (is_array($userRow)) {
+        $access = isset($userRow['page_access']) && is_array($userRow['page_access'])
+            ? $userRow['page_access']
+            : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
+    }
+    $pages = is_array($access) && isset($access['pages']) && is_array($access['pages'])
+        ? $access['pages']
+        : [];
+
+    if ($role === 'operational_manager') {
+        return userOperationalManagerHasPageAccess($access, 'offer_letters');
+    }
+
+    if ($role !== 'hr') {
+        return false;
+    }
+    if (!is_array($access)) {
+        return false;
+    }
+    if (!empty($pages) && array_key_exists('offer_letters', $pages)) {
+        return !empty($pages['offer_letters']);
+    }
+    return !empty($access['offer_letters']);
+}
+
+function userOperationalManagerAutoGrantedPages(): array
+{
+    return [
+        'marketing_access',
+        'form_management',
+        'dashboard',
+        'payments',
+        'students',
+        'offer_letters',
+        'timetables',
+        'settings',
+        'tasks',
+        'notifications',
+        'holidays',
+    ];
+}
+
+/** Operational Manager: marketing auto-granted; other pages default off unless toggled on. */
+function userOperationalManagerHasPageAccess(?array $access, string $featureKey): bool
+{
+    if (in_array($featureKey, userOperationalManagerAutoGrantedPages(), true)) {
+        return true;
+    }
+    $pages = is_array($access) && isset($access['pages']) && is_array($access['pages'])
+        ? $access['pages']
+        : [];
+    if (empty($pages)) {
+        return false;
+    }
+    return !empty($pages[$featureKey]);
+}
+
+/**
+ * Form Management for HR: pages.form_management must be explicitly true.
+ * Operational Manager: toggle required. Other roles as before.
+ */
+function userCanAccessFormManagementPage(array $tokenData, ?array $userRow = null): bool {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ($userRow['role'] ?? '')));
+    $access = null;
+    if (is_array($userRow)) {
+        $access = isset($userRow['page_access']) && is_array($userRow['page_access'])
+            ? $userRow['page_access']
+            : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
+    }
+    if ($role === 'operational_manager') {
+        return userOperationalManagerHasPageAccess($access, 'form_management');
+    }
+    if (in_array($role, ['super_admin', 'admin', 'org', 'marketing', 'manager'], true)) {
         return true;
     }
     if ($role !== 'hr') {
+        return false;
+    }
+    if (!is_array($userRow)) {
+        return false;
+    }
+    $access = isset($userRow['page_access']) && is_array($userRow['page_access'])
+        ? $userRow['page_access']
+        : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
+    $pages = is_array($access) && isset($access['pages']) && is_array($access['pages'])
+        ? $access['pages']
+        : [];
+    if (empty($pages)) {
+        return false;
+    }
+    return !empty($pages['form_management']);
+}
+
+/** Marketing portal: org/super_admin/marketing always; OM auto-granted; manager when page grant on. */
+function userCanAccessMarketingPage(array $tokenData, ?array $userRow = null): bool
+{
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ($userRow['role'] ?? '')));
+    if (in_array($role, ['super_admin', 'admin', 'org', 'marketing'], true)) {
+        return true;
+    }
+    if ($role === 'operational_manager') {
+        return true;
+    }
+    if ($role !== 'manager') {
         return false;
     }
     $access = null;
@@ -3354,15 +3501,13 @@ function userCanAccessOfferLettersPage(array $tokenData, ?array $userRow = null,
             ? $userRow['page_access']
             : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
     }
-    if (!is_array($access)) {
-        return false;
+    $pages = is_array($access) && isset($access['pages']) && is_array($access['pages'])
+        ? $access['pages']
+        : [];
+    if (empty($pages)) {
+        return true;
     }
-    // Prefer pages.offer_letters when a pages map exists; fall back to top-level flag.
-    $pages = isset($access['pages']) && is_array($access['pages']) ? $access['pages'] : [];
-    if (!empty($pages) && array_key_exists('offer_letters', $pages)) {
-        return !empty($pages['offer_letters']);
-    }
-    return !empty($access['offer_letters']);
+    return !empty($pages['marketing_access']);
 }
 
 /** Ensure organizations.cert_prefix exists (globally unique 2-letter certificate org code). */
@@ -4967,6 +5112,8 @@ function callRecordingAllowedMimeTypes(): array {
         'audio/x-wav',
         'audio/mp4',
         'audio/x-m4a',
+        'audio/aac',
+        'audio/aacp',
         'audio/webm',
         'audio/ogg',
         'application/pdf',
@@ -6779,6 +6926,307 @@ function syncpediaNotifyTaskAssignee(
 /** In-app notification for payment link events (webhook). */
 function paymentLinkNotifySalesperson(PDO $db, string $salespersonId, string $title, string $message, ?string $orgId = null): void {
     syncpediaNotifyUser($db, $salespersonId, $title, $message, 'payment_link', '/payments', $orgId);
+}
+
+/**
+ * Manager access grants for form / assessment source cards.
+ */
+function syncpediaLeadSourceCardManagersEnsureSchema(PDO $db): void
+{
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        $db->exec(
+            "CREATE TABLE IF NOT EXISTS lead_source_card_managers (
+                id CHAR(36) NOT NULL PRIMARY KEY,
+                org_id CHAR(36) NOT NULL,
+                source_key VARCHAR(255) NOT NULL,
+                manager_user_id CHAR(36) NOT NULL,
+                granted_by CHAR(36) NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_lscm_org_source_mgr (org_id, source_key, manager_user_id),
+                KEY idx_lscm_manager (org_id, manager_user_id),
+                KEY idx_lscm_source (org_id, source_key)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        );
+    } catch (Throwable $e) {
+        error_log('[lead_source_card_managers] schema: ' . $e->getMessage());
+    }
+    $done = true;
+}
+
+/** @return string[] */
+function syncpediaParseLeadTags($tags): array
+{
+    if (is_array($tags)) {
+        $out = [];
+        foreach ($tags as $t) {
+            $t = trim((string) $t);
+            if ($t !== '') {
+                $out[] = $t;
+            }
+        }
+        return $out;
+    }
+    $raw = trim((string) $tags);
+    if ($raw === '') {
+        return [];
+    }
+    $decoded = json_decode($raw, true);
+    if (is_array($decoded)) {
+        $out = [];
+        foreach ($decoded as $t) {
+            $t = trim((string) $t);
+            if ($t !== '') {
+                $out[] = $t;
+            }
+        }
+        return $out;
+    }
+    // Comma / whitespace separated fallback
+    $parts = preg_split('/[,;\s]+/', $raw) ?: [];
+    $out = [];
+    foreach ($parts as $t) {
+        $t = trim((string) $t);
+        if ($t !== '') {
+            $out[] = $t;
+        }
+    }
+    return $out;
+}
+
+function syncpediaIsPeaklyyLeadRow(array $row): bool
+{
+    $source = strtolower(trim((string) ($row['source'] ?? '')));
+    if ($source === 'peaklyy' || str_starts_with($source, 'peaklyy:')) {
+        return true;
+    }
+    foreach (syncpediaParseLeadTags($row['tags'] ?? null) as $t) {
+        $tl = strtolower(trim((string) $t));
+        if ($tl === 'peaklyy' || str_starts_with($tl, 'peaklyy_id:')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function syncpediaIsManuallyAddedLeadRow(array $row): bool
+{
+    if (syncpediaIsPeaklyyLeadRow($row)) {
+        return false;
+    }
+    foreach (syncpediaParseLeadTags($row['tags'] ?? null) as $t) {
+        $v = strtolower(trim((string) $t));
+        if ($v === 'entry:manual' || $v === 'added_lead') {
+            return true;
+        }
+        if (str_starts_with($v, 'import_set:')) {
+            return false;
+        }
+    }
+    $source = strtolower(trim((string) ($row['source'] ?? '')));
+    return in_array($source, ['manual', 'added', 'added_leads'], true);
+}
+
+function syncpediaIsFormLeadRow(array $row): bool
+{
+    if (syncpediaIsManuallyAddedLeadRow($row)) {
+        return false;
+    }
+    if (trim((string) ($row['referred_by'] ?? '')) !== '') {
+        return true;
+    }
+    $source = strtolower(trim((string) ($row['source'] ?? '')));
+    if ($source === 'google_forms' || $source === 'normal_form') {
+        return true;
+    }
+    return str_starts_with($source, 'form_');
+}
+
+function syncpediaIsMetaAdLeadRow(array $row): bool
+{
+    $source = strtolower(trim((string) ($row['source'] ?? '')));
+    if ($source === 'meta_ads' || $source === 'facebook' || $source === 'instagram' || str_starts_with($source, 'meta_ad:')) {
+        return true;
+    }
+    foreach (syncpediaParseLeadTags($row['tags'] ?? null) as $t) {
+        $tl = trim((string) $t);
+        if (
+            str_starts_with($tl, 'meta_ad:')
+            || str_starts_with($tl, 'meta_ad_name:')
+            || str_starts_with($tl, 'meta_lead_id:')
+            || str_starts_with($tl, 'meta_ad_id:')
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function syncpediaMetaAdSourceKey(array $row): string
+{
+    $source = trim((string) ($row['source'] ?? ''));
+    if (stripos($source, 'meta_ad:') === 0) {
+        return $source;
+    }
+    foreach (syncpediaParseLeadTags($row['tags'] ?? null) as $t) {
+        $tl = trim((string) $t);
+        if (str_starts_with($tl, 'meta_ad:')) {
+            return $tl;
+        }
+        if (str_starts_with($tl, 'meta_ad_id:')) {
+            return 'meta_ad:' . substr($tl, strlen('meta_ad_id:'));
+        }
+    }
+    return 'meta_ads';
+}
+
+/**
+ * Source-card key for leads that managers only see after "Access to manager" grant
+ * (forms, Peaklyy assessments, Meta/promotion ads).
+ */
+function syncpediaLeadFormOrAssessmentSourceKey(array $row): ?string
+{
+    if (syncpediaIsPeaklyyLeadRow($row)) {
+        $source = trim((string) ($row['source'] ?? ''));
+        if (stripos($source, 'peaklyy:') === 0) {
+            return $source;
+        }
+        foreach (syncpediaParseLeadTags($row['tags'] ?? null) as $t) {
+            if (stripos($t, 'peaklyy_id:') === 0) {
+                return 'peaklyy:' . substr($t, strlen('peaklyy_id:'));
+            }
+        }
+        return 'peaklyy';
+    }
+    if (syncpediaIsMetaAdLeadRow($row)) {
+        return syncpediaMetaAdSourceKey($row);
+    }
+    if (!syncpediaIsFormLeadRow($row)) {
+        return null;
+    }
+    $source = trim((string) ($row['source'] ?? ''));
+    $lower = strtolower($source);
+    if (str_starts_with($lower, 'form_') && strlen($lower) > 5) {
+        return 'form_' . substr($source, 5);
+    }
+    if ($lower === 'google_forms') {
+        return 'form_google_forms';
+    }
+    if ($lower === 'normal_form') {
+        return 'form_normal';
+    }
+    return 'form_other';
+}
+
+/**
+ * Managers: hide form / assessment / Meta promotion leads unless granted card access,
+ * assigned, or self-created.
+ *
+ * @param array<int,mixed> $rows
+ * @return array<int,array>
+ */
+function syncpediaFilterLeadsForManagerCardAccess(PDO $db, array $tokenData, array $rows): array
+{
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($role !== 'manager') {
+        $out = [];
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $out[] = $row;
+            }
+        }
+        return $out;
+    }
+
+    $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    $orgId = getOrgId($tokenData);
+    if ($orgId === null || trim((string) $orgId) === '') {
+        $orgId = resolveCreatorOrgId($db, $tokenData);
+    }
+    $orgId = $orgId !== null ? trim((string) $orgId) : '';
+
+    $granted = [];
+    if ($orgId !== '' && $userId !== '') {
+        syncpediaLeadSourceCardManagersEnsureSchema($db);
+        try {
+            $st = $db->prepare(
+                'SELECT source_key FROM lead_source_card_managers WHERE org_id = ? AND manager_user_id = ?'
+            );
+            $st->execute([$orgId, $userId]);
+            while ($key = $st->fetchColumn()) {
+                $key = trim((string) $key);
+                if ($key !== '') {
+                    $granted[$key] = true;
+                }
+            }
+        } catch (Throwable $e) {
+        }
+    }
+
+    // Multi-assignee: any lead_id where this manager is in lead_assignments
+    $assignedExtra = [];
+    $leadIds = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $lid = trim((string) ($row['id'] ?? ''));
+        if ($lid !== '') {
+            $leadIds[$lid] = true;
+        }
+    }
+    if ($userId !== '' && $leadIds !== []) {
+        try {
+            foreach (array_chunk(array_keys($leadIds), 400) as $chunk) {
+                $ph = implode(',', array_fill(0, count($chunk), '?'));
+                $st = $db->prepare(
+                    "SELECT lead_id FROM lead_assignments WHERE user_id = ? AND lead_id IN ($ph)"
+                );
+                $st->execute(array_merge([$userId], $chunk));
+                while ($lid = $st->fetchColumn()) {
+                    $lid = trim((string) $lid);
+                    if ($lid !== '') {
+                        $assignedExtra[$lid] = true;
+                    }
+                }
+            }
+        } catch (Throwable $e) {
+        }
+    }
+
+    $out = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $sourceKey = syncpediaLeadFormOrAssessmentSourceKey($row);
+        if ($sourceKey === null) {
+            // Non-gated cards: keep (imports, added, website, etc.)
+            $out[] = $row;
+            continue;
+        }
+        if (isset($granted[$sourceKey])) {
+            $out[] = $row;
+            continue;
+        }
+        // Also accept parent meta_ads grant for per-ad cards (meta_ad:{id}).
+        if (str_starts_with($sourceKey, 'meta_ad:') && isset($granted['meta_ads'])) {
+            $out[] = $row;
+            continue;
+        }
+        $lid = trim((string) ($row['id'] ?? ''));
+        $assignedTo = trim((string) ($row['assigned_to'] ?? ''));
+        $createdBy = trim((string) ($row['created_by'] ?? ''));
+        if ($userId !== '' && ($assignedTo === $userId || $createdBy === $userId || ($lid !== '' && isset($assignedExtra[$lid])))) {
+            $out[] = $row;
+            continue;
+        }
+        // Hide gated form / assessment / Meta promotion lead
+    }
+    return $out;
 }
 
 register_shutdown_function(static function () {

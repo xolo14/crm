@@ -1,0 +1,6 @@
+# DECOY-ONLY API — block config downloads
+<IfModule mod_authz_core.c>
+  <FilesMatch "^(config\.php|config\.example\.php)$">
+    Require all denied
+  </FilesMatch>
+</IfModule>

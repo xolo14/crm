@@ -347,7 +347,8 @@ function metaAdsOauthScopes(): string
 {
     // Default: ads_read only (insights). Do NOT include leads_retrieval until Meta grants
     // Advanced Access — otherwise Facebook shows "Invalid Scopes: leads_retrieval".
-    // After App Review, set e.g. define('META_ADS_OAUTH_SCOPES', 'ads_read,leads_retrieval');
+    // After App Review, set e.g.:
+    // define('META_ADS_OAUTH_SCOPES', 'ads_read,leads_retrieval,pages_show_list,pages_manage_metadata,pages_read_engagement');
     if (defined('META_ADS_OAUTH_SCOPES') && trim((string) META_ADS_OAUTH_SCOPES) !== '') {
         return trim((string) META_ADS_OAUTH_SCOPES);
     }
@@ -761,6 +762,7 @@ function metaAdsRunHourlySync(PDO $db, int $lookbackDays = 30): array
 
 /**
  * Pull Meta Lead Ads into CRM leads. One card per ad (tags meta_ad: / meta_ad_name:).
+ * Lead forms live on Facebook Pages ({page-id}/leadgen_forms), not on AdAccount.
  * @return array{imported:int,skipped:int,forms:int}
  */
 function metaAdsSyncAccountLeads(PDO $db, string $orgId, string $adAccountId, string $accessToken): array
@@ -768,36 +770,16 @@ function metaAdsSyncAccountLeads(PDO $db, string $orgId, string $adAccountId, st
     if (function_exists('ensureLeadsSourceColumnVarchar')) {
         ensureLeadsSourceColumnVarchar($db);
     }
-    $act = $adAccountId;
-    if (!str_starts_with($act, 'act_')) {
-        $act = 'act_' . preg_replace('/\D+/', '', $act);
+
+    $forms = metaAdsCollectLeadgenForms($accessToken, $adAccountId);
+    if ($forms === null) {
+        // Permission / scope failure already thrown inside collector.
+        return ['imported' => 0, 'skipped' => 0, 'forms' => 0];
+    }
+    if ($forms === []) {
+        return ['imported' => 0, 'skipped' => 0, 'forms' => 0];
     }
 
-    $formsRes = metaAdsGraphGet($act . '/leadgen_forms', $accessToken, [
-        'fields' => 'id,name,status',
-        'limit' => 100,
-    ]);
-    if (!$formsRes['ok']) {
-        $raw = (string) ($formsRes['error'] ?? 'Failed to list leadgen forms');
-        $err = strtolower($raw);
-        // Missing leads_retrieval / page access — tell the admin (do not silently return 0).
-        if (
-            str_contains($err, 'permission')
-            || str_contains($err, 'oauth')
-            || str_contains($err, '(#200)')
-            || str_contains($err, 'leads_retrieval')
-            || $formsRes['status'] === 403
-            || $formsRes['status'] === 400
-        ) {
-            throw new RuntimeException(
-                'Lead Ads blocked: Meta did not grant leads_retrieval (or Page access). '
-                . 'In Meta App Review approve leads_retrieval, set META_ADS_OAUTH_SCOPES=ads_read,leads_retrieval, reconnect, then sync. '
-                . 'Graph: ' . mb_substr($raw, 0, 280)
-            );
-        }
-        throw new RuntimeException('Lead forms API error: ' . mb_substr($raw, 0, 400));
-    }
-    $forms = is_array($formsRes['json']['data'] ?? null) ? $formsRes['json']['data'] : [];
     $imported = 0;
     $skipped = 0;
 
@@ -835,6 +817,7 @@ function metaAdsSyncAccountLeads(PDO $db, string $orgId, string $adAccountId, st
                 ) {
                     throw new RuntimeException(
                         'Cannot read leads for form ' . $formId . ': ' . mb_substr($raw, 0, 280)
+                        . ' — approve leads_retrieval + Pages permissions, set META_ADS_OAUTH_SCOPES=ads_read,leads_retrieval,pages_show_list,pages_manage_metadata,pages_read_engagement, reconnect, then sync.'
                     );
                 }
                 break;
@@ -861,6 +844,134 @@ function metaAdsSyncAccountLeads(PDO $db, string $orgId, string $adAccountId, st
     }
 
     return ['imported' => $imported, 'skipped' => $skipped, 'forms' => count($forms)];
+}
+
+/**
+ * Collect leadgen forms from Pages the token can access (and optionally promote pages for the ad account).
+ * @return list<array<string,mixed>>|null  null = hard failure already thrown
+ */
+function metaAdsCollectLeadgenForms(string $accessToken, string $adAccountId): array
+{
+    $byId = [];
+    $pageErrors = [];
+
+    // 1) Pages the user manages
+    $pagesRes = metaAdsGraphGet('me/accounts', $accessToken, [
+        'fields' => 'id,name,access_token',
+        'limit' => 100,
+    ]);
+    if (!$pagesRes['ok']) {
+        $raw = (string) ($pagesRes['error'] ?? 'Failed to list Pages');
+        $err = strtolower($raw);
+        if (
+            str_contains($err, 'permission')
+            || str_contains($err, 'oauth')
+            || str_contains($err, 'pages_show_list')
+            || str_contains($err, '(#200)')
+            || $pagesRes['status'] === 403
+            || $pagesRes['status'] === 400
+        ) {
+            throw new RuntimeException(
+                'Lead Ads blocked: cannot list Facebook Pages (need pages_show_list / pages_manage_metadata). '
+                . 'In Meta App Review approve pages_show_list, pages_manage_metadata, pages_read_engagement, leads_retrieval; set '
+                . 'META_ADS_OAUTH_SCOPES=ads_read,leads_retrieval,pages_show_list,pages_manage_metadata,pages_read_engagement; reconnect, then sync. '
+                . 'Graph: ' . mb_substr($raw, 0, 240)
+            );
+        }
+        $pageErrors[] = $raw;
+    } else {
+        $pages = is_array($pagesRes['json']['data'] ?? null) ? $pagesRes['json']['data'] : [];
+        foreach ($pages as $page) {
+            if (!is_array($page)) {
+                continue;
+            }
+            $pageId = trim((string) ($page['id'] ?? ''));
+            if ($pageId === '') {
+                continue;
+            }
+            $pageToken = trim((string) ($page['access_token'] ?? ''));
+            $tokenForPage = $pageToken !== '' ? $pageToken : $accessToken;
+            $formsRes = metaAdsGraphGet($pageId . '/leadgen_forms', $tokenForPage, [
+                'fields' => 'id,name,status',
+                'limit' => 100,
+            ]);
+            if (!$formsRes['ok']) {
+                $raw = (string) ($formsRes['error'] ?? 'fail');
+                error_log('[meta_ads] page ' . $pageId . ' leadgen_forms: ' . $raw);
+                $pageErrors[] = $raw;
+                continue;
+            }
+            $forms = is_array($formsRes['json']['data'] ?? null) ? $formsRes['json']['data'] : [];
+            foreach ($forms as $form) {
+                if (!is_array($form)) {
+                    continue;
+                }
+                $fid = trim((string) ($form['id'] ?? ''));
+                if ($fid !== '') {
+                    $byId[$fid] = $form;
+                }
+            }
+        }
+    }
+
+    // 2) Fallback: promote pages linked to this ad account (when available)
+    $act = $adAccountId;
+    if (!str_starts_with($act, 'act_')) {
+        $act = 'act_' . preg_replace('/\D+/', '', $act);
+    }
+    $promoteRes = metaAdsGraphGet($act . '/promote_pages', $accessToken, [
+        'fields' => 'id,name',
+        'limit' => 50,
+    ]);
+    if ($promoteRes['ok']) {
+        $promotePages = is_array($promoteRes['json']['data'] ?? null) ? $promoteRes['json']['data'] : [];
+        foreach ($promotePages as $page) {
+            if (!is_array($page)) {
+                continue;
+            }
+            $pageId = trim((string) ($page['id'] ?? ''));
+            if ($pageId === '') {
+                continue;
+            }
+            $formsRes = metaAdsGraphGet($pageId . '/leadgen_forms', $accessToken, [
+                'fields' => 'id,name,status',
+                'limit' => 100,
+            ]);
+            if (!$formsRes['ok']) {
+                continue;
+            }
+            $forms = is_array($formsRes['json']['data'] ?? null) ? $formsRes['json']['data'] : [];
+            foreach ($forms as $form) {
+                if (!is_array($form)) {
+                    continue;
+                }
+                $fid = trim((string) ($form['id'] ?? ''));
+                if ($fid !== '') {
+                    $byId[$fid] = $form;
+                }
+            }
+        }
+    }
+
+    if ($byId === [] && $pageErrors !== []) {
+        $joined = strtolower(implode(' | ', $pageErrors));
+        if (
+            str_contains($joined, 'leads_retrieval')
+            || str_contains($joined, 'permission')
+            || str_contains($joined, 'oauth')
+            || str_contains($joined, '(#200)')
+            || str_contains($joined, 'nonexisting field')
+        ) {
+            throw new RuntimeException(
+                'Lead Ads blocked: Meta did not grant leads_retrieval (or Page access). '
+                . 'Approve leads_retrieval, pages_show_list, pages_manage_metadata, pages_read_engagement; set '
+                . 'META_ADS_OAUTH_SCOPES=ads_read,leads_retrieval,pages_show_list,pages_manage_metadata,pages_read_engagement; '
+                . 'reconnect, then sync. Graph: ' . mb_substr(implode(' | ', $pageErrors), 0, 280)
+            );
+        }
+    }
+
+    return array_values($byId);
 }
 
 /**

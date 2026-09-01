@@ -257,6 +257,28 @@ export const api = {
       if (data.organization) setStoredOrg(data.organization);
       return data;
     },
+    requestSuperAdminEmailLogin: (email: string) =>
+      request('/auth.php?action=request_super_admin_email_login', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      }),
+    listSuperAdminLoginEmails: () =>
+      request('/auth.php?action=list_super_admin_login_emails', { method: 'POST', body: '{}' }),
+    addSuperAdminLoginEmail: (email: string) =>
+      request('/auth.php?action=add_super_admin_login_email', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      }),
+    removeSuperAdminLoginEmail: (id: string) =>
+      request('/auth.php?action=remove_super_admin_login_email', {
+        method: 'POST',
+        body: JSON.stringify({ id }),
+      }),
+    saveSuperAdminLoginEmails: (emails: string[]) =>
+      request('/auth.php?action=save_super_admin_login_emails', {
+        method: 'POST',
+        body: JSON.stringify({ emails }),
+      }),
     loginWithGoogle: async (credential: string) => {
       const data = await request('/auth.php?action=google_login', {
         method: 'POST',
@@ -477,12 +499,18 @@ export const api = {
   leadFolders: {
     list: (orgId?: string) => {
       const q = orgId ? `?org_id=${encodeURIComponent(orgId)}` : '';
-      return request(`/lead-folders.php${q}`);
+      return request(`/lead-folders.php${q}`, {
+        headers: orgId ? { 'X-Org-Id': orgId } : {},
+      });
     },
     create: (name: string, orgId?: string) => {
       const q = new URLSearchParams({ action: 'create' });
       if (orgId) q.set('org_id', orgId);
-      return request(`/lead-folders.php?${q}`, { method: 'POST', body: JSON.stringify({ name }) });
+      return request(`/lead-folders.php?${q}`, {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+        headers: orgId ? { 'X-Org-Id': orgId } : {},
+      });
     },
     move: (source_key: string, folder_id: string | null, orgId?: string) => {
       const q = new URLSearchParams({ action: 'move' });
@@ -490,20 +518,47 @@ export const api = {
       return request(`/lead-folders.php?${q}`, {
         method: 'POST',
         body: JSON.stringify({ source_key, folder_id }),
+        headers: orgId ? { 'X-Org-Id': orgId } : {},
       });
     },
     rename: (id: string, name: string, orgId?: string) => {
-      const q = new URLSearchParams({ action: 'rename', id });
+      const q = new URLSearchParams({ id, action: 'rename' });
       if (orgId) q.set('org_id', orgId);
       return request(`/lead-folders.php?${q}`, {
         method: 'PUT',
         body: JSON.stringify({ name }),
+        headers: orgId ? { 'X-Org-Id': orgId } : {},
       });
     },
     delete: (id: string, orgId?: string) => {
       const q = new URLSearchParams({ id });
       if (orgId) q.set('org_id', orgId);
-      return request(`/lead-folders.php?${q}`, { method: 'DELETE' });
+      return request(`/lead-folders.php?${q}`, {
+        method: 'DELETE',
+        headers: orgId ? { 'X-Org-Id': orgId } : {},
+      });
+    },
+  },
+
+  /** Form / assessment source-card → manager visibility grants */
+  leadSourceCardManagers: {
+    list: (orgId?: string) => {
+      const q = new URLSearchParams({ action: 'list' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/lead-source-card-managers.php?${q}`);
+    },
+    managers: (orgId?: string) => {
+      const q = new URLSearchParams({ action: 'managers' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/lead-source-card-managers.php?${q}`);
+    },
+    set: (source_key: string, manager_user_ids: string[], orgId?: string) => {
+      const q = new URLSearchParams({ action: 'set' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/lead-source-card-managers.php?${q}`, {
+        method: 'POST',
+        body: JSON.stringify({ source_key, manager_user_ids }),
+      });
     },
   },
 
@@ -608,6 +663,9 @@ export const api = {
       customer_phone: string;
       paid_at: string;
       proof: File;
+      pitch_price?: number | string;
+      candidate_id?: string;
+      lead_id?: string;
     }) => {
       const fd = new FormData();
       fd.append('amount', String(fields.amount));
@@ -617,6 +675,11 @@ export const api = {
       fd.append('customer_phone', fields.customer_phone);
       fd.append('paid_at', fields.paid_at);
       fd.append('proof', fields.proof);
+      if (fields.pitch_price != null && fields.pitch_price !== '') {
+        fd.append('pitch_price', String(fields.pitch_price));
+      }
+      if (fields.candidate_id) fd.append('candidate_id', fields.candidate_id);
+      if (fields.lead_id) fd.append('lead_id', fields.lead_id);
       return request('/manual-payments.php?action=create', { method: 'POST', body: fd });
     },
     approve: (id: string, review_notes?: string) =>
@@ -632,6 +695,29 @@ export const api = {
     delete: (id: string) =>
       request(`/manual-payments.php?action=delete&id=${encodeURIComponent(id)}`, {
         method: 'DELETE',
+      }),
+  },
+
+  paymentCandidates: {
+    list: (params?: { owner_user_id?: string; search?: string }) => {
+      const q = new URLSearchParams({ action: 'list' });
+      if (params?.owner_user_id) q.set('owner_user_id', params.owner_user_id);
+      if (params?.search) q.set('search', params.search);
+      return request(`/payment-candidates.php?${q.toString()}`);
+    },
+    detail: (id: string) =>
+      request(`/payment-candidates.php?action=detail&id=${encodeURIComponent(id)}`),
+    lookup: (params: { email?: string; phone?: string; owner_user_id?: string }) => {
+      const q = new URLSearchParams({ action: 'lookup' });
+      if (params.email) q.set('email', params.email);
+      if (params.phone) q.set('phone', params.phone);
+      if (params.owner_user_id) q.set('owner_user_id', params.owner_user_id);
+      return request(`/payment-candidates.php?${q.toString()}`);
+    },
+    updatePitch: (id: string, pitchPrice: number) =>
+      request(`/payment-candidates.php?action=update_pitch&id=${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ pitch_price: pitchPrice }),
       }),
   },
 
@@ -808,6 +894,22 @@ export const api = {
     /** Stored server PDF for a sent letter (PHP backend + Dompdf). */
     fetchSentPdfBlob: (id: string) =>
       requestBlob(`/offer-letters.php?action=pdf&id=${encodeURIComponent(id)}`),
+  },
+
+  // Timetables
+  timetables: {
+    list: () => request('/timetables.php'),
+    get: (id: string) => request(`/timetables.php?action=get&id=${encodeURIComponent(id)}`),
+    preview: (id: string) => request(`/timetables.php?action=preview&id=${encodeURIComponent(id)}`),
+    batchStudents: (batchId: string) =>
+      request(`/timetables.php?action=students&batch_id=${encodeURIComponent(batchId)}`),
+    create: (data: Record<string, unknown>) =>
+      request('/timetables.php', { method: 'POST', body: JSON.stringify(data) }),
+    update: (id: string, data: Record<string, unknown>) =>
+      request(`/timetables.php?id=${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id: string) => request(`/timetables.php?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    send: (id: string, data: Record<string, unknown>) =>
+      request(`/timetables.php?action=send&id=${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(data) }),
   },
 
   // Holidays
@@ -1160,6 +1262,22 @@ export const api = {
     listIssued: () => request('/issued-certificates.php'),
     verifyPublic: (id: string, token: string) =>
       request(`/public-certificate-verify.php?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`),
+    /** Public issued PDF (token-gated; same file as email). No login redirect on failure. */
+    verifyPublicPdf: async (id: string, token: string): Promise<Blob> => {
+      let res: Response;
+      try {
+        res = await fetch(
+          `${API_BASE}/public-certificate-verify.php?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}&format=pdf`,
+          { credentials: 'include' },
+        );
+      } catch {
+        throw new Error('Network error - unable to reach server');
+      }
+      if (!res.ok) {
+        throw new Error(res.status === 404 ? 'PDF not found' : 'Could not load certificate PDF');
+      }
+      return res.blob();
+    },
     createIssuedBulk: (certificates: any[]) =>
       request('/issued-certificates.php', { method: 'POST', body: JSON.stringify({ certificates }) }),
     updateIssuedStatus: (id: string, status: 'issued' | 'revoked' | 'expired') =>
@@ -1187,6 +1305,11 @@ export const api = {
       attachmentUrl: string;
       attachmentName?: string;
     }) => request('/certificates.php?action=send_email', { method: 'POST', body: JSON.stringify(data) }),
+    /** Issued certificate PDF bytes (same file attached to email). */
+    pdf: (certificateId: string) =>
+      requestBlob(
+        `/certificates.php?action=pdf&certificate_id=${encodeURIComponent(certificateId)}`,
+      ),
     emailLogs: (certificateId?: string) =>
       request(`/certificates.php?action=email_logs${certificateId ? `&certificate_id=${encodeURIComponent(certificateId)}` : ''}`),
   },

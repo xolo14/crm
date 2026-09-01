@@ -35,6 +35,27 @@ $userId = $tokenData['user_id'];
 $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 $orgId = tenantIsMasterView($tokenData) ? null : resolveCreatorOrgId($db, $tokenData);
 
+/** HR must have pages.form_management; other form roles pass. */
+function formsRequireCallerAccess(PDO $db, array $tokenData): void {
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($role !== 'hr') {
+        return;
+    }
+    ensureUsersPageAccessColumn($db);
+    try {
+        $st = $db->prepare('SELECT role, page_access_json FROM users WHERE id = ? LIMIT 1');
+        $st->execute([(string) ($tokenData['user_id'] ?? '')]);
+        $row = $st->fetch(PDO::FETCH_ASSOC) ?: ['role' => $role, 'page_access_json' => null];
+    } catch (Throwable $e) {
+        $row = ['role' => $role, 'page_access_json' => null];
+    }
+    if (!userCanAccessFormManagementPage($tokenData, is_array($row) ? $row : null)) {
+        respond(['error' => 'Forbidden — Form Management access is disabled for this account'], 403);
+    }
+}
+
+formsRequireCallerAccess($db, $tokenData);
+
 function formsResolveOrgSlug(PDO $db, ?string $orgId): ?string {
     $oid = is_string($orgId) ? trim($orgId) : '';
     if ($oid === '') return null;
@@ -106,7 +127,7 @@ function formsGetScopedForm(PDO $db, string $formId, array $tokenData): ?array {
     $userId = (string) ($tokenData['user_id'] ?? '');
     $params = [$formId];
     $orgClause = '';
-    if ($role === 'marketing') {
+    if ($role === 'marketing' || $role === 'hr') {
         $orgClause = ' AND created_by = ?';
         $params[] = $userId;
         $tenantOrg = formsEffectiveTenantOrgId($db, $tokenData);
@@ -208,9 +229,12 @@ function formsSubmissionCountSelectSql(string $formAlias = 'lf'): string {
 function formsGetAccessibleFormDetail(PDO $db, string $formId, array $tokenData): ?array {
     $scope = formsBuildListScope($db, $tokenData);
     $params = array_merge($scope['params'], [$formId]);
-    $sql = 'SELECT lf.*, o.name AS org_name, ' . formsSubmissionCountSelectSql() . ' AS submission_count
+    $sql = 'SELECT lf.*, o.name AS org_name,
+                   COALESCE(NULLIF(TRIM(p.full_name), \'\'), NULLIF(TRIM(p.email), \'\'), NULL) AS created_by_name,
+                   ' . formsSubmissionCountSelectSql() . ' AS submission_count
             FROM lead_forms lf
             LEFT JOIN organizations o ON o.id = lf.org_id
+            LEFT JOIN profiles p ON p.id = lf.created_by
             WHERE ' . $scope['where'] . ' AND lf.id = ?
             LIMIT 1';
     $st = $db->prepare($sql);
@@ -240,7 +264,7 @@ function formsCallerCanAccessForm(PDO $db, string $formId, array $tokenData): bo
         }
         // Admins/managers: also allow any form in their tenant org (Leads page roster).
         $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-        if (in_array($role, ['super_admin', 'admin', 'org', 'manager'], true)) {
+        if (in_array($role, ['super_admin', 'admin', 'org', 'manager', 'operational_manager'], true)) {
             return formsGetScopedForm($db, $formId, $tokenData) !== null;
         }
         return false;
@@ -352,7 +376,7 @@ function formsNormalizeFormRow(array &$row): void {
 retireGlobalBuiltinLeadForms($db);
 
 if ($method === 'GET') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'operational_manager', 'sales_representative', 'marketing', 'hr']);
     $action = $_GET['action'] ?? '';
 
     if ($action === 'assignments') {
@@ -373,7 +397,7 @@ if ($method === 'GET') {
                 SELECT lfa.id, lfa.form_id, lfa.member_id, lfa.created_at,
                        u.full_name, u.email, u.referral_code
                 FROM lead_form_assignments lfa
-                LEFT JOIN users u ON u.id = lfa.member_id
+                LEFT JOIN users u ON BINARY u.id = BINARY lfa.member_id
                 WHERE lfa.form_id = ?
                 ORDER BY COALESCE(u.full_name, u.email, '') ASC
             ";
@@ -394,7 +418,7 @@ if ($method === 'GET') {
     }
 
     if ($action === 'external_api') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'hr']);
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $row = formsGetScopedForm($db, $formId, $tokenData);
@@ -521,10 +545,12 @@ if ($method === 'GET') {
     $stmt = $db->prepare('
         SELECT lf.*,
                o.name AS org_name,
+               COALESCE(NULLIF(TRIM(p.full_name), \'\'), NULLIF(TRIM(p.email), \'\'), NULL) AS created_by_name,
                (SELECT COUNT(*) FROM lead_form_assignments lfa WHERE lfa.form_id = lf.id) AS assigned_count,
                ' . formsSubmissionCountSelectSql() . ' AS submission_count
         FROM lead_forms lf
         LEFT JOIN organizations o ON o.id = lf.org_id
+        LEFT JOIN profiles p ON p.id = lf.created_by
         WHERE ' . $where . '
         ORDER BY lf.created_at DESC
     ');
@@ -537,7 +563,7 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager', 'operational_manager', 'hr']);
     $input = getInput();
     $action = $_GET['action'] ?? '';
 
@@ -590,7 +616,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'assign') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'operational_manager']);
         $formId = trim($input['form_id'] ?? '');
         $memberIds = $input['member_ids'] ?? [];
         if (!$formId || !is_array($memberIds)) respond(['error' => 'form_id and member_ids are required'], 400);
@@ -741,7 +767,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'generate_api_key') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'hr']);
         $formId = trim((string) ($input['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $row = formsGetScopedForm($db, $formId, $tokenData);
@@ -765,7 +791,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'duplicate') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager', 'operational_manager', 'hr']);
         $formId = trim((string) ($input['form_id'] ?? $input['id'] ?? ''));
         if ($formId === '') {
             respond(['error' => 'form_id required'], 400);
@@ -958,7 +984,7 @@ if ($method === 'POST') {
 }
 
 if ($method === 'PUT') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager', 'operational_manager', 'hr']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'id required'], 400);
     $input = getInput();
@@ -996,7 +1022,7 @@ if ($method === 'PUT') {
 
     $vals[] = $id;
     $updateClause = '';
-    if ($role === 'marketing') {
+    if ($role === 'marketing' || $role === 'hr') {
         $updateClause = ' AND created_by = ?';
         $vals[] = $userId;
     } elseif ($role === 'super_admin' && tenantIsMasterView($tokenData)) {
@@ -1035,7 +1061,7 @@ if ($method === 'PUT') {
 if ($method === 'DELETE') {
     $action = $_GET['action'] ?? '';
     if ($action === 'revoke_api_key') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'hr']);
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $row = formsGetScopedForm($db, $formId, $tokenData);
@@ -1048,14 +1074,14 @@ if ($method === 'DELETE') {
         respond(['message' => 'Form API key revoked']);
     }
 
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'hr']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'id required'], 400);
 
     $params = [$id];
     $orgClause = '';
     $roleNorm = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? $role ?? ''));
-    if ($roleNorm === 'marketing') {
+    if ($roleNorm === 'marketing' || $roleNorm === 'hr') {
         $orgClause = ' AND created_by = ?';
         $params[] = $userId;
     } elseif ($roleNorm !== 'super_admin') {

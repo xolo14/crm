@@ -7,15 +7,16 @@ import { AuthProvider, useAuth } from "@/hooks/useAuth";
 import AppLayout from "@/components/AppLayout";
 import RouteSeo from "@/components/seo/RouteSeo";
 import { ReactNode, Suspense } from "react";
+import DelayedPageLoader from "@/components/DelayedPageLoader";
 import { ThemeProvider } from "next-themes";
 import LoginPortal from "@/pages/LoginPortal";
 import Auth from "@/pages/Auth";
 import { getPortalLoginRedirect, AUTH_PORTAL } from "@/lib/portalAuth";
 import { normalizeAppRole } from "@/lib/roleUtils";
 import HRLayout from "@/layouts/HRLayout";
-import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from "@/lib/orgAccess";
-import { isPathAllowedByOrgFeatures, FEATURE_FORM_MANAGEMENT } from "@/lib/orgFeatures";
-import { managerFeatureKeyForPath, managerHasPageAccess } from "@/lib/managerPageAccess";
+import { canAccessFresherSalary, canAccessOfferLetters, canAccessFormManagement, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage, canAccessMarketing } from "@/lib/orgAccess";
+import { isPathAllowedByOrgFeatures } from "@/lib/orgFeatures";
+import { managerFeatureKeyForPath, managerHasPageAccess, operationalManagerHasPageAccess, firstAllowedOperationalManagerPath } from "@/lib/managerPageAccess";
 import { firstAllowedHrPath, hrFeatureKeyForPath, hrHasPageAccess } from "@/lib/hrPageAccess";
 import { useFresherSalaryAccess } from "@/hooks/useFresherSalaryAccess";
 import {
@@ -72,6 +73,7 @@ import {
   SuperAdminPanel,
   Tasks,
   Team,
+  Timetables,
   TemplateLibraryPage,
   Trash,
   WhatsAppAnalytics,
@@ -80,6 +82,7 @@ import {
   TermsOfServicePage,
   AssessmentsAdminPage,
   PeaklyyAssessmentPage,
+  SyncpediaFresherAssessmentPage,
 } from "@/routes/lazyPages";
 
 const queryClient = new QueryClient();
@@ -92,11 +95,8 @@ function normalizePlatformRole(user: { role?: string } | null): string | null {
 }
 
 function AuthLoading() {
-  return (
-    <div className="flex min-h-dvh items-center justify-center">
-      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-    </div>
-  );
+  // Auth session check: short delay so a fast login check does not flash, but users are not left on a blank screen for 2s.
+  return <DelayedPageLoader fullScreen delayMs={400} label="Loading…" />;
 }
 
 /** One AppLayout for the whole CRM shell so the sidebar does not remount (and jump scroll) on route changes. */
@@ -114,7 +114,9 @@ function MainLayoutRoute() {
   return (
     <AppLayout>
       <OrgFeatureRoute>
-        <Outlet />
+        <Suspense fallback={<DelayedPageLoader label="Loading…" />}>
+          <Outlet />
+        </Suspense>
       </OrgFeatureRoute>
     </AppLayout>
   );
@@ -129,13 +131,16 @@ function RootHome() {
   if (role === "marketing") {
     return <Navigate to="/marketing/dashboard" replace />;
   }
+  if (role === "operational_manager") {
+    return <Navigate to={firstAllowedOperationalManagerPath(user.page_access)} replace />;
+  }
   if (role === "hr") {
     return <Navigate to={firstAllowedHrPath(user.page_access)} replace />;
   }
   return (
     <AppLayout>
       <OrgFeatureRoute>
-        <Suspense fallback={<AuthLoading />}>
+        <Suspense fallback={<DelayedPageLoader label="Loading…" />}>
           <Dashboard />
         </Suspense>
       </OrgFeatureRoute>
@@ -198,6 +203,15 @@ function PaymentRecordsGate({ children }: { children: ReactNode }) {
 }
 
 /** Blocks routes when the org feature toggle is off; managers also need admin page grants. */
+function TimetableGate({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  const role = normalizeAppRole(user?.role);
+  if (!["super_admin", "org", "operational_manager"].includes(role)) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
 function OrgFeatureRoute({ children }: { children: ReactNode }) {
   const { user, organization } = useAuth();
   const location = useLocation();
@@ -205,14 +219,20 @@ function OrgFeatureRoute({ children }: { children: ReactNode }) {
   if (!isPathAllowedByOrgFeatures(role, organization, location.pathname)) {
     return <Navigate to="/" replace />;
   }
-  if (role === "manager") {
+  const nRole = normalizeAppRole(user?.role);
+  if (nRole === "operational_manager") {
+    const key = managerFeatureKeyForPath(location.pathname);
+    if (key && !operationalManagerHasPageAccess(user?.page_access, key)) {
+      return <Navigate to={firstAllowedOperationalManagerPath(user?.page_access)} replace />;
+    }
+  } else if (nRole === "manager") {
     const key = managerFeatureKeyForPath(location.pathname);
     if (key && !managerHasPageAccess(user?.page_access, key)) {
       // Avoid redirect loop on home when dashboard itself is denied.
       if (location.pathname === "/" || location.pathname === "") {
         return (
           <div className="flex min-h-[40vh] items-center justify-center p-6 text-center text-sm text-muted-foreground">
-            Dashboard access is not enabled for your account. Ask an admin to grant it under Team → Edit → Configure pages.
+            Dashboard access is not enabled for your account. Ask an org admin to grant it under Team → Edit → Configure pages.
           </div>
         );
       }
@@ -225,9 +245,8 @@ function OrgFeatureRoute({ children }: { children: ReactNode }) {
 function CallLogAllowedRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <AuthLoading />;
-  const r = String(user?.role || "").toLowerCase();
-  const n = r === "superadmin" ? "super_admin" : r === "organisation" ? "org" : r;
-  const ok = ["sales_representative", "admin", "super_admin", "manager", "org"].includes(n);
+  const n = normalizeAppRole(user?.role);
+  const ok = ["sales_representative", "super_admin", "manager", "org"].includes(n);
   if (!ok) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
@@ -239,15 +258,13 @@ function SuperAdminGate({ children }: { children: ReactNode }) {
 }
 
 function FormManagementGate({ children }: { children: ReactNode }) {
-  const { user, hasFeature } = useAuth();
-  const role = normalizePlatformRole(user);
-  if (!role || !["super_admin", "admin", "org", "marketing", "manager"].includes(role)) {
-    return <Navigate to="/" replace />;
+  const { user, organization } = useAuth();
+  const role = normalizeAppRole(user?.role);
+  // HR uses the HR portal route (/hr/form-management), not the main CRM shell.
+  if (role === "hr") {
+    return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
   }
-  if (!hasFeature(FEATURE_FORM_MANAGEMENT)) {
-    return <Navigate to="/" replace />;
-  }
-  if (role === "manager" && !managerHasPageAccess(user?.page_access, FEATURE_FORM_MANAGEMENT)) {
+  if (!canAccessFormManagement(role, organization, user?.page_access)) {
     return <Navigate to="/" replace />;
   }
   return <>{children}</>;
@@ -255,9 +272,8 @@ function FormManagementGate({ children }: { children: ReactNode }) {
 
 function TeamPageGate({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const role = String(user?.role || "").toLowerCase();
-  const normalized = role === "superadmin" ? "super_admin" : role === "organisation" ? "org" : role;
-  if (!["super_admin", "admin", "org", "manager"].includes(normalized)) return <Navigate to="/" replace />;
+  const normalized = normalizeAppRole(user?.role);
+  if (!["super_admin", "org", "manager"].includes(normalized)) return <Navigate to="/" replace />;
   if (normalized === "manager" && !managerHasPageAccess(user?.page_access, "team")) {
     return <Navigate to="/" replace />;
   }
@@ -266,36 +282,33 @@ function TeamPageGate({ children }: { children: ReactNode }) {
 
 function AdminSuperOrOrgGate({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const role = String(user?.role || "").toLowerCase();
-  const normalized = role === "superadmin" ? "super_admin" : role === "organisation" ? "org" : role;
+  const normalized = normalizeAppRole(user?.role);
   if (normalized === "hr") return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
-  if (!["super_admin", "admin", "org"].includes(normalized)) return <Navigate to="/" replace />;
+  if (!["super_admin", "org"].includes(normalized)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
 function RoleGate({ allow, children }: { allow: string[]; children: ReactNode }) {
   const { user } = useAuth();
-  const role = normalizePlatformRole(user);
+  const role = normalizeAppRole(user?.role);
   if (!role || !allow.includes(role)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
 function SettingsGate({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const role = normalizePlatformRole(user);
+  const role = normalizeAppRole(user?.role);
   // Keep HR inside the HR portal shell
   if (role === "hr") return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
   return (
     <RoleGate
       allow={[
         "super_admin",
-        "admin",
         "org",
         "manager",
+        "operational_manager",
         "sales_representative",
         "marketing",
-        "trainer",
-        "finance",
       ]}
     >
       {children}
@@ -304,11 +317,16 @@ function SettingsGate({ children }: { children: ReactNode }) {
 }
 
 function TrashGate({ children }: { children: ReactNode }) {
-  return <RoleGate allow={["super_admin", "admin", "manager", "org"]}>{children}</RoleGate>;
+  return <RoleGate allow={["super_admin", "manager", "org"]}>{children}</RoleGate>;
 }
 
 function MarketingGate({ children }: { children: ReactNode }) {
-  return <RoleGate allow={["super_admin", "admin", "manager", "marketing", "org"]}>{children}</RoleGate>;
+  const { user, organization } = useAuth();
+  const role = normalizeAppRole(user?.role);
+  if (!canAccessMarketing(role, organization, user?.page_access)) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
 }
 
 function HRProtectedRoute() {
@@ -320,7 +338,9 @@ function HRProtectedRoute() {
   }
   return (
     <HRLayout>
-      <Outlet />
+      <Suspense fallback={<DelayedPageLoader label="Loading…" />}>
+        <Outlet />
+      </Suspense>
     </HRLayout>
   );
 }
@@ -336,6 +356,12 @@ function HRPageGate({ children }: { children: ReactNode }) {
   if (key === "offer_letters") {
     const role = normalizeAppRole(user?.role);
     if (!canAccessOfferLetters(role, organization, user?.page_access)) {
+      return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
+    }
+  }
+  if (key === "form_management") {
+    const role = normalizeAppRole(user?.role);
+    if (!canAccessFormManagement(role, organization, user?.page_access)) {
       return <Navigate to={firstAllowedHrPath(user?.page_access)} replace />;
     }
   }
@@ -362,10 +388,11 @@ const App = () => (
       <BrowserRouter>
         <AuthProvider>
           <RouteSeo />
-          <Suspense fallback={<AuthLoading />}>
+          <Suspense fallback={<DelayedPageLoader fullScreen label="Loading…" />}>
           <Routes>
             <Route path="/apply" element={<Apply />} />
             <Route path="/doc-form/:slug" element={<PublicDocFormPage />} />
+            <Route path="/assessment/syncpedia-fresher-basics" element={<SyncpediaFresherAssessmentPage />} />
             <Route path="/assessment/:slug" element={<PeaklyyAssessmentPage />} />
             <Route path="/privacy" element={<PrivacyPolicyPage />} />
             <Route path="/terms" element={<TermsOfServicePage />} />
@@ -395,8 +422,8 @@ const App = () => (
               <Route path="/leads/history" element={<LeadHistory />} />
               <Route path="/leads/form-leads" element={<Leads />} />
               <Route path="/leads/hr-leads" element={<AdminSuperOrOrgGate><HRLeadsPage /></AdminSuperOrOrgGate>} />
-              <Route path="/marketing/form-leads" element={<FormLeads />} />
-              <Route path="/marketing/imported-leads" element={<ImportedLeads />} />
+              <Route path="/marketing/form-leads" element={<MarketingGate><FormLeads /></MarketingGate>} />
+              <Route path="/marketing/imported-leads" element={<MarketingGate><ImportedLeads /></MarketingGate>} />
               <Route path="/leads/form-leads/history" element={<FormLeadHistory />} />
               {/* Legacy: assigned leads live inside source cards on Leads Management / My Leads */}
               <Route path="/assigned-leads" element={<Navigate to="/my-leads" replace />} />
@@ -408,7 +435,7 @@ const App = () => (
               <Route path="/daily-reports/analytics" element={<DailyReportsAnalytics />} />
               <Route path="/communications" element={<CommunicationsHubPage />} />
               <Route path="/communications/whatsapp-inbox" element={<WhatsAppInboxPage />} />
-              <Route path="/communications/whatsapp-setup" element={<RoleGate allow={["super_admin", "admin", "org", "manager", "marketing"]}><OrgWhatsAppSetupPage /></RoleGate>} />
+              <Route path="/communications/whatsapp-setup" element={<RoleGate allow={["super_admin", "org", "manager", "marketing"]}><OrgWhatsAppSetupPage /></RoleGate>} />
               <Route path="/communications/template-library" element={<AdminSuperOrOrgGate><TemplateLibraryPage /></AdminSuperOrOrgGate>} />
               <Route path="/communications/meta-partner" element={<SuperAdminGate><MetaPartnerPage /></SuperAdminGate>} />
               <Route path="/communications/admin" element={<SuperAdminGate><CommunicationsAdminPage /></SuperAdminGate>} />
@@ -424,6 +451,7 @@ const App = () => (
               <Route path="/students" element={<Students />} />
               <Route path="/courses" element={<Courses />} />
               <Route path="/batches" element={<Batches />} />
+              <Route path="/timetables" element={<TimetableGate><Timetables /></TimetableGate>} />
               <Route path="/payments" element={<PaymentsPageGate><PaymentLinksPage /></PaymentsPageGate>} />
               <Route path="/payments/records" element={<PaymentRecordsGate><PaymentLinksRecordsPage /></PaymentRecordsGate>} />
               <Route path="/payment-links" element={<Navigate to="/payments" replace />} />
@@ -465,6 +493,7 @@ const App = () => (
               <Route path="communications" element={<HRPageGate><HRCommunicationsPage /></HRPageGate>} />
               <Route path="holidays" element={<HRPageGate><HRHolidays /></HRPageGate>} />
               <Route path="offer-letters" element={<HRPageGate><OfferLetters /></HRPageGate>} />
+              <Route path="form-management" element={<HRPageGate><FormsManagerPage /></HRPageGate>} />
               <Route path="settings" element={<HRPageGate><SettingsPage /></HRPageGate>} />
             </Route>
           </Routes>

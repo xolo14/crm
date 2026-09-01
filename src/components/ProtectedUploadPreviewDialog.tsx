@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import {
   Dialog,
@@ -19,7 +19,10 @@ function guessMimeFromPath(path: string): string | null {
   if (lower.endsWith(".mp3")) return "audio/mpeg";
   if (lower.endsWith(".wav")) return "audio/wav";
   if (lower.endsWith(".ogg") || lower.endsWith(".opus")) return "audio/ogg";
-  if (lower.endsWith(".m4a") || lower.endsWith(".aac") || lower.endsWith(".mp4")) return "audio/mp4";
+  // AAC-LC in MP4/M4A — browsers expect audio/mp4 (codec often mp4a.40.2)
+  if (lower.endsWith(".m4a") || lower.endsWith(".aac") || lower.endsWith(".mp4") || lower.endsWith(".mp4a")) {
+    return "audio/mp4";
+  }
   if (lower.endsWith(".webm")) return "audio/webm";
   if (lower.endsWith(".amr")) return "audio/amr";
   if (lower.endsWith(".3gp") || lower.endsWith(".3gpp")) return "audio/3gpp";
@@ -30,7 +33,7 @@ function guessMimeFromPath(path: string): string | null {
 
 /** Detect real format from bytes (Android often names AMR as .wav). */
 function sniffMimeFromBytes(buf: ArrayBuffer): string | null {
-  const u8 = new Uint8Array(buf.slice(0, 32));
+  const u8 = new Uint8Array(buf.slice(0, 64));
   if (u8.length < 4) return null;
   const asStr = (start: number, len: number) => {
     let out = "";
@@ -45,10 +48,11 @@ function sniffMimeFromBytes(buf: ArrayBuffer): string | null {
   if (asStr(0, 3) === "ID3") return "audio/mpeg";
   if (u8[0] === 0xff && (u8[1] & 0xe0) === 0xe0) return "audio/mpeg";
   if (u8.length >= 12 && asStr(4, 4) === "ftyp") {
-    const brand = asStr(8, 4).toLowerCase();
+    const brand = asStr(8, 4).toLowerCase().replace(/\0/g, "").trim();
     if (brand.startsWith("3g") || brand === "3gp4" || brand === "3gp5" || brand === "3g2a") {
       return "audio/3gpp";
     }
+    // M4A / isom / mp42 / mp4a — AAC in MP4 container
     return "audio/mp4";
   }
   if (asStr(0, 4) === "%PDF") return "application/pdf";
@@ -64,8 +68,21 @@ function isPdfMime(mime: string, path: string): boolean {
   return mime === "application/pdf" || /\.pdf$/i.test(path);
 }
 
+function isAacMp4Family(mime: string, path: string): boolean {
+  const m = mime.toLowerCase();
+  const p = path.toLowerCase();
+  return (
+    m.includes("audio/mp4") ||
+    m.includes("audio/x-m4a") ||
+    m.includes("audio/aac") ||
+    m.includes("mp4a") ||
+    /\.(m4a|aac|mp4|mp4a)$/i.test(p)
+  );
+}
+
 /**
  * In-app preview for private uploads (call recordings, attachments).
+ * Plays AAC/M4A (mp4a) via same-origin stream URL so Chrome can decode + seek.
  */
 export function ProtectedUploadPreviewDialog({
   path,
@@ -84,17 +101,30 @@ export function ProtectedUploadPreviewDialog({
   const [mime, setMime] = useState<string>("");
   const [playError, setPlayError] = useState<string | null>(null);
   const [fileBytes, setFileBytes] = useState(0);
+  const [useStream, setUseStream] = useState(true);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const blobRef = useRef<Blob | null>(null);
 
   const storage = path ? resumeStoragePath(path) : null;
 
+  const streamUrl = useMemo(() => {
+    if (!storage) return "";
+    return `${getApiBase()}/files.php?path=${encodeURIComponent(storage)}`;
+  }, [storage]);
+
   useEffect(() => {
     if (!open) {
-      setBlobUrl("");
+      setBlobUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return "";
+      });
       setError(null);
       setLoading(false);
       setMime("");
       setPlayError(null);
       setFileBytes(0);
+      setUseStream(true);
+      blobRef.current = null;
       return;
     }
 
@@ -117,11 +147,12 @@ export function ProtectedUploadPreviewDialog({
     setPlayError(null);
     setBlobUrl("");
     setFileBytes(0);
+    setUseStream(true);
+    blobRef.current = null;
 
     void (async () => {
       try {
-        const url = `${getApiBase()}/files.php?path=${encodeURIComponent(storage)}`;
-        const res = await fetch(url, { credentials: "include" });
+        const res = await fetch(streamUrl, { credentials: "include", cache: "no-store" });
         const contentType = (res.headers.get("Content-Type") || "").split(";")[0].trim();
 
         if (!res.ok) {
@@ -151,7 +182,7 @@ export function ProtectedUploadPreviewDialog({
 
         const sniffed = sniffMimeFromBytes(buf);
         const guessed = guessMimeFromPath(storage);
-        const type =
+        let type =
           sniffed ||
           (contentType &&
           contentType !== "application/octet-stream" &&
@@ -159,15 +190,22 @@ export function ProtectedUploadPreviewDialog({
             ? contentType
             : null) ||
           guessed ||
-          "audio/wav";
+          "audio/mp4";
+
+        // Prefer standard AAC-in-MP4 type for .m4a / mp4a (Chrome + Edge + Safari)
+        if (isAacMp4Family(type, storage) && !isLikelyUnplayableInBrowser(type)) {
+          type = "audio/mp4";
+        }
 
         const blob = new Blob([buf], { type });
+        blobRef.current = blob;
         created = URL.createObjectURL(blob);
         if (!cancelled) {
           setMime(type);
           setFileBytes(buf.byteLength);
           setBlobUrl(created);
           if (isLikelyUnplayableInBrowser(type)) {
+            setUseStream(false);
             setPlayError(
               "This recording is AMR/3GP (common on Android phones). The browser cannot play it — use Download, then open on your phone or with VLC.",
             );
@@ -189,22 +227,59 @@ export function ProtectedUploadPreviewDialog({
       cancelled = true;
       if (created) URL.revokeObjectURL(created);
     };
-  }, [open, path, storage]);
+  }, [open, path, storage, streamUrl]);
 
-  const onDownload = () => {
-    if (!blobUrl || !path) return;
-    const a = document.createElement("a");
-    a.href = blobUrl;
-    a.download = basename(path);
-    a.click();
+  const onDownload = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!path) return;
+
+    const name = basename(path) || "recording.m4a";
+    const blob = blobRef.current;
+    if (blob) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+      return;
+    }
+
+    if (blobUrl) {
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = name;
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
   };
 
-  const isPdf = Boolean(blobUrl && path && isPdfMime(mime, path));
-  const showAudio = Boolean(blobUrl && !isPdf && !isLikelyUnplayableInBrowser(mime));
+  const isPdf = Boolean(path && isPdfMime(mime, path));
+  const showAudio = Boolean((blobUrl || streamUrl) && !isPdf && !isLikelyUnplayableInBrowser(mime || guessMimeFromPath(path || "") || ""));
+  const audioSrc = useStream && streamUrl && !isPdf ? streamUrl : blobUrl;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[min(92vw,32rem)] max-h-[min(92dvh,100%)] overflow-hidden p-4 sm:p-5 z-[100]">
+      <DialogContent
+        className="max-w-[min(92vw,32rem)] max-h-[min(92dvh,100%)] overflow-hidden p-4 sm:p-5 z-[100]"
+        onPointerDownOutside={(ev) => {
+          // Keep dialog stable while using native audio controls / download
+          const t = ev.target as HTMLElement | null;
+          if (t?.closest?.("audio")) ev.preventDefault();
+        }}
+        onInteractOutside={(ev) => {
+          const t = ev.target as HTMLElement | null;
+          if (t?.closest?.("audio")) ev.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="truncate pr-6">
             {title}
@@ -230,33 +305,46 @@ export function ProtectedUploadPreviewDialog({
                 If the file exists on the server, redeploy <code className="text-[10px]">api/files.php</code> and try again.
               </p>
             </div>
-          ) : showAudio ? (
+          ) : showAudio && audioSrc ? (
             <>
               <audio
-                key={blobUrl}
+                ref={audioRef}
+                key={`${audioSrc}-${useStream ? "stream" : "blob"}`}
                 controls
-                preload="auto"
+                preload="metadata"
+                playsInline
                 className="w-full"
-                src={blobUrl}
+                src={audioSrc}
                 onLoadedMetadata={(e) => {
                   const el = e.currentTarget;
-                  if (!Number.isFinite(el.duration) || el.duration <= 0) {
-                    setPlayError("Audio loaded but duration is unknown — try Download if play fails.");
+                  if (Number.isFinite(el.duration) && el.duration > 0) {
+                    setPlayError(null);
                   }
                 }}
-                onError={() =>
+                onCanPlay={() => setPlayError(null)}
+                onError={() => {
+                  // Stream failed (cookie/CORS edge) → fall back to in-memory blob once
+                  if (useStream && blobUrl) {
+                    setUseStream(false);
+                    setPlayError(null);
+                    return;
+                  }
                   setPlayError(
-                    "Browser could not decode this audio. Download the file and play it with VLC or on your phone.",
-                  )
-                }
+                    "Browser could not decode this audio. Use Download, then open with VLC or on your phone.",
+                  );
+                }}
               >
                 Your browser does not support audio playback.
               </audio>
               {playError ? (
                 <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">{playError}</p>
-              ) : null}
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  AAC/M4A (mp4a) plays in Chrome, Edge, Safari, and Firefox when the file is standard AAC.
+                </p>
+              )}
             </>
-          ) : isPdf ? (
+          ) : isPdf && blobUrl ? (
             <iframe
               title="Attachment"
               src={blobUrl}
@@ -273,9 +361,16 @@ export function ProtectedUploadPreviewDialog({
             <p className="text-sm text-muted-foreground text-center py-6">No recording loaded</p>
           )}
 
-          {blobUrl ? (
+          {blobUrl || blobRef.current ? (
             <div className="flex justify-end">
-              <Button type="button" variant={showAudio || isPdf ? "ghost" : "default"} size="sm" className="gap-1.5" onClick={onDownload}>
+              <Button
+                type="button"
+                variant={showAudio || isPdf ? "ghost" : "default"}
+                size="sm"
+                className="gap-1.5"
+                onClick={onDownload}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
                 <Download className="h-3.5 w-3.5" />
                 {showAudio || isPdf ? "Download" : "Download to play"}
               </Button>

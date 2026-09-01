@@ -140,9 +140,12 @@ export function parseFormLeadNotes(notes: string | null | undefined): ParsedForm
 
 export function listExtraFormFields(
   parsed: ParsedFormLeadNotes,
-  opts?: { resumePath?: string | null; skipKeys?: Iterable<string> },
+  opts?: { resumePath?: string | null; skipKeys?: Iterable<string>; includeStandardFields?: boolean },
 ): { key: string; label: string; value: string }[] {
-  const skip = new Set(STANDARD_LEAD_KEYS);
+  const skip = new Set<string>();
+  if (!opts?.includeStandardFields) {
+    for (const k of STANDARD_LEAD_KEYS) skip.add(k);
+  }
   if (opts?.skipKeys) {
     for (const k of opts.skipKeys) skip.add(k.toLowerCase());
   }

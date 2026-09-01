@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
+import { callLogsApi } from '@/services/callLogs';
 import { APP_TIMEZONE } from '@/lib/dateTime';
 import { aggregateByRep, mapToSalesReports, type DailyReportRecord } from '@/utils/analyticsHelpers';
 
@@ -9,7 +10,8 @@ export type DailyReportsTimeline =
   | 'yesterday'
   | 'last_7_days'
   | 'this_month'
-  | 'all';
+  | 'all'
+  | 'custom';
 
 function isoInAppTz(date = new Date()): string {
   return date.toLocaleDateString('en-CA', { timeZone: APP_TIMEZONE });
@@ -26,7 +28,12 @@ function reportDateKey(r: DailyReportRecord): string {
   return String(r.report_date || '').slice(0, 10);
 }
 
-function reportInTimeline(r: DailyReportRecord, timeline: DailyReportsTimeline): boolean {
+function reportInTimeline(
+  r: DailyReportRecord,
+  timeline: DailyReportsTimeline,
+  customFrom?: string,
+  customTo?: string,
+): boolean {
   if (timeline === 'all') return true;
   const key = reportDateKey(r);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return false;
@@ -34,12 +41,21 @@ function reportInTimeline(r: DailyReportRecord, timeline: DailyReportsTimeline):
   if (timeline === 'today') return key === today;
   if (timeline === 'yesterday') return key === shiftIsoDay(today, -1);
   if (timeline === 'last_7_days') {
-    const from = shiftIsoDay(today, -7);
+    const from = shiftIsoDay(today, -6);
     return key >= from && key <= today;
   }
   if (timeline === 'this_month') {
     const from = `${today.slice(0, 7)}-01`;
     return key >= from && key <= today;
+  }
+  if (timeline === 'custom') {
+    const from = (customFrom || '').slice(0, 10);
+    const to = (customTo || '').slice(0, 10);
+    if (from && /^\d{4}-\d{2}-\d{2}$/.test(from) && key < from) return false;
+    if (to && /^\d{4}-\d{2}-\d{2}$/.test(to) && key > to) return false;
+    // No bounds yet → show nothing until at least one date is set
+    if (!from && !to) return false;
+    return true;
   }
   return true;
 }
@@ -50,15 +66,27 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
   const [loading, setLoading] = useState(true);
   const [selectedRep, setSelectedRep] = useState<string>('all');
   const [timeline, setTimeline] = useState<DailyReportsTimeline>(opts?.initialTimeline ?? 'today');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
   const [teamMembers, setTeamMembers] = useState<{ id: string; full_name: string; role?: string }[]>([]);
 
   const isManager =
-    role === 'admin' || role === 'org' || role === 'super_admin' || role === 'manager';
+    role === 'org' || role === 'super_admin' || role === 'manager';
   const isSalesRep = role === 'sales_representative';
+  /** Sales reps and managers can submit their own daily update. */
+  const canSubmit = isSalesRep || role === 'manager';
 
   const fetchReports = useCallback(async () => {
     setLoading(true);
     try {
+      // Ensure existing call-log days have matching daily reports before listing.
+      if (canSubmit) {
+        try {
+          await callLogsApi.syncDailyReportsFromCallLogs(60);
+        } catch {
+          /* non-blocking */
+        }
+      }
       const params: { user_id?: string } = {};
       if (isSalesRep && user?.id) params.user_id = user.id;
       const data = await api.dailyReports.list(params);
@@ -68,7 +96,7 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
     } finally {
       setLoading(false);
     }
-  }, [isSalesRep, user?.id]);
+  }, [canSubmit, isSalesRep, user?.id]);
 
   const fetchTeam = useCallback(async () => {
     try {
@@ -89,9 +117,9 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
   const filteredReports = useMemo(() => {
     return reports.filter((r) => {
       if (selectedRep !== 'all' && r.user_id !== selectedRep) return false;
-      return reportInTimeline(r, timeline);
+      return reportInTimeline(r, timeline, customFrom, customTo);
     });
-  }, [reports, selectedRep, timeline]);
+  }, [reports, selectedRep, timeline, customFrom, customTo]);
 
   const salesReports = useMemo(() => mapToSalesReports(filteredReports), [filteredReports]);
   const byRep = useMemo(() => aggregateByRep(salesReports), [salesReports]);
@@ -106,9 +134,14 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
     setSelectedRep,
     timeline,
     setTimeline,
+    customFrom,
+    setCustomFrom,
+    customTo,
+    setCustomTo,
     teamMembers,
     isManager,
     isSalesRep,
+    canSubmit,
     refetch: fetchReports,
   };
 }

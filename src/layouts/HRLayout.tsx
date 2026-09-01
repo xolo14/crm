@@ -7,6 +7,7 @@ import {
   Bell,
   Calendar,
   CheckSquare,
+  ClipboardList,
   FileCheck,
   LayoutDashboard,
   LogOut,
@@ -19,7 +20,8 @@ import {
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { hrHasPageAccess } from "@/lib/hrPageAccess";
-import { canAccessOfferLetters } from "@/lib/orgAccess";
+import { canAccessFormManagement, canAccessOfferLetters } from "@/lib/orgAccess";
+import { FEATURE_FORM_MANAGEMENT } from "@/lib/orgFeatures";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +38,7 @@ const navItems: { to: string; label: string; icon: typeof LayoutDashboard; acces
   { to: "/hr/communications", label: "Communications", icon: PhoneCall, accessKey: "communications" },
   { to: "/hr/holidays", label: "Holidays", icon: Calendar, accessKey: "holidays" },
   { to: "/hr/offer-letters", label: "Offer Letters", icon: FileCheck, accessKey: "offer_letters" },
+  { to: "/hr/form-management", label: "Form Management", icon: ClipboardList, accessKey: "form_management" },
   { to: "/hr/settings", label: "Settings", icon: Settings, accessKey: "settings" },
 ];
 
@@ -55,6 +58,12 @@ function NavLinks({
   const visible = navItems.filter((item) => {
     if (!hrHasPageAccess(pageAccess, item.accessKey)) return false;
     if (item.accessKey === "offer_letters" && !canAccessOfferLetters(role ?? null, organization ?? null, pageAccess)) {
+      return false;
+    }
+    if (
+      item.accessKey === FEATURE_FORM_MANAGEMENT &&
+      !canAccessFormManagement(role ?? null, organization ?? null, pageAccess)
+    ) {
       return false;
     }
     return true;

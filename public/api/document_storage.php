@@ -234,15 +234,32 @@ function syncpediaDocumentStorageSaveAndUpload(
         'local_path' => $rel,
         'local_abs' => is_string($abs) ? $abs : null,
         'gcs_object' => null,
+        'gcs_uploaded' => false,
+        'gcs_error' => null,
     ];
 
-    if ($gcsObjectKey !== '' && function_exists('syncpediaGcsEnabled') && syncpediaGcsEnabled()) {
-        $up = syncpediaGcsUploadObject($gcsObjectKey, $pdfBinary);
-        if (!empty($up['ok']) && !empty($up['object'])) {
-            $out['gcs_object'] = (string) $up['object'];
-        } else {
-            error_log('[document_storage] GCS upload failed: ' . ($up['error'] ?? 'unknown'));
-        }
+    $gcsOn = function_exists('syncpediaGcsEnabled') && syncpediaGcsEnabled();
+    if (!$gcsOn) {
+        $out['gcs_error'] = 'GCS_ENABLED is false in api/config.php';
+        return $out;
+    }
+    if ($gcsObjectKey === '') {
+        $out['gcs_error'] = 'Empty GCS object key';
+        return $out;
+    }
+    if (!function_exists('syncpediaGcsUploadObject')) {
+        $out['gcs_error'] = 'gcs_storage.php not loaded';
+        return $out;
+    }
+
+    $up = syncpediaGcsUploadObject($gcsObjectKey, $pdfBinary);
+    if (!empty($up['ok']) && !empty($up['object'])) {
+        $out['gcs_object'] = (string) $up['object'];
+        $out['gcs_uploaded'] = true;
+    } else {
+        $err = (string) ($up['error'] ?? 'unknown');
+        $out['gcs_error'] = $err;
+        error_log('[document_storage] GCS upload failed: ' . $err);
     }
 
     return $out;

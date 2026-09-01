@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
-  BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone
+  BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, CalendarRange, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import syncpediaLogoTransparent from '@/assets/syncpedia-logo-transparent.png';
@@ -26,7 +26,7 @@ import {
 import { NotificationBell } from '@/components/NotificationBell';
 import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from '@/lib/orgAccess';
 import { featureKeyForPath, isOrgFeatureEnabled } from '@/lib/orgFeatures';
-import { managerFeatureKeyForPath, managerHasPageAccess } from '@/lib/managerPageAccess';
+import { managerFeatureKeyForPath, managerHasPageAccess, operationalManagerHasPageAccess } from '@/lib/managerPageAccess';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import { useFresherSalaryAccess } from '@/hooks/useFresherSalaryAccess';
 import type { PageAccess } from '@/lib/orgAccess';
@@ -129,16 +129,16 @@ function storedAppearance(): { compactMode: boolean; collapsedSidebar: boolean }
 }
 
 const navItems: NavItem[] = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'trainer', 'finance'] },
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'org', 'manager', 'operational_manager', 'sales_representative'] },
   { to: '/organizations', icon: Building2, label: 'Organizations', roles: ['super_admin'] },
   {
-    to: '/leads', icon: Users, label: 'Leads', roles: ['super_admin', 'admin', 'org', 'manager', 'marketing'],
+    to: '/leads', icon: Users, label: 'Leads', roles: ['super_admin', 'org', 'manager', 'marketing'],
     children: [
-      { to: '/leads/form-leads', icon: FileText, label: 'Form Leads', roles: ['super_admin', 'admin', 'manager'] },
-      { to: '/leads/hr-leads', icon: UserCheck, label: 'HR Leads', roles: ['super_admin', 'admin', 'org'] },
+      { to: '/leads/form-leads', icon: FileText, label: 'Form Leads', roles: ['super_admin', 'org', 'manager'] },
+      { to: '/leads/hr-leads', icon: UserCheck, label: 'HR Leads', roles: ['super_admin', 'org'] },
     ],
   },
-  { to: '/form-management', icon: ClipboardList, label: 'Form Management', roles: ['super_admin', 'admin', 'org', 'marketing', 'manager'] },
+  { to: '/form-management', icon: ClipboardList, label: 'Form Management', roles: ['super_admin', 'org', 'marketing', 'manager', 'operational_manager'] },
   // Marketing home — only this Dashboard entry (not the main `/` CRM dashboard)
   { to: '/marketing/dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['marketing'] },
   { to: '/my-leads', icon: ClipboardList, label: 'My Leads', roles: ['marketing'] },
@@ -155,94 +155,100 @@ const navItems: NavItem[] = [
     to: '/my-referrals',
     icon: Users,
     label: 'Sales Tracker',
-    roles: ['super_admin', 'admin', 'manager'],
+    roles: ['super_admin', 'org', 'manager'],
     children: [
       {
         to: '/referral-analytics',
         icon: TrendingUp,
         label: 'Rep Performance',
-        roles: ['super_admin', 'admin', 'manager'],
+        roles: ['super_admin', 'org', 'manager'],
       },
     ],
   },
-  { to: '/students', icon: GraduationCap, label: 'Students', roles: ['super_admin', 'admin', 'manager', 'trainer'] },
-  { to: '/courses', icon: BookOpen, label: 'Courses', roles: ['super_admin', 'admin', 'trainer', 'manager'] },
+  { to: '/students', icon: GraduationCap, label: 'Students', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
+  { to: '/courses', icon: BookOpen, label: 'Courses', roles: ['super_admin', 'org', 'manager'] },
   {
     to: '/batches',
     icon: Layers,
     label: 'Batches',
-    roles: ['super_admin', 'admin', 'trainer', 'manager', 'sales_representative'],
+    roles: ['super_admin', 'org', 'manager', 'sales_representative'],
+  },
+  {
+    to: '/timetables',
+    icon: CalendarRange,
+    label: 'Timetables',
+    roles: ['super_admin', 'org', 'operational_manager'],
   },
   {
     to: '/payments',
     icon: Link2,
     label: 'Payment links',
-    roles: ['super_admin', 'admin', 'org', 'finance', 'manager', 'sales_representative'],
+    roles: ['super_admin', 'org', 'manager', 'sales_representative'],
   },
   {
     to: '/payments/records',
     icon: Receipt,
     label: 'Payment Records',
-    roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'finance', 'hr', 'marketing', 'trainer'],
+    roles: ['super_admin', 'org', 'manager', 'sales_representative', 'hr', 'marketing', 'operational_manager'],
   },
-  { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'trainer', 'finance'],
+  { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'],
     children: [
-      { to: '/communications/whatsapp-inbox', icon: MessageSquare, label: 'WhatsApp Inbox', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing'] },
+      { to: '/communications/whatsapp-inbox', icon: MessageSquare, label: 'WhatsApp Inbox', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing'] },
     ],
   },
   {
-    to: '/daily-reports', icon: ClipboardList, label: 'Daily Reports', roles: ['super_admin', 'admin', 'manager', 'sales_representative'],
+    to: '/daily-reports', icon: ClipboardList, label: 'Daily Reports', roles: ['super_admin', 'org', 'manager', 'sales_representative'],
     children: [
-      { to: '/sales/call-log', icon: PhoneCall, label: 'Call Log', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative'] },
-      { to: '/daily-reports/analytics', icon: BarChart2, label: 'Analytics', roles: ['super_admin', 'admin', 'manager', 'sales_representative'] },
+      { to: '/sales/call-log', icon: PhoneCall, label: 'Call Log', roles: ['super_admin', 'org', 'manager', 'sales_representative'] },
+      { to: '/daily-reports/analytics', icon: BarChart2, label: 'Analytics', roles: ['super_admin', 'org', 'manager', 'sales_representative'] },
     ],
   },
   {
-    to: '/marketing-admin', icon: Mail, label: 'Marketing', roles: ['super_admin', 'admin', 'org'],
+    to: '/marketing-admin', icon: Mail, label: 'Marketing', roles: ['super_admin', 'org'],
     children: [
-      { to: '/marketing-email', icon: Mail, label: 'Email Templates', roles: ['super_admin', 'admin', 'org'] },
-      { to: '/marketing-whatsapp', icon: MessageSquare, label: 'WhatsApp Templates', roles: ['super_admin', 'admin', 'org'] },
-      { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['super_admin', 'admin', 'org'] },
-      { to: '/marketing/whatsapp-analytics', icon: MessageSquare, label: 'WhatsApp Analytics', roles: ['super_admin', 'admin', 'org'] },
-      { to: '/marketing/meta-ads', icon: Megaphone, label: 'Meta Ads', roles: ['super_admin', 'admin', 'org'] },
+      { to: '/marketing-email', icon: Mail, label: 'Email Templates', roles: ['super_admin', 'org'] },
+      { to: '/marketing-whatsapp', icon: MessageSquare, label: 'WhatsApp Templates', roles: ['super_admin', 'org'] },
+      { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['super_admin', 'org'] },
+      { to: '/marketing/whatsapp-analytics', icon: MessageSquare, label: 'WhatsApp Analytics', roles: ['super_admin', 'org'] },
+      { to: '/marketing/meta-ads', icon: Megaphone, label: 'Meta Ads', roles: ['super_admin', 'org'] },
     ],
   },
   {
-    to: '/marketing/portal', icon: Mail, label: 'Email Marketing', roles: ['marketing'],
+    to: '/marketing/portal', icon: Mail, label: 'Email Marketing', roles: ['marketing', 'operational_manager'],
     children: [
-      { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['marketing'] },
+      { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['marketing', 'operational_manager'] },
     ],
   },
   {
-    to: '/marketing/whatsapp', icon: MessageSquare, label: 'WhatsApp Marketing', roles: ['marketing'],
+    to: '/marketing/whatsapp', icon: MessageSquare, label: 'WhatsApp Marketing', roles: ['marketing', 'operational_manager'],
     children: [
-      { to: '/marketing/whatsapp-analytics', icon: BarChart3, label: 'WA Analytics', roles: ['marketing'] },
+      { to: '/marketing/whatsapp-analytics', icon: BarChart3, label: 'WA Analytics', roles: ['marketing', 'operational_manager'] },
     ],
   },
   { to: '/marketing/form-leads', icon: FileText, label: 'Form Leads', roles: ['marketing'] },
   { to: '/marketing/imported-leads', icon: Users, label: 'Imported Leads', roles: ['marketing'] },
   { to: '/marketing/meta-ads', icon: Megaphone, label: 'Meta Ads', roles: ['marketing'] },
-  { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'admin', 'manager'] },
-  { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'admin', 'manager'] },
-  { to: '/payslip', icon: Receipt, label: 'Payslip', roles: ['super_admin', 'admin', 'org'] },
+  { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
+  { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'org', 'manager'] },
+  { to: '/payslip', icon: Receipt, label: 'Payslip', roles: ['super_admin', 'org'] },
   {
     to: '/team',
     icon: Users,
     label: 'Team',
-    roles: ['super_admin', 'admin', 'org', 'manager'],
+    roles: ['super_admin', 'org', 'manager'],
   },
   {
     to: '/fresher-salary-tracker',
     icon: IndianRupee,
     label: 'Fresher Salary',
-    roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative'],
+    roles: ['super_admin', 'org', 'manager', 'sales_representative'],
   },
-  { to: '/tasks', icon: CheckSquare, label: 'Tasks', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'marketing'] },
-  { to: '/notifications', icon: Bell, label: 'Notifications', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'trainer', 'finance', 'marketing'] },
-  { to: '/holidays', icon: CalendarDays, label: 'Holidays', roles: ['super_admin', 'admin', 'manager', 'sales_representative', 'marketing'] },
+  { to: '/tasks', icon: CheckSquare, label: 'Tasks', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
+  { to: '/notifications', icon: Bell, label: 'Notifications', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
+  { to: '/holidays', icon: CalendarDays, label: 'Holidays', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
   { to: '/assessments', icon: ClipboardCheck, label: 'Assessments', roles: ['super_admin'] },
-  { to: '/trash', icon: Trash2, label: 'Trash', roles: ['super_admin', 'admin', 'org', 'manager'] },
-  { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'admin', 'org', 'manager', 'sales_representative', 'marketing', 'trainer', 'finance'] },
+  { to: '/trash', icon: Trash2, label: 'Trash', roles: ['super_admin', 'org', 'manager'] },
+  { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
 ];
 
 function SidebarNavItem({ item, collapsed, role, organization, pageAccess, currentPath, onNavigate, showNewBadge, fresherEnrolled }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; pageAccess?: PageAccess | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean; fresherEnrolled?: boolean }) {
@@ -365,6 +371,11 @@ function navItemAllowed(
     return isOrgFeatureEnabled(normalized, organization, "payments");
   }
 
+  // OM home is payments/students ops — do not require the Leads org module.
+  if (normalized === "operational_manager" && item.to === "/") {
+    return operationalManagerHasPageAccess(pageAccess, "dashboard");
+  }
+
   const feat = featureKeyForPath(item.to);
   const orgAllowed =
     !feat ||
@@ -372,8 +383,10 @@ function navItemAllowed(
     isOrgFeatureEnabled(normalized, organization, feat);
   if (!orgAllowed) return false;
 
-  // Managers only see pages the admin granted (page_access.pages).
-  if (normalized === "manager") {
+  if (normalized === "operational_manager") {
+    const managerKey = managerFeatureKeyForPath(item.to);
+    if (managerKey && !operationalManagerHasPageAccess(pageAccess, managerKey)) return false;
+  } else if (normalized === "manager") {
     const managerKey = managerFeatureKeyForPath(item.to);
     if (managerKey && !managerHasPageAccess(pageAccess, managerKey)) return false;
   }

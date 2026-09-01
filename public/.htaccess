@@ -28,6 +28,20 @@
   # ── PHP API: never route /api/*.php to the React app ─────────
   RewriteRule ^api/.+\.php$ - [L,NC]
 
+  # ── DECOY Layer 1 API (isolated) — never SPA-fallback ───────
+  RewriteRule ^api-decoy/.+\.php$ - [L,NC]
+  RewriteCond %{REQUEST_URI} ^/api-decoy/.+\.php$ [NC]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteRule ^ - [R=404,L]
+  RewriteRule ^api-decoy/ - [L]
+
+  # ── DECOY SPA under /legacy (separate build, no main-app routes) ─
+  RewriteRule ^legacy/?$ legacy/index.html [L]
+  RewriteCond %{REQUEST_URI} ^/legacy/
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule ^legacy/ legacy/index.html [L]
+
   # Missing /api/*.php must not fall through to index.html (that causes "HTTP 200" HTML errors)
   RewriteCond %{REQUEST_URI} ^/api/.+\.php$ [NC]
   RewriteCond %{REQUEST_FILENAME} !-f

@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
@@ -45,7 +46,50 @@ function parseLeadTags(raw: unknown): string {
   return String(raw);
 }
 
+type StudentPaymentSummary = {
+  candidate_id?: string;
+  pitch_price?: number | string;
+  total_paid?: number | string;
+  remaining?: number | string;
+};
+
+function fmtInr(amount: number): string {
+  return `₹${amount.toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+
+function StudentPaymentProgress({
+  summary,
+}: {
+  summary?: StudentPaymentSummary | null;
+}) {
+  if (!summary) {
+    return <span className="text-xs text-muted-foreground">No records</span>;
+  }
+  const paid = Number(summary.total_paid || 0);
+  const pitch = Number(summary.pitch_price || 0);
+  if (pitch <= 0 && paid <= 0) {
+    return <span className="text-xs text-muted-foreground">No records</span>;
+  }
+  const pct =
+    pitch > 0 ? Math.min(100, Math.round((paid / pitch) * 100)) : paid > 0 ? 100 : 0;
+  return (
+    <div className="min-w-[8rem]">
+      <p className="text-sm font-medium tabular-nums">
+        {fmtInr(paid)}
+        {pitch > 0 ? ` / ${fmtInr(pitch)}` : ''}
+      </p>
+      {pitch > 0 ? (
+        <Progress value={pct} className="h-1.5 mt-1.5" />
+      ) : null}
+    </div>
+  );
+}
+
 export default function Students() {
+  return <StudentsRoster />;
+}
+
+function StudentsRoster() {
   const { toast } = useToast();
   const { role, organization } = useAuth();
   const isMobile = useIsMobile();
@@ -320,6 +364,10 @@ export default function Students() {
                       {student.batch_name || student.batch ? ` · ${student.batch_name || student.batch}` : ''}
                     </div>
                   )}
+                  <div className="ml-7 mt-2">
+                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">Payment</p>
+                    <StudentPaymentProgress summary={student.payment_summary} />
+                  </div>
                   {student.source_lead_id && (
                     <Button type="button" variant="link" className="ml-7 h-auto p-0 text-xs" onClick={() => setDetailStudent(student)}>View lead details</Button>
                   )}
@@ -352,6 +400,7 @@ export default function Students() {
                 <TableHead>Course</TableHead>
                 <TableHead>Batch</TableHead>
                 <TableHead>College</TableHead>
+                <TableHead>Payment</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Enrolled</TableHead>
                 <TableHead className="w-24">Actions</TableHead>
@@ -359,7 +408,7 @@ export default function Students() {
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
-                <TableRow><TableCell colSpan={hasBulkDelete ? 13 : 12} className="text-center py-8 text-muted-foreground">No students found</TableCell></TableRow>
+                <TableRow><TableCell colSpan={hasBulkDelete ? 14 : 13} className="text-center py-8 text-muted-foreground">No students found</TableCell></TableRow>
               ) : filtered.map((student, index) => (
                 <TableRow key={student.id} className={selectedIds.has(student.id) ? 'bg-muted/50' : ''}>
                   {hasBulkDelete && <TableCell><Checkbox checked={selectedIds.has(student.id)} onCheckedChange={() => toggleSelect(student.id)} /></TableCell>}
@@ -393,6 +442,9 @@ export default function Students() {
                     </div>
                   </TableCell>
                   <TableCell className="text-sm">{student.college || student.lead_college || '—'}</TableCell>
+                  <TableCell>
+                    <StudentPaymentProgress summary={student.payment_summary} />
+                  </TableCell>
                   <TableCell><Badge variant="outline" className={statusColor(student.status) + ' capitalize text-xs'}>{student.status}</Badge></TableCell>
                   <TableCell className="text-sm text-muted-foreground">{student.enrollment_date ? new Date(student.enrollment_date).toLocaleDateString() : '—'}</TableCell>
                   <TableCell>

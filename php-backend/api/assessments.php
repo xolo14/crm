@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/lib/PeaklyyQuestions.php';
+require_once __DIR__ . '/lib/SyncpediaFresherBasics.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -786,6 +787,81 @@ function peaklyyPublicQuestion(array $row): array
 }
 
 /**
+ * Shuffle MCQ option texts among a/b/c/d for this attempt.
+ * Stores correct_option on the attempt question (never send that key to the client).
+ */
+function peaklyyShuffleMcqOptions(array $publicQ, string $bankCorrect): array
+{
+    $qType = strtolower((string) ($publicQ['q_type'] ?? 'mcq'));
+    $options = $publicQ['options'] ?? null;
+    if ($qType === 'task' || !is_array($options) || $options === []) {
+        return $publicQ;
+    }
+    $bankCorrect = strtolower(trim($bankCorrect));
+    if (!in_array($bankCorrect, ['a', 'b', 'c', 'd'], true)) {
+        $bankCorrect = 'a';
+    }
+    $pairs = [];
+    foreach (['a', 'b', 'c', 'd'] as $letter) {
+        if (!array_key_exists($letter, $options)) {
+            continue;
+        }
+        $text = trim((string) $options[$letter]);
+        if ($text === '') {
+            continue;
+        }
+        $pairs[] = ['from' => $letter, 'text' => (string) $options[$letter]];
+    }
+    if (count($pairs) < 2) {
+        $publicQ['correct_option'] = $bankCorrect;
+        return $publicQ;
+    }
+    shuffle($pairs);
+    $newOptions = [];
+    $newCorrect = $bankCorrect;
+    $letters = ['a', 'b', 'c', 'd'];
+    foreach ($pairs as $i => $pair) {
+        $key = $letters[$i];
+        $newOptions[$key] = $pair['text'];
+        if ($pair['from'] === $bankCorrect) {
+            $newCorrect = $key;
+        }
+    }
+    $publicQ['options'] = $newOptions;
+    $publicQ['correct_option'] = $newCorrect;
+    return $publicQ;
+}
+
+/** Build public questions for a new attempt: shuffle MCQ options per candidate. */
+function peaklyyPublicQuestionsForAttempt(array $bankRows): array
+{
+    $out = [];
+    foreach ($bankRows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $pq = peaklyyPublicQuestion($row);
+        $pq = peaklyyShuffleMcqOptions($pq, (string) ($row['correct_option'] ?? 'a'));
+        $out[] = $pq;
+    }
+    return $out;
+}
+
+/** Strip scoring fields before returning questions to the candidate. */
+function peaklyyQuestionsForClient(array $questions): array
+{
+    $out = [];
+    foreach ($questions as $q) {
+        if (!is_array($q)) {
+            continue;
+        }
+        unset($q['correct_option'], $q['_correct_option'], $q['correct']);
+        $out[] = $q;
+    }
+    return $out;
+}
+
+/**
  * Domain MCQ attempt: all beginner MCQs for the selected domain.
  */
 function peaklyyPickMcqQuestions(PDO $db, string $domain, ?int $mcqCount = null): array
@@ -1111,6 +1187,7 @@ peaklyyEnsureTables($db);
 peaklyySeedBank($db);
 peaklyyNormalizeDomainAssessments($db);
 peaklyyEnsureApiKeys($db);
+syncpediaEnsureFresherBasicsAssessment($db);
 
 // ── Meta (public) ──
 if ($action === 'meta' && $method === 'GET') {
@@ -1610,16 +1687,22 @@ if ($action === 'public_get' && $method === 'GET') {
     if ($slug === '') {
         respond(['error' => 'slug required'], 400);
     }
-    $stmt = $db->prepare('SELECT id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, pass_score, once_per_candidate, anti_cheat, is_active, result_api_key, source_mode FROM peaklyy_assessments WHERE slug = ? LIMIT 1');
+    $stmt = $db->prepare('SELECT id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, pass_score, once_per_candidate, anti_cheat, is_active, result_api_key, source_mode, ui_theme, interest_options_json FROM peaklyy_assessments WHERE slug = ? LIMIT 1');
     try {
         $stmt->execute([$slug]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
     } catch (Throwable $e) {
-        $stmt = $db->prepare('SELECT id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, pass_score, once_per_candidate, anti_cheat, is_active, result_api_key FROM peaklyy_assessments WHERE slug = ? LIMIT 1');
-        $stmt->execute([$slug]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($row) {
-            $row['source_mode'] = 'domain_bank';
+        $stmt = $db->prepare('SELECT id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, pass_score, once_per_candidate, anti_cheat, is_active, result_api_key, source_mode FROM peaklyy_assessments WHERE slug = ? LIMIT 1');
+        try {
+            $stmt->execute([$slug]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable $e2) {
+            $stmt = $db->prepare('SELECT id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, pass_score, once_per_candidate, anti_cheat, is_active, result_api_key FROM peaklyy_assessments WHERE slug = ? LIMIT 1');
+            $stmt->execute([$slug]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row) {
+                $row['source_mode'] = 'domain_bank';
+            }
         }
     }
     if (!$row || !(int) $row['is_active']) {
@@ -1675,6 +1758,31 @@ if ($action === 'public_get' && $method === 'GET') {
     $row['duration_minutes'] = $duration;
     $row['question_count'] = $qCount;
     $row['pass_score'] = $passScore;
+    $uiTheme = strtolower(trim((string) ($row['ui_theme'] ?? 'peaklyy')));
+    if ($uiTheme === '') {
+        $uiTheme = 'peaklyy';
+    }
+    $row['ui_theme'] = $uiTheme;
+    $interestOpts = [];
+    if (!empty($row['interest_options_json'])) {
+        $decoded = is_string($row['interest_options_json'])
+            ? json_decode((string) $row['interest_options_json'], true)
+            : $row['interest_options_json'];
+        if (is_array($decoded)) {
+            foreach ($decoded as $opt) {
+                $opt = trim((string) $opt);
+                if ($opt !== '') {
+                    $interestOpts[] = $opt;
+                }
+            }
+        }
+    }
+    if (!$interestOpts && $slug === syncpediaFresherBasicsSlug()) {
+        $interestOpts = syncpediaFresherInterestTopics();
+    }
+    $row['interest_options'] = $interestOpts;
+    $row['require_post_interests'] = count($interestOpts) > 0;
+    unset($row['interest_options_json']);
     $instructions = [];
     if ($duration > 0) {
         $instructions[] = 'Duration: ' . $duration . ' minutes';
@@ -1685,13 +1793,24 @@ if ($action === 'public_get' && $method === 'GET') {
         $instructions[] = 'Part 1 — MCQ test: 15 beginner questions (auto-scored; results sent to the partner website)';
         $instructions[] = 'Part 2 — Task test: 1 very basic practical task with notepad and/or file upload (manual grading)';
     } else {
-        $instructions[] = $qCount . ' question' . ($qCount === 1 ? '' : 's');
+        $instructions[] = $qCount . ' question' . ($qCount === 1 ? '' : 's') . ' (basics for freshers)';
+        if ($interestOpts) {
+            $instructions[] = 'After the test, select one or more topics you are interested in';
+        }
     }
     $instructions = array_merge($instructions, [
-        'Full screen required once the test starts',
-        'No tab switching or leaving the page',
-        'Copy and paste is disabled (except in notepad answer fields)',
-        'Leaving or switching tabs auto-submits the current part',
+        !empty($row['anti_cheat'])
+            ? 'Full screen required once the test starts'
+            : 'Stay on this page until you finish the test',
+        !empty($row['anti_cheat'])
+            ? 'No tab switching or leaving the page'
+            : 'Answer carefully — you can navigate between questions before submitting',
+        !empty($row['anti_cheat'])
+            ? 'Copy and paste is disabled (except in notepad answer fields)'
+            : 'Do not refresh the page during the test',
+        !empty($row['anti_cheat'])
+            ? 'Leaving or switching tabs auto-submits the current part'
+            : 'The timer ends the test automatically when time is up',
         !empty($row['once_per_candidate']) ? 'Test allowed only once per candidate' : 'Multiple attempts may be allowed',
         'MCQ score ' . $passScore . '+ to pass (1★ at 70, 2★ at 80, 3★ at 90, 4★ at 100). Below ' . $passScore . ' = Not pass',
         $sourceMode === 'domain_bank'
@@ -1840,7 +1959,7 @@ if ($action === 'start' && $method === 'POST') {
             if (!$picked) {
                 respond(['error' => 'No practical tasks available for this domain'], 500);
             }
-            $questions = array_map('peaklyyPublicQuestion', $picked);
+            $questions = peaklyyPublicQuestionsForAttempt($picked);
             try {
                 $db->prepare(
                     'UPDATE peaklyy_attempts SET status = ?, attempt_phase = ?, started_at = COALESCE(started_at, NOW()),
@@ -1907,7 +2026,8 @@ if ($action === 'start' && $method === 'POST') {
             if (!$picked) {
                 respond(['error' => $mode === 'custom' ? 'No custom questions on this assessment' : 'No questions available for this domain'], 500);
             }
-            $questions = array_map('peaklyyPublicQuestion', $picked);
+            $questions = peaklyyPublicQuestionsForAttempt($picked);
+            shuffle($questions);
             try {
                 $db->prepare(
                     'UPDATE peaklyy_attempts SET status = ?, attempt_phase = ?, started_at = COALESCE(started_at, NOW()),
@@ -1965,7 +2085,7 @@ if ($action === 'start' && $method === 'POST') {
         'anti_cheat' => (bool) (int) $attempt['anti_cheat'],
         'domain_key' => $attempt['domain_key'],
         'domain_label' => $domainLabel,
-        'questions' => $questions,
+        'questions' => peaklyyQuestionsForClient($questions),
         'title' => $phase === 'task' ? 'Part 2 — Practical tasks' : ($phase === 'mcq' ? 'Part 1 — MCQ test' : ($attempt['title'] ?? 'Assessment')),
     ]);
 }
@@ -2410,7 +2530,7 @@ if ($action === 'submit' && $method === 'POST') {
             if ($opt === '' && is_array($raw) && isset($raw['answer_option'])) {
                 $opt = strtolower(trim((string) $raw['answer_option']));
             }
-            $correct = strtolower((string) ($bankRow['correct_option'] ?? ''));
+            $correct = strtolower((string) ($pq['correct_option'] ?? $bankRow['correct_option'] ?? ''));
             if ($opt !== '' && $opt === $correct) {
                 $isCorrect = 1;
                 $awarded = $points;
@@ -2764,6 +2884,22 @@ if ($action === 'submit' && $method === 'POST') {
         }
     }
 
+    $interestOpts = [];
+    if (!empty($assessment['interest_options_json'])) {
+        $decoded = json_decode((string) $assessment['interest_options_json'], true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $opt) {
+                $opt = trim((string) $opt);
+                if ($opt !== '') {
+                    $interestOpts[] = $opt;
+                }
+            }
+        }
+    }
+    if (!$interestOpts && (($assessment['slug'] ?? '') === syncpediaFresherBasicsSlug())) {
+        $interestOpts = syncpediaFresherInterestTopics();
+    }
+
     respond([
         'phase' => 'single',
         'next_phase' => null,
@@ -2772,9 +2908,103 @@ if ($action === 'submit' && $method === 'POST') {
         'passed' => (bool) $passed,
         'time_taken_seconds' => $taken,
         'unlock_at' => $unlockAt,
-        'redirect_url' => $passed ? $redirect : null,
+        'redirect_url' => $passed && !$interestOpts ? $redirect : null,
         'attempt_token' => $token,
+        'require_interests' => count($interestOpts) > 0,
+        'interest_options' => $interestOpts,
         'webhook' => ['sent' => !empty($hook['sent']), 'status' => $hook['status'] ?? null],
+    ]);
+}
+
+// ── Save post-test interest topics (multi-select) ──
+if ($action === 'save_interests' && $method === 'POST') {
+    $token = trim((string) ($input['attempt_token'] ?? ''));
+    $selected = $input['interests'] ?? [];
+    if ($token === '' || !is_array($selected)) {
+        respond(['error' => 'attempt_token and interests[] required'], 400);
+    }
+    $stmt = $db->prepare('SELECT * FROM peaklyy_attempts WHERE public_token = ? LIMIT 1');
+    $stmt->execute([$token]);
+    $attempt = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$attempt) {
+        respond(['error' => 'Attempt not found'], 404);
+    }
+    if (($attempt['status'] ?? '') !== 'submitted') {
+        respond(['error' => 'Complete the test before selecting interests'], 409);
+    }
+    $aStmt = $db->prepare('SELECT * FROM peaklyy_assessments WHERE id = ? LIMIT 1');
+    $aStmt->execute([$attempt['assessment_id']]);
+    $assessment = $aStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+    $allowed = [];
+    if (!empty($assessment['interest_options_json'])) {
+        $decoded = json_decode((string) $assessment['interest_options_json'], true);
+        if (is_array($decoded)) {
+            $allowed = array_values(array_filter(array_map(static fn($x) => trim((string) $x), $decoded)));
+        }
+    }
+    if (!$allowed && (($assessment['slug'] ?? '') === syncpediaFresherBasicsSlug())) {
+        $allowed = syncpediaFresherInterestTopics();
+    }
+    if (!$allowed) {
+        respond(['error' => 'This assessment does not collect interest topics'], 400);
+    }
+    $picked = [];
+    foreach ($selected as $s) {
+        $s = trim((string) $s);
+        if ($s !== '' && in_array($s, $allowed, true) && !in_array($s, $picked, true)) {
+            $picked[] = $s;
+        }
+    }
+    if (count($picked) < 1) {
+        respond(['error' => 'Select at least one topic'], 422);
+    }
+    $json = json_encode($picked, JSON_UNESCAPED_UNICODE);
+    try {
+        $db->prepare('UPDATE peaklyy_attempts SET interest_selected_json = ? WHERE id = ?')->execute([$json, $attempt['id']]);
+    } catch (Throwable $e) {
+        respond(['error' => 'Could not save interests (redeploy API / run schema update)'], 500);
+    }
+    peaklyyAppendTimeline($db, (string) $attempt['id'], 'interests_saved', 'Interest topics selected', [
+        'interests' => $picked,
+    ]);
+    // Tag CRM lead with interests
+    try {
+        $leadId = trim((string) ($attempt['lead_id'] ?? ''));
+        if ($leadId === '') {
+            // resolve by email if lead_id not on attempt
+            $email = strtolower(trim((string) ($attempt['email'] ?? '')));
+            if ($email !== '') {
+                $ls = $db->prepare('SELECT id, tags, course_interest FROM leads WHERE email = ? ORDER BY created_at DESC LIMIT 1');
+                $ls->execute([$email]);
+                $lead = $ls->fetch(PDO::FETCH_ASSOC);
+            } else {
+                $lead = null;
+            }
+        } else {
+            $ls = $db->prepare('SELECT id, tags, course_interest FROM leads WHERE id = ? LIMIT 1');
+            $ls->execute([$leadId]);
+            $lead = $ls->fetch(PDO::FETCH_ASSOC);
+        }
+        if ($lead) {
+            $tags = trim((string) ($lead['tags'] ?? ''));
+            $interestTag = 'interests:' . implode('|', $picked);
+            $tags = $tags === '' ? $interestTag : ($tags . ',' . $interestTag);
+            $course = implode(', ', $picked);
+            try {
+                $db->prepare('UPDATE leads SET tags = ?, course_interest = ?, updated_at = NOW() WHERE id = ?')
+                    ->execute([$tags, $course, $lead['id']]);
+            } catch (Throwable $e2) {
+                $db->prepare('UPDATE leads SET tags = ?, course_interest = ? WHERE id = ?')
+                    ->execute([$tags, $course, $lead['id']]);
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[syncpedia] interest lead update: ' . $e->getMessage());
+    }
+    respond([
+        'success' => true,
+        'interests' => $picked,
+        'message' => 'Interest topics saved',
     ]);
 }
 

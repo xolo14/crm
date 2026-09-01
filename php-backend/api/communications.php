@@ -35,7 +35,7 @@ function commIsAdmin(array $tokenData): bool {
 
 /** Roles allowed to send WhatsApp and load hub operational data. */
 function commMessagingRoles(): array {
-    return ['super_admin', 'admin', 'org', 'manager', 'marketing', 'sales_representative'];
+    return ['super_admin', 'admin', 'org', 'manager', 'marketing', 'sales_representative', 'operational_manager'];
 }
 
 function commCanAssignWhatsappChats(array $tokenData): bool {
@@ -387,7 +387,19 @@ if (($action === 'test_whatsapp_connection' || $action === 'test_meta_connection
     }
     $provider = 'meta';
     $db->prepare("UPDATE org_whatsapp_config SET connection_status = 'connected', provider = 'meta' WHERE org_id = ?")->execute([$orgId]);
-    respond(['message' => 'Connected to Meta WhatsApp Cloud API', 'data' => $test, 'org_id' => $orgId, 'provider' => $provider]);
+    $backfill = ['conversations' => 0, 'messages_linked' => 0, 'campaign_imports' => 0];
+    try {
+        require_once __DIR__ . '/lib/WhatsAppInbox.php';
+        $backfill = WhatsAppInbox::backfillInboxForOrg($db, $orgId);
+    } catch (Throwable $ignored) {
+    }
+    respond([
+        'message' => 'Connected to Meta WhatsApp Cloud API',
+        'data' => $test,
+        'org_id' => $orgId,
+        'provider' => $provider,
+        'inbox_backfill' => $backfill,
+    ]);
 }
 
 // ─── Meta Embedded Signup (org connects via Facebook / WhatsApp Business login) ───
@@ -416,10 +428,17 @@ if ($action === 'complete_embedded_signup' && $method === 'POST') {
     if (!$result['ok']) {
         respond(['error' => $result['error'] ?? 'Embedded signup failed'], 502);
     }
+    $backfill = ['conversations' => 0, 'messages_linked' => 0, 'campaign_imports' => 0];
+    try {
+        require_once __DIR__ . '/lib/WhatsAppInbox.php';
+        $backfill = WhatsAppInbox::backfillInboxForOrg($db, $orgId);
+    } catch (Throwable $ignored) {
+    }
     respond([
         'message' => 'WhatsApp connected via Meta',
         'org_id' => $orgId,
         'data' => $result['data'] ?? [],
+        'inbox_backfill' => $backfill,
     ]);
 }
 
@@ -1179,10 +1198,17 @@ if ($action === 'conversations' && $method === 'GET') {
     if (!$orgId) {
         respond(['error' => 'Organization required'], 400);
     }
+    $role = commNormRole($tokenData);
+    // Admins/managers: pull CRM + campaign history into inbox threads so past chats are visible.
+    if (WhatsAppInbox::isOrgWideInboxRole($role) || !empty($_GET['backfill'])) {
+        try {
+            WhatsAppInbox::backfillInboxForOrg($db, $orgId);
+        } catch (Throwable $ignored) {
+        }
+    }
     $limit = min(200, max(10, (int) ($_GET['limit'] ?? 50)));
     $offset = max(0, (int) ($_GET['offset'] ?? 0));
     $search = trim((string) ($_GET['search'] ?? ''));
-    $role = commNormRole($tokenData);
     $rows = WhatsAppInbox::listConversationsForUser($db, $orgId, $userId, $role, $limit + $offset);
     if ($search !== '') {
         $q = strtolower($search);
@@ -1204,6 +1230,19 @@ if ($action === 'conversations' && $method === 'GET') {
         'can_assign' => commCanAssignWhatsappChats($tokenData),
         'scope' => WhatsAppInbox::isOrgWideInboxRole($role) ? 'org' : 'mine',
     ]);
+}
+
+// ─── Explicit inbox backfill (admin/superadmin/org) ───
+if ($action === 'backfill_whatsapp_inbox' && $method === 'POST') {
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    require_once __DIR__ . '/lib/WhatsAppInbox.php';
+    $orgId = commResolveOrgId($db, $tokenData, $input);
+    if (!$orgId) {
+        respond(['error' => 'Organization required'], 400);
+    }
+    commAssertOrgAccess($tokenData, $orgId);
+    $stats = WhatsAppInbox::backfillInboxForOrg($db, $orgId);
+    respond(['success' => true, 'org_id' => $orgId, 'inbox_backfill' => $stats]);
 }
 
 // ─── Mark conversation read ───

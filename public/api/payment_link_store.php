@@ -3,6 +3,7 @@
  * Persist Razorpay payment links in PostgreSQL (payment_links table).
  */
 require_once __DIR__ . '/document_storage.php';
+require_once __DIR__ . '/lib/PaymentCandidates.php';
 
 function paymentLinksDb(): PDO
 {
@@ -375,6 +376,20 @@ function paymentLinkPersistOnCreate(
         $notesJson,
     ]);
 
+    if ($orgId && $salespersonId !== 'unknown') {
+        $leadId = trim((string) ($notes['lead_id'] ?? ''));
+        paymentCandidatesLinkPaymentLink(
+            $db,
+            (string) $orgId,
+            $salespersonId,
+            $plinkId,
+            trim((string) ($custRzp['name'] ?? $customer['name'] ?? '')),
+            trim((string) ($custRzp['email'] ?? $customer['email'] ?? '')),
+            trim((string) ($custRzp['contact'] ?? $customer['contact'] ?? '')),
+            $leadId !== '' ? $leadId : null,
+        );
+    }
+
     return paymentLinkFindByRazorpayId($plinkId);
 }
 
@@ -462,6 +477,36 @@ function paymentLinkUpsertFromRazorpay(
         // Links must be created via the CRM first so org_id / salesperson are trusted.
         error_log('[payment_links] rejecting unknown razorpay link (not created via CRM): ' . $plinkId);
         return null;
+    }
+
+    $linked = paymentLinkFindByRazorpayId($plinkId);
+    if ($linked && empty($linked['candidate_id'])) {
+        $linkOrg = trim((string) ($linked['org_id'] ?? ''));
+        $linkOwner = trim((string) ($linked['salesperson_id'] ?? $salespersonId));
+        $leadId = trim((string) ($notes['lead_id'] ?? ''));
+        if ($linkOrg !== '' && $linkOwner !== '' && $linkOwner !== 'unknown') {
+            paymentCandidatesLinkPaymentLink(
+                $db,
+                $linkOrg,
+                $linkOwner,
+                $plinkId,
+                trim((string) ($cust['name'] ?? $linked['customer_name'] ?? '')),
+                trim((string) ($cust['email'] ?? $linked['customer_email'] ?? '')),
+                trim((string) ($cust['contact'] ?? $linked['customer_phone'] ?? '')),
+                $leadId !== '' ? $leadId : null,
+            );
+            $linked = paymentLinkFindByRazorpayId($plinkId);
+        }
+    }
+
+    if (is_array($linked) && !empty($linked['candidate_id']) && $amountPaid > $existingPaid) {
+        paymentCandidatesSyncLinkPaidDelta(
+            $db,
+            $linked,
+            $existingPaid,
+            $amountPaid,
+            $paymentEntity,
+        );
     }
 
     return paymentLinkFindByRazorpayId($plinkId);

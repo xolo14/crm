@@ -477,12 +477,42 @@ function formCampaignSendWhatsapp(PDO $db, array $tokenData, array $formRow, str
         }
         $sent = 0;
         $failed = 0;
+        require_once __DIR__ . '/lib/WhatsAppInbox.php';
+        $orgCfg = [];
+        try {
+            $orgCfg = commLoadOrgConfig($db, $sendOrgId);
+        } catch (Throwable $ignored) {
+        }
         foreach ($valid as $lead) {
             $name = trim((string) ($lead['name'] ?? ''));
             $vars = $name !== '' ? [$name] : [];
             $send = commSendViaOrgProvider($db, $sendOrgId, (string) $lead['phone'], $template, $vars, null);
             if ($send['ok']) {
                 $sent++;
+                $bodyText = (string) ($template['body'] ?? $template['name'] ?? 'WhatsApp template');
+                if (function_exists('commRenderTemplate') && $vars !== []) {
+                    try {
+                        $bodyText = commRenderTemplate($bodyText, $vars);
+                    } catch (Throwable $ignored) {
+                    }
+                }
+                try {
+                    WhatsAppInbox::recordOutboundAutomation(
+                        $db,
+                        $sendOrgId,
+                        (string) $lead['phone'],
+                        $bodyText,
+                        $userId !== '' ? $userId : null,
+                        $templateId,
+                        isset($send['provider_message_id']) ? (string) $send['provider_message_id'] : null,
+                        'sent',
+                        $name !== '' ? $name : null,
+                        null,
+                        isset($orgCfg['waba_id']) ? (string) $orgCfg['waba_id'] : null,
+                        isset($orgCfg['phone_number_id']) ? (string) $orgCfg['phone_number_id'] : null,
+                    );
+                } catch (Throwable $ignored) {
+                }
             } else {
                 $failed++;
             }

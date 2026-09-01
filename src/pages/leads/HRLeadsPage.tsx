@@ -51,7 +51,7 @@ export default function HRLeadsPage() {
   const role = String(user?.role || "").toLowerCase();
   const normalizedRole = role === "superadmin" ? "super_admin" : role === "organisation" ? "org" : role;
   const isSuperAdmin = normalizedRole === "super_admin";
-  const isAdmin = normalizedRole === "admin";
+  const isAdmin = normalizedRole === "org";
   const isOrg = normalizedRole === "org";
   const hasExport = perms.canExport(normalizedRole);
   const canAssign = isSuperAdmin || isAdmin;

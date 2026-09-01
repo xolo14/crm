@@ -57,10 +57,20 @@ function toQuery(params: Record<string, unknown>) {
 }
 
 export const callLogsApi = {
-  getStats: (period: CallLogPeriod | string) =>
-    request<{ success: true; stats: CallLogStats; period?: unknown }>(
-      `/call_logs.php?action=get_stats${toQuery({ period })}`,
-    ),
+  getStats: (params: CallLogPeriod | string | CallLogsQueryParams) => {
+    const q =
+      typeof params === "string"
+        ? { period: params }
+        : {
+            period: params.period,
+            date_from: params.date_from,
+            date_to: params.date_to,
+            sales_rep_id: params.sales_rep_id,
+          };
+    return request<{ success: true; stats: CallLogStats; period?: unknown }>(
+      `/call_logs.php?action=get_stats${toQuery(q as Record<string, unknown>)}`,
+    );
+  },
 
   getLogs: (params: CallLogsQueryParams) =>
     request<{
@@ -73,7 +83,7 @@ export const callLogsApi = {
     }>(`/call_logs.php?action=get_logs${toQuery(params as Record<string, unknown>)}`),
 
   /** Single-day aggregates from call logs + linked lead status (daily report prefill). */
-  getDailyReportMetrics: (date: string) =>
+  getDailyReportMetrics: (date: string, salesRepId?: string) =>
     request<{
       success: true;
       metrics: {
@@ -85,7 +95,18 @@ export const callLogsApi = {
         total_lost: number;
       };
       date: string;
-    }>(`/call_logs.php?action=daily_report_metrics${toQuery({ date })}`),
+    }>(
+      `/call_logs.php?action=daily_report_metrics${toQuery({
+        date,
+        ...(salesRepId ? { sales_rep_id: salesRepId } : {}),
+      })}`,
+    ),
+
+  /** Backfill/refresh daily_reports from call_logs for the current user (recent days). */
+  syncDailyReportsFromCallLogs: (days = 60) =>
+    request<{ success: true; synced_dates: number }>(
+      `/call_logs.php?action=sync_daily_reports${toQuery({ days })}`,
+    ),
 
   addLog: (body: CreateCallLogInput) =>
     request<{ success: true; log: CallLog }>("/call_logs.php?action=add_log", {

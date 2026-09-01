@@ -16,9 +16,14 @@ type Props = {
 
 export function FormSubmissionDetails({ notes, resumePath }: Props) {
   const parsed = useMemo(() => parseFormLeadNotes(notes), [notes]);
+  const showAllFields = parsed.formSlug === "api_ingest";
   const extraFields = useMemo(
-    () => listExtraFormFields(parsed, { resumePath }),
-    [parsed, resumePath],
+    () =>
+      listExtraFormFields(parsed, {
+        resumePath,
+        includeStandardFields: showAllFields,
+      }),
+    [parsed, resumePath, showAllFields],
   );
 
   const attachmentEntries = useMemo(() => {
@@ -41,11 +46,20 @@ export function FormSubmissionDetails({ notes, resumePath }: Props) {
   return (
     <div className="border-t border-border pt-4">
       <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-        {parsed.formSlug ? "Form Responses" : "Additional Details"}
+        {parsed.formSlug === "api_ingest"
+          ? "API Lead Details (as sent)"
+          : parsed.formSlug
+            ? "Form Responses"
+            : "Additional Details"}
       </h4>
-      {parsed.formSlug ? (
+      {parsed.formSlug && parsed.formSlug !== "api_ingest" ? (
         <p className="text-xs text-muted-foreground mb-3 capitalize">
           Form: {parsed.formSlug.replace(/_/g, " ").replace(/-/g, " ")}
+        </p>
+      ) : null}
+      {parsed.formSlug === "api_ingest" ? (
+        <p className="text-xs text-muted-foreground mb-3">
+          Full payload from the third-party website
         </p>
       ) : null}
       <div className="space-y-2.5">

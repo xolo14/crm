@@ -3,12 +3,18 @@ import { RefreshCw, User } from "lucide-react";
 import type { PaymentRecordRow, TeamMemberLookup } from "@/utils/normalizePaymentLink";
 import {
   buildMemberPaymentSummaries,
+  buildMemberSummariesFromCandidates,
   mergeManualPaymentsIntoSummaries,
+  mergeMemberPaymentSummaries,
   type ManualPaymentRow,
   type MemberPaymentSummary,
+  type PaymentCandidateSummaryInput,
+  type TeamMemberLookup,
 } from "@/utils/normalizePaymentLink";
 import {
+  filterCandidatesByPeriod,
   filterLinksByPeriod,
+  filterManualRowsByPeriod,
   PAYMENT_LINK_PERIODS,
   type PaymentLinkPeriod,
 } from "@/utils/paymentLinkPeriod";
@@ -30,6 +36,7 @@ export interface RecordsTableFilters {
 interface Props {
   records: PaymentRecordRow[];
   team: TeamMemberLookup[];
+  candidates?: PaymentCandidateSummaryInput[];
   loading: boolean;
   period: PaymentLinkPeriod;
   onPeriodChange: (period: PaymentLinkPeriod) => void;
@@ -38,6 +45,8 @@ interface Props {
   onRefresh: () => void;
   /** Approved manual payments counted in member totals. */
   manualPayments?: ManualPaymentRow[];
+  /** When set, member rows are clickable (manager/admin drill-down). */
+  onMemberClick?: (row: MemberPaymentSummary) => void;
 }
 
 const PAGE_SIZE = 20;
@@ -52,6 +61,7 @@ const inputCls =
 export default function PaymentRecordsTable({
   records,
   team,
+  candidates = [],
   loading,
   period,
   onPeriodChange,
@@ -59,8 +69,12 @@ export default function PaymentRecordsTable({
   onFilterChange,
   onRefresh,
   manualPayments = [],
+  onMemberClick,
 }: Props) {
   const [page, setPage] = useState(1);
+
+  const customRange =
+    period === "custom" ? { from: filters.from || undefined, to: filters.to || undefined } : undefined;
 
   function setField<K extends keyof RecordsTableFilters>(
     key: K,
@@ -70,15 +84,24 @@ export default function PaymentRecordsTable({
     setPage(1);
   }
 
+  function handlePeriodChange(next: PaymentLinkPeriod) {
+    if (next !== "custom") {
+      onFilterChange({ ...filters, from: "", to: "" });
+    }
+    onPeriodChange(next);
+    setPage(1);
+  }
+
   const periodRecords = useMemo(() => {
     const periodLinkIds = new Set(
       filterLinksByPeriod(
         records.map((r) => r.link),
         period,
+        customRange,
       ).map((l) => l.id),
     );
     return records.filter((r) => periodLinkIds.has(r.link.id));
-  }, [records, period]);
+  }, [records, period, customRange]);
 
   const filteredRecords = useMemo(() => {
     const fromTs = filters.from
@@ -88,12 +111,15 @@ export default function PaymentRecordsTable({
       ? Math.floor(new Date(filters.to + "T23:59:59").getTime() / 1000)
       : null;
     const term = filters.search.trim().toLowerCase();
+    const useCustomInline = period === "custom";
 
     return periodRecords.filter((r) => {
       const l = r.link;
       if (filters.memberId && r.creator.id !== filters.memberId) return false;
-      if (fromTs !== null && l.created_at < fromTs) return false;
-      if (toTs !== null && l.created_at > toTs) return false;
+      if (!useCustomInline) {
+        if (fromTs !== null && l.created_at < fromTs) return false;
+        if (toTs !== null && l.created_at > toTs) return false;
+      }
       if (term) {
         const hay = [
           r.creator.full_name,
@@ -107,18 +133,24 @@ export default function PaymentRecordsTable({
       }
       return true;
     });
-  }, [periodRecords, filters]);
+  }, [periodRecords, filters, period]);
 
   const memberRows = useMemo(() => {
+    const candidatesInPeriod = filterCandidatesByPeriod(candidates, period, customRange);
+    const fromCandidates = buildMemberSummariesFromCandidates(candidatesInPeriod, team);
     const fromLinks = buildMemberPaymentSummaries(filteredRecords);
-    // Filter manuals by date range + member when set
-    const manualsInFilter = manualPayments.filter((m) => {
+    const combined = mergeMemberPaymentSummaries(fromCandidates, fromLinks);
+
+    const manualsInPeriod = filterManualRowsByPeriod(manualPayments, period, customRange);
+    const manualsInFilter = manualsInPeriod.filter((m) => {
       if (filters.memberId && String(m.submitted_by) !== filters.memberId) {
         return false;
       }
-      const day = (m.paid_at || m.created_at || "").slice(0, 10);
-      if (filters.from && day && day < filters.from) return false;
-      if (filters.to && day && day > filters.to) return false;
+      if (period !== "custom") {
+        const day = (m.paid_at || m.reviewed_at || m.created_at || "").slice(0, 10);
+        if (filters.from && day && day < filters.from) return false;
+        if (filters.to && day && day > filters.to) return false;
+      }
       if (filters.search.trim()) {
         const term = filters.search.trim().toLowerCase();
         const hay = [
@@ -133,8 +165,25 @@ export default function PaymentRecordsTable({
       }
       return true;
     });
-    return mergeManualPaymentsIntoSummaries(fromLinks, manualsInFilter);
-  }, [filteredRecords, manualPayments, filters]);
+
+    let rows = mergeManualPaymentsIntoSummaries(combined, manualsInFilter);
+
+    if (filters.memberId) {
+      rows = rows.filter((r) => r.creator.id === filters.memberId);
+    }
+    if (filters.search.trim()) {
+      const term = filters.search.trim().toLowerCase();
+      rows = rows.filter((r) => {
+        const hay = [r.creator.full_name, r.creator.email, r.creator.referral_code]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(term);
+      });
+    }
+
+    return rows;
+  }, [filteredRecords, manualPayments, filters, period, customRange, candidates, team]);
 
   const totals = useMemo(() => {
     return memberRows.reduce(
@@ -143,22 +192,19 @@ export default function PaymentRecordsTable({
         paid: acc.paid + m.paidCount,
         partial: acc.partial + m.partialCount,
         payments: acc.payments + m.paymentsReceivedCount,
+        pitch: acc.pitch + (m.totalPitchPaise ?? 0),
         collected: acc.collected + m.totalCollectedPaise,
       }),
-      { links: 0, paid: 0, partial: 0, payments: 0, collected: 0 },
+      { links: 0, paid: 0, partial: 0, payments: 0, pitch: 0, collected: 0 },
     );
   }, [memberRows]);
 
-  const creatorsWithLinks = useMemo(() => {
-    const ids = new Set(
-      periodRecords
-        .map((r) => r.creator.id)
-        .filter((id) => id && id !== ""),
-    );
+  const membersForFilter = useMemo(() => {
+    const ids = new Set(memberRows.map((r) => r.creator.id).filter(Boolean));
     return team
       .filter((m) => ids.has(String(m.id)))
       .sort((a, b) => (a.full_name || "").localeCompare(b.full_name || ""));
-  }, [periodRecords, team]);
+  }, [memberRows, team]);
 
   const total = memberRows.length;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -168,14 +214,14 @@ export default function PaymentRecordsTable({
 
   return (
     <div>
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
         <h2 className="text-base font-semibold text-gray-900">
           Team member summary
         </h2>
-        <div className="w-full sm:w-56">
+        <div className="w-full sm:w-auto sm:min-w-[14rem] space-y-2">
           <Select
             value={period}
-            onValueChange={(v) => onPeriodChange(v as PaymentLinkPeriod)}
+            onValueChange={(v) => handlePeriodChange(v as PaymentLinkPeriod)}
           >
             <SelectTrigger>
               <SelectValue placeholder="Select period" />
@@ -188,37 +234,42 @@ export default function PaymentRecordsTable({
               ))}
             </SelectContent>
           </Select>
+          {period === "custom" ? (
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="date"
+                value={filters.from}
+                onChange={(e) => setField("from", e.target.value)}
+                className={inputCls}
+                title="From date"
+              />
+              <input
+                type="date"
+                value={filters.to}
+                onChange={(e) => setField("to", e.target.value)}
+                className={inputCls}
+                title="To date"
+              />
+            </div>
+          ) : null}
         </div>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <select
             value={filters.memberId}
             onChange={(e) => setField("memberId", e.target.value)}
             className={inputCls}
           >
             <option value="">All members</option>
-            {creatorsWithLinks.map((m) => (
+            {membersForFilter.map((m) => (
               <option key={m.id} value={String(m.id)}>
                 {m.full_name || m.email}
+                {m.role ? ` (${m.role.replace(/_/g, " ")})` : ""}
               </option>
             ))}
           </select>
-          <input
-            type="date"
-            value={filters.from}
-            onChange={(e) => setField("from", e.target.value)}
-            className={inputCls}
-            title="From date"
-          />
-          <input
-            type="date"
-            value={filters.to}
-            onChange={(e) => setField("to", e.target.value)}
-            className={inputCls}
-            title="To date"
-          />
           <input
             type="search"
             value={filters.search}
@@ -242,7 +293,7 @@ export default function PaymentRecordsTable({
 
       <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[720px]">
+          <table className="w-full text-sm min-w-[820px]">
             <thead>
               <tr className="bg-gray-50 text-left text-[11px] uppercase tracking-wider text-gray-500">
                 <th className="px-4 py-3 font-semibold">Member</th>
@@ -255,6 +306,9 @@ export default function PaymentRecordsTable({
                   Payments received
                 </th>
                 <th className="px-4 py-3 font-semibold text-right">
+                  Total pitch
+                </th>
+                <th className="px-4 py-3 font-semibold text-right">
                   Total collected
                 </th>
               </tr>
@@ -263,7 +317,7 @@ export default function PaymentRecordsTable({
               {loading ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-4 py-12 text-center text-gray-500"
                   >
                     Loading payment records…
@@ -271,7 +325,7 @@ export default function PaymentRecordsTable({
                 </tr>
               ) : pageRows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-14 text-center">
+                  <td colSpan={7} className="px-4 py-14 text-center">
                     <p className="font-semibold text-gray-900">
                       No member activity for this period
                     </p>
@@ -283,7 +337,11 @@ export default function PaymentRecordsTable({
                 </tr>
               ) : (
                 pageRows.map((row) => (
-                  <MemberSummaryRow key={rowKey(row)} row={row} />
+                  <MemberSummaryRow
+                    key={rowKey(row)}
+                    row={row}
+                    onClick={onMemberClick ? () => onMemberClick(row) : undefined}
+                  />
                 ))
               )}
             </tbody>
@@ -302,6 +360,9 @@ export default function PaymentRecordsTable({
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     {totals.payments}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[#0f5230]">
+                    {fmtInr(totals.pitch)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-[#22c55e]">
                     {fmtInr(totals.collected)}
@@ -349,12 +410,33 @@ function rowKey(row: MemberPaymentSummary): string {
   return row.creator.id || row.creator.full_name;
 }
 
-function MemberSummaryRow({ row }: { row: MemberPaymentSummary }) {
+function MemberSummaryRow({
+  row,
+  onClick,
+}: {
+  row: MemberPaymentSummary;
+  onClick?: () => void;
+}) {
   const { creator } = row;
   const ref = creator.referral_code?.trim();
 
   return (
-    <tr className="hover:bg-gray-50/80">
+    <tr
+      className={`hover:bg-gray-50/80 ${onClick ? "cursor-pointer hover:bg-[#f0fdf4]/60" : ""}`}
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+    >
       <td className="px-4 py-3 min-w-[12rem]">
         <div className="flex items-center gap-2">
           <div className="h-9 w-9 rounded-full bg-[#e6faf0] flex items-center justify-center shrink-0">
@@ -392,6 +474,9 @@ function MemberSummaryRow({ row }: { row: MemberPaymentSummary }) {
       </td>
       <td className="px-4 py-3 text-right font-medium tabular-nums">
         {row.paymentsReceivedCount}
+      </td>
+      <td className="px-4 py-3 text-right font-semibold text-[#0f5230] tabular-nums whitespace-nowrap">
+        {fmtInr(row.totalPitchPaise ?? 0)}
       </td>
       <td className="px-4 py-3 text-right font-semibold text-[#22c55e] tabular-nums whitespace-nowrap">
         {fmtInr(row.totalCollectedPaise)}

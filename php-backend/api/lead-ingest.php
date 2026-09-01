@@ -1,10 +1,16 @@
 <?php
 /**
- * Form-less public lead ingest API (for websites like syncpedia.in).
+ * Form-less public lead ingest API (for websites / third parties).
  *
  * POST /api/lead-ingest.php
- * Header: X-Lead-Api-Key: <PUBLIC_LEAD_API_KEY>
- * Body JSON: name, email?, phone?, source?, college?, course_interest?, notes?, assigned_to?, ref?
+ * Auth (header only — either one):
+ *   Authorization: Bearer <PUBLIC_LEAD_API_KEY>
+ *   X-Lead-Api-Key: <PUBLIC_LEAD_API_KEY>
+ *
+ * Body: any JSON object. All fields are stored as sent (full payload).
+ * Common fields (name/email/phone/…) are also mapped to CRM columns when present.
+ * Leads appear under a separate "API / Website" source card on the Leads page.
+ *
  * (Client org_id is rejected — LEAD_INGEST_ORG_ID is required in config.)
  */
 require_once __DIR__ . '/helpers.php';
@@ -26,10 +32,11 @@ if ($method === 'GET') {
     respond([
         'ok' => true,
         'endpoint' => 'lead-ingest',
-        'usage' => 'POST JSON with X-Lead-Api-Key header only. No CRM form required.',
-        'required' => ['name'],
-        'optional' => ['email', 'phone', 'source', 'college', 'year_of_study', 'course_interest', 'notes', 'company', 'assigned_to', 'ref'],
-        'note' => 'Client org_id is rejected. LEAD_INGEST_ORG_ID must be set in api/config.php (required for POST).',
+        'usage' => 'POST any JSON lead payload with Authorization: Bearer <PUBLIC_LEAD_API_KEY>. Full body is stored; leads show under the API / Website source card.',
+        'auth' => ['Authorization: Bearer <key>', 'X-Lead-Api-Key: <key>'],
+        'required' => ['name or full_name (or another identifiable field)'],
+        'note' => 'All JSON fields are saved as sent. Client org_id is rejected. LEAD_INGEST_ORG_ID must be set in api/config.php.',
+        'source_card' => 'api_ingest',
     ]);
 }
 
@@ -50,11 +57,38 @@ if (!is_array($input)) {
     $input = [];
 }
 
+/** Extract ingest API key from Authorization Bearer and/or X-Lead-Api-Key (header-only). */
+if (!function_exists('syncpediaLeadIngestProvidedKey')) {
+    function syncpediaLeadIngestProvidedKey(): string
+    {
+        $fromHeader = trim((string) ($_SERVER['HTTP_X_LEAD_API_KEY'] ?? ''));
+        if ($fromHeader !== '') {
+            return $fromHeader;
+        }
+
+        $auth = '';
+        if (!empty($_SERVER['HTTP_AUTHORIZATION'])) {
+            $auth = (string) $_SERVER['HTTP_AUTHORIZATION'];
+        } elseif (!empty($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+            $auth = (string) $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+        } else {
+            $headers = function_exists('getallheaders') ? getallheaders() : [];
+            if (is_array($headers)) {
+                $auth = (string) ($headers['Authorization'] ?? $headers['authorization'] ?? '');
+            }
+        }
+        if (preg_match('/^\s*Bearer\s+(\S+)\s*$/i', $auth, $m)) {
+            return trim($m[1]);
+        }
+        return '';
+    }
+}
+
 // Header-only — never accept api_key in query/body (avoids access-log leakage).
-$providedKey = trim((string) ($_SERVER['HTTP_X_LEAD_API_KEY'] ?? ''));
+$providedKey = syncpediaLeadIngestProvidedKey();
 
 if ($providedKey === '' || !hash_equals($configuredKey, $providedKey)) {
-    respond(['error' => 'Invalid or missing X-Lead-Api-Key header'], 401);
+    respond(['error' => 'Invalid or missing Authorization Bearer (or X-Lead-Api-Key) header'], 401);
 }
 
 syncpediaRateLimitConsume('lead_ingest_post', 60, 3600);
@@ -77,27 +111,76 @@ if (!$lockSt->fetch(PDO::FETCH_ASSOC)) {
     respond(['error' => 'LEAD_INGEST_ORG_ID is invalid in server config'], 503);
 }
 
-$name = trim((string) ($input['name'] ?? $input['full_name'] ?? ''));
-$email = trim((string) ($input['email'] ?? ''));
-$phone = trim((string) ($input['phone'] ?? ''));
-$source = trim((string) ($input['source'] ?? 'website'));
-$college = trim((string) ($input['college'] ?? ''));
-$yearOfStudy = trim((string) ($input['year_of_study'] ?? ''));
-$courseInterest = trim((string) ($input['course_interest'] ?? ''));
-$company = trim((string) ($input['company'] ?? ''));
-$notes = trim((string) ($input['notes'] ?? ''));
-$ref = trim((string) ($input['ref'] ?? $input['referred_by'] ?? ''));
+/** Flatten nested arrays/objects into stringable answers for display. */
+if (!function_exists('syncpediaLeadIngestNormalizeValue')) {
+    function syncpediaLeadIngestNormalizeValue(mixed $value): mixed
+    {
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+        if (is_int($value) || is_float($value) || is_string($value) || $value === null) {
+            return $value;
+        }
+        if (is_array($value)) {
+            $out = [];
+            foreach ($value as $k => $v) {
+                $out[(string) $k] = syncpediaLeadIngestNormalizeValue($v);
+            }
+            return $out;
+        }
+        return (string) $value;
+    }
+}
+
+// Keep the full payload exactly as received (normalized for JSON storage).
+$fullPayload = [];
+foreach ($input as $key => $value) {
+    $k = trim((string) $key);
+    if ($k === '' || strcasecmp($k, 'org_id') === 0 || strcasecmp($k, 'api_key') === 0) {
+        continue;
+    }
+    $fullPayload[$k] = syncpediaLeadIngestNormalizeValue($value);
+}
+
+if ($fullPayload === []) {
+    respond(['error' => 'JSON body with lead fields is required'], 400);
+}
+
+$name = trim((string) ($input['name'] ?? $input['full_name'] ?? $input['fullnameName'] ?? $input['student_name'] ?? ''));
+if ($name === '') {
+    $first = trim((string) ($input['first_name'] ?? $input['firstName'] ?? ''));
+    $last = trim((string) ($input['last_name'] ?? $input['lastName'] ?? ''));
+    $name = trim($first . ' ' . $last);
+}
+if ($name === '') {
+    foreach (['email', 'phone', 'mobile', 'contact'] as $fallbackKey) {
+        $v = trim((string) ($input[$fallbackKey] ?? ''));
+        if ($v !== '') {
+            $name = $v;
+            break;
+        }
+    }
+}
+if ($name === '') {
+    $name = 'API Lead ' . date('Y-m-d H:i');
+}
+
+$email = trim((string) ($input['email'] ?? $input['Email'] ?? ''));
+$phone = trim((string) ($input['phone'] ?? $input['mobile'] ?? $input['Mobile'] ?? $input['contact'] ?? ''));
+$college = trim((string) ($input['college'] ?? $input['college_name'] ?? $input['institution'] ?? ''));
+$yearOfStudy = trim((string) ($input['year_of_study'] ?? $input['year'] ?? $input['graduation_year'] ?? ''));
+$courseInterest = trim((string) ($input['course_interest'] ?? $input['course'] ?? $input['program'] ?? ''));
+$company = trim((string) ($input['company'] ?? $input['organization'] ?? ''));
+$notesFree = trim((string) ($input['notes'] ?? $input['message'] ?? $input['comment'] ?? $input['comments'] ?? ''));
+$ref = trim((string) ($input['ref'] ?? $input['referred_by'] ?? $input['referral_code'] ?? ''));
 $assignedTo = trim((string) ($input['assigned_to'] ?? ''));
 $orgIdIn = trim((string) ($input['org_id'] ?? ''));
 
-if ($name === '') {
-    respond(['error' => 'name is required'], 400);
-}
+// Always use dedicated source card — ignore client "source" for bucketing (keep it inside payload).
+$source = 'api_ingest';
+
 if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
     respond(['error' => 'Invalid email address'], 400);
-}
-if ($source === '') {
-    $source = 'website';
 }
 
 if ($orgIdIn !== '' && $orgIdIn !== $lockedOrgId) {
@@ -144,20 +227,35 @@ if ($dup) {
         'duplicate' => true,
         'lead_id' => $dup['id'],
         'org_id' => $orgId,
+        'source' => $source,
         'message' => 'Lead already exists — returning existing record',
     ], 200);
 }
 
 $id = generateUUID();
+
+// Full payload as Answers: so Leads dialog shows every field the third party sent.
+$answersJson = json_encode($fullPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+if ($answersJson === false) {
+    $answersJson = '{}';
+}
 $noteParts = [];
-if ($notes !== '') {
-    $noteParts[] = $notes;
+$noteParts[] = 'Form: api_ingest';
+$noteParts[] = 'Answers: ' . $answersJson;
+if ($notesFree !== '') {
+    $noteParts[] = $notesFree;
 }
-if ($courseInterest !== '') {
-    $noteParts[] = 'Course Interest: ' . $courseInterest;
-}
-$noteParts[] = 'Ingested via lead-ingest API';
 $finalNotes = implode("\n", $noteParts);
+
+$tags = [
+    'ingest:api',
+    'ingest:lead-ingest',
+    'source:api_ingest',
+];
+$clientSource = trim((string) ($input['source'] ?? ''));
+if ($clientSource !== '') {
+    $tags[] = 'origin_source:' . substr($clientSource, 0, 80);
+}
 
 try {
     $stmt = $db->prepare(
@@ -177,7 +275,7 @@ try {
         $source,
         $finalNotes,
         $assignedTo,
-        json_encode(['ingest' => 'lead-ingest', 'source' => $source]),
+        json_encode(array_values($tags)),
         $orgId,
     ]);
 } catch (Throwable $e) {
@@ -190,5 +288,7 @@ respond([
     'lead_id' => $id,
     'org_id' => $orgId,
     'source' => $source,
+    'source_card' => 'api_ingest',
+    'fields_stored' => count($fullPayload),
     'destination' => 'leads',
 ], 201);

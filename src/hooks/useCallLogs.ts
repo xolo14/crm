@@ -5,13 +5,18 @@ import type { CallLogPeriod, CallLogsQueryParams, CreateCallLogInput } from "@/t
 export type AddCallLogPayload = CreateCallLogInput & { recording?: File | null };
 export type UpdateCallLogPayload = Partial<CreateCallLogInput> & { id: number; recording?: File | null };
 
-export function useCallLogStats(period: CallLogPeriod | string) {
+export function useCallLogStats(params: CallLogPeriod | string | CallLogsQueryParams) {
+  const key = typeof params === "string" ? { period: params } : params;
   return useQuery({
-    queryKey: ["callLogs", "stats", period],
-    queryFn: () => callLogsApi.getStats(period),
+    queryKey: ["callLogs", "stats", key],
+    queryFn: () => callLogsApi.getStats(params),
     select: (d) => d.stats,
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
+    enabled:
+      typeof params === "string" ||
+      params.period !== "custom" ||
+      Boolean(params.date_from || params.date_to),
   });
 }
 
@@ -19,6 +24,7 @@ export function useCallLogs(params: CallLogsQueryParams) {
   return useQuery({
     queryKey: ["callLogs", "list", params],
     queryFn: () => callLogsApi.getLogs(params),
+    enabled: params.period !== "custom" || Boolean(params.date_from || params.date_to),
   });
 }
 
@@ -35,6 +41,7 @@ export function useAddCallLog() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["callLogs"] });
       qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["dailyReports"] });
     },
   });
 }
@@ -52,6 +59,7 @@ export function useUpdateCallLog() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["callLogs"] });
       qc.invalidateQueries({ queryKey: ["leads"] });
+      qc.invalidateQueries({ queryKey: ["dailyReports"] });
     },
   });
 }
@@ -62,6 +70,7 @@ export function useDeleteCallLog() {
     mutationFn: (id: number) => callLogsApi.deleteLog(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["callLogs"] });
+      qc.invalidateQueries({ queryKey: ["dailyReports"] });
     },
   });
 }

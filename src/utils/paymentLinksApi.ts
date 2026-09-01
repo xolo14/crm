@@ -52,6 +52,8 @@ export async function getAllPaymentLinks(filters?: {
   force?: boolean;
   /** Payment Records page: managers see self + downline only. */
   forRecords?: boolean;
+  /** Used when period is `custom`. */
+  customRange?: { from?: string; to?: string };
 }): Promise<PaymentLinksListResult> {
   const extra: Record<string, string> = {};
   if (filters?.status) extra.status = filters.status;
@@ -61,7 +63,7 @@ export async function getAllPaymentLinks(filters?: {
   let from = filters?.from;
   let to = filters?.to;
   if (filters?.period) {
-    const range = paymentLinkPeriodUnixRange(filters.period);
+    const range = paymentLinkPeriodUnixRange(filters.period, filters.customRange);
     if (range.from !== undefined) from = range.from;
     if (range.to !== undefined) to = range.to;
   }

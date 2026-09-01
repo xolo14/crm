@@ -52,7 +52,7 @@ export default function EmailAnalytics() {
   const [customTo, setCustomTo] = useState('');
   const [activeTab, setActiveTab] = useState('overview');
 
-  const isSuperAdmin = role === 'super_admin' || role === 'admin';
+  const isSuperAdmin = role === 'super_admin' || role === 'org';
   const isMarketing = role === 'marketing';
 
   useEffect(() => { fetchData(); }, [dateFilter, memberFilter, customFrom, customTo]);

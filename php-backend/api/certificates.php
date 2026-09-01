@@ -269,6 +269,12 @@ if ($method === 'POST' && $action === 'issue') {
         'syncId' => $syncId,
         'studentName' => $studentName,
         'studentEmail' => $studentEmail,
+        'storage' => [
+            'local' => $pdfPathRel !== '',
+            'gcs' => !empty($saved['gcs_uploaded']),
+            'gcs_object' => $gcsObject,
+            'gcs_error' => isset($saved['gcs_error']) ? $saved['gcs_error'] : null,
+        ],
     ]);
 }
 

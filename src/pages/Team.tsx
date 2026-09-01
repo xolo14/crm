@@ -28,10 +28,16 @@ import {
   TEAM_ROLE_GROUPS,
 } from '@/lib/roleUtils';
 import {
+  buildOperationalManagerPageAccessPayload,
   defaultManagerPages,
+  defaultOperationalManagerPages,
   managerPagesBySection,
+  operationalManagerAlwaysOnPagesBySection,
+  operationalManagerPagesBySection,
   resolveManagerPagesForEdit,
+  resolveOperationalManagerPagesForEdit,
 } from '@/lib/managerPageAccess';
+import { isOrgFeatureEnabled } from '@/lib/orgFeatures';
 import {
   buildHrPageAccessPayload,
   defaultHrPages,
@@ -80,20 +86,16 @@ function getRoleInfo(roleKey: string) {
 
 /** Normalize JWT/account role for org-scoping checks (marketing_* → marketing, etc.). */
 function normalizeAuthRole(role?: string | null): string {
-  const r = String(role || '').trim().toLowerCase();
-  if (r === 'superadmin') return 'super_admin';
-  if (r === 'organisation') return 'org';
-  if (r.startsWith('marketing')) return 'marketing';
-  return r;
+  return normalizeAppRole(role);
 }
 
 function getRoleBadgeColor(role: string): string {
   const normalized = normalizeRole(role);
   const map: Record<string, string> = {
     super_admin: 'bg-red-500/10 text-red-600 border-red-200',
-    admin: 'bg-purple-500/10 text-purple-600 border-purple-200',
     org: 'bg-violet-500/10 text-violet-700 border-violet-200',
     manager: 'bg-blue-500/10 text-blue-600 border-blue-200',
+    operational_manager: 'bg-cyan-500/10 text-cyan-700 border-cyan-200',
     marketing: 'bg-fuchsia-500/10 text-fuchsia-600 border-fuchsia-200',
     hr: 'bg-sky-500/10 text-sky-700 border-sky-200',
     sales_representative: 'bg-teal-500/10 text-teal-600 border-teal-200',
@@ -130,10 +132,10 @@ function memberOrgDisplayName(member: TeamMember): string | null {
 type OrgOption = { id: string; name: string };
 
 export default function Team() {
-  const { role: currentRole, user } = useAuth();
+  const { role: currentRole, user, organization } = useAuth();
   const authNorm = normalizeAuthRole(currentRole);
   const isSuperAdmin = authNorm === 'super_admin';
-  const isTenantAdmin = authNorm === 'admin';
+  const isTenantAdmin = authNorm === 'org';
   const isManagerViewer = authNorm === 'manager';
   /** Matches backend team GET scope for reps / HR / marketing — defence-in-depth vs stale merges */
   const orgScopedViewer = ['sales_representative', 'hr', 'marketing'].includes(authNorm);
@@ -162,7 +164,6 @@ export default function Team() {
   const [taskForm, setTaskForm] = useState({ title: '', description: '', due_date: '', priority: 'medium' });
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
     super_admin: true,
-    admin: true,
     org: true,
     manager: true,
     marketing: true,
@@ -181,11 +182,11 @@ export default function Team() {
   });
   const currentLevel = getRoleLevel(currentRole);
   /** L4/L3: full roster CRUD. L2: add L1 members assigned to self only. */
-  const canManageMembers = authNorm === 'super_admin' || authNorm === 'admin' || authNorm === 'org';
+  const canManageMembers = authNorm === 'super_admin' || authNorm === 'org';
   const canAddMembers = canManageMembers || isManagerViewer;
-  /** Assign L1 members to a manager (reports_to) — Super Admin / Admin only. */
+  /** Assign L1 members to a manager (reports_to) — Super Admin / Org Admin only. */
   const canAssignTeam = canManageMembers;
-  /** Admin + Manager can edit page-access toggles (managers: their L1 only). */
+  /** Org Admin + Manager can edit page-access toggles (managers: their L1 only). */
   const canEditPageAccess = canManageMembers || isManagerViewer;
   const isReadOnly = !canAddMembers;
   const assignableRoles = (canManageMembers
@@ -194,7 +195,7 @@ export default function Team() {
       ? TEAM_ROLE_GROUPS.filter((r) => isL1OperationalRole(r.key))
       : []
   // Org admins are created only at org provision time / Organizations credentials — not via Add Team Member
-  ).filter((r) => r.key !== 'admin' && r.key !== 'org');
+  ).filter((r) => r.key !== 'org');
 
   useEffect(() => {
     if (!isSuperAdmin) return;
@@ -345,7 +346,9 @@ export default function Team() {
           offer_letters: false,
           ...(role === 'manager'
             ? { pages: newMember.page_access?.pages || defaultManagerPages(true) }
-            : {}),
+            : role === 'operational_manager'
+              ? { pages: newMember.page_access?.pages || defaultOperationalManagerPages(true) }
+              : {}),
         };
       })(),
     };
@@ -441,9 +444,11 @@ export default function Team() {
         pages:
           role === 'manager'
             ? resolveManagerPagesForEdit(member.page_access)
-            : role === 'hr'
-              ? resolveHrPagesForEdit(member.page_access)
-              : {},
+            : role === 'operational_manager'
+              ? resolveOperationalManagerPagesForEdit(member.page_access)
+              : role === 'hr'
+                ? resolveHrPagesForEdit(member.page_access)
+                : {},
       },
     });
     setEditPassword('');
@@ -478,7 +483,11 @@ export default function Team() {
                 offer_letters: false,
                 ...(role === 'manager'
                   ? { pages: editingMember.page_access?.pages || defaultManagerPages(true) }
-                  : {}),
+                  : role === 'operational_manager'
+                    ? buildOperationalManagerPageAccessPayload(
+                        editingMember.page_access?.pages || defaultOperationalManagerPages(false),
+                      )
+                    : {}),
               };
         const payload: Record<string, unknown> = {
           full_name: editingMember.full_name.trim(),
@@ -957,6 +966,9 @@ export default function Team() {
                       offer_letters: false,
                       ...(normalizeRole(v) === 'hr' ? { pages: defaultHrPages(true) } : {}),
                       ...(normalizeRole(v) === 'manager' ? { pages: defaultManagerPages(true) } : {}),
+                      ...(normalizeRole(v) === 'operational_manager'
+                        ? { pages: defaultOperationalManagerPages(false) }
+                        : {}),
                     },
                   }))
                 }
@@ -989,7 +1001,7 @@ export default function Team() {
               <div className="rounded-lg border border-border/60 px-3 py-2.5 space-y-1">
                 <p className="text-sm font-medium">Page access</p>
                 <p className="text-xs text-muted-foreground">
-                  HR portal pages are enabled by default. Offer Letters stays off until you grant it after create (Edit → Configure pages).
+                  HR portal pages are enabled by default. Offer Letters, Form Management, and Communications stay off until you grant them (Edit → Configure pages).
                 </p>
               </div>
             )}
@@ -1214,7 +1226,7 @@ export default function Team() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label className="text-muted-foreground">Role</Label>
-                    {['admin', 'org'].includes(normalizeAppRole(editingMember.role)) ? (
+                    {normalizeAppRole(editingMember.role) === 'org' ? (
                       <>
                         <Input value={getRoleInfo(editingMember.role).label} disabled className="bg-muted" />
                         <p className="text-[11px] text-muted-foreground sm:col-span-2">
@@ -1239,9 +1251,11 @@ export default function Team() {
                                     pages:
                                       normalizeRole(v) === 'manager'
                                         ? defaultManagerPages(true)
-                                        : normalizeRole(v) === 'hr'
-                                          ? defaultHrPages(true)
-                                          : {},
+                                        : normalizeRole(v) === 'operational_manager'
+                                          ? defaultOperationalManagerPages(false)
+                                          : normalizeRole(v) === 'hr'
+                                            ? defaultHrPages(true)
+                                            : {},
                                   },
                                 }
                               : p,
@@ -1344,12 +1358,16 @@ export default function Team() {
                     </Button>
                   </div>
                 )}
-                {normalizeRole(editingMember.role) === 'manager' && canManageMembers && (
+                {(normalizeRole(editingMember.role) === 'manager' ||
+                  normalizeRole(editingMember.role) === 'operational_manager') &&
+                  canManageMembers && (
                   <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-background px-3 py-2.5">
                     <div className="min-w-0 pr-2">
                       <p className="text-sm font-medium">Page access</p>
                       <p className="text-xs text-muted-foreground">
-                        Grant which pages this manager may open. They only see pages you enable here (within your org’s enabled modules).
+                        {normalizeRole(editingMember.role) === 'operational_manager'
+                          ? 'Dashboard, Payment Records, Students, Offer Letters, Form Management, Tasks, Notifications, Holidays, and Email/WhatsApp marketing are always on. Toggle optional pages below when needed.'
+                          : 'Grant which pages this manager may open. They only see pages you enable here (within your org’s enabled modules).'}
                       </p>
                     </div>
                     <Button
@@ -1364,7 +1382,10 @@ export default function Team() {
                                 ...p,
                                 page_access: {
                                   ...(p.page_access || {}),
-                                  pages: resolveManagerPagesForEdit(p.page_access),
+                                  pages:
+                                    normalizeRole(p.role) === 'operational_manager'
+                                      ? resolveOperationalManagerPagesForEdit(p.page_access)
+                                      : resolveManagerPagesForEdit(p.page_access),
                                 },
                               }
                             : p,
@@ -1423,24 +1444,68 @@ export default function Team() {
         <DialogContent className="!flex max-w-[95vw] sm:max-w-lg max-h-[min(90dvh,720px)] flex-col gap-0 p-0 overflow-hidden">
           <DialogHeader className="px-6 py-4 border-b shrink-0">
             <DialogTitle>
-              {normalizeRole(editingMember?.role || '') === 'hr' ? 'HR page access' : 'Manager page access'}
+              {normalizeRole(editingMember?.role || '') === 'hr'
+                ? 'HR page access'
+                : normalizeRole(editingMember?.role || '') === 'operational_manager'
+                  ? 'Operational Manager page access'
+                  : 'Manager page access'}
             </DialogTitle>
             <p className="text-sm text-muted-foreground">
               {normalizeRole(editingMember?.role || '') === 'hr'
                 ? `Toggle which HR portal pages ${editingMember?.full_name || 'this HR user'} can open (including Offer Letters).`
-                : `Toggle which pages ${editingMember?.full_name || 'this manager'} can open in the CRM.`}
+                : normalizeRole(editingMember?.role || '') === 'operational_manager'
+                  ? `Core pages are always available. Turn on optional pages for ${editingMember?.full_name || 'this Operational Manager'} below when needed.`
+                  : `Toggle which pages ${editingMember?.full_name || 'this manager'} can open in the CRM.`}
             </p>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4">
             <div className="space-y-5 pr-1 pb-1">
-              {(normalizeRole(editingMember?.role || '') === 'hr' ? hrPagesBySection() : managerPagesBySection()).map(
-                ({ title, options }) => (
+              {normalizeRole(editingMember?.role || '') === 'operational_manager'
+                ? operationalManagerAlwaysOnPagesBySection().map(({ title, options }) => (
+                    <div key={title} className="space-y-2">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+                      <div className="space-y-2">
+                        {options.map((opt) => (
+                          <div
+                            key={opt.key}
+                            className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5"
+                          >
+                            <div className="min-w-0 pr-2">
+                              <p className="text-sm font-medium">{opt.label}</p>
+                              <p className="text-xs text-muted-foreground">{opt.description}</p>
+                            </div>
+                            <Badge variant="secondary" className="shrink-0 text-[10px] uppercase tracking-wide">
+                              Always on
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))
+                : null}
+              {(normalizeRole(editingMember?.role || '') === 'hr'
+                ? hrPagesBySection()
+                : normalizeRole(editingMember?.role || '') === 'operational_manager'
+                  ? operationalManagerPagesBySection()
+                  : managerPagesBySection()
+              ).map(({ title, options }) => {
+                const editRole = normalizeRole(editingMember?.role || '');
+                const visibleOptions =
+                  editRole === 'operational_manager'
+                    ? options.filter((opt) =>
+                        isOrgFeatureEnabled(normalizeAppRole(currentRole), organization, opt.key),
+                      )
+                    : options;
+                if (visibleOptions.length === 0) return null;
+                return (
                   <div key={title} className="space-y-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {editRole === 'operational_manager' ? `Optional — ${title}` : title}
+                    </p>
                     <div className="space-y-2">
-                      {options.map((opt) => {
+                      {visibleOptions.map((opt) => {
                         const checked = Boolean(editingMember?.page_access?.pages?.[opt.key]);
-                        const isHr = normalizeRole(editingMember?.role || '') === 'hr';
+                        const isHr = editRole === 'hr';
                         return (
                           <div
                             key={opt.key}
@@ -1462,7 +1527,11 @@ export default function Team() {
                                           ...(p.page_access || {}),
                                           pages: {
                                             ...(p.page_access?.pages ||
-                                              (isHr ? defaultHrPages(true) : defaultManagerPages(true))),
+                                              (isHr
+                                                ? defaultHrPages(true)
+                                                : editRole === 'operational_manager'
+                                                  ? defaultOperationalManagerPages(false)
+                                                  : defaultManagerPages(true))),
                                             [opt.key]: on,
                                           },
                                           ...(isHr && opt.key === 'offer_letters' ? { offer_letters: on } : {}),
@@ -1477,8 +1546,8 @@ export default function Team() {
                       })}
                     </div>
                   </div>
-                ),
-              )}
+                );
+              })}
             </div>
           </div>
           <DialogFooter className="px-6 py-4 border-t shrink-0 gap-2 sm:justify-between bg-background">
@@ -1490,10 +1559,13 @@ export default function Team() {
                 onClick={() =>
                   setEditingMember((p) => {
                     if (!p) return p;
-                    const isHr = normalizeRole(p.role) === 'hr';
+                    const editRole = normalizeRole(p.role);
+                    const isHr = editRole === 'hr';
                     const pages = isHr
                       ? Object.fromEntries(HR_PAGE_ACCESS_KEYS.map((k) => [k, true]))
-                      : defaultManagerPages(true);
+                      : editRole === 'operational_manager'
+                        ? defaultOperationalManagerPages(true)
+                        : defaultManagerPages(true);
                     return {
                       ...p,
                       page_access: {
@@ -1514,12 +1586,17 @@ export default function Team() {
                 onClick={() =>
                   setEditingMember((p) => {
                     if (!p) return p;
-                    const isHr = normalizeRole(p.role) === 'hr';
+                    const editRole = normalizeRole(p.role);
+                    const isHr = editRole === 'hr';
                     return {
                       ...p,
                       page_access: {
                         ...(p.page_access || {}),
-                        pages: isHr ? defaultHrPages(false) : defaultManagerPages(false),
+                        pages: isHr
+                          ? defaultHrPages(false)
+                          : editRole === 'operational_manager'
+                            ? defaultOperationalManagerPages(false)
+                            : defaultManagerPages(false),
                         ...(isHr ? { offer_letters: false } : {}),
                       },
                     };
@@ -1535,7 +1612,10 @@ export default function Team() {
                 // Persist page grants immediately so Done does not rely only on parent Save Changes.
                 void (async () => {
                   const role = normalizeRole(editingMember?.role || '');
-                  if (!editingMember || (role !== 'manager' && role !== 'hr')) {
+                  if (
+                    !editingMember ||
+                    (role !== 'manager' && role !== 'operational_manager' && role !== 'hr')
+                  ) {
                     setPageAccessOpen(false);
                     return;
                   }
@@ -1546,7 +1626,12 @@ export default function Team() {
                         : {
                             payments: false,
                             offer_letters: false,
-                            pages: editingMember.page_access?.pages || defaultManagerPages(true),
+                            pages:
+                              role === 'operational_manager'
+                                ? buildOperationalManagerPageAccessPayload(
+                                    editingMember.page_access?.pages || defaultOperationalManagerPages(false),
+                                  ).pages
+                                : editingMember.page_access?.pages || defaultManagerPages(true),
                           };
                     await api.team.update(editingMember.id, { page_access });
                     setEditingMember((p) => (p ? { ...p, page_access } : p));

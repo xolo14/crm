@@ -611,4 +611,358 @@ class WhatsAppInbox
             error_log('[wa_webhook] log failed: ' . $e->getMessage());
         }
     }
+
+    /**
+     * Record an outbound automation/campaign send into the inbox so admins can review it.
+     * Dedupes by provider_message_id when present.
+     *
+     * @return string|null message id
+     */
+    public static function recordOutboundAutomation(
+        PDO $db,
+        string $orgId,
+        string $phone,
+        string $body,
+        ?string $userId = null,
+        ?string $templateId = null,
+        ?string $providerMessageId = null,
+        string $status = 'sent',
+        ?string $recipientName = null,
+        ?string $errorMessage = null,
+        ?string $wabaId = null,
+        ?string $phoneNumberId = null,
+    ): ?string {
+        self::ensureTables($db);
+        $normalized = self::normalizePhone($phone);
+        if ($orgId === '' || $normalized === '') {
+            return null;
+        }
+
+        $wamid = $providerMessageId !== null ? trim($providerMessageId) : '';
+        if ($wamid !== '') {
+            $dup = $db->prepare('SELECT id FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
+            $dup->execute([$wamid]);
+            $existingId = $dup->fetchColumn();
+            if ($existingId) {
+                $conv = self::findOrCreateConversation($db, $orgId, $normalized, $recipientName, $wabaId, $phoneNumberId);
+                if ($conv) {
+                    $db->prepare(
+                        'UPDATE comm_whatsapp_messages
+                         SET conversation_id = COALESCE(conversation_id, ?), status = ?, error_message = COALESCE(?, error_message)
+                         WHERE id = ?',
+                    )->execute([(string) $conv['id'], $status, $errorMessage, (string) $existingId]);
+                    if ($userId) {
+                        self::touchOutboundOwnership($db, (string) $conv['id'], $userId);
+                    }
+                }
+                return (string) $existingId;
+            }
+        }
+
+        $conv = self::findOrCreateConversation($db, $orgId, $normalized, $recipientName, $wabaId, $phoneNumberId);
+        if (!$conv) {
+            return null;
+        }
+        $convId = (string) $conv['id'];
+        $leadId = self::resolveValidLeadId(
+            $db,
+            isset($conv['lead_id']) ? (string) $conv['lead_id'] : null,
+            $convId,
+        );
+        $msgId = generateUUID();
+        $now = date('Y-m-d H:i:s');
+        $previewBody = $body !== '' ? $body : '[WhatsApp template]';
+
+        try {
+            $db->prepare(
+                'INSERT INTO comm_whatsapp_messages
+                 (id, org_id, user_id, virtual_number_id, template_id, recipient_phone, recipient_name, variables,
+                  message_body, message_type, status, provider_message_id, error_message, lead_id, direction, conversation_id, sent_at)
+                 VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            )->execute([
+                $msgId,
+                $orgId,
+                $userId,
+                $templateId,
+                $normalized,
+                $recipientName,
+                '[]',
+                $previewBody,
+                'template',
+                $status,
+                $wamid !== '' ? $wamid : null,
+                $errorMessage,
+                $leadId,
+                'outbound',
+                $convId,
+                $status === 'failed' ? null : $now,
+            ]);
+        } catch (Throwable $e) {
+            if ($wamid !== '' && (stripos($e->getMessage(), 'Duplicate') !== false || stripos($e->getMessage(), 'unique') !== false)) {
+                return null;
+            }
+            error_log('[WhatsAppInbox] recordOutboundAutomation: ' . $e->getMessage());
+            return null;
+        }
+
+        if ($userId) {
+            self::touchOutboundOwnership($db, $convId, $userId);
+        }
+        if ($status !== 'failed') {
+            $db->prepare(
+                'UPDATE wa_conversations SET last_message_at = ?, last_message_preview = ?, updated_at = NOW() WHERE id = ?',
+            )->execute([$now, self::previewText($previewBody, 200), $convId]);
+        }
+
+        return $msgId;
+    }
+
+    /**
+     * Link existing CRM WhatsApp rows (and campaign sends) into wa_conversations for an org.
+     * @return array{conversations:int,messages_linked:int,campaign_imports:int}
+     */
+    public static function backfillInboxForOrg(PDO $db, string $orgId, int $limit = 2000): array
+    {
+        self::ensureTables($db);
+        $out = ['conversations' => 0, 'messages_linked' => 0, 'campaign_imports' => 0];
+        if ($orgId === '') {
+            return $out;
+        }
+
+        $wabaId = null;
+        $phoneNumberId = null;
+        try {
+            if (function_exists('commLoadOrgConfig')) {
+                $cfg = commLoadOrgConfig($db, $orgId);
+                $wabaId = isset($cfg['waba_id']) ? (string) $cfg['waba_id'] : null;
+                $phoneNumberId = isset($cfg['phone_number_id']) ? (string) $cfg['phone_number_id'] : null;
+            }
+        } catch (Throwable $ignored) {
+        }
+
+        $limit = max(100, min(5000, $limit));
+
+        // 1) Attach orphan outbound/inbound messages to conversations
+        try {
+            $st = $db->prepare(
+                "SELECT id, recipient_phone, sender_phone, recipient_name, message_body, direction, status, sent_at, created_at, user_id, provider_message_id
+                 FROM comm_whatsapp_messages
+                 WHERE org_id = ?
+                   AND (conversation_id IS NULL OR conversation_id = '')
+                 ORDER BY created_at DESC
+                 LIMIT {$limit}",
+            );
+            $st->execute([$orgId]);
+            $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $seenPhones = [];
+            foreach ($rows as $row) {
+                $dir = strtolower((string) ($row['direction'] ?? 'outbound'));
+                $phone = $dir === 'inbound'
+                    ? self::normalizePhone((string) ($row['sender_phone'] ?? $row['recipient_phone'] ?? ''))
+                    : self::normalizePhone((string) ($row['recipient_phone'] ?? ''));
+                if ($phone === '') {
+                    continue;
+                }
+                $conv = self::findOrCreateConversation(
+                    $db,
+                    $orgId,
+                    $phone,
+                    isset($row['recipient_name']) ? (string) $row['recipient_name'] : null,
+                    $wabaId,
+                    $phoneNumberId,
+                );
+                if (!$conv) {
+                    continue;
+                }
+                if (!isset($seenPhones[$phone])) {
+                    $seenPhones[$phone] = true;
+                    $out['conversations']++;
+                }
+                $db->prepare('UPDATE comm_whatsapp_messages SET conversation_id = ? WHERE id = ? AND (conversation_id IS NULL OR conversation_id = \'\')')
+                    ->execute([(string) $conv['id'], (string) $row['id']]);
+                $out['messages_linked']++;
+                $uid = trim((string) ($row['user_id'] ?? ''));
+                if ($uid !== '') {
+                    self::touchOutboundOwnership($db, (string) $conv['id'], $uid);
+                }
+                $ts = (string) ($row['sent_at'] ?? $row['created_at'] ?? '');
+                $preview = self::previewText((string) ($row['message_body'] ?? ''), 200);
+                if ($ts !== '' && $preview !== '') {
+                    try {
+                        $db->prepare(
+                            'UPDATE wa_conversations
+                             SET last_message_at = CASE
+                                   WHEN last_message_at IS NULL OR last_message_at < ? THEN ?
+                                   ELSE last_message_at
+                                 END,
+                                 last_message_preview = CASE
+                                   WHEN last_message_at IS NULL OR last_message_at <= ? THEN ?
+                                   ELSE last_message_preview
+                                 END,
+                                 updated_at = NOW()
+                             WHERE id = ?',
+                        )->execute([$ts, $ts, $ts, $preview, (string) $conv['id']]);
+                    } catch (Throwable $ignored) {
+                    }
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[WhatsAppInbox] backfill messages: ' . $e->getMessage());
+        }
+
+        // 2) Import marketing/form campaign sends that never hit the inbox
+        try {
+            $st = $db->prepare(
+                "SELECT ws.id, ws.recipient_phone, ws.status, ws.error_message, ws.created_at, wc.created_by, wc.subject, wc.org_id
+                 FROM whatsapp_sends ws
+                 INNER JOIN whatsapp_campaigns wc ON wc.id = ws.campaign_id
+                 WHERE wc.org_id = ?
+                   AND ws.status IN ('sent', 'delivered', 'read', 'failed', 'pending')
+                 ORDER BY ws.created_at DESC
+                 LIMIT {$limit}",
+            );
+            $st->execute([$orgId]);
+            foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                $phone = self::normalizePhone((string) ($row['recipient_phone'] ?? ''));
+                if ($phone === '') {
+                    continue;
+                }
+                // Skip if we already have a message for this phone on that day with same campaign subject preview
+                $subject = trim((string) ($row['subject'] ?? 'Campaign'));
+                $body = '[Automation] ' . ($subject !== '' ? $subject : 'WhatsApp campaign');
+                $fingerprint = 'campaign-send:' . (string) $row['id'];
+                $dup = $db->prepare('SELECT id FROM comm_whatsapp_messages WHERE provider_message_id = ? LIMIT 1');
+                $dup->execute([$fingerprint]);
+                if ($dup->fetchColumn()) {
+                    continue;
+                }
+                $status = strtolower((string) ($row['status'] ?? 'sent'));
+                if ($status === 'pending') {
+                    $status = 'queued';
+                }
+                if (!in_array($status, ['sent', 'delivered', 'read', 'failed', 'queued'], true)) {
+                    $status = 'sent';
+                }
+                $id = self::recordOutboundAutomation(
+                    $db,
+                    $orgId,
+                    $phone,
+                    $body,
+                    trim((string) ($row['created_by'] ?? '')) ?: null,
+                    null,
+                    $fingerprint,
+                    $status === 'queued' ? 'sent' : $status,
+                    null,
+                    isset($row['error_message']) ? (string) $row['error_message'] : null,
+                    $wabaId,
+                    $phoneNumberId,
+                );
+                if ($id) {
+                    $out['campaign_imports']++;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[WhatsAppInbox] backfill campaigns: ' . $e->getMessage());
+        }
+
+        return $out;
+    }
+
+    /**
+     * Ingest Meta coexistence / onboarding history webhook chunks into the inbox.
+     * @param array<string,mixed> $value change.value payload
+     * @return int messages stored
+     */
+    public static function ingestHistoryWebhook(PDO $db, string $orgId, array $value): int
+    {
+        self::ensureTables($db);
+        if ($orgId === '') {
+            return 0;
+        }
+        $phoneNumberId = (string) ($value['metadata']['phone_number_id'] ?? '');
+        $displayPhone = (string) ($value['metadata']['display_phone_number'] ?? '');
+        $wabaId = null;
+        $stored = 0;
+
+        $historyBlocks = $value['history'] ?? [];
+        if (!is_array($historyBlocks)) {
+            return 0;
+        }
+
+        foreach ($historyBlocks as $block) {
+            if (!is_array($block)) {
+                continue;
+            }
+            // Declined / error payloads have no threads
+            if (!empty($block['errors']) && empty($block['threads'])) {
+                self::logWebhook($db, 'history_error', $orgId, null, null, 'error', json_encode($block['errors']), $block);
+                continue;
+            }
+            foreach ($block['threads'] ?? [] as $thread) {
+                if (!is_array($thread)) {
+                    continue;
+                }
+                $contactPhone = (string) ($thread['id'] ?? '');
+                if ($contactPhone === '') {
+                    continue;
+                }
+                $conv = self::findOrCreateConversation($db, $orgId, $contactPhone, null, $wabaId, $phoneNumberId !== '' ? $phoneNumberId : null);
+                if (!$conv) {
+                    continue;
+                }
+                foreach ($thread['messages'] ?? [] as $msg) {
+                    if (!is_array($msg)) {
+                        continue;
+                    }
+                    $from = (string) ($msg['from'] ?? '');
+                    $normalizedFrom = self::normalizePhone($from);
+                    $normalizedContact = self::normalizePhone($contactPhone);
+                    $normalizedBiz = self::normalizePhone($displayPhone);
+                    $isOutbound = $normalizedFrom !== '' && $normalizedBiz !== '' && $normalizedFrom === $normalizedBiz;
+                    if (!$isOutbound && $normalizedFrom !== '' && $normalizedContact !== '' && $normalizedFrom !== $normalizedContact) {
+                        // from is business phone in some payloads
+                        $isOutbound = true;
+                    }
+                    if ($isOutbound) {
+                        $type = (string) ($msg['type'] ?? 'text');
+                        $body = '';
+                        if ($type === 'text') {
+                            $body = (string) ($msg['text']['body'] ?? '');
+                        } else {
+                            $body = '[' . $type . ' message]';
+                        }
+                        $wamid = (string) ($msg['id'] ?? '');
+                        $histStatus = strtolower((string) ($msg['history_context']['status'] ?? 'sent'));
+                        if (!in_array($histStatus, ['sent', 'delivered', 'read', 'failed'], true)) {
+                            $histStatus = 'sent';
+                        }
+                        $id = self::recordOutboundAutomation(
+                            $db,
+                            $orgId,
+                            $contactPhone,
+                            $body !== '' ? $body : '[WhatsApp message]',
+                            null,
+                            null,
+                            $wamid !== '' ? $wamid : null,
+                            $histStatus,
+                            null,
+                            null,
+                            $wabaId,
+                            $phoneNumberId !== '' ? $phoneNumberId : null,
+                        );
+                        if ($id) {
+                            $stored++;
+                        }
+                    } else {
+                        $id = self::storeInboundMessage($db, $orgId, $conv, $msg, null, $displayPhone);
+                        if ($id) {
+                            $stored++;
+                        }
+                    }
+                }
+            }
+        }
+
+        return $stored;
+    }
 }

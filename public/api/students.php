@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/lib/PaymentCandidates.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -99,6 +100,7 @@ if ($method === 'GET') {
         }
     }
     unset($row);
+    studentsAttachPaymentSummaries($db, $rows);
     respond(['data' => $rows]);
 }
 

@@ -52,18 +52,22 @@ function persistThemePreference(theme: ThemeChoice) {
 }
 
 export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) {
-  const { profile, refreshOrganization } = useAuth();
+  const { profile, role, refreshOrganization } = useAuth();
   const { toast } = useToast();
   const { theme: activeTheme, setTheme: applyTheme, resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [loginEmail1, setLoginEmail1] = useState("");
+  const [loginEmail2, setLoginEmail2] = useState("");
+  const [loginEmailsLoaded, setLoginEmailsLoaded] = useState<[string, string]>(["", ""]);
   const [avatarPreview, setAvatarPreview] = useState("");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [removeAvatar, setRemoveAvatar] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState("");
+  const isSuperAdmin = role === "super_admin";
   const [theme, setTheme] = useState<ThemeChoice>("light");
   const [compactMode, setCompactMode] = useState(false);
   const [collapsedSidebar, setCollapsedSidebar] = useState(false);
@@ -117,16 +121,42 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
     setProfileError("");
   }, [profile?.full_name, profile?.email, profile?.phone, profile?.avatar_url]);
 
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await api.auth.listSuperAdminLoginEmails();
+        if (cancelled) return;
+        const list = Array.isArray(data.emails) ? data.emails : [];
+        const e1 = String(list[0]?.email ?? "").trim();
+        const e2 = String(list[1]?.email ?? "").trim();
+        setLoginEmail1(e1);
+        setLoginEmail2(e2);
+        setLoginEmailsLoaded([e1, e2]);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSuperAdmin]);
+
   const profileChanged = useMemo(() => {
     if (!profile) return false;
-    return (
+    const base =
       fullName.trim() !== (profile.full_name ?? "").trim() ||
       email.trim().toLowerCase() !== (profile.email ?? "").trim().toLowerCase() ||
       phone.trim() !== (profile.phone ?? "").trim() ||
       avatarFile !== null ||
-      removeAvatar
-    );
-  }, [profile, fullName, email, phone, avatarFile, removeAvatar]);
+      removeAvatar;
+    if (!isSuperAdmin) return base;
+    const loginChanged =
+      loginEmail1.trim().toLowerCase() !== loginEmailsLoaded[0].toLowerCase() ||
+      loginEmail2.trim().toLowerCase() !== loginEmailsLoaded[1].toLowerCase();
+    return base || loginChanged;
+  }, [profile, fullName, email, phone, avatarFile, removeAvatar, isSuperAdmin, loginEmail1, loginEmail2, loginEmailsLoaded]);
 
   const handleAvatarChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -172,6 +202,22 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
         avatar: avatarFile,
         remove_avatar: removeAvatar,
       });
+      if (isSuperAdmin) {
+        const e1 = loginEmail1.trim().toLowerCase();
+        const e2 = loginEmail2.trim().toLowerCase();
+        for (const e of [e1, e2]) {
+          if (e && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+            throw new Error(`Invalid login email: ${e}`);
+          }
+        }
+        const saved = await api.auth.saveSuperAdminLoginEmails([e1, e2].filter(Boolean));
+        const list = Array.isArray(saved.emails) ? saved.emails : [];
+        const s1 = String(list[0]?.email ?? "").trim();
+        const s2 = String(list[1]?.email ?? "").trim();
+        setLoginEmail1(s1);
+        setLoginEmail2(s2);
+        setLoginEmailsLoaded([s1, s2]);
+      }
       await refreshOrganization();
       setAvatarFile(null);
       setRemoveAvatar(false);
@@ -284,6 +330,34 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
         <SettingsRow label="Email address" description="Used for signing in and account communication.">
           <Input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setProfileError(""); }} autoComplete="email" />
         </SettingsRow>
+        {isSuperAdmin ? (
+          <>
+            <SettingsRow
+              label="Other login email 1"
+              description="Allowed to request Super Admin email login (max 2). Leave blank to clear."
+            >
+              <Input
+                type="email"
+                value={loginEmail1}
+                onChange={(event) => { setLoginEmail1(event.target.value); setProfileError(""); }}
+                placeholder="second@example.com"
+                autoComplete="off"
+              />
+            </SettingsRow>
+            <SettingsRow
+              label="Other login email 2"
+              description="Second allowed email for Super Admin passwordless login."
+            >
+              <Input
+                type="email"
+                value={loginEmail2}
+                onChange={(event) => { setLoginEmail2(event.target.value); setProfileError(""); }}
+                placeholder="third@example.com"
+                autoComplete="off"
+              />
+            </SettingsRow>
+          </>
+        ) : null}
         <SettingsRow label="Phone number" description="Include the country code when applicable." border={false}>
           <Input type="tel" value={phone} maxLength={24} onChange={(event) => { setPhone(event.target.value); setProfileError(""); }} autoComplete="tel" />
         </SettingsRow>

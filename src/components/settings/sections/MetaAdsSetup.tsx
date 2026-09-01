@@ -205,12 +205,17 @@ export function MetaAdsSetup() {
             <ol className="mt-2 list-decimal space-y-1 pl-4 text-amber-900/90">
               <li>
                 Meta Developer → App Review → request Advanced Access for{" "}
-                <code className="text-xs">leads_retrieval</code> (and usually Pages access Meta requires with it).
+                <code className="text-xs">leads_retrieval</code>,{" "}
+                <code className="text-xs">pages_show_list</code>,{" "}
+                <code className="text-xs">pages_manage_metadata</code>,{" "}
+                <code className="text-xs">pages_read_engagement</code>.
               </li>
               <li>
                 After approval, in <code className="text-xs">api/config.php</code> set{" "}
                 <code className="text-xs">META_ADS_OAUTH_SCOPES</code> to{" "}
-                <code className="text-xs">ads_read,leads_retrieval</code>.
+                <code className="text-xs">
+                  ads_read,leads_retrieval,pages_show_list,pages_manage_metadata,pages_read_engagement
+                </code>.
               </li>
               <li>Click Reconnect here and accept the new lead permission, then Sync now.</li>
             </ol>

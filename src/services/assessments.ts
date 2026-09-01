@@ -167,9 +167,17 @@ export const assessmentsApi = {
       task_questions?: PeaklyyQuestion[];
       tasks_submitted?: boolean;
       message?: string;
+      require_interests?: boolean;
+      interest_options?: string[];
     }>("?action=submit", {
       method: "POST",
       body: JSON.stringify({ attempt_token, answers }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  saveInterests: (attempt_token: string, interests: string[]) =>
+    req<{ success: boolean; interests: string[]; message?: string }>("?action=save_interests", {
+      method: "POST",
+      body: JSON.stringify({ attempt_token, interests }),
       headers: { "Content-Type": "application/json" },
     }),
   saveAnswer: (
@@ -239,6 +247,9 @@ export interface PeaklyyAssessment {
   open_url?: string | null;
   is_active: number | boolean;
   created_at?: string;
+  ui_theme?: string;
+  interest_options?: string[];
+  require_post_interests?: boolean;
 }
 
 export type PeaklyyAssessmentPublic = Omit<PeaklyyAssessment, "result_api_key">;
@@ -256,6 +267,8 @@ export interface PeaklyyAttemptRow {
   email: string;
   phone: string;
   domain_key: string;
+  degree_branch?: string | null;
+  college_name?: string | null;
   status: string;
   attempt_phase?: string;
   score: number | null;

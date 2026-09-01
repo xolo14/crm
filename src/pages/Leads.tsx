@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
@@ -20,7 +20,7 @@ import {
   UserPlus, Users, Target, Clock, Eye, History, CalendarDays, Building2, GraduationCap,
   StickyNote, XCircle, ChevronLeft, ChevronRight, Megaphone, Globe2,
   MessageCircle, MapPin, School, CircleHelp, Youtube, FileText, Upload as UploadIcon, ClipboardCheck,
-  Menu, FolderPlus, Folder, MoreVertical,
+  Menu, FolderPlus, Folder, MoreVertical, UserCog,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { LeadActivityTimeline } from '@/components/LeadActivityTimeline';
@@ -45,6 +45,8 @@ import {
   getLeadSourceBucket,
   isFormLead as isFormLeadRow,
   isFormSourceBucket,
+  isMetaAdSourceBucket,
+  isMetaAdsFolderName,
   isPeaklyySourceBucket,
   resolveFormAssigneesForSourceKey,
   type LeadSourceBucket,
@@ -98,7 +100,7 @@ const statusColors: Record<string, string> = {
 
 const SOURCE_LABELS: Record<string, string> = {
   google_ads: 'Google Ads', instagram: 'Instagram', facebook: 'Facebook', youtube: 'YouTube',
-  website: 'Website', normal_form: 'Normal Form', google_forms: 'Google Forms', whatsapp: 'WhatsApp', referral: 'Referral',
+  website: 'Website', api_ingest: 'API / Website leads', normal_form: 'Normal Form', google_forms: 'Google Forms', whatsapp: 'WhatsApp', referral: 'Referral',
   walkin: 'Walk-in', college_seminar: 'College Seminar', other: 'Other',
 };
 
@@ -132,6 +134,7 @@ const SOURCE_BUCKET_ICONS: Record<LeadSourceBucket, LucideIcon> = {
   meta_ads: Megaphone,
   youtube: Youtube,
   website: Globe2,
+  api_ingest: Globe2,
   form_leads: FileText,
   peaklyy: ClipboardCheck,
   import: UploadIcon,
@@ -168,13 +171,20 @@ export default function Leads() {
   const showSourceCards = useSourceCards && !statusChangedPeriod;
   /** Lead source-card folders (org-scoped). '' = All sources. */
   const [leadFolders, setLeadFolders] = useState<
-    Array<{ id: string; name: string; source_keys: string[]; card_count: number }>
+    Array<{ id: string; name: string; source_keys: string[]; card_count: number; org_id?: string; org_name?: string | null }>
   >([]);
   const [activeFolderId, setActiveFolderId] = useState<string>('');
   const [newFolderOpen, setNewFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [folderBusy, setFolderBusy] = useState(false);
   const [moveCardKey, setMoveCardKey] = useState<string | null>(null);
+  /** Admin: grant form/assessment source card to managers */
+  const [accessCardKey, setAccessCardKey] = useState<string | null>(null);
+  const [accessCardLabel, setAccessCardLabel] = useState('');
+  const [accessManagers, setAccessManagers] = useState<Array<{ id: string; full_name: string; email?: string }>>([]);
+  const [accessSelectedIds, setAccessSelectedIds] = useState<Set<string>>(new Set());
+  const [accessBusy, setAccessBusy] = useState(false);
+  const [cardManagerGrants, setCardManagerGrants] = useState<Record<string, string[]>>({});
   /** Super-admin: which org's source cards + folders to show */
   const [viewOrgId, setViewOrgId] = useState('');
   const [viewOrgs, setViewOrgs] = useState<{ id: string; name: string }[]>([]);
@@ -216,10 +226,10 @@ export default function Leads() {
   const hasBulkDelete = perms.canBulkDelete(role);
   const hasImport = perms.canImport(role);
   const isManager =
-    role === 'admin' || role === 'org' || role === 'super_admin' || role === 'manager';
+    role === 'org' || role === 'super_admin' || role === 'manager';
   /** Source-card folders: admin/org only — not visible to managers. */
   const canManageLeadFolders =
-    role === 'admin' || role === 'org' || role === 'super_admin';
+    role === 'org' || role === 'super_admin';
   const normalizedLeadRole = String(role || '')
     .trim()
     .toLowerCase()
@@ -227,7 +237,7 @@ export default function Leads() {
     .replace(/^organisation$/, 'org');
   const isSuperAdmin = normalizedLeadRole === 'super_admin';
   /** Leads export: super_admin / admin only (not manager / org / L1). */
-  const canExportLeads = normalizedLeadRole === 'super_admin' || normalizedLeadRole === 'admin';
+  const canExportLeads = normalizedLeadRole === 'super_admin' || normalizedLeadRole === 'org';
   const [exportCardsOpen, setExportCardsOpen] = useState(false);
   const [exportCardKeys, setExportCardKeys] = useState<Set<string>>(new Set());
   /** Sales rep / exec: hub lists all org-visible rows from API; My Leads shows only referral-link form submissions. */
@@ -243,7 +253,7 @@ export default function Leads() {
     ? viewOrgId
       ? `Scope: ${viewOrgs.find((o) => o.id === viewOrgId)?.name || 'selected organisation'}`
       : 'Scope: select an organisation'
-    : normalizedLeadRole === 'admin' || normalizedLeadRole === 'org' || normalizedLeadRole === 'manager'
+    : normalizedLeadRole === 'org' || normalizedLeadRole === 'org' || normalizedLeadRole === 'manager'
       ? 'Scope: organization leads'
       : isSalesRepMyLeadsPage
           ? 'Scope: your referral forms only'
@@ -279,50 +289,77 @@ export default function Leads() {
     })();
   }, [isSuperAdmin, organization?.id]);
 
-  useEffect(() => {
-    fetchLeads();
-    if (needsAssignmentRoster) {
-      fetchTeam();
-      fetchProfiles();
-      fetchAssignments();
-    }
-    if (canManageLeadFolders && (!isSuperAdmin || !!viewOrgId)) {
-      void fetchLeadFolders();
-    } else {
-      setLeadFolders([]);
-      setActiveFolderId('');
-    }
-    api.forms.list()
-      .then(async (res) => {
-        const rows = Array.isArray(res) ? res : res?.data || [];
-        const forms = rows
-          .filter((f: { id?: string; slug?: string; name?: string }) => f?.id && f?.slug && f?.name)
-          .map((f: { id: string; slug: string; name: string }) => ({
-            id: String(f.id),
-            slug: String(f.slug),
-            name: String(f.name),
-          }));
-        setLeadForms(forms);
-        if (!needsAssignmentRoster || forms.length === 0) {
-          setFormAssignmentsByFormId({});
-          return;
-        }
-        const pairs = await Promise.all(
-          forms.map(async (form) => {
-            try {
-              const a = await api.forms.assignments(form.id);
-              return [form.id, (a?.data || []) as Array<{ member_id: string; full_name?: string | null }>] as const;
-            } catch {
-              return [form.id, []] as const;
-            }
+  const fetchLeads = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.leads.list({
+        ...(statusChangedPeriod ? { status_changed: statusChangedPeriod } : {}),
+        ...(isSuperAdmin && viewOrgId ? { org_id: viewOrgId } : {}),
+      });
+      const allLeads = data.data || [];
+
+      if (isFormLeadsPage) {
+        setLeads(allLeads.filter((l: any) => isFormLeadRow(l)));
+      } else if (isSalesRepMyLeadsPage) {
+        const code = String(profile?.referral_code ?? '').trim();
+        setLeads(
+          allLeads.filter((l: any) => {
+            if (!l?.referred_by) return false;
+            if (code) return String(l.referred_by).trim() === code;
+            return true;
           }),
         );
-        const next: Record<string, Array<{ member_id: string; full_name?: string | null }>> = {};
-        for (const [id, list] of pairs) next[id] = list;
-        setFormAssignmentsByFormId(next);
-      })
-      .catch(() => {});
-  }, [isFormLeadsPage, isSalesRepMyLeadsPage, role, profile?.referral_code, statusChangedPeriod, canManageLeadFolders, viewOrgId]);
+      } else {
+        setLeads(allLeads);
+      }
+    } catch (err) {
+      console.error('Failed to load leads:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    statusChangedPeriod,
+    isSuperAdmin,
+    viewOrgId,
+    isFormLeadsPage,
+    isSalesRepMyLeadsPage,
+    profile?.referral_code,
+  ]);
+
+  const loadLeadForms = useCallback(async () => {
+    try {
+      const res = await api.forms.list();
+      const rows = Array.isArray(res) ? res : res?.data || [];
+      const forms = rows
+        .filter((f: { id?: string; slug?: string; name?: string }) => f?.id && f?.slug && f?.name)
+        .map((f: { id: string; slug: string; name: string }) => ({
+          id: String(f.id),
+          slug: String(f.slug),
+          name: String(f.name),
+        }));
+      setLeadForms(forms);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  /** Load assignees for one form only when opening assign UI (avoids N parallel API calls on page load). */
+  const ensureFormAssignmentsLoaded = useCallback(
+    async (sourceKey: string | null | undefined) => {
+      if (!needsAssignmentRoster || !sourceKey || !String(sourceKey).startsWith('form_')) return;
+      const slug = String(sourceKey).slice('form_'.length);
+      const form = leadForms.find((f) => String(f.slug || '').toLowerCase() === slug.toLowerCase());
+      if (!form?.id || formAssignmentsByFormId[form.id]) return;
+      try {
+        const a = await api.forms.assignments(form.id);
+        const rows = (a?.data || []) as Array<{ member_id: string; full_name?: string | null }>;
+        setFormAssignmentsByFormId((prev) => ({ ...prev, [form.id]: rows }));
+      } catch {
+        setFormAssignmentsByFormId((prev) => ({ ...prev, [form.id]: [] }));
+      }
+    },
+    [needsAssignmentRoster, leadForms, formAssignmentsByFormId],
+  );
 
   const fetchAssignments = async () => {
     try {
@@ -344,52 +381,156 @@ export default function Leads() {
     } catch {}
   };
 
-  const fetchLeads = async () => {
-    setLoading(true);
+  const fetchLeadFolders = useCallback(async () => {
+    if (!canManageLeadFolders) {
+      setLeadFolders([]);
+      return;
+    }
     try {
-      const data = await api.leads.list({
-        ...(statusChangedPeriod ? { status_changed: statusChangedPeriod } : {}),
-        ...(isSuperAdmin && viewOrgId ? { org_id: viewOrgId } : {}),
-      });
-      const allLeads = data.data || [];
-
-      if (isFormLeadsPage) {
-        // Form Leads page: only form-generated leads (per-form cards).
-        setLeads(allLeads.filter((l: any) => isFormLeadRow(l)));
-      } else if (isSalesRepMyLeadsPage) {
-        const code = String(profile?.referral_code ?? '').trim();
-        setLeads(
-          allLeads.filter((l: any) => {
-            if (!l?.referred_by) return false;
-            if (code) return String(l.referred_by).trim() === code;
-            return true;
-          }),
-        );
-      } else {
-        // Main leads / hub: show ALL rows returned by API for this user.
-        setLeads(allLeads);
-      }
-    } catch (err) { console.error('Failed to load leads:', err); }
-    finally { setLoading(false); }
-  };
-
-  const fetchLeadFolders = async () => {
-    try {
-      const res = (await api.leadFolders.list(isSuperAdmin ? viewOrgId || undefined : undefined)) as {
-        data?: { folders?: Array<{ id: string; name: string; source_keys?: string[]; card_count?: number }> };
+      // Admin/org: API locks to their org. Super-admin: pass selected org when set.
+      const res = (await api.leadFolders.list(
+        isSuperAdmin && viewOrgId ? viewOrgId : undefined,
+      )) as {
+        data?: {
+          folders?: Array<{
+            id: string;
+            name: string;
+            source_keys?: string[];
+            card_count?: number;
+            org_id?: string;
+            org_name?: string | null;
+          }>;
+        };
+        folders?: Array<{
+          id: string;
+          name: string;
+          source_keys?: string[];
+          card_count?: number;
+          org_id?: string;
+          org_name?: string | null;
+        }>;
       };
-      const list = (res?.data?.folders ?? []).map((f) => ({
+      const raw = res?.data?.folders ?? res?.folders ?? [];
+      const list = (Array.isArray(raw) ? raw : []).map((f) => ({
         id: String(f.id),
         name: String(f.name || 'Folder'),
         source_keys: Array.isArray(f.source_keys) ? f.source_keys.map(String) : [],
         card_count: Number(f.card_count ?? (f.source_keys?.length ?? 0)),
+        org_id: f.org_id ? String(f.org_id) : undefined,
+        org_name: f.org_name != null ? String(f.org_name) : null,
       }));
       setLeadFolders(list);
-      if (activeFolderId && !list.some((f) => f.id === activeFolderId)) {
-        setActiveFolderId('');
+      setActiveFolderId((prev) => (prev && !list.some((f) => f.id === prev) ? '' : prev));
+    } catch (err) {
+      console.error('Failed to load lead folders:', err);
+      setLeadFolders([]);
+      toast({
+        variant: 'destructive',
+        title: 'Could not load folders',
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [canManageLeadFolders, isSuperAdmin, viewOrgId, toast]);
+
+  /** Folders shown in sidebar: admin = all returned (already org-locked). Superadmin = selected org, or all if none selected. */
+  const visibleLeadFolders = useMemo(() => {
+    if (!isSuperAdmin) return leadFolders;
+    if (!viewOrgId) return leadFolders;
+    const want = viewOrgId.trim().toLowerCase();
+    return leadFolders.filter((f) => String(f.org_id || '').trim().toLowerCase() === want);
+  }, [leadFolders, isSuperAdmin, viewOrgId]);
+
+  const orgIdForCardAdmin = useCallback(
+    () => (isSuperAdmin ? viewOrgId || undefined : undefined),
+    [isSuperAdmin, viewOrgId],
+  );
+
+  const fetchCardManagerGrants = useCallback(async () => {
+    if (!canManageLeadFolders) {
+      setCardManagerGrants({});
+      return;
+    }
+    if (isSuperAdmin && !viewOrgId) return;
+    try {
+      const res = (await api.leadSourceCardManagers.list(orgIdForCardAdmin())) as {
+        data?: { grants?: Record<string, string[]> };
+      };
+      const grants = res?.data?.grants && typeof res.data.grants === 'object' ? res.data.grants : {};
+      const cleaned: Record<string, string[]> = {};
+      for (const [k, ids] of Object.entries(grants)) {
+        cleaned[k] = Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
       }
-    } catch {
-      /* folders optional — page still works */
+      setCardManagerGrants(cleaned);
+    } catch (err) {
+      console.error('Failed to load card manager grants:', err);
+      setCardManagerGrants({});
+    }
+  }, [canManageLeadFolders, isSuperAdmin, viewOrgId, orgIdForCardAdmin]);
+
+  const openAccessToManager = async (sourceKey: string, label: string) => {
+    if (isSuperAdmin && !viewOrgId) {
+      toast({ variant: 'destructive', title: 'Select an organisation first' });
+      return;
+    }
+    setAccessCardKey(sourceKey);
+    setAccessCardLabel(label);
+    setAccessBusy(true);
+    setAccessSelectedIds(new Set(cardManagerGrants[sourceKey] || []));
+    try {
+      const res = (await api.leadSourceCardManagers.managers(orgIdForCardAdmin())) as {
+        data?: Array<{ id?: string; full_name?: string; email?: string }>;
+      };
+      const rows = Array.isArray(res?.data) ? res.data : [];
+      setAccessManagers(
+        rows
+          .map((m) => ({
+            id: String(m.id || '').trim(),
+            full_name: String(m.full_name || '').trim() || 'Manager',
+            email: String(m.email || '').trim() || undefined,
+          }))
+          .filter((m) => m.id),
+      );
+    } catch (e: unknown) {
+      setAccessManagers([]);
+      toast({
+        variant: 'destructive',
+        title: 'Could not load managers',
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setAccessBusy(false);
+    }
+  };
+
+  const handleSaveManagerAccess = async () => {
+    if (!accessCardKey) return;
+    setAccessBusy(true);
+    try {
+      const res = (await api.leadSourceCardManagers.set(
+        accessCardKey,
+        Array.from(accessSelectedIds),
+        orgIdForCardAdmin(),
+      )) as { data?: { grants?: Record<string, string[]> } };
+      const grants = res?.data?.grants && typeof res.data.grants === 'object' ? res.data.grants : null;
+      if (grants) {
+        const cleaned: Record<string, string[]> = {};
+        for (const [k, ids] of Object.entries(grants)) {
+          cleaned[k] = Array.isArray(ids) ? ids.map(String).filter(Boolean) : [];
+        }
+        setCardManagerGrants(cleaned);
+      } else {
+        await fetchCardManagerGrants();
+      }
+      setAccessCardKey(null);
+      toast({ title: 'Manager access updated' });
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: 'Could not save access',
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setAccessBusy(false);
     }
   };
 
@@ -406,16 +547,9 @@ export default function Leads() {
     setFolderBusy(true);
     try {
       const res = (await api.leadFolders.create(name, isSuperAdmin ? viewOrgId : undefined)) as {
-        data?: { folders?: Array<{ id: string; name: string; source_keys?: string[]; card_count?: number }> };
         id?: string;
       };
-      const list = (res?.data?.folders ?? []).map((f) => ({
-        id: String(f.id),
-        name: String(f.name || 'Folder'),
-        source_keys: Array.isArray(f.source_keys) ? f.source_keys.map(String) : [],
-        card_count: Number(f.card_count ?? (f.source_keys?.length ?? 0)),
-      }));
-      setLeadFolders(list);
+      await fetchLeadFolders();
       setNewFolderOpen(false);
       setNewFolderName('');
       if (res?.id) setActiveFolderId(String(res.id));
@@ -434,20 +568,12 @@ export default function Leads() {
   const handleMoveCardToFolder = async (sourceKey: string, folderId: string | null) => {
     setFolderBusy(true);
     try {
-      const res = (await api.leadFolders.move(
+      await api.leadFolders.move(
         sourceKey,
         folderId,
         isSuperAdmin ? viewOrgId : undefined,
-      )) as {
-        data?: { folders?: Array<{ id: string; name: string; source_keys?: string[]; card_count?: number }> };
-      };
-      const list = (res?.data?.folders ?? []).map((f) => ({
-        id: String(f.id),
-        name: String(f.name || 'Folder'),
-        source_keys: Array.isArray(f.source_keys) ? f.source_keys.map(String) : [],
-        card_count: Number(f.card_count ?? (f.source_keys?.length ?? 0)),
-      }));
-      setLeadFolders(list);
+      );
+      await fetchLeadFolders();
       setMoveCardKey(null);
       toast({
         title: folderId ? 'Moved to folder' : 'Removed from folder',
@@ -508,6 +634,67 @@ export default function Leads() {
       );
     } catch {}
   };
+
+  // Stagger API calls — Leads page used to fire 8+ parallel requests and hit Hostinger MySQL limits.
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      if (canManageLeadFolders) {
+        await fetchLeadFolders();
+        if (cancelled) return;
+        if (!(isSuperAdmin && !viewOrgId)) {
+          await fetchCardManagerGrants();
+        }
+      } else {
+        setLeadFolders([]);
+        setActiveFolderId('');
+        setCardManagerGrants({});
+      }
+      if (cancelled) return;
+
+      await fetchLeads();
+      if (cancelled) return;
+
+      if (needsAssignmentRoster) {
+        await fetchTeam();
+        if (cancelled) return;
+        await fetchProfiles();
+        if (cancelled) return;
+        await fetchAssignments();
+      }
+      if (cancelled) return;
+
+      await loadLeadForms();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    canManageLeadFolders,
+    isSuperAdmin,
+    viewOrgId,
+    needsAssignmentRoster,
+    fetchLeadFolders,
+    fetchCardManagerGrants,
+    fetchLeads,
+    loadLeadForms,
+    statusChangedPeriod,
+  ]);
+
+  useEffect(() => {
+    if (sourceDialogKey) {
+      void ensureFormAssignmentsLoaded(sourceDialogKey);
+    }
+  }, [sourceDialogKey, ensureFormAssignmentsLoaded]);
+
+  useEffect(() => {
+    if (!assignLeadId) return;
+    const lead = leads.find((l) => l.id === assignLeadId);
+    if (!lead) return;
+    void ensureFormAssignmentsLoaded(getFormSourceKey(lead));
+  }, [assignLeadId, leads, ensureFormAssignmentsLoaded]);
 
   const canEditLead = (lead: any) => {
     if (hasEditAll) return true;
@@ -1164,21 +1351,69 @@ export default function Leads() {
     [leads, formLabels],
   );
 
+  const metaAdSourceCount = useMemo(
+    () => sourceSummaries.filter((s) => s.isMetaAd || isMetaAdSourceBucket(s.key)).length,
+    [sourceSummaries],
+  );
+
+  const metaAdsFolderId = useMemo(
+    () => visibleLeadFolders.find((f) => isMetaAdsFolderName(f.name))?.id ?? '',
+    [visibleLeadFolders],
+  );
+
   const sourceKeyToFolderId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const f of leadFolders) {
+    for (const f of visibleLeadFolders) {
       for (const k of f.source_keys) map.set(k, f.id);
     }
+    // Virtual: every Meta Ads card belongs in the Meta Ads folder.
+    if (metaAdsFolderId) {
+      for (const s of sourceSummaries) {
+        if (s.isMetaAd || isMetaAdSourceBucket(s.key)) {
+          map.set(s.key, metaAdsFolderId);
+        }
+      }
+    }
     return map;
-  }, [leadFolders]);
+  }, [visibleLeadFolders, metaAdsFolderId, sourceSummaries]);
 
   const visibleSourceSummaries = useMemo(() => {
-    if (!activeFolderId) return sourceSummaries;
-    const folder = leadFolders.find((f) => f.id === activeFolderId);
+    const isMetaCard = (s: (typeof sourceSummaries)[number]) =>
+      !!(s.isMetaAd || isMetaAdSourceBucket(s.key));
+
+    // All sources: Meta Ads cards live only in the Meta Ads folder (admins with folders).
+    if (!activeFolderId) {
+      if (canManageLeadFolders && metaAdsFolderId) {
+        return sourceSummaries.filter((s) => !isMetaCard(s));
+      }
+      return sourceSummaries;
+    }
+
+    const folder = visibleLeadFolders.find((f) => f.id === activeFolderId);
     if (!folder) return sourceSummaries;
+
+    if (isMetaAdsFolderName(folder.name)) {
+      return sourceSummaries.filter((s) => isMetaCard(s));
+    }
+
     const allow = new Set(folder.source_keys);
-    return sourceSummaries.filter((s) => allow.has(s.key));
-  }, [sourceSummaries, leadFolders, activeFolderId]);
+    return sourceSummaries.filter((s) => allow.has(s.key) && !isMetaCard(s));
+  }, [sourceSummaries, visibleLeadFolders, activeFolderId, canManageLeadFolders, metaAdsFolderId]);
+
+  const folderDisplayCount = useCallback(
+    (folder: { id: string; name: string; card_count: number }) => {
+      if (isMetaAdsFolderName(folder.name)) return metaAdSourceCount;
+      return folder.card_count;
+    },
+    [metaAdSourceCount],
+  );
+
+  const allSourcesDisplayCount = useMemo(() => {
+    if (canManageLeadFolders && metaAdsFolderId) {
+      return Math.max(0, sourceSummaries.length - metaAdSourceCount);
+    }
+    return sourceSummaries.length;
+  }, [canManageLeadFolders, metaAdsFolderId, sourceSummaries.length, metaAdSourceCount]);
 
   const sourceDialogLeads = useMemo(() => {
     if (!sourceDialogKey) return [];
@@ -1580,13 +1815,18 @@ export default function Leads() {
                 >
                   <Folder className="h-3.5 w-3.5 shrink-0 opacity-70" />
                   <span className="truncate flex-1">All sources</span>
-                  <span className="tabular-nums text-muted-foreground">{sourceSummaries.length}</span>
+                  <span className="tabular-nums text-muted-foreground">{allSourcesDisplayCount}</span>
                 </button>
-                {leadFolders.map((folder) => (
+                {visibleLeadFolders.map((folder) => (
                   <button
                     key={folder.id}
                     type="button"
-                    onClick={() => setActiveFolderId(folder.id)}
+                    onClick={() => {
+                      if (isSuperAdmin && folder.org_id) {
+                        setViewOrgId(folder.org_id);
+                      }
+                      setActiveFolderId(folder.id);
+                    }}
                     className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors shrink-0 md:w-full min-h-9 ${
                       activeFolderId === folder.id
                         ? 'bg-primary/10 text-primary font-medium'
@@ -1594,11 +1834,21 @@ export default function Leads() {
                     }`}
                   >
                     <Folder className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                    <span className="truncate flex-1" title={folder.name}>{folder.name}</span>
-                    <span className="tabular-nums text-muted-foreground">{folder.card_count}</span>
+                    <span
+                      className="min-w-0 flex-1 truncate"
+                      title={folder.org_name ? `${folder.name} · ${folder.org_name}` : folder.name}
+                    >
+                      {folder.name}
+                      {isSuperAdmin && !viewOrgId && folder.org_name ? (
+                        <span className="block truncate text-[10px] font-normal text-muted-foreground">
+                          {folder.org_name}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="tabular-nums text-muted-foreground">{folderDisplayCount(folder)}</span>
                   </button>
                 ))}
-                {leadFolders.length === 0 ? (
+                {visibleLeadFolders.length === 0 ? (
                   <p className="text-[11px] text-muted-foreground px-2 py-1 hidden md:block">
                     No folders yet. Use New folder.
                   </p>
@@ -1615,7 +1865,9 @@ export default function Leads() {
               </p>
               <p className="text-xs text-muted-foreground mt-1">
                 {canManageLeadFolders && activeFolderId
-                  ? 'Move a source card into this folder using ⋮ → Move to folder'
+                  ? isMetaAdsFolderName(visibleLeadFolders.find((f) => f.id === activeFolderId)?.name)
+                    ? 'Meta Ads cards appear here automatically when Lead Ads sync in'
+                    : 'Move a source card into this folder using ⋮ → Move to folder'
                   : 'Import a CSV or Excel file, or add a lead to get started'}
               </p>
             </div>
@@ -1673,7 +1925,8 @@ export default function Leads() {
                                 <MoreVertical className="h-4 w-4" />
                               </Button>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-44" onClick={(e) => e.stopPropagation()}>
+                            <DropdownMenuContent align="end" className="w-52" onClick={(e) => e.stopPropagation()}>
+                              {!(summary.isMetaAd || isMetaAdSourceBucket(summary.key)) ? (
                               <DropdownMenuItem
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1683,6 +1936,28 @@ export default function Leads() {
                                 <Folder className="h-3.5 w-3.5 mr-2" />
                                 Move to folder
                               </DropdownMenuItem>
+                              ) : null}
+                              {(summary.isForm ||
+                                summary.isPeaklyy ||
+                                summary.isMetaAd ||
+                                isFormSourceBucket(summary.key) ||
+                                isPeaklyySourceBucket(summary.key) ||
+                                isMetaAdSourceBucket(summary.key)) && (
+                                <DropdownMenuItem
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void openAccessToManager(summary.key, summary.label);
+                                  }}
+                                >
+                                  <UserCog className="h-3.5 w-3.5 mr-2" />
+                                  Access to manager
+                                  {(cardManagerGrants[summary.key]?.length ?? 0) > 0 ? (
+                                    <Badge variant="secondary" className="ml-auto text-[10px]">
+                                      {cardManagerGrants[summary.key].length}
+                                    </Badge>
+                                  ) : null}
+                                </DropdownMenuItem>
+                              )}
                             </DropdownMenuContent>
                           </DropdownMenu>
                           ) : null}
@@ -2493,6 +2768,75 @@ export default function Leads() {
       </Dialog>
 
       <Dialog
+        open={canManageLeadFolders && Boolean(accessCardKey)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAccessCardKey(null);
+            setAccessCardLabel('');
+          }
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Access to manager</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            Share <span className="font-medium text-foreground">{accessCardLabel || 'this card'}</span> with
+            selected managers. Others only see self-created or assigned leads from this card.
+          </p>
+          <div className="space-y-1.5 max-h-[50vh] overflow-y-auto py-1">
+            {accessBusy && accessManagers.length === 0 ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : accessManagers.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center">No managers in this organisation.</p>
+            ) : (
+              accessManagers.map((m) => {
+                const checked = accessSelectedIds.has(m.id);
+                return (
+                  <label
+                    key={m.id}
+                    className={`flex w-full cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted/50 ${
+                      checked ? 'border-primary bg-primary/5' : 'border-border/60'
+                    }`}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(v) => {
+                        setAccessSelectedIds((prev) => {
+                          const next = new Set(prev);
+                          if (v === true) next.add(m.id);
+                          else next.delete(m.id);
+                          return next;
+                        });
+                      }}
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block font-medium truncate">{m.full_name}</span>
+                      {m.email ? (
+                        <span className="block text-xs text-muted-foreground truncate">{m.email}</span>
+                      ) : null}
+                    </span>
+                  </label>
+                );
+              })
+            )}
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setAccessCardKey(null)} disabled={accessBusy}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void handleSaveManagerAccess()} disabled={accessBusy || !accessCardKey}>
+              {accessBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={canManageLeadFolders && Boolean(moveCardKey)}
         onOpenChange={(open) => {
           if (!open) setMoveCardKey(null);
@@ -2506,12 +2850,12 @@ export default function Leads() {
             Choose a folder for this source card. A card can only be in one folder.
           </p>
           <div className="space-y-1.5 max-h-[50vh] overflow-y-auto py-1">
-            {leadFolders.length === 0 ? (
+            {visibleLeadFolders.length === 0 ? (
               <p className="text-sm text-muted-foreground py-6 text-center">
                 No folders yet. Create one with New folder.
               </p>
             ) : (
-              leadFolders.map((folder) => {
+              visibleLeadFolders.map((folder) => {
                 const current = moveCardKey ? sourceKeyToFolderId.get(moveCardKey) === folder.id : false;
                 return (
                   <button

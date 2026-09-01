@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/lib/CallLogDailyReportSync.php';
 ensureUploadDirectoriesExist();
 cors();
 
@@ -239,12 +240,51 @@ function callLogsScopeWhere(PDO $db, string $role, string $userId, array $tokenD
     return ['cl.sales_rep_id = ?', [$userId]];
 }
 
+/**
+ * Optional sales_rep_id filter, only if that user is inside the caller's scope.
+ *
+ * @return array{0: string, 1: array}
+ */
+function callLogsApplyRepFilter(string $scopeSql, array $scopeParams, string $role, string $userId): array
+{
+    $repFilter = isset($_GET['sales_rep_id']) ? trim((string) $_GET['sales_rep_id']) : '';
+    if ($repFilter === '' || $repFilter === 'all') {
+        return [$scopeSql, $scopeParams];
+    }
+    // Sales reps can only ever see themselves
+    if (!in_array($role, ['admin', 'super_admin', 'org', 'manager'], true)) {
+        return [$scopeSql, $scopeParams];
+    }
+    return ["($scopeSql) AND cl.sales_rep_id = ?", array_merge($scopeParams, [$repFilter])];
+}
+
 function callLogsPeriodBounds(string $period, ?string $dateFromIn, ?string $dateToIn): array
 {
     $today = new DateTimeImmutable('today');
     $period = strtolower(trim($period));
-    if ($period === 'custom' && $dateFromIn && $dateToIn) {
-        return [$dateFromIn, $dateToIn];
+    if ($period === 'custom') {
+        $from = $dateFromIn && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateFromIn) ? $dateFromIn : null;
+        $to = $dateToIn && preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateToIn) ? $dateToIn : null;
+        if ($from && $to) {
+            return [$from <= $to ? $from : $to, $from <= $to ? $to : $from];
+        }
+        if ($from) {
+            return [$from, $today->format('Y-m-d')];
+        }
+        if ($to) {
+            return ['2000-01-01', $to];
+        }
+        $d = $today->format('Y-m-d');
+        return [$d, $d];
+    }
+    if ($period === 'yesterday') {
+        $y = $today->modify('-1 day');
+        $d = $y->format('Y-m-d');
+        return [$d, $d];
+    }
+    if ($period === 'last_7_days' || $period === 'last_7') {
+        $start = $today->modify('-6 days');
+        return [$start->format('Y-m-d'), $today->format('Y-m-d')];
     }
     if ($period === 'week') {
         $dow = (int) $today->format('N');
@@ -252,10 +292,13 @@ function callLogsPeriodBounds(string $period, ?string $dateFromIn, ?string $date
         $end = $start->modify('+6 days');
         return [$start->format('Y-m-d'), $end->format('Y-m-d')];
     }
-    if ($period === 'month') {
+    if ($period === 'month' || $period === 'this_month') {
         $start = $today->modify('first day of this month');
         $end = $today->modify('last day of this month');
         return [$start->format('Y-m-d'), $end->format('Y-m-d')];
+    }
+    if ($period === 'all') {
+        return ['2000-01-01', $today->format('Y-m-d')];
     }
     $d = $today->format('Y-m-d');
     return [$d, $d];
@@ -264,12 +307,26 @@ function callLogsPeriodBounds(string $period, ?string $dateFromIn, ?string $date
 function callLogsPeriodLabel(string $period, string $dateFrom, string $dateTo): string
 {
     $period = strtolower(trim($period));
+    if ($period === 'all') {
+        return 'All time';
+    }
+    if ($period === 'custom') {
+        if ($dateFrom === $dateTo) {
+            return (new DateTimeImmutable($dateFrom))->format('d M Y');
+        }
+        $a = new DateTimeImmutable($dateFrom);
+        $b = new DateTimeImmutable($dateTo);
+        return $a->format('d M Y') . ' – ' . $b->format('d M Y');
+    }
+    if ($period === 'yesterday') {
+        return (new DateTimeImmutable($dateFrom))->format('d M Y');
+    }
     if ($period === 'today') {
         return $dateFrom === $dateTo
             ? (new DateTimeImmutable($dateFrom))->format('d M Y')
             : $dateFrom . ' – ' . $dateTo;
     }
-    if ($period === 'week') {
+    if ($period === 'last_7_days' || $period === 'last_7' || $period === 'week') {
         $a = new DateTimeImmutable($dateFrom);
         $b = new DateTimeImmutable($dateTo);
         if ($a->format('M Y') === $b->format('M Y')) {
@@ -277,7 +334,7 @@ function callLogsPeriodLabel(string $period, string $dateFrom, string $dateTo): 
         }
         return $a->format('M j') . ' – ' . $b->format('M j, Y');
     }
-    if ($period === 'month') {
+    if ($period === 'month' || $period === 'this_month') {
         return (new DateTimeImmutable($dateFrom))->format('M Y');
     }
     return $dateFrom === $dateTo ? (new DateTimeImmutable($dateFrom))->format('j M Y') : ($dateFrom . ' – ' . $dateTo);
@@ -328,6 +385,34 @@ if (!callLogsAllowedRole($rawRole)) {
 
 $tokenOrgId = $tokenData['org_id'] ?? null;
 
+// ---------- GET sync_daily_reports — backfill/refresh daily_reports from this user's call_logs ----------
+if ($method === 'GET' && $action === 'sync_daily_reports') {
+    $days = max(1, min(120, (int) ($_GET['days'] ?? 60)));
+    $from = (new DateTimeImmutable('today'))->modify('-' . ($days - 1) . ' days')->format('Y-m-d');
+    $repId = $userId;
+    if (in_array($rawRole, ['admin', 'super_admin', 'org', 'manager'], true) && !empty($_GET['sales_rep_id'])) {
+        $repId = trim((string) $_GET['sales_rep_id']);
+    }
+    $st = $db->prepare(
+        'SELECT DISTINCT call_date FROM call_logs WHERE sales_rep_id = ? AND call_date >= ? ORDER BY call_date DESC LIMIT 120'
+    );
+    $st->execute([$repId, $from]);
+    $dates = $st->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    $synced = 0;
+    foreach ($dates as $d) {
+        $d = substr((string) $d, 0, 10);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+            continue;
+        }
+        try {
+            syncpediaSyncDailyReportFromCallLogs($db, $repId, $d, null);
+            $synced++;
+        } catch (Throwable $ignored) {
+        }
+    }
+    respond(['success' => true, 'synced_dates' => $synced]);
+}
+
 // ---------- GET daily_report_metrics — counts from call_logs (+ lead pipeline) for one day ----------
 if ($method === 'GET' && $action === 'daily_report_metrics') {
     $date = trim((string) ($_GET['date'] ?? ''));
@@ -335,6 +420,7 @@ if ($method === 'GET' && $action === 'daily_report_metrics') {
         respond(['error' => 'date required (YYYY-MM-DD)'], 400);
     }
     [$scopeSql, $scopeParams] = callLogsScopeWhere($db, $rawRole, $userId, $tokenData);
+    [$scopeSql, $scopeParams] = callLogsApplyRepFilter($scopeSql, $scopeParams, $rawRole, $userId);
     $whereFull = "$scopeSql AND cl.call_date = ?";
     $params = array_merge($scopeParams, [$date]);
 
@@ -588,6 +674,10 @@ if ($method === 'POST' && $action === 'add_log') {
 
     $q = $db->prepare('SELECT cl.*, u.full_name AS sales_rep_name, l.name AS lead_name, l.status AS lead_status FROM call_logs cl LEFT JOIN users u ON u.id = cl.sales_rep_id LEFT JOIN leads l ON l.id = cl.lead_id WHERE cl.id = ?');
     $q->execute([$id]);
+    try {
+        syncpediaSyncDailyReportFromCallLogs($db, (string) $repId, $callDate, (string) $orgId);
+    } catch (Throwable $ignored) {
+    }
     respond(['success' => true, 'log' => $q->fetch(PDO::FETCH_ASSOC)]);
 }
 
@@ -599,6 +689,7 @@ if ($method === 'GET' && $action === 'get_stats') {
     [$df, $dt] = callLogsPeriodBounds($period, $dateFromIn, $dateToIn);
 
     [$scopeSql, $scopeParams] = callLogsScopeWhere($db, $rawRole, $userId, $tokenData);
+    [$scopeSql, $scopeParams] = callLogsApplyRepFilter($scopeSql, $scopeParams, $rawRole, $userId);
     $dateSql = 'cl.call_date BETWEEN ? AND ?';
     $baseParams = array_merge($scopeParams, [$df, $dt]);
     $whereFull = "$scopeSql AND $dateSql";
@@ -663,6 +754,7 @@ if ($method === 'GET' && $action === 'get_logs') {
     [$df, $dt] = callLogsPeriodBounds($period, $dateFromIn, $dateToIn);
 
     [$scopeSql, $scopeParams] = callLogsScopeWhere($db, $rawRole, $userId, $tokenData);
+    [$scopeSql, $scopeParams] = callLogsApplyRepFilter($scopeSql, $scopeParams, $rawRole, $userId);
     $whereFull = "$scopeSql AND cl.call_date BETWEEN ? AND ?";
     $params = array_merge($scopeParams, [$df, $dt]);
 
@@ -895,6 +987,20 @@ if (($method === 'PUT' && $action === 'update_log') || ($method === 'POST' && $a
         respond(['error' => $e->getMessage() ?: 'Could not update call log'], $statusCode);
     }
 
+    $oldDate = substr((string) ($row['call_date'] ?? ''), 0, 10);
+    $newDate = array_key_exists('call_date', $input) && trim((string) $input['call_date']) !== ''
+        ? substr(trim((string) $input['call_date']), 0, 10)
+        : $oldDate;
+    $syncRep = (string) ($row['sales_rep_id'] ?? $userId);
+    $syncOrg = isset($row['org_id']) ? (string) $row['org_id'] : null;
+    try {
+        syncpediaSyncDailyReportFromCallLogs($db, $syncRep, $oldDate, $syncOrg);
+        if ($newDate !== '' && $newDate !== $oldDate) {
+            syncpediaSyncDailyReportFromCallLogs($db, $syncRep, $newDate, $syncOrg);
+        }
+    } catch (Throwable $ignored) {
+    }
+
     respond(['success' => true, 'message' => 'Updated']);
 }
 
@@ -925,6 +1031,15 @@ if ($method === 'DELETE' && $action === 'delete_log') {
     }
     deleteCallRecordingIfExists($row['attachment_path'] ?? null);
     $db->prepare('DELETE FROM call_logs WHERE id = ?')->execute([$id]);
+    try {
+        syncpediaSyncDailyReportFromCallLogs(
+            $db,
+            (string) ($row['sales_rep_id'] ?? $userId),
+            substr((string) ($row['call_date'] ?? ''), 0, 10),
+            isset($row['org_id']) ? (string) $row['org_id'] : null
+        );
+    } catch (Throwable $ignored) {
+    }
     respond(['success' => true, 'message' => 'Deleted']);
 }
 

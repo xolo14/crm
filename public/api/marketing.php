@@ -16,17 +16,39 @@ function marketingNormRole(array $tokenData): string {
 function marketingIsPrivileged(array $tokenData): bool
 {
     $r = marketingNormRole($tokenData);
-    return in_array($r, ['super_admin', 'admin', 'org', 'marketing', 'manager'], true);
+    return in_array($r, ['super_admin', 'admin', 'org', 'marketing', 'manager', 'operational_manager'], true);
 }
 
 function marketingGateRoles(): array
 {
-    return ['super_admin', 'admin', 'org', 'marketing', 'manager'];
+    return ['super_admin', 'admin', 'org', 'marketing', 'manager', 'operational_manager'];
 }
 
 function marketingAdminRoles(): array
 {
     return ['super_admin', 'admin', 'org', 'manager'];
+}
+
+/** Manager / OM need marketing_access page grant when pages map is configured. */
+function marketingEnsurePageAccess(PDO $db, array $tokenData): void
+{
+    $r = marketingNormRole($tokenData);
+    if ($r === 'operational_manager') {
+        return;
+    }
+    if (!in_array($r, ['manager'], true)) {
+        return;
+    }
+    $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    $userRow = null;
+    if ($userId !== '') {
+        $st = $db->prepare('SELECT id, role, page_access_json FROM users WHERE id = ? LIMIT 1');
+        $st->execute([$userId]);
+        $userRow = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+    }
+    if (!userCanAccessMarketingPage($tokenData, $userRow)) {
+        respond(['error' => 'Forbidden — Marketing Portal is not enabled for your account'], 403);
+    }
 }
 
 /** WHERE fragment + params: SuperAdmin master view → all rows; switched org / tenant → own org only */
@@ -100,6 +122,8 @@ function marketingAssertRowInScope(PDO $db, string $table, string $id, array $to
     }
     respond(['error' => 'Forbidden'], 403);
 }
+
+marketingEnsurePageAccess($db, $tokenData);
 
 // ---- Marketing Members ----
 if ($action === 'members') {
@@ -885,6 +909,33 @@ if ($action === 'dispatch_whatsapp_campaign' && $method === 'POST') {
         $ok = !empty($res['ok']);
         if ($ok) {
             $sent++;
+            try {
+                require_once __DIR__ . '/lib/WhatsAppInbox.php';
+                $preview = $source === 'communications' && is_array($template)
+                    ? (string) ($template['body'] ?? $template['name'] ?? $subject)
+                    : ($personalized ?? $bodyText);
+                if ($source === 'communications' && is_array($template) && !empty($vars) && function_exists('commRenderTemplate')) {
+                    try {
+                        $preview = commRenderTemplate((string) ($template['body'] ?? $preview), $vars);
+                    } catch (Throwable $ignored) {
+                    }
+                }
+                WhatsAppInbox::recordOutboundAutomation(
+                    $db,
+                    $orgId,
+                    $phone,
+                    $preview !== '' ? $preview : ('[Automation] ' . $subject),
+                    $userId,
+                    $source === 'communications' ? $templateId : null,
+                    isset($res['provider_message_id']) ? (string) $res['provider_message_id'] : null,
+                    'sent',
+                    $name !== '' ? $name : null,
+                    null,
+                    isset($cfg['waba_id']) ? (string) $cfg['waba_id'] : null,
+                    isset($cfg['phone_number_id']) ? (string) $cfg['phone_number_id'] : null,
+                );
+            } catch (Throwable $ignored) {
+            }
         } else {
             $failed++;
             if ($firstError === null) {

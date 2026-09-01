@@ -4,7 +4,6 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Bell, Check, CheckCheck, Trash2, UserPlus, UserMinus, ClipboardList, Layers, GraduationCap, Info, AlertTriangle, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
@@ -102,8 +101,8 @@ export function NotificationBell() {
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 p-0">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+      <PopoverContent align="end" className="w-80 p-0 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
           <h3 className="text-sm font-semibold">Notifications</h3>
           {unreadCount > 0 && (
             <Button variant="ghost" size="sm" className="h-7 text-xs gap-1" onClick={markAllRead}>
@@ -111,7 +110,7 @@ export function NotificationBell() {
             </Button>
           )}
         </div>
-        <ScrollArea className="max-h-[360px]">
+        <div className="max-h-[min(360px,70vh)] overflow-y-auto overscroll-contain">
           {notifications.length === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
               No notifications yet
@@ -160,7 +159,7 @@ export function NotificationBell() {
               })}
             </div>
           )}
-        </ScrollArea>
+        </div>
       </PopoverContent>
     </Popover>
   );

@@ -12,7 +12,7 @@ export type HrPageOption = {
   section: string;
 };
 
-/** Pages an admin can toggle for an HR account (HR portal + Offer Letters). */
+/** Pages an admin can toggle for an HR account (HR portal + optional modules). */
 export const HR_PAGE_ACCESS_OPTIONS: HrPageOption[] = [
   { key: "dashboard", section: "Core", label: "Dashboard", description: "HR home dashboard" },
   { key: "my_leads", section: "Leads", label: "My Leads", description: "Leads created by this HR user" },
@@ -28,6 +28,12 @@ export const HR_PAGE_ACCESS_OPTIONS: HrPageOption[] = [
     section: "Documents",
     label: "Offer Letters",
     description: "Create and send offer letters (HR portal)",
+  },
+  {
+    key: "form_management",
+    section: "CRM",
+    label: "Form Management",
+    description: "Build and publish lead / HR capture forms",
   },
 ];
 
@@ -46,17 +52,29 @@ export function hrFeatureKeyForPath(pathname: string): string | null {
   if (p === "/hr/holidays") return "holidays";
   if (p === "/hr/settings") return "settings";
   if (p === "/hr/offer-letters" || p === "/offer-letters") return "offer_letters";
+  if (
+    p === "/hr/form-management" ||
+    p.startsWith("/hr/form-management/") ||
+    p === "/form-management" ||
+    p.startsWith("/form-management/") ||
+    p === "/form-api-integrations"
+  ) {
+    return "form_management";
+  }
   return null;
 }
 
+/** Opt-in modules — off by default until an admin grants them. */
+const HR_OPT_IN_PAGES = new Set(["offer_letters", "form_management", "communications"]);
+
 /**
  * Default grants for a new / fully-enabled HR user.
- * Portal pages default on; offer_letters stays off unless explicitly granted.
+ * Portal pages default on; offer_letters, form_management, and communications stay off unless granted.
  */
 export function defaultHrPages(allOn = true): Record<string, boolean> {
   const out: Record<string, boolean> = {};
   for (const key of HR_PAGE_ACCESS_KEYS) {
-    out[key] = key === "offer_letters" ? false : allOn;
+    out[key] = HR_OPT_IN_PAGES.has(key) ? false : allOn;
   }
   return out;
 }
@@ -79,7 +97,8 @@ export function resolveHrPagesForEdit(pageAccess?: PageAccess | null): Record<st
 
 /**
  * HR page grant check.
- * - No pages map (legacy): allow all portal pages; offer_letters uses top-level flag.
+ * - No pages map (legacy): allow portal pages except opt-in modules;
+ *   offer_letters uses top-level flag; form_management and communications stay off.
  * - Configured map: only keys explicitly set to true are allowed.
  */
 export function hrHasPageAccess(
@@ -90,6 +109,7 @@ export function hrHasPageAccess(
   const pages = pageAccess?.pages;
   if (!pages || Object.keys(pages).length === 0) {
     if (featureKey === "offer_letters") return Boolean(pageAccess?.offer_letters);
+    if (featureKey === "form_management" || featureKey === "communications") return false;
     return true;
   }
   return pages[featureKey] === true;
@@ -107,6 +127,7 @@ export function firstAllowedHrPath(pageAccess?: PageAccess | null): string {
     { key: "communications", path: "/hr/communications" },
     { key: "holidays", path: "/hr/holidays" },
     { key: "offer_letters", path: "/hr/offer-letters" },
+    { key: "form_management", path: "/hr/form-management" },
     { key: "settings", path: "/hr/settings" },
   ];
   for (const item of order) {

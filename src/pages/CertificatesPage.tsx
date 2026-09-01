@@ -28,6 +28,7 @@ import {
   Unlock,
   Variable,
   Users,
+  Loader2,
   FileText,
   Minus,
 } from "lucide-react";
@@ -35,7 +36,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -71,7 +72,7 @@ import {
 import { ProtectedUploadImage } from "@/components/ProtectedUploadImage";
 import { PlaceholderPalette } from "@/components/templates/PlaceholderPalette";
 import { resolveUploadSrc } from "@/lib/resumeHref";
-import { buildCertificatePdfBase64 } from "@/utils/certificatePdf";
+import { buildCertificatePdfBase64, certPageSizePx } from "@/utils/certificatePdf";
 import { createRoot } from "react-dom/client";
 
 type CertStatus = "active" | "draft" | "archived";
@@ -210,8 +211,10 @@ function CertificatePreviewFit({
   children: ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [fit, setFit] = useState<{ width: number; height: number } | null>(null);
+  const [fit, setFit] = useState<{ width: number; height: number; scale: number } | null>(null);
   const pageSpec = getCertPageSpec(pageFormat);
+  // Same CSS px as captureCertificatePdfBase64 — font px stay consistent with emailed PDF.
+  const { widthPx: designW, heightPx: designH } = certPageSizePx(pageSpec);
   const aspect = pageSpec.widthMm / pageSpec.heightMm;
   const isPortrait = certPageIsPortrait(pageFormat);
 
@@ -229,16 +232,19 @@ function CertificatePreviewFit({
         height = ch;
         width = height * aspect;
       }
+      const fitW = Math.floor(Math.max(80, width));
+      const fitH = Math.floor(Math.max(80, height));
       setFit({
-        width: Math.floor(Math.max(80, width)),
-        height: Math.floor(Math.max(80, height)),
+        width: fitW,
+        height: fitH,
+        scale: fitW / Math.max(1, designW),
       });
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [aspect, pageFormat]);
+  }, [aspect, pageFormat, designW]);
 
   return (
     <div
@@ -250,14 +256,27 @@ function CertificatePreviewFit({
       )}
     >
       <div
-        className="mx-auto shrink-0"
+        className="mx-auto shrink-0 relative overflow-hidden"
         style={
           fit
             ? { width: fit.width, height: fit.height, maxWidth: "100%" }
             : { width: "100%", aspectRatio: String(aspect), maxWidth: "100%", maxHeight: "100%" }
         }
       >
-        {children}
+        {fit ? (
+          <div
+            style={{
+              width: designW,
+              height: designH,
+              transform: `scale(${fit.scale})`,
+              transformOrigin: "top left",
+            }}
+          >
+            {children}
+          </div>
+        ) : (
+          children
+        )}
       </div>
     </div>
   );
@@ -284,8 +303,11 @@ function CertificatePreviewThumb({
   const isPortrait = certPageIsPortrait(template.style.pageFormat);
 
   if (!isPortrait) {
-    // Previous landscape thumbnails: fixed scale, top-left origin — full page visible.
-    const scale = height <= 120 ? 0.24 : 0.28;
+    // Same design px as PDF capture, then scale — keeps font proportions correct.
+    const { widthPx: designW, heightPx: designH } = certPageSizePx(
+      getCertPageSpec(template.style.pageFormat),
+    );
+    const scale = height / Math.max(1, designH);
     return (
       <div
         className={cn("overflow-hidden rounded-md w-full bg-gray-100", className)}
@@ -293,9 +315,10 @@ function CertificatePreviewThumb({
       >
         <div
           style={{
+            width: designW,
+            height: designH,
             transform: `scale(${scale})`,
             transformOrigin: "top left",
-            width: `${100 / scale}%`,
             pointerEvents: "none",
             position: "absolute",
             top: 0,
@@ -1220,6 +1243,8 @@ function CertificatePreview({
       style={{
         aspectRatio: String(pageAspect),
         width: "100%",
+        height: "100%",
+        boxSizing: "border-box",
         backgroundColor: template.style.bgColor || "#ffffff",
       }}
       onClick={() => onLayerSelect?.(null)}
@@ -1472,16 +1497,37 @@ async function captureCertificatePdfBase64(opts: {
   placeholderValues?: Record<string, string>;
 }): Promise<string> {
   const page = getCertPageSpec(opts.template.style.pageFormat);
+  const { widthPx, heightPx } = certPageSizePx(page);
+  const expectsBgImage = Boolean(
+    String(opts.template.style.bgImage || "").trim() ||
+      String(opts.template.style.bgPdf || "").trim(),
+  );
   const host = document.createElement("div");
   host.setAttribute("data-cert-pdf-capture", "1");
-  host.style.cssText =
-    "position:fixed;left:-14000px;top:0;z-index:-1;pointer-events:none;opacity:1;background:#fff;";
+  host.style.cssText = [
+    "position:fixed",
+    "left:-14000px",
+    "top:0",
+    "z-index:-1",
+    "pointer-events:none",
+    "opacity:1",
+    "background:#fff",
+    `width:${widthPx}px`,
+    `height:${heightPx}px`,
+    "overflow:hidden",
+  ].join(";");
   document.body.appendChild(host);
   const root = createRoot(host);
   try {
+    // PDF <object> backgrounds cannot be rasterized by html2canvas — prefer image bg.
+    // If only bgPdf exists, still mount without object (layers/text still capture).
+    const usePdfObject = false;
     await new Promise<void>((resolve) => {
       root.render(
-        <div className="inline-block bg-white">
+        <div
+          className="bg-white"
+          style={{ width: widthPx, height: heightPx, overflow: "hidden", position: "relative" }}
+        >
           <CertificatePreview
             template={opts.template}
             recipientName={opts.recipientName}
@@ -1491,7 +1537,7 @@ async function captureCertificatePdfBase64(opts: {
             certID={opts.certID}
             placeholderValues={opts.placeholderValues}
             overrides={{ domainName: opts.domainName }}
-            renderPdfBackground
+            renderPdfBackground={usePdfObject}
             showQr
           />
         </div>,
@@ -1500,25 +1546,61 @@ async function captureCertificatePdfBase64(opts: {
         requestAnimationFrame(() => resolve());
       });
     });
+
+    // Wait for ProtectedUploadImage async blob loads (poll up to 8s).
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const imgs = Array.from(host.querySelectorAll("img"));
+      const allComplete =
+        imgs.length > 0 &&
+        imgs.every((img) => img.complete && img.naturalWidth > 0);
+      if (!expectsBgImage && imgs.length === 0) break;
+      if (expectsBgImage && allComplete) break;
+      if (!expectsBgImage && imgs.length > 0 && allComplete) break;
+      await new Promise((r) => setTimeout(r, 120));
+    }
+
     const imgs = Array.from(host.querySelectorAll("img"));
     await Promise.all(
       imgs.map(
         (img) =>
           new Promise<void>((resolve) => {
-            if (img.complete) {
+            if (img.complete && img.naturalWidth > 0) {
               resolve();
               return;
             }
             const done = () => resolve();
             img.addEventListener("load", done, { once: true });
             img.addEventListener("error", done, { once: true });
-            setTimeout(done, 2500);
+            setTimeout(done, 3000);
           }),
       ),
     );
-    await new Promise((r) => setTimeout(r, 120));
+    // Fonts / layout settle
+    await new Promise((r) => setTimeout(r, 200));
+    if (typeof document !== "undefined" && "fonts" in document) {
+      try {
+        await Promise.race([
+          (document as Document & { fonts: FontFaceSet }).fonts.ready,
+          new Promise((r) => setTimeout(r, 1500)),
+        ]);
+      } catch {
+        /* ignore */
+      }
+    }
+
     const node = (host.firstElementChild as HTMLElement | null) || host;
-    return await buildCertificatePdfBase64(node, page);
+    // Force explicit size on the preview root (width:100% of fixed host).
+    const canvasRoot = host.querySelector("[data-canvas-root]") as HTMLElement | null;
+    if (canvasRoot) {
+      canvasRoot.style.width = `${widthPx}px`;
+      canvasRoot.style.height = `${heightPx}px`;
+      canvasRoot.style.aspectRatio = "auto";
+      canvasRoot.style.borderRadius = "0";
+      canvasRoot.style.border = "none";
+    }
+
+    return await buildCertificatePdfBase64(node, page, { widthPx, heightPx });
   } finally {
     root.unmount();
     host.remove();
@@ -2174,7 +2256,15 @@ function TemplateBuilderModal({
                 const isText =
                   selected &&
                   ["text", "company", "name", "domain", "date", "certID"].includes(selected.type);
+                const canDeleteSelected =
+                  !!selected &&
+                  !CERT_BUILTIN_LAYER_TYPES.includes(selected.type as "date" | "certID" | "qr");
                 const isQr = selected?.type === "qr";
+                const isImage =
+                  selected &&
+                  (selected.type === "image" ||
+                    selected.type === "logo" ||
+                    selected.type === "signature");
                 if (isQr && selected) {
                   return (
                     <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border bg-card px-2 py-1.5 shadow-sm">
@@ -2198,6 +2288,40 @@ function TemplateBuilderModal({
                         title="QR code color"
                       />
                       <span className="text-[11px] text-muted-foreground">Drag this box independently of Cert ID</span>
+                      <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
+                        <Plus className="h-3 w-3" />Text box
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addImageLayer}>
+                        <ImageIcon className="h-3 w-3" />Image
+                      </Button>
+                    </div>
+                  );
+                }
+                if (isImage && selected) {
+                  return (
+                    <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border bg-card px-2 py-1.5 shadow-sm">
+                      <Button
+                        type="button"
+                        variant={layoutLocked ? "default" : "outline"}
+                        size="sm"
+                        className="h-7 text-xs gap-1"
+                        onClick={() => setLayoutLocked((v) => !v)}
+                      >
+                        {layoutLocked ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                        {layoutLocked ? "Locked" : "Lock"}
+                      </Button>
+                      <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                      <span className="text-[11px] font-medium">Image selected</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs gap-1 text-destructive hover:text-destructive"
+                        onClick={() => removeLayer(selected.id)}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        Delete
+                      </Button>
                       <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
                         <Plus className="h-3 w-3" />Text box
                       </Button>
@@ -2331,6 +2455,19 @@ function TemplateBuilderModal({
                           ? "Line: top"
                           : "Add line"}
                     </Button>
+                    {canDeleteSelected ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs gap-1 text-destructive hover:text-destructive border-destructive/40"
+                        title="Delete this text box"
+                        onClick={() => removeLayer(selected.id)}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        Delete
+                      </Button>
+                    ) : null}
                     <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
                       <Plus className="h-3 w-3" />Text box
                     </Button>
@@ -3255,8 +3392,21 @@ function SingleIssueCertDialog({
         toast({
           variant: "destructive",
           title: "PDF capture failed",
-          description: "Issuing with server fallback PDF. Preview again and retry for a full design copy.",
+          description:
+            pdfErr instanceof Error
+              ? pdfErr.message
+              : "Could not build the certificate PDF. Use an image background (not PDF-only) and try again.",
         });
+        return;
+      }
+
+      if (!pdfBase64) {
+        toast({
+          variant: "destructive",
+          title: "PDF missing",
+          description: "Certificate PDF was empty. Fix the template background and re-issue.",
+        });
+        return;
       }
 
       const res = await api.certificates.issue({
@@ -3268,7 +3418,7 @@ function SingleIssueCertDialog({
         courseName: domainName,
         issueDate,
         verifyToken,
-        pdf_base64: pdfBase64 || undefined,
+        pdf_base64: pdfBase64,
       });
       const issuedCertId = String((res as any)?.certificateId || (res as any)?.syncId || certId).trim();
       const payload = {
@@ -3585,9 +3735,10 @@ function IssueCertWizard({
   orgPrefix: string;
 }) {
   const { toast } = useToast();
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(initialTemplateId || null);
+  const templateLocked = Boolean(initialTemplateId);
   const [courseName, setCourseName] = useState("");
   const [issueDate, setIssueDate] = useState(stableNowISODate());
   const [certIdsByRecipientId, setCertIdsByRecipientId] = useState<Record<string, string>>({});
@@ -3677,7 +3828,7 @@ function IssueCertWizard({
   }, [extraGlobalValues, courseName, templateHasDomain, templateHasCompany, selectedTemplate]);
 
   useEffect(() => {
-    if (!open || step !== 2) return;
+    if (!open || step !== 1) return;
     const q = bulkLeadSearch.trim();
     if (!bulkLeadSuggestionsOpen || q.length < 1) {
       setBulkLeads([]);
@@ -3938,16 +4089,8 @@ function IssueCertWizard({
           return;
         }
       }
-      setStep(2);
-      return;
-    }
-    if (step === 2) {
       if (selectedRecipientIds.length === 0) {
         toast({ variant: "destructive", title: "Select recipients", description: "Add or pick at least one recipient to continue." });
-        return;
-      }
-      if (!selectedTemplate) {
-        toast({ variant: "destructive", title: "Select template", description: "Choose a certificate template." });
         return;
       }
       const missing: string[] = [];
@@ -3982,12 +4125,12 @@ function IssueCertWizard({
       }
       setCertIdsByRecipientId(nextIds);
       setVerifyTokensByRecipientId(nextTokens);
-      setStep(3);
+      setStep(2);
       return;
     }
   };
 
-  const goBack = () => setStep((s) => (s === 4 ? 3 : s === 3 ? 2 : 1));
+  const goBack = () => setStep((s) => (s === 3 ? 2 : 1));
 
   const confirm = async () => {
     if (!selectedTemplate) return;
@@ -4065,6 +4208,23 @@ function IssueCertWizard({
           });
         } catch (pdfErr) {
           console.error(pdfErr);
+          toast({
+            variant: "destructive",
+            title: "PDF capture failed",
+            description:
+              pdfErr instanceof Error
+                ? `${name}: ${pdfErr.message}`
+                : `Could not build PDF for ${name}. Use an image background and retry.`,
+          });
+          continue;
+        }
+        if (!pdfBase64) {
+          toast({
+            variant: "destructive",
+            title: "PDF missing",
+            description: `Empty PDF for ${name}. Skipped.`,
+          });
+          continue;
         }
         const res = await api.certificates.issue({
           recipientId: recipient.id,
@@ -4075,7 +4235,7 @@ function IssueCertWizard({
           courseName: course,
           issueDate,
           verifyToken: issued.verifyToken,
-          pdf_base64: pdfBase64 || undefined,
+          pdf_base64: pdfBase64,
         });
         issueResults.push({ recipientId: recipient.id, res });
       }
@@ -4117,7 +4277,7 @@ function IssueCertWizard({
         attachmentUrl: payload.pdfUrl,
         attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.certificateId}.pdf`,
       });
-      setStep(4);
+      setStep(3);
       toast({ title: "Issued certificates", description: `${issuedList.length} certificate(s) issued.` });
     } catch (e: any) {
       toast({ variant: "destructive", title: "Issue failed", description: e?.message || "Unable to issue certificates." });
@@ -4186,177 +4346,190 @@ function IssueCertWizard({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-6xl max-h-[min(90dvh,100%)] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="text-base">Issue Certificates</DialogTitle>
+          <DialogTitle className="text-base">
+            {selectedTemplate
+              ? `Bulk issue — ${selectedTemplate.name}`
+              : "Bulk issue certificates"}
+          </DialogTitle>
+          {selectedTemplate ? (
+            <DialogDescription className="text-xs">
+              {templateLocked ? "Using this template · " : ""}
+              Placeholders:{" "}
+              {templateBulkKeys.length
+                ? templateBulkKeys.map((k) => `{{${k}}}`).join(", ")
+                : "none detected"}
+            </DialogDescription>
+          ) : null}
         </DialogHeader>
 
         <div className="mb-4 flex items-center gap-2 text-xs">
-          <Badge variant={step === 1 ? "default" : "secondary"} className="text-[10px]">1. Template</Badge>
-          <Badge variant={step === 2 ? "default" : "secondary"} className="text-[10px]">2. Recipients</Badge>
-          <Badge variant={step === 3 ? "default" : "secondary"} className="text-[10px]">3. Review</Badge>
-          <Badge variant={step === 4 ? "default" : "secondary"} className="text-[10px]">4. Send Email</Badge>
+          <Badge variant={step === 1 ? "default" : "secondary"} className="text-[10px]">1. Recipients</Badge>
+          <Badge variant={step === 2 ? "default" : "secondary"} className="text-[10px]">2. Review</Badge>
+          <Badge variant={step === 3 ? "default" : "secondary"} className="text-[10px]">3. Send Email</Badge>
         </div>
 
         {step === 1 && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader className="py-3 px-4">
-                <CardTitle className="text-sm">Pick a template</CardTitle>
-                <CardDescription className="text-xs">
-                  Columns for bulk import follow only the placeholders on this template.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="px-4 pb-4">
-                <ScrollArea className="h-[420px] pr-3">
-                  <div className="grid gap-3">
-                    {activeTemplates.map((t) => {
-                      const selected = selectedTemplateId === t.id;
-                      const keys = getCertificateTemplatePlaceholderKeys(t);
-                      return (
-                        <button
-                          key={t.id}
-                          type="button"
-                          className={cn(
-                            "rounded-xl border p-3 text-left transition-colors",
-                            selected ? "border-primary ring-2 ring-primary/20 bg-primary/5" : "hover:bg-muted/20",
-                          )}
-                          onClick={() => {
-                            setSelectedTemplateId(t.id);
-                            setSelectedRecipientIds([]);
-                            setRowValuesByRecipientId({});
-                          }}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-sm font-semibold truncate">{t.name}</div>
-                              <div className="text-[11px] text-muted-foreground font-mono truncate">{t.id}</div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <Badge variant={statusBadgeVariant(t.status)} className="text-[10px]">{t.status}</Badge>
-                              <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(t.certType))}>{t.certType}</Badge>
-                            </div>
-                          </div>
-                          {keys.length > 0 ? (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {keys.map((k) => (
-                                <code key={k} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{`{{${k}}}`}</code>
-                              ))}
-                            </div>
-                          ) : null}
-                          <div className="mt-2 overflow-hidden rounded-lg border bg-muted/10">
-                            <CertificatePreviewThumb template={t} height={120} />
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
+          <div className="space-y-4">
+            {!templateLocked ? (
+              <Card>
+                <CardHeader className="py-3 px-4">
+                  <CardTitle className="text-sm">Template</CardTitle>
+                  <CardDescription className="text-xs">
+                    Choose which certificate template to issue (Bulk from a template card skips this).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="px-4 pb-4">
+                  <Select
+                    value={selectedTemplateId || undefined}
+                    onValueChange={(v) => {
+                      setSelectedTemplateId(v);
+                      setSelectedRecipientIds([]);
+                      setRowValuesByRecipientId({});
+                    }}
+                  >
+                    <SelectTrigger className="h-10">
+                      <SelectValue placeholder="Select template" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {activeTemplates.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>
+                          {t.name} ({t.certType})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </CardContent>
+              </Card>
+            ) : null}
 
             <Card>
               <CardHeader className="py-3 px-4">
-                <CardTitle className="text-sm">Issue details</CardTitle>
+                <CardTitle className="text-sm">Template placeholders</CardTitle>
                 <CardDescription className="text-xs">
-                  Only fields used in the selected template
+                  Shared fields for this template
                   {selectedTemplate && templateBulkKeys.length
                     ? ` · ${templateBulkKeys.map((k) => `{{${k}}}`).join(", ")}`
-                    : ""}
+                    : selectedTemplate
+                      ? " · no custom placeholders"
+                      : ""}
                 </CardDescription>
               </CardHeader>
               <CardContent className="px-4 pb-4 space-y-3">
-                <div>
-                  <Label className="text-xs">Issue date *</Label>
-                  <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
-                </div>
-                {templateHasCompany ? (
-                  <div>
-                    <Label className="text-xs">{certPlaceholderLabel("company_name")} *</Label>
-                    <Input
-                      value={extraGlobalValues.company_name || selectedTemplate?.fields.companyName || ""}
-                      onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, company_name: e.target.value }))}
-                      placeholder="Company name"
-                    />
-                  </div>
-                ) : null}
-                {templateHasDomain || templateRowKeys.some((k) => !["recipient_name", "recipient_email", "name", "email"].includes(k)) ? (
-                  <div className="rounded-md border p-3 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <Label className="text-xs">Defaults for recipients</Label>
-                        <p className="text-[10px] text-muted-foreground">
-                          Optional — applied when you add/select recipients. You can still edit per person in step 2.
-                        </p>
-                      </div>
-                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={applyGlobalExtrasToSelected}>
-                        Apply to selected
-                      </Button>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      {templateHasDomain ? (
-                        <div>
-                          <Label className="text-[11px]">{certPlaceholderLabel("domain_name")}</Label>
-                          <Input
-                            value={courseName}
-                            onChange={(e) => setCourseName(e.target.value)}
-                            placeholder="Course / Domain default"
-                          />
-                        </div>
-                      ) : null}
-                      {templateRowKeys
-                        .filter((k) => !["recipient_name", "recipient_email", "name", "email", "domain_name"].includes(k))
-                        .map((k) => (
-                          <div key={k}>
-                            <Label className="text-[11px]">
-                              {certPlaceholderLabel(k)}{" "}
-                              <span className="font-mono text-muted-foreground">{`{{${k}}}`}</span>
-                            </Label>
-                            <Input
-                              value={extraGlobalValues[k] || ""}
-                              onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, [k]: e.target.value }))}
-                              placeholder={certPlaceholderLabel(k)}
-                            />
-                          </div>
+                {!selectedTemplate ? (
+                  <p className="text-sm text-muted-foreground">Select a template to see its placeholders.</p>
+                ) : (
+                  <>
+                    {templateBulkKeys.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {templateBulkKeys.map((k) => (
+                          <code key={k} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">{`{{${k}}}`}</code>
                         ))}
+                      </div>
+                    ) : null}
+                    <div>
+                      <Label className="text-xs">Issue date *</Label>
+                      <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
                     </div>
-                  </div>
-                ) : null}
-
-                <div className="pt-2">
-                  <Label className="text-xs">Preview (selected template)</Label>
-                  <div className="mt-2">
-                    {selectedTemplate ? (
-                      <CertificatePreviewFit
-                        pageFormat={selectedTemplate.style.pageFormat}
-                        className={cn(
-                          "rounded-lg border bg-muted/10 p-2",
-                          certPageIsPortrait(selectedTemplate.style.pageFormat)
-                            ? "max-h-[min(68vh,880px)] min-h-[300px]"
-                            : "max-h-[50vh]",
-                        )}
-                      >
-                        <CertificatePreview
-                          template={selectedTemplate}
-                          recipientName={selectedRecipients[0]?.name || selectedTemplate.fields.recipientName}
-                          domainName={courseName || selectedTemplate.fields.domainName}
-                          companyName={extraGlobalValues.company_name || selectedTemplate.fields.companyName}
-                          date={issueDate}
-                          placeholderValues={extraGlobalValues}
-                          overrides={{ domainName: courseName || selectedTemplate.fields.domainName }}
-                          renderPdfBackground
+                    {templateHasCompany ? (
+                      <div>
+                        <Label className="text-xs">{certPlaceholderLabel("company_name")} *</Label>
+                        <Input
+                          value={extraGlobalValues.company_name || selectedTemplate.fields.companyName || ""}
+                          onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, company_name: e.target.value }))}
+                          placeholder="Company name"
                         />
-                      </CertificatePreviewFit>
-                    ) : (
-                      <div className="text-sm text-muted-foreground">Select a template to preview.</div>
-                    )}
-                  </div>
-                </div>
+                      </div>
+                    ) : null}
+                    {templateHasDomain ||
+                    templateRowKeys.some((k) => !["recipient_name", "recipient_email", "name", "email"].includes(k)) ||
+                    templateSharedKeys.some((k) => k !== "issue_date" && k !== "company_name") ? (
+                      <div className="rounded-md border p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <Label className="text-xs">Defaults for recipients</Label>
+                            <p className="text-[10px] text-muted-foreground">
+                              Optional — applied when you add/select recipients. Edit per person below.
+                            </p>
+                          </div>
+                          <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={applyGlobalExtrasToSelected}>
+                            Apply to selected
+                          </Button>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {templateHasDomain ? (
+                            <div>
+                              <Label className="text-[11px]">{certPlaceholderLabel("domain_name")}</Label>
+                              <Input
+                                value={courseName}
+                                onChange={(e) => setCourseName(e.target.value)}
+                                placeholder="Course / Domain default"
+                              />
+                            </div>
+                          ) : null}
+                          {templateSharedKeys
+                            .filter((k) => k !== "issue_date" && k !== "company_name" && k !== "domain_name")
+                            .map((k) => (
+                              <div key={k}>
+                                <Label className="text-[11px]">
+                                  {certPlaceholderLabel(k)}{" "}
+                                  <span className="font-mono text-muted-foreground">{`{{${k}}}`}</span>
+                                </Label>
+                                <Input
+                                  value={extraGlobalValues[k] || ""}
+                                  onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, [k]: e.target.value }))}
+                                  placeholder={certPlaceholderLabel(k)}
+                                />
+                              </div>
+                            ))}
+                          {templateRowKeys
+                            .filter((k) => !["recipient_name", "recipient_email", "name", "email", "domain_name"].includes(k))
+                            .filter((k) => !templateSharedKeys.includes(k))
+                            .map((k) => (
+                              <div key={k}>
+                                <Label className="text-[11px]">
+                                  {certPlaceholderLabel(k)}{" "}
+                                  <span className="font-mono text-muted-foreground">{`{{${k}}}`}</span>
+                                </Label>
+                                <Input
+                                  value={extraGlobalValues[k] || ""}
+                                  onChange={(e) => setExtraGlobalValues((prev) => ({ ...prev, [k]: e.target.value }))}
+                                  placeholder={certPlaceholderLabel(k)}
+                                />
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div>
+                      <Label className="text-xs">Preview</Label>
+                      <div className="mt-2">
+                        <CertificatePreviewFit
+                          pageFormat={selectedTemplate.style.pageFormat}
+                          className={cn(
+                            "rounded-lg border bg-muted/10 p-2",
+                            certPageIsPortrait(selectedTemplate.style.pageFormat)
+                              ? "max-h-[min(48vh,520px)] min-h-[220px]"
+                              : "max-h-[40vh]",
+                          )}
+                        >
+                          <CertificatePreview
+                            template={selectedTemplate}
+                            recipientName={selectedRecipients[0]?.name || selectedTemplate.fields.recipientName}
+                            domainName={courseName || selectedTemplate.fields.domainName}
+                            companyName={extraGlobalValues.company_name || selectedTemplate.fields.companyName}
+                            date={issueDate}
+                            placeholderValues={extraGlobalValues}
+                            overrides={{ domainName: courseName || selectedTemplate.fields.domainName }}
+                            renderPdfBackground
+                          />
+                        </CertificatePreviewFit>
+                      </div>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
-          </div>
-        )}
 
-        {step === 2 && (
-          <div className="space-y-4">
             <Card>
               <CardHeader className="py-3 px-4">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -4537,7 +4710,7 @@ function IssueCertWizard({
           </div>
         )}
 
-        {step === 3 && (
+        {step === 2 && (
           <Card>
             <CardHeader className="py-3 px-4">
               <CardTitle className="text-sm">Review</CardTitle>
@@ -4599,7 +4772,7 @@ function IssueCertWizard({
           </Card>
         )}
 
-        {step === 4 && issuePayload && (
+        {step === 3 && issuePayload && (
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
             <div className="space-y-3">
               <div className="rounded-md border border-emerald-300 bg-emerald-50 text-emerald-900 px-3 py-2 text-sm">
@@ -4689,11 +4862,11 @@ function IssueCertWizard({
             <Button variant="outline" onClick={() => (step === 1 ? onOpenChange(false) : goBack())}>
               {step === 1 ? "Cancel" : "Back"}
             </Button>
-            {step < 3 ? (
+            {step === 1 ? (
               <Button onClick={goNext} className="gap-1.5">
                 Next
               </Button>
-            ) : step === 3 ? (
+            ) : step === 2 ? (
               <Button onClick={confirm} className="gap-1.5" disabled={isIssuing}>
                 <Send className="h-4 w-4" />
                 {isIssuing ? "Preparing email..." : "Send Mail"}
@@ -4715,6 +4888,61 @@ function formatCertIdParts(certId: string) {
   const parts = certId.split("-");
   const [p0, p1, p2, p3] = [parts[0] || "", parts[1] || "", parts[2] || "", parts.slice(3).join("-") || ""];
   return { prefix: p0, type: p1, date: p2, suffix: p3 };
+}
+
+/** Shows the stored issued PDF (same file as email attachment), not a live template re-render. */
+function IssuedCertificatePdfViewer({ certificateId }: { certificateId: string }) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let revoked: string | null = null;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setUrl("");
+    void (async () => {
+      try {
+        const blob = await api.certificates.pdf(certificateId);
+        if (cancelled) return;
+        const next = URL.createObjectURL(blob);
+        revoked = next;
+        setUrl(next);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Could not load certificate PDF");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
+  }, [certificateId]);
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[320px] items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" />
+        Loading certificate PDF…
+      </div>
+    );
+  }
+  if (error || !url) {
+    return (
+      <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+        {error || "PDF not available for this certificate."}
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border bg-muted/20">
+      <iframe title={`Certificate ${certificateId}`} src={url} className="h-[min(70vh,820px)] w-full bg-white" />
+    </div>
+  );
 }
 
 function CertIdBadge({ certId }: { certId: string }) {
@@ -4749,11 +4977,6 @@ function IssuedCertificatesTable({
   }, [confirmRevokeId]);
 
   const previewCert = useMemo(() => issuedCerts.find((c) => c.id === previewCertId) || null, [issuedCerts, previewCertId]);
-  const previewTemplate = useMemo(() => (previewCert ? templates.find((t) => t.id === previewCert.templateId) || null : null), [templates, previewCert]);
-  const previewVerifyUrl = useMemo(() => {
-    if (!previewCert?.verifyToken) return "";
-    return getVerifyURL(previewCert.id, previewCert.verifyToken);
-  }, [previewCert]);
 
   return (
     <>
@@ -4846,31 +5069,12 @@ function IssuedCertificatesTable({
         <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)]">
           <DialogHeader>
             <DialogTitle>Certificate Preview</DialogTitle>
+            <DialogDescription className="text-xs">
+              Shows the same PDF that was generated at issue time (matches the email attachment).
+            </DialogDescription>
           </DialogHeader>
-          {previewCert && previewTemplate ? (
-            <div className="flex flex-col gap-4 p-4 bg-muted/30 rounded-lg">
-              <CertificatePreviewFit
-                pageFormat={previewTemplate.style.pageFormat}
-                className={cn(
-                  certPageIsPortrait(previewTemplate.style.pageFormat)
-                    ? "max-h-[min(75vh,920px)] min-h-[320px]"
-                    : "max-h-[70vh]",
-                )}
-              >
-                <CertificatePreview
-                  template={previewTemplate}
-                  certID={previewCert.id}
-                  verifyUrl={previewVerifyUrl}
-                  recipientName={previewCert.recipientName}
-                  domainName={previewCert.courseName}
-                  date={previewCert.issueDate}
-                  overrides={{
-                    recipientName: previewCert.recipientName,
-                    domainName: previewCert.courseName,
-                  }}
-                />
-              </CertificatePreviewFit>
-            </div>
+          {previewCert ? (
+            <IssuedCertificatePdfViewer certificateId={previewCert.id} />
           ) : (
             <div className="text-sm text-muted-foreground">Unable to load preview.</div>
           )}
@@ -4878,7 +5082,41 @@ function IssuedCertificatesTable({
             <Button variant="outline" onClick={() => setPreviewCertId(null)}>
               Close
             </Button>
-            <Button onClick={() => window.print()} className="gap-1.5">
+            <Button
+              className="gap-1.5"
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const blob = await api.certificates.pdf(previewCert!.id);
+                    const url = URL.createObjectURL(blob);
+                    const w = window.open(url, "_blank");
+                    if (!w) {
+                      toast({
+                        variant: "destructive",
+                        title: "Popup blocked",
+                        description: "Allow popups to print or save the PDF.",
+                      });
+                    } else {
+                      w.addEventListener("load", () => {
+                        try {
+                          w.print();
+                        } catch {
+                          /* user can print from the tab */
+                        }
+                      });
+                    }
+                    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                  } catch (e: unknown) {
+                    toast({
+                      variant: "destructive",
+                      title: "PDF unavailable",
+                      description: e instanceof Error ? e.message : "Could not open certificate PDF.",
+                    });
+                  }
+                })();
+              }}
+              disabled={!previewCert}
+            >
               <Printer className="h-3.5 w-3.5" /> Print / Save as PDF
             </Button>
           </DialogFooter>
@@ -5094,9 +5332,12 @@ export function CertificateVerifyPage() {
   const [displayId, setDisplayId] = useState(certId);
   const [displayOverrides, setDisplayOverrides] = useState<Partial<CertTemplateFields>>({});
   const [displayDate, setDisplayDate] = useState<string | undefined>(undefined);
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [recipientLabel, setRecipientLabel] = useState("");
 
   useEffect(() => {
     let cancelled = false;
+    let revoked: string | null = null;
     async function load() {
       const normalizedCertId = decodeURIComponent(certId || "");
       if (!normalizedCertId) {
@@ -5117,6 +5358,8 @@ export function CertificateVerifyPage() {
         setDisplayTemplate(embedded.template);
         setDisplayOverrides(embedded.overrides);
         setDisplayDate(undefined);
+        setPdfUrl("");
+        setRecipientLabel(String(embedded.overrides.recipientName || ""));
         setLoading(false);
         return;
       }
@@ -5124,18 +5367,36 @@ export function CertificateVerifyPage() {
       try {
         const res = await api.certificates.verifyPublic(normalizedCertId, verifyToken);
         if (cancelled) return;
-        if (res?.verified && res.template) {
-          setVerified(true);
-          setDisplayId(String(res.certId || normalizedCertId));
-          setDisplayTemplate(res.template as CertTemplate);
-          setDisplayOverrides({
-            recipientName: String(res.recipientName || res.overrides?.recipientName || ""),
-            domainName: String(res.courseName || res.overrides?.domainName || ""),
-            ...(res.overrides || {}),
-          });
-          setDisplayDate(typeof res.issueDate === "string" ? res.issueDate : undefined);
-        } else {
+        if (!res?.verified) {
           setVerified(false);
+          return;
+        }
+
+        setVerified(true);
+        setDisplayId(String(res.certId || normalizedCertId));
+        setRecipientLabel(String(res.recipientName || res.overrides?.recipientName || ""));
+        setDisplayOverrides({
+          recipientName: String(res.recipientName || res.overrides?.recipientName || ""),
+          domainName: String(res.courseName || res.overrides?.domainName || ""),
+          ...(res.overrides || {}),
+        });
+        setDisplayDate(typeof res.issueDate === "string" ? res.issueDate : undefined);
+        if (res.template) {
+          setDisplayTemplate(res.template as CertTemplate);
+        }
+
+        // Prefer the stored issued PDF (same bytes as email) so bg + fonts match.
+        const tryPdf = res.hasPdf !== false;
+        if (tryPdf) {
+          try {
+            const blob = await api.certificates.verifyPublicPdf(normalizedCertId, verifyToken);
+            if (cancelled) return;
+            const next = URL.createObjectURL(blob);
+            revoked = next;
+            setPdfUrl(next);
+          } catch {
+            // Fall back to live template re-render below.
+          }
         }
       } catch {
         if (!cancelled) setVerified(false);
@@ -5144,15 +5405,20 @@ export function CertificateVerifyPage() {
       }
     }
     void load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
   }, [certId, verifyToken]);
+
+  const showLiveFallback = verified && !pdfUrl && displayTemplate;
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-8">
-      <div className="max-w-5xl mx-auto">
+      <div className="max-w-5xl mx-auto space-y-4">
         {loading ? (
           <Card><CardContent className="py-10 text-center text-muted-foreground">Verifying certificate…</CardContent></Card>
-        ) : !verified || !displayTemplate ? (
+        ) : !verified || (!pdfUrl && !displayTemplate) ? (
           <Card>
             <CardContent className="py-10 text-center">
               <h1 className="text-xl font-bold">Certificate not found</h1>
@@ -5160,25 +5426,54 @@ export function CertificateVerifyPage() {
             </CardContent>
           </Card>
         ) : (
-          <CertificatePreviewFit
-            pageFormat={displayTemplate.style.pageFormat}
-            className={cn(
-              certPageIsPortrait(displayTemplate.style.pageFormat)
-                ? "min-h-[min(80vh,1000px)]"
-                : "min-h-[40vh]",
-            )}
-          >
-            <CertificatePreview
-              template={displayTemplate}
-              certID={displayId}
-              overrides={displayOverrides}
-              recipientName={displayOverrides.recipientName}
-              domainName={displayOverrides.domainName}
-              companyName={displayOverrides.companyName}
-              date={displayDate}
-              showQr={false}
-            />
-          </CertificatePreviewFit>
+          <>
+            <div className="text-center space-y-1">
+              <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">Certificate verified</p>
+              {recipientLabel ? (
+                <p className="text-sm text-muted-foreground">
+                  Issued to <span className="font-medium text-foreground">{recipientLabel}</span>
+                  {displayId ? (
+                    <>
+                      {" · "}
+                      <span className="font-mono text-xs">{displayId}</span>
+                    </>
+                  ) : null}
+                </p>
+              ) : displayId ? (
+                <p className="font-mono text-xs text-muted-foreground">{displayId}</p>
+              ) : null}
+            </div>
+            {pdfUrl ? (
+              <div className="overflow-hidden rounded-lg border bg-muted/20 shadow-sm">
+                <iframe
+                  title={`Certificate ${displayId}`}
+                  src={pdfUrl}
+                  className="h-[min(80vh,920px)] w-full bg-white"
+                />
+              </div>
+            ) : showLiveFallback ? (
+              <CertificatePreviewFit
+                pageFormat={displayTemplate.style.pageFormat}
+                className={cn(
+                  certPageIsPortrait(displayTemplate.style.pageFormat)
+                    ? "min-h-[min(80vh,1000px)]"
+                    : "min-h-[40vh]",
+                )}
+              >
+                <CertificatePreview
+                  template={displayTemplate}
+                  certID={displayId}
+                  overrides={displayOverrides}
+                  recipientName={displayOverrides.recipientName}
+                  domainName={displayOverrides.domainName}
+                  companyName={displayOverrides.companyName}
+                  date={displayDate}
+                  showQr={false}
+                  renderPdfBackground
+                />
+              </CertificatePreviewFit>
+            ) : null}
+          </>
         )}
       </div>
     </div>

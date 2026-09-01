@@ -26,16 +26,30 @@ type LeadOption = {
   phone: string;
 };
 
+export type ManualPaymentPresetCandidate = {
+  id: string;
+  customer_name: string;
+  customer_email?: string | null;
+  customer_phone?: string | null;
+  pitch_price?: number;
+  total_paid?: number;
+  remaining?: number;
+  next_installment?: number;
+};
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmitted: () => void;
+  /** When set (Update payments from candidate detail): no pitch field; proof still required. */
+  presetCandidate?: ManualPaymentPresetCandidate | null;
 }
 
 export default function ManualPaymentDialog({
   open,
   onOpenChange,
   onSubmitted,
+  presetCandidate = null,
 }: Props) {
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -55,6 +69,16 @@ export default function ManualPaymentDialog({
   const [loadingLeads, setLoadingLeads] = useState(false);
   const [leadPickerOpen, setLeadPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pitchPrice, setPitchPrice] = useState("");
+  const [candidateId, setCandidateId] = useState("");
+  const [matchedCandidate, setMatchedCandidate] = useState<{
+    id: string;
+    pitch_price: number;
+    total_paid: number;
+    remaining: number;
+    next_installment: number;
+  } | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
 
   function reset() {
     setCustomerName("");
@@ -66,11 +90,32 @@ export default function ManualPaymentDialog({
     setProof(null);
     setLeadId("");
     setLeadPickerOpen(false);
+    setPitchPrice("");
+    setCandidateId("");
+    setMatchedCandidate(null);
     if (fileRef.current) fileRef.current.value = "";
   }
 
+  const isUpdateMode = Boolean(presetCandidate?.id);
+
   useEffect(() => {
     if (!open) return;
+    if (presetCandidate?.id) {
+      setCustomerName(presetCandidate.customer_name || "");
+      setCustomerEmail(presetCandidate.customer_email || "");
+      setCustomerPhone(presetCandidate.customer_phone || "");
+      setCandidateId(presetCandidate.id);
+      setPitchPrice("");
+      setMatchedCandidate({
+        id: presetCandidate.id,
+        pitch_price: Number(presetCandidate.pitch_price || 0),
+        total_paid: Number(presetCandidate.total_paid || 0),
+        remaining: Number(presetCandidate.remaining || 0),
+        next_installment: Number(presetCandidate.next_installment || 1),
+      });
+      setLeadPickerOpen(false);
+      return;
+    }
     let cancelled = false;
     const load = async () => {
       setLoadingLeads(true);
@@ -105,7 +150,7 @@ export default function ManualPaymentDialog({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, presetCandidate]);
 
   useEffect(() => {
     if (!leadPickerOpen) return;
@@ -137,6 +182,8 @@ export default function ManualPaymentDialog({
   function handleNameChange(value: string) {
     setCustomerName(value);
     setLeadId("");
+    setCandidateId("");
+    setMatchedCandidate(null);
     setLeadPickerOpen(true);
   }
 
@@ -145,8 +192,56 @@ export default function ManualPaymentDialog({
     setCustomerName(l.name);
     setCustomerEmail(l.email || "");
     setCustomerPhone(l.phone || "");
+    setCandidateId("");
+    setMatchedCandidate(null);
     setLeadPickerOpen(false);
   }
+
+  useEffect(() => {
+    if (isUpdateMode) return;
+    const email = customerEmail.trim();
+    const phone = customerPhone.trim();
+    if (!open || (!email && !phone)) {
+      setMatchedCandidate(null);
+      setCandidateId("");
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setLookupLoading(true);
+      try {
+        const res = (await api.paymentCandidates.lookup({ email, phone })) as {
+          data?: {
+            id: string;
+            pitch_price: number;
+            total_paid: number;
+            remaining: number;
+            next_installment: number;
+          } | null;
+        };
+        if (cancelled) return;
+        if (res?.data?.id) {
+          setMatchedCandidate(res.data);
+          setCandidateId(res.data.id);
+          setPitchPrice("");
+        } else {
+          setMatchedCandidate(null);
+          setCandidateId("");
+        }
+      } catch {
+        if (!cancelled) {
+          setMatchedCandidate(null);
+          setCandidateId("");
+        }
+      } finally {
+        if (!cancelled) setLookupLoading(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, customerEmail, customerPhone, isUpdateMode]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -185,6 +280,16 @@ export default function ManualPaymentDialog({
       toast({ variant: "destructive", title: "Upload a payment proof image" });
       return;
     }
+    if (!candidateId) {
+      const pitch = Number(pitchPrice);
+      if (!Number.isFinite(pitch) || pitch <= 0) {
+        toast({
+          variant: "destructive",
+          title: "Pitch price is required for a new candidate",
+        });
+        return;
+      }
+    }
 
     setSaving(true);
     try {
@@ -196,6 +301,9 @@ export default function ManualPaymentDialog({
         customer_email: email,
         paid_at: paid,
         proof,
+        candidate_id: candidateId || undefined,
+        pitch_price: candidateId ? undefined : pitchPrice,
+        lead_id: leadId || undefined,
       });
       toast({
         title: "Payment submitted",
@@ -226,117 +334,181 @@ export default function ManualPaymentDialog({
     >
       <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Add manual payment</DialogTitle>
+          <DialogTitle>
+            {isUpdateMode ? "Update payment" : "Add manual payment"}
+          </DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Customer name — search leads or type manually */}
-          <div className="space-y-1.5" ref={leadPickerRef}>
-            <Label htmlFor="mp-customer">Customer name *</Label>
-            <div className="relative">
-              <Input
-                id="mp-customer"
-                required
-                autoComplete="off"
-                role="combobox"
-                aria-expanded={leadPickerOpen}
-                aria-autocomplete="list"
-                aria-controls="mp-lead-listbox"
-                disabled={loadingLeads}
-                value={customerName}
-                onChange={(e) => handleNameChange(e.target.value)}
-                onFocus={() => setLeadPickerOpen(true)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") setLeadPickerOpen(false);
-                }}
-                placeholder="Type name or search leads…"
-                className="pr-9"
-              />
-              <button
-                type="button"
-                tabIndex={-1}
-                aria-label="Show leads"
-                disabled={loadingLeads || leads.length === 0}
-                onClick={() => setLeadPickerOpen((o) => !o)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-gray-400 hover:text-gray-600 disabled:opacity-30"
-              >
-                <ChevronDown
-                  size={18}
-                  className={
-                    leadPickerOpen ? "rotate-180 transition-transform" : ""
-                  }
-                />
-              </button>
-
-              {leadPickerOpen && leads.length > 0 ? (
-                <ul
-                  id="mp-lead-listbox"
-                  role="listbox"
-                  className="absolute z-20 left-0 right-0 mt-1 max-h-52 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg py-1"
-                >
-                  {filteredLeads.length === 0 ? (
-                    <li className="px-3 py-2 text-xs text-gray-500">
-                      No leads match — enter details manually
-                    </li>
-                  ) : (
-                    filteredLeads.map((l) => (
-                      <li
-                        key={l.id}
-                        role="option"
-                        aria-selected={leadId === l.id}
-                      >
-                        <button
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => selectLead(l)}
-                          className={`w-full text-left px-3 py-2 text-sm hover:bg-[#e6faf0] ${
-                            leadId === l.id ? "bg-[#e6faf0]/80" : ""
-                          }`}
-                        >
-                          <span className="font-medium text-[#0f2318] block truncate">
-                            {l.name}
-                          </span>
-                          {(l.email || l.phone) && (
-                            <span className="text-[11px] text-gray-500 block truncate">
-                              {[l.email, l.phone].filter(Boolean).join(" · ")}
-                            </span>
-                          )}
-                        </button>
-                      </li>
-                    ))
-                  )}
-                </ul>
+          {isUpdateMode ? (
+            <>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
+                <p className="font-semibold text-gray-900">{customerName}</p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {[customerEmail, customerPhone].filter(Boolean).join(" · ")}
+                </p>
+              </div>
+              {matchedCandidate ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                  <p className="font-medium">
+                    Next installment #{matchedCandidate.next_installment}
+                  </p>
+                  <p className="text-xs mt-0.5">
+                    Pitch ₹{Number(matchedCandidate.pitch_price).toLocaleString("en-IN")} ·
+                    Paid ₹{Number(matchedCandidate.total_paid).toLocaleString("en-IN")} ·
+                    Remaining ₹{Number(matchedCandidate.remaining).toLocaleString("en-IN")}
+                  </p>
+                </div>
               ) : null}
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              {leads.length === 0 && !loadingLeads
-                ? "No leads found — enter the customer manually"
-                : "Pick a lead to auto-fill email and phone, or type a new name"}
-            </p>
-          </div>
+            </>
+          ) : (
+            <>
+              <div className="space-y-1.5" ref={leadPickerRef}>
+                <Label htmlFor="mp-customer">Customer name *</Label>
+                <div className="relative">
+                  <Input
+                    id="mp-customer"
+                    required
+                    autoComplete="off"
+                    role="combobox"
+                    aria-expanded={leadPickerOpen}
+                    aria-autocomplete="list"
+                    aria-controls="mp-lead-listbox"
+                    disabled={loadingLeads}
+                    value={customerName}
+                    onChange={(e) => handleNameChange(e.target.value)}
+                    onFocus={() => setLeadPickerOpen(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") setLeadPickerOpen(false);
+                    }}
+                    placeholder="Type name or search leads…"
+                    className="pr-9"
+                  />
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    aria-label="Show leads"
+                    disabled={loadingLeads || leads.length === 0}
+                    onClick={() => setLeadPickerOpen((o) => !o)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-gray-400 hover:text-gray-600 disabled:opacity-30"
+                  >
+                    <ChevronDown
+                      size={18}
+                      className={
+                        leadPickerOpen ? "rotate-180 transition-transform" : ""
+                      }
+                    />
+                  </button>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="mp-email">Email *</Label>
-              <Input
-                id="mp-email"
-                type="email"
-                required
-                value={customerEmail}
-                onChange={(e) => setCustomerEmail(e.target.value)}
-                placeholder="customer@email.com"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="mp-phone">Phone *</Label>
-              <Input
-                id="mp-phone"
-                required
-                value={customerPhone}
-                onChange={(e) => setCustomerPhone(e.target.value)}
-                placeholder="Phone number"
-              />
-            </div>
-          </div>
+                  {leadPickerOpen && leads.length > 0 ? (
+                    <ul
+                      id="mp-lead-listbox"
+                      role="listbox"
+                      className="absolute z-20 left-0 right-0 mt-1 max-h-52 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg py-1"
+                    >
+                      {filteredLeads.length === 0 ? (
+                        <li className="px-3 py-2 text-xs text-gray-500">
+                          No leads match — enter details manually
+                        </li>
+                      ) : (
+                        filteredLeads.map((l) => (
+                          <li
+                            key={l.id}
+                            role="option"
+                            aria-selected={leadId === l.id}
+                          >
+                            <button
+                              type="button"
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => selectLead(l)}
+                              className={`w-full text-left px-3 py-2 text-sm hover:bg-[#e6faf0] ${
+                                leadId === l.id ? "bg-[#e6faf0]/80" : ""
+                              }`}
+                            >
+                              <span className="font-medium text-[#0f2318] block truncate">
+                                {l.name}
+                              </span>
+                              {(l.email || l.phone) && (
+                                <span className="text-[11px] text-gray-500 block truncate">
+                                  {[l.email, l.phone].filter(Boolean).join(" · ")}
+                                </span>
+                              )}
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  ) : null}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {leads.length === 0 && !loadingLeads
+                    ? "No leads found — enter the customer manually"
+                    : "Pick a lead to auto-fill email and phone, or type a new name"}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="mp-email">Email *</Label>
+                  <Input
+                    id="mp-email"
+                    type="email"
+                    required
+                    value={customerEmail}
+                    onChange={(e) => {
+                      setCustomerEmail(e.target.value);
+                      setCandidateId("");
+                    }}
+                    placeholder="customer@email.com"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="mp-phone">Phone *</Label>
+                  <Input
+                    id="mp-phone"
+                    required
+                    value={customerPhone}
+                    onChange={(e) => {
+                      setCustomerPhone(e.target.value);
+                      setCandidateId("");
+                    }}
+                    placeholder="Phone number"
+                  />
+                </div>
+              </div>
+
+              {lookupLoading ? (
+                <p className="text-xs text-muted-foreground">Checking existing candidate…</p>
+              ) : matchedCandidate ? (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                  <p className="font-medium">Returning candidate</p>
+                  <p className="text-xs mt-0.5">
+                    Pitch ₹{Number(matchedCandidate.pitch_price).toLocaleString("en-IN")} ·
+                    Paid ₹{Number(matchedCandidate.total_paid).toLocaleString("en-IN")} ·
+                    Remaining ₹{Number(matchedCandidate.remaining).toLocaleString("en-IN")} ·
+                    Installment #{matchedCandidate.next_installment}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <Label htmlFor="mp-pitch">Pitch price (₹) *</Label>
+                  <Input
+                    id="mp-pitch"
+                    type="number"
+                    min="1"
+                    step="0.01"
+                    required={!candidateId}
+                    value={pitchPrice}
+                    onChange={(e) => setPitchPrice(e.target.value)}
+                    placeholder="Total amount candidate must pay"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Required for new candidates. Repeat payments for the same email/phone
+                    auto-link as the next installment.
+                  </p>
+                </div>
+              )}
+            </>
+          )}
 
           <div className="space-y-1.5">
             <Label htmlFor="mp-paid-at">Paid on *</Label>

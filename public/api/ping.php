@@ -61,7 +61,30 @@ $site = (defined('CRM_PUBLIC_URL') && CRM_PUBLIC_URL !== '')
     : ($host !== '' ? $scheme . '://' . $host : '');
 
 require_once __DIR__ . '/document_storage.php';
+if (is_file(__DIR__ . '/gcs_storage.php')) {
+    require_once __DIR__ . '/gcs_storage.php';
+}
 $invoiceStorage = syncpediaDocumentStorageHealth('payment_invoices');
+$certStorage = syncpediaDocumentStorageHealth('certificates');
+
+$gcsEnabled = function_exists('syncpediaGcsEnabled') && syncpediaGcsEnabled();
+$gcsBucket = function_exists('syncpediaGcsBucket') ? syncpediaGcsBucket() : '';
+$gcsSaPath = function_exists('syncpediaGcsSaJsonPath') ? syncpediaGcsSaJsonPath() : '';
+$gcsSaPath = is_string($gcsSaPath) ? trim($gcsSaPath) : '';
+$gcsSaExists = $gcsSaPath !== '' && @is_file($gcsSaPath);
+$gcsSaReadable = $gcsSaExists && @is_readable($gcsSaPath);
+$gcsSaOk = $gcsSaReadable;
+
+$gcsHint = null;
+if ($gcsEnabled && !$gcsSaOk) {
+    if ($gcsSaPath === '') {
+        $gcsHint = 'GCS_SA_JSON_PATH is empty in api/config.php';
+    } elseif (!$gcsSaExists) {
+        $gcsHint = 'File not found at GCS_SA_JSON_PATH — check home username and exact filename (case-sensitive)';
+    } else {
+        $gcsHint = 'File exists but PHP cannot read it — chmod 644 (or 600 if PHP user owns it)';
+    }
+}
 
 $debug = defined('APP_DEBUG') && APP_DEBUG === true;
 http_response_code($dbOk ? 200 : 503);
@@ -70,13 +93,26 @@ $payload = [
     'api' => 'reachable',
     'database' => $dbOk ? 'connected' : 'failed',
     'smtp' => $smtpReady ? 'ready' : 'not_ready',
+    'gcs' => [
+        'enabled' => $gcsEnabled,
+        'bucket_set' => $gcsBucket !== '',
+        'sa_json_readable' => $gcsSaOk,
+        'sa_path_set' => $gcsSaPath !== '',
+        'sa_exists' => $gcsSaExists,
+        'sa_basename' => $gcsSaPath !== '' ? basename($gcsSaPath) : null,
+        'ready' => $gcsEnabled && $gcsBucket !== '' && $gcsSaOk,
+        'hint' => $gcsHint,
+    ],
+    'storage' => [
+        'payment_invoices' => $invoiceStorage['writable'] ? 'writable' : 'not_writable',
+        'certificates' => $certStorage['writable'] ? 'writable' : 'not_writable',
+    ],
 ];
 if ($debug) {
     $payload['php'] = PHP_VERSION;
     $payload['smtp_detail'] = $smtpHint;
-    $payload['storage'] = [
-        'payment_invoices' => $invoiceStorage['writable'] ? 'writable' : 'not_writable',
-    ];
+    $payload['gcs']['sa_path'] = $gcsSaPath;
+    $payload['gcs']['open_basedir'] = (string) ini_get('open_basedir');
     $payload['message'] = $dbOk ? 'Syncpedia CRM API is ready' : $dbMessage;
 }
 echo json_encode($payload, JSON_UNESCAPED_UNICODE);

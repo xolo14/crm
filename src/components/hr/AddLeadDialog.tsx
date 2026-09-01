@@ -54,7 +54,7 @@ export default function AddLeadDialog({
   const { role } = useAuth();
   const { toast } = useToast();
   const mutation = useAddLead();
-  const isAdminMode = role === "admin" || role === "super_admin";
+  const isAdminMode = role === "org" || role === "super_admin";
   const form = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: {

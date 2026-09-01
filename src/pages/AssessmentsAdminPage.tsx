@@ -237,10 +237,24 @@ function exportAttemptsCsv(
   URL.revokeObjectURL(url);
 }
 
+function isSyncpediaAssessment(a: PeaklyyAssessment): boolean {
+  const theme = String(a.ui_theme || "").toLowerCase();
+  const slug = String(a.slug || "").toLowerCase();
+  return theme === "syncpedia" || slug.includes("syncpedia");
+}
+
+function assessmentPublicPath(a: PeaklyyAssessment | null | undefined): string {
+  if (!a) return "";
+  if (a.open_url) return a.open_url;
+  const key = a.result_api_key ? `#key=${encodeURIComponent(a.result_api_key)}` : "";
+  return `${window.location.origin}/assessment/${a.slug}${key}`;
+}
+
 export default function AssessmentsAdminPage() {
   const { toast } = useToast();
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [linkDialogId, setLinkDialogId] = useState<string | null>(null);
   const [form, setForm] = useState({
     title: "Peaklyy Domain Screening",
     duration_minutes: 0,
@@ -255,7 +269,7 @@ export default function AssessmentsAdminPage() {
   const [attemptPeriod, setAttemptPeriod] = useState<AttemptPeriod>("last_7");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
-  const [adminTab, setAdminTab] = useState<"assessments" | "attempts">("assessments");
+  const [adminTab, setAdminTab] = useState<"assessments" | "peaklyy" | "syncpedia">("assessments");
   const [zipBusy, setZipBusy] = useState(false);
 
   const { data, isLoading } = useQuery({
@@ -265,15 +279,32 @@ export default function AssessmentsAdminPage() {
   const list = data?.data ?? [];
   const domains = data?.domains ?? {};
 
+  const peaklyyList = useMemo(() => list.filter((a) => !isSyncpediaAssessment(a)), [list]);
+  const syncpediaList = useMemo(() => list.filter((a) => isSyncpediaAssessment(a)), [list]);
+  const activeList = useMemo(() => list.filter((a) => !!a.is_active), [list]);
+
   const selected = useMemo(
-    () => list.find((a) => a.id === selectedId) || list[0] || null,
+    () => list.find((a) => a.id === selectedId) || null,
     [list, selectedId],
   );
 
+  const linkDialogAssessment = useMemo(
+    () => list.find((a) => a.id === linkDialogId) || null,
+    [list, linkDialogId],
+  );
+
+  // Keep selection valid for the active brand tab
+  const brandList = adminTab === "syncpedia" ? syncpediaList : adminTab === "peaklyy" ? peaklyyList : list;
+  const selectedForAttempts = useMemo(() => {
+    if (adminTab === "assessments") return selected;
+    if (selected && brandList.some((a) => a.id === selected.id)) return selected;
+    return brandList[0] || null;
+  }, [adminTab, selected, brandList]);
+
   const { data: attemptsRes } = useQuery({
-    queryKey: ["peaklyy", "attempts", selected?.id],
-    queryFn: () => assessmentsApi.attempts(selected!.id),
-    enabled: !!selected?.id,
+    queryKey: ["peaklyy", "attempts", selectedForAttempts?.id],
+    queryFn: () => assessmentsApi.attempts(selectedForAttempts!.id),
+    enabled: !!selectedForAttempts?.id && (adminTab === "peaklyy" || adminTab === "syncpedia"),
   });
 
   const { data: attemptDetail, isFetching: detailLoading } = useQuery({
@@ -301,13 +332,13 @@ export default function AssessmentsAdminPage() {
       : attemptPeriod;
 
   const handleExportAttempts = () => {
-    if (!selected) return;
+    if (!selectedForAttempts) return;
     if (attemptRows.length === 0) {
       toast({ variant: "destructive", title: "No attempts in this period", description: periodLabel });
       return;
     }
     exportAttemptsCsv(attemptRows, {
-      assessmentSlug: selected.slug,
+      assessmentSlug: selectedForAttempts.slug,
       domains,
       periodLabel,
       periodSlug,
@@ -418,15 +449,177 @@ export default function AssessmentsAdminPage() {
     onError: (e: Error) => toast({ variant: "destructive", title: e.message }),
   });
 
-  const publicPath =
-    selected?.open_url ||
-    (selected
-      ? `${window.location.origin}/assessment/${selected.slug}${selected.result_api_key ? `#key=${encodeURIComponent(selected.result_api_key)}` : ""}`
-      : "");
-  const apiKey = selected?.result_api_key || "";
-
   const updateQuestion = (index: number, patch: Partial<PeaklyyCustomQuestionInput>) => {
     setCustomQuestions((prev) => prev.map((q, i) => (i === index ? { ...q, ...patch } : q)));
+  };
+
+  const renderBrandAttemptsPanel = (label: string, brandAssessments: PeaklyyAssessment[]) => {
+    const current = selectedForAttempts && brandAssessments.some((a) => a.id === selectedForAttempts.id)
+      ? selectedForAttempts
+      : brandAssessments[0] || null;
+    const isSyncpedia = label.toLowerCase().includes("syncpedia");
+
+    if (brandAssessments.length === 0) {
+      return (
+        <Card>
+          <CardContent className="py-10 text-sm text-muted-foreground text-center">
+            No {label} assessments yet.
+          </CardContent>
+        </Card>
+      );
+    }
+
+    return (
+      <>
+        {brandAssessments.length > 1 ? (
+          <div className="flex flex-wrap gap-2">
+            {brandAssessments.map((a) => (
+              <Button
+                key={a.id}
+                type="button"
+                size="sm"
+                variant={current?.id === a.id ? "default" : "outline"}
+                className={current?.id === a.id ? "bg-emerald-800 hover:bg-emerald-900" : ""}
+                onClick={() => setSelectedId(a.id)}
+              >
+                {a.title}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+
+        {current ? (
+          <Card>
+            <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
+              <div className="space-y-1.5">
+                <CardTitle className="text-base">
+                  {label} — candidates
+                </CardTitle>
+                <CardDescription>
+                  Everyone who took {current.title}. Showing {attemptRows.length}
+                  {allAttemptRows.length !== attemptRows.length ? ` of ${allAttemptRows.length}` : ""}{" "}
+                  ({periodLabel}). Click a row for full details.
+                </CardDescription>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="gap-1.5 shrink-0"
+                disabled={attemptRows.length === 0}
+                onClick={handleExportAttempts}
+              >
+                <Download className="h-3.5 w-3.5" />
+                Export candidates
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1.5 min-w-[180px]">
+                  <Label className="text-xs text-muted-foreground">Timeline</Label>
+                  <Select value={attemptPeriod} onValueChange={(v) => setAttemptPeriod(v as AttemptPeriod)}>
+                    <SelectTrigger className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(PERIOD_LABELS) as AttemptPeriod[]).map((key) => (
+                        <SelectItem key={key} value={key}>
+                          {PERIOD_LABELS[key]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {attemptPeriod === "custom" ? (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">From</Label>
+                      <Input
+                        type="date"
+                        className="h-9 w-[150px]"
+                        value={customFrom}
+                        onChange={(e) => setCustomFrom(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">To</Label>
+                      <Input
+                        type="date"
+                        className="h-9 w-[150px]"
+                        value={customTo}
+                        onChange={(e) => setCustomTo(e.target.value)}
+                      />
+                    </div>
+                  </>
+                ) : null}
+              </div>
+
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Candidate</TableHead>
+                      <TableHead>{isSyncpedia ? "Degree / Year" : "Domain"}</TableHead>
+                      <TableHead>Score</TableHead>
+                      <TableHead>Stars</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Attempted</TableHead>
+                      <TableHead>Webhook</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {attemptRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={7} className="text-muted-foreground text-sm">
+                          {allAttemptRows.length === 0
+                            ? "No candidates have taken this assessment yet."
+                            : `No candidates in ${periodLabel}. Try All time or another timeline.`}
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      attemptRows.map((r) => (
+                        <TableRow
+                          key={r.id}
+                          className="cursor-pointer hover:bg-muted/40"
+                          onClick={() => setDetailAttemptId(r.id)}
+                        >
+                          <TableCell>
+                            <div className="font-medium text-sm">{r.full_name}</div>
+                            <div className="text-xs text-muted-foreground">{r.email}</div>
+                            {r.phone ? (
+                              <div className="text-[11px] text-muted-foreground">{r.phone}</div>
+                            ) : null}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {isSyncpedia
+                              ? r.degree_branch || r.college_name || "—"
+                              : r.domain_key === "custom"
+                                ? "Custom"
+                                : domains[r.domain_key] || r.domain_key}
+                          </TableCell>
+                          <TableCell>{r.score ?? "—"}</TableCell>
+                          <TableCell>{r.stars != null ? "★".repeat(r.stars) || "—" : "—"}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{r.status}</Badge>
+                            {r.attempt_phase ? (
+                              <span className="ml-1 text-[10px] text-muted-foreground">{r.attempt_phase}</span>
+                            ) : null}
+                          </TableCell>
+                          <TableCell className="text-xs whitespace-nowrap">
+                            {formatAttemptDate(r.created_at || r.started_at || r.submitted_at)}
+                          </TableCell>
+                          <TableCell className="text-xs">{r.webhook_status || "—"}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        ) : null}
+      </>
+    );
   };
 
   return (
@@ -434,20 +627,34 @@ export default function AssessmentsAdminPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <ClipboardCheck className="h-6 w-6 text-emerald-700" />
-          Peaklyy Assessments
+          Assessments
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Keep domain-bank assessments (15 beginner MCQs + 1 task, untimed), or create timed custom MCQ assessments. Pass 70★ ·
-          80★★ · 90★★★ · 100★★★★
+          Assessments tab: create and open link/API keys. Peaklyy and Syncpedia Fresher tabs: candidate lists for people
+          who took those assessments.
         </p>
       </div>
 
-      <Tabs value={adminTab} onValueChange={(v) => setAdminTab(v as "assessments" | "attempts")} className="space-y-4">
+      <Tabs
+        value={adminTab}
+        onValueChange={(v) => {
+          const next = v as "assessments" | "peaklyy" | "syncpedia";
+          setAdminTab(next);
+          if (next === "peaklyy" && peaklyyList[0]) {
+            setSelectedId(peaklyyList[0].id);
+            setAttemptPeriod("all");
+          }
+          if (next === "syncpedia" && syncpediaList[0]) {
+            setSelectedId(syncpediaList[0].id);
+            setAttemptPeriod("all");
+          }
+        }}
+        className="space-y-4"
+      >
         <TabsList>
           <TabsTrigger value="assessments">Assessments</TabsTrigger>
-          <TabsTrigger value="attempts" disabled={!selected}>
-            Attempts{selected ? ` · ${selected.title}` : ""}
-          </TabsTrigger>
+          <TabsTrigger value="peaklyy">Peaklyy</TabsTrigger>
+          <TabsTrigger value="syncpedia">Syncpedia Fresher</TabsTrigger>
         </TabsList>
 
         <TabsContent value="assessments" className="space-y-4 mt-0">
@@ -529,8 +736,7 @@ export default function AssessmentsAdminPage() {
                 onChange={(e) => setForm((f) => ({ ...f, result_webhook_url: e.target.value }))}
               />
               <p className="text-[11px] text-muted-foreground">
-                Permanent API key + open link are auto-generated. The key can fetch MCQ score and task uploads. On MCQ
-                pass and again when tasks finish, results POST here (include score + uploads).
+                Permanent API key + open link are auto-generated. Click an assessment on the right to view them.
               </p>
             </div>
             <div className="flex items-center justify-between gap-2">
@@ -686,33 +892,33 @@ export default function AssessmentsAdminPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Assessments</CardTitle>
-            <CardDescription>Share the permanent link with candidates.</CardDescription>
+            <CardTitle className="text-base">Active assessments</CardTitle>
+            <CardDescription>Click an assessment to view its permanent link and API key.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {isLoading ? (
               <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : list.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No assessments yet.</p>
+            ) : activeList.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No active assessments yet.</p>
             ) : (
-              <div className="space-y-2 max-h-[360px] overflow-y-auto">
-                {list.map((a) => (
+              <div className="space-y-2 max-h-[520px] overflow-y-auto">
+                {activeList.map((a) => (
                   <button
                     key={a.id}
                     type="button"
                     onClick={() => {
                       setSelectedId(a.id);
-                      setAdminTab("attempts");
+                      setLinkDialogId(a.id);
                     }}
-                    className={`w-full text-left rounded-lg border p-3 transition-colors ${
-                      selected?.id === a.id ? "border-emerald-600 bg-emerald-50" : "hover:bg-muted/40"
-                    }`}
+                    className="w-full text-left rounded-lg border p-3 transition-colors hover:bg-muted/40 hover:border-emerald-600/50"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-medium text-sm truncate">{a.title}</p>
                       <div className="flex items-center gap-1.5 shrink-0">
-                        <Badge variant="outline">{a.source_mode === "custom" ? "Custom" : "Domain"}</Badge>
-                        <Badge variant={a.is_active ? "default" : "secondary"}>{a.is_active ? "Active" : "Off"}</Badge>
+                        <Badge variant="outline">
+                          {isSyncpediaAssessment(a) ? "Syncpedia" : a.source_mode === "custom" ? "Custom" : "Domain"}
+                        </Badge>
+                        <Badge variant="default">Active</Badge>
                       </div>
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
@@ -726,241 +932,142 @@ export default function AssessmentsAdminPage() {
                 ))}
               </div>
             )}
-
-            {selected ? (
-              <div className="rounded-lg border p-3 space-y-3">
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Permanent assessment link (opens test directly)</Label>
-                  <div className="flex gap-2">
-                    <Input readOnly value={publicPath} className="text-xs" />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(publicPath);
-                        toast({ title: "Link copied" });
-                      }}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </Button>
-                    <Button type="button" variant="outline" size="icon" asChild>
-                      <a href={publicPath} target="_blank" rel="noreferrer">
-                        <ExternalLink className="h-4 w-4" />
-                      </a>
-                    </Button>
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Permanent API key</Label>
-                  <div className="flex gap-2">
-                    <Input readOnly value={apiKey || "(none — regenerate)"} className="text-xs font-mono" />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      disabled={!apiKey}
-                      onClick={() => {
-                        void navigator.clipboard.writeText(apiKey);
-                        toast({ title: "API key copied" });
-                      }}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground space-y-1.5 leading-relaxed">
-                    <p className="font-medium text-foreground">Partner website — score + uploads via this key</p>
-                    <p>
-                      Header: <code className="text-[10px]">X-Assessment-Api-Key: {apiKey || "pkly_…"}</code> (or{" "}
-                      <code className="text-[10px]">Authorization: Bearer …</code>)
-                    </p>
-                    <p>
-                      List attempts:{" "}
-                      <code className="text-[10px] break-all">GET /api/assessments.php?action=partner_attempts</code>
-                    </p>
-                    <p>
-                      Score + uploads JSON:{" "}
-                      <code className="text-[10px] break-all">
-                        GET /api/assessments.php?action=partner_result&amp;attempt_id=…
-                      </code>
-                    </p>
-                    <p>
-                      Download a file:{" "}
-                      <code className="text-[10px] break-all">
-                        GET /api/assessments.php?action=partner_file&amp;attempt_id=…&amp;question_id=…
-                      </code>{" "}
-                      (same header)
-                    </p>
-                    <p>
-                      Webhooks POST <code className="text-[10px]">score</code> after MCQ pass, then{" "}
-                      <code className="text-[10px]">score + uploads[]</code> when tasks are submitted.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      updateMut.mutate({
-                        id: selected.id,
-                        is_active: selected.is_active ? 0 : 1,
-                      })
-                    }
-                  >
-                    {selected.is_active ? "Deactivate" : "Activate"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={regenMut.isPending}
-                    onClick={() => regenMut.mutate(selected.id)}
-                  >
-                    Regenerate API key
-                  </Button>
-                </div>
-              </div>
+            {list.some((a) => !a.is_active) ? (
+              <p className="text-[11px] text-muted-foreground">
+                {list.filter((a) => !a.is_active).length} inactive assessment(s) hidden — open Peaklyy / Syncpedia tabs
+                to manage attempts.
+              </p>
             ) : null}
           </CardContent>
         </Card>
       </div>
         </TabsContent>
 
-        <TabsContent value="attempts" className="mt-0 space-y-4">
-      {selected ? (
-        <Card>
-          <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
-            <div className="space-y-1.5">
-              <CardTitle className="text-base">Attempts — {selected.title}</CardTitle>
-              <CardDescription>
-                Click a candidate to open full details. Showing {attemptRows.length}
-                {allAttemptRows.length !== attemptRows.length ? ` of ${allAttemptRows.length}` : ""} for{" "}
-                {periodLabel}.
-              </CardDescription>
-            </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="gap-1.5 shrink-0"
-              disabled={attemptRows.length === 0}
-              onClick={handleExportAttempts}
-            >
-              <Download className="h-3.5 w-3.5" />
-              Export this period
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="space-y-1.5 min-w-[180px]">
-                <Label className="text-xs text-muted-foreground">Timeline</Label>
-                <Select
-                  value={attemptPeriod}
-                  onValueChange={(v) => setAttemptPeriod(v as AttemptPeriod)}
-                >
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(Object.keys(PERIOD_LABELS) as AttemptPeriod[]).map((key) => (
-                      <SelectItem key={key} value={key}>
-                        {PERIOD_LABELS[key]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {attemptPeriod === "custom" ? (
-                <>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">From</Label>
-                    <Input
-                      type="date"
-                      className="h-9 w-[150px]"
-                      value={customFrom}
-                      onChange={(e) => setCustomFrom(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">To</Label>
-                    <Input
-                      type="date"
-                      className="h-9 w-[150px]"
-                      value={customTo}
-                      onChange={(e) => setCustomTo(e.target.value)}
-                    />
-                  </div>
-                </>
-              ) : null}
-            </div>
+        <TabsContent value="peaklyy" className="mt-0 space-y-4">
+          {renderBrandAttemptsPanel("Peaklyy", peaklyyList)}
+        </TabsContent>
 
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Candidate</TableHead>
-                    <TableHead>Domain</TableHead>
-                    <TableHead>Score</TableHead>
-                    <TableHead>Stars</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Attempted</TableHead>
-                    <TableHead>Webhook</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {attemptRows.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={7} className="text-muted-foreground text-sm">
-                        {allAttemptRows.length === 0
-                          ? "No attempts yet."
-                          : `No attempts in ${periodLabel}. Try another timeline.`}
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    attemptRows.map((r) => (
-                      <TableRow
-                        key={r.id}
-                        className="cursor-pointer hover:bg-muted/40"
-                        onClick={() => setDetailAttemptId(r.id)}
-                      >
-                        <TableCell>
-                          <div className="font-medium text-sm">{r.full_name}</div>
-                          <div className="text-xs text-muted-foreground">{r.email}</div>
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {r.domain_key === "custom" ? "Custom" : domains[r.domain_key] || r.domain_key}
-                        </TableCell>
-                        <TableCell>{r.score ?? "—"}</TableCell>
-                        <TableCell>{r.stars != null ? "★".repeat(r.stars) || "—" : "—"}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{r.status}</Badge>
-                          {r.attempt_phase ? (
-                            <span className="ml-1 text-[10px] text-muted-foreground">{r.attempt_phase}</span>
-                          ) : null}
-                        </TableCell>
-                        <TableCell className="text-xs whitespace-nowrap">
-                          {formatAttemptDate(r.created_at || r.started_at || r.submitted_at)}
-                        </TableCell>
-                        <TableCell className="text-xs">{r.webhook_status || "—"}</TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      ) : (
-        <Card>
-          <CardContent className="py-10 text-sm text-muted-foreground text-center">
-            Select an assessment first (Assessments tab).
-          </CardContent>
-        </Card>
-      )}
+        <TabsContent value="syncpedia" className="mt-0 space-y-4">
+          {renderBrandAttemptsPanel("Syncpedia Fresher", syncpediaList)}
         </TabsContent>
       </Tabs>
+
+      <Dialog open={!!linkDialogId} onOpenChange={(open) => { if (!open) setLinkDialogId(null); }}>
+        <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="pr-6">{linkDialogAssessment?.title || "Assessment link"}</DialogTitle>
+            <DialogDescription>
+              Permanent candidate link and partner API key
+              {linkDialogAssessment ? ` · /${linkDialogAssessment.slug}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          {linkDialogAssessment ? (
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <Label className="text-xs">Permanent assessment link</Label>
+                <div className="flex gap-2">
+                  <Input readOnly value={assessmentPublicPath(linkDialogAssessment)} className="text-xs" />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(assessmentPublicPath(linkDialogAssessment));
+                      toast({ title: "Link copied" });
+                    }}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                  <Button type="button" variant="outline" size="icon" asChild>
+                    <a href={assessmentPublicPath(linkDialogAssessment)} target="_blank" rel="noreferrer">
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Permanent API key</Label>
+                <div className="flex gap-2">
+                  <Input
+                    readOnly
+                    value={linkDialogAssessment.result_api_key || "(none — regenerate)"}
+                    className="text-xs font-mono"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    disabled={!linkDialogAssessment.result_api_key}
+                    onClick={() => {
+                      void navigator.clipboard.writeText(String(linkDialogAssessment.result_api_key || ""));
+                      toast({ title: "API key copied" });
+                    }}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+                {linkDialogAssessment.result_api_key ? (
+                  <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground space-y-1.5 leading-relaxed">
+                    <p className="font-medium text-foreground">Partner website</p>
+                    <p>
+                      Header:{" "}
+                      <code className="text-[10px]">X-Assessment-Api-Key: {linkDialogAssessment.result_api_key}</code>
+                    </p>
+                    <p>
+                      List attempts:{" "}
+                      <code className="text-[10px] break-all">GET /api/assessments.php?action=partner_attempts</code>
+                    </p>
+                    <p>
+                      Score JSON:{" "}
+                      <code className="text-[10px] break-all">
+                        GET /api/assessments.php?action=partner_result&amp;attempt_id=…
+                      </code>
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No API key yet — regenerate to create one.</p>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    updateMut.mutate({
+                      id: linkDialogAssessment.id,
+                      is_active: linkDialogAssessment.is_active ? 0 : 1,
+                    })
+                  }
+                >
+                  {linkDialogAssessment.is_active ? "Deactivate" : "Activate"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={regenMut.isPending}
+                  onClick={() => regenMut.mutate(linkDialogAssessment.id)}
+                >
+                  Regenerate API key
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="bg-emerald-800 hover:bg-emerald-900"
+                  onClick={() => {
+                    setSelectedId(linkDialogAssessment.id);
+                    setLinkDialogId(null);
+                    setAdminTab(isSyncpediaAssessment(linkDialogAssessment) ? "syncpedia" : "peaklyy");
+                  }}
+                >
+                  View attempts
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!detailAttemptId} onOpenChange={(open) => { if (!open) setDetailAttemptId(null); }}>
         <DialogContent className="max-w-3xl max-h-[90dvh] overflow-hidden flex flex-col p-0 gap-0">

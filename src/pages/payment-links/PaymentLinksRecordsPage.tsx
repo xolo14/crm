@@ -6,6 +6,8 @@ import { api } from "@/lib/api";
 import {
   canApproveManualPayments,
   canSubmitManualPayment,
+  isPaymentRecordsOrgCandidatesView,
+  isPaymentRecordsTeamView,
 } from "@/lib/orgAccess";
 import { normalizeAppRole } from "@/lib/roleUtils";
 import { getAllPaymentLinks } from "@/utils/paymentLinksApi";
@@ -14,15 +16,20 @@ import {
   buildPaymentRecords,
   mergeManualPaymentsIntoSummaries,
   type ManualPaymentRow,
+  type MemberPaymentSummary,
+  type PaymentCandidateSummaryInput,
   type TeamMemberLookup,
 } from "@/utils/normalizePaymentLink";
 import {
+  filterCandidatesByPeriod,
   filterLinksByPeriod,
+  filterManualRowsByPeriod,
   type PaymentLinkPeriod,
 } from "@/utils/paymentLinkPeriod";
 import PaymentRecordsTable, {
   type RecordsTableFilters,
 } from "@/components/paymentLinks/PaymentRecordsTable";
+import CandidatePaymentRecords from "@/components/paymentLinks/CandidatePaymentRecords";
 import ManualPaymentDialog from "@/components/paymentLinks/ManualPaymentDialog";
 import ManualPaymentApprovalsTab from "@/components/paymentLinks/ManualPaymentApprovalsTab";
 import PaymentBankDetailsChip from "@/components/paymentLinks/PaymentBankDetailsChip";
@@ -64,13 +71,16 @@ type TabKey = "records" | "approvals";
 export default function PaymentLinksRecordsPage() {
   const { user } = useAuth();
   const role = normalizeAppRole(user?.role ?? "");
+  const teamView = isPaymentRecordsTeamView(role);
+  const orgCandidatesView = isPaymentRecordsOrgCandidatesView(role);
   const showPaymentsBtn = canSubmitManualPayment(role);
   const showApprovals = canApproveManualPayments(role);
-  const canDeleteApproved = role === "admin" || role === "super_admin";
+  const canDeleteApproved = role === "org" || role === "super_admin";
 
   const [links, setLinks] = useState<RazorpayPaymentLink[]>([]);
   const [team, setTeam] = useState<TeamMemberLookup[]>([]);
   const [manuals, setManuals] = useState<ManualPaymentRow[]>([]);
+  const [candidates, setCandidates] = useState<PaymentCandidateSummaryInput[]>([]);
   const [pending, setPending] = useState<ManualPaymentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [approvalsLoading, setApprovalsLoading] = useState(false);
@@ -78,18 +88,40 @@ export default function PaymentLinksRecordsPage() {
   const [period, setPeriod] = useState<PaymentLinkPeriod>("month");
   const [filters, setFilters] = useState<RecordsTableFilters>(initialFilters);
   const [tab, setTab] = useState<TabKey>("records");
+  /** Org/admin/manager: candidates list (migrated payment_candidates) vs legacy link summary. */
+  const [teamSummaryMode, setTeamSummaryMode] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [drillMember, setDrillMember] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
+      // Team summary needs payment links; L1 candidate view does not (avoids 403 noise).
+      if (!teamView) {
+        setLinks([]);
+        setManuals([]);
+        setCandidates([]);
+        setTeam([]);
+        setLoading(false);
+        return;
+      }
+
       const teamRes = await api.team.list().catch(() => ({ data: [] }));
       setTeam(parseTeamList(teamRes));
 
-      const [linksOutcome, manualsOutcome] = await Promise.allSettled([
-        getAllPaymentLinks({ period, forRecords: true }),
+      const customRange =
+        period === "custom"
+          ? { from: filters.from || undefined, to: filters.to || undefined }
+          : undefined;
+
+      const [linksOutcome, manualsOutcome, candidatesOutcome] = await Promise.allSettled([
+        getAllPaymentLinks({ period, forRecords: true, customRange }),
         api.manualPayments.list("approved"),
+        api.paymentCandidates.list(),
       ]);
 
       if (linksOutcome.status === "fulfilled") {
@@ -104,9 +136,17 @@ export default function PaymentLinksRecordsPage() {
         setManuals([]);
       }
 
+      if (candidatesOutcome.status === "fulfilled") {
+        const raw = candidatesOutcome.value as { data?: PaymentCandidateSummaryInput[] };
+        setCandidates(Array.isArray(raw?.data) ? raw.data : []);
+      } else {
+        setCandidates([]);
+      }
+
       if (
         linksOutcome.status === "rejected" &&
-        manualsOutcome.status === "rejected"
+        manualsOutcome.status === "rejected" &&
+        candidatesOutcome.status === "rejected"
       ) {
         const msg =
           manualsOutcome.reason instanceof Error
@@ -120,7 +160,7 @@ export default function PaymentLinksRecordsPage() {
     } finally {
       setLoading(false);
     }
-  }, [period]);
+  }, [period, teamView, filters.from, filters.to]);
 
   const loadApprovals = useCallback(async () => {
     if (!showApprovals) return;
@@ -149,18 +189,30 @@ export default function PaymentLinksRecordsPage() {
   );
 
   const memberCount = useMemo(() => {
+    const customRange =
+      period === "custom"
+        ? { from: filters.from || undefined, to: filters.to || undefined }
+        : undefined;
     const periodLinkIds = new Set(
       filterLinksByPeriod(
         records.map((r) => r.link),
         period,
+        customRange,
       ).map((l) => l.id),
     );
     const periodRecords = records.filter((r) =>
       periodLinkIds.has(r.link.id),
     );
     const linkSummaries = buildMemberPaymentSummaries(periodRecords);
-    return mergeManualPaymentsIntoSummaries(linkSummaries, manuals).length;
-  }, [records, period, manuals]);
+    const manualsInPeriod = filterManualRowsByPeriod(manuals, period, customRange);
+    const fromCandidates = filterCandidatesByPeriod(candidates, period, customRange);
+    const ownerIds = new Set([
+      ...linkSummaries.map((s) => s.creator.id),
+      ...manualsInPeriod.map((m) => String(m.submitted_by)),
+      ...fromCandidates.map((c) => String(c.owner_user_id || "")),
+    ]);
+    return ownerIds.size;
+  }, [records, period, manuals, candidates, filters.from, filters.to]);
   const pendingCount = useMemo(
     () => pending.filter((r) => String(r.status || "").toLowerCase() === "pending").length,
     [pending],
@@ -176,9 +228,18 @@ export default function PaymentLinksRecordsPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Payment Records</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Summary by team member — payment links, manual payments, and total
-            collected
-            {memberCount > 0 ? ` · ${memberCount} member(s) in period` : ""}
+            {teamView && teamSummaryMode && !drillMember
+              ? "Summary by team member — click a member to view their candidates"
+              : teamView && drillMember
+                ? `Candidates for ${drillMember.name}`
+                : teamView
+                  ? "All payment candidates in the organization"
+                  : orgCandidatesView
+                    ? "All candidates in the organization (read-only)"
+                    : "Pitch price, installments, and collected amounts per candidate"}
+            {!teamView && !orgCandidatesView && memberCount > 0
+              ? ` · ${memberCount} member(s) in period`
+              : ""}
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
@@ -241,18 +302,72 @@ export default function PaymentLinksRecordsPage() {
         </div>
       ) : null}
 
+      {tab === "records" && teamView ? (
+        <div className="flex flex-wrap gap-2 mb-4">
+          <button
+            type="button"
+            onClick={() => {
+              setTeamSummaryMode(false);
+              setDrillMember(null);
+            }}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+              !teamSummaryMode && !drillMember
+                ? "bg-[#2ed573] text-[#0f2318] border-[#2ed573]"
+                : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            All candidates
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setTeamSummaryMode(true);
+              setDrillMember(null);
+            }}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+              teamSummaryMode && !drillMember
+                ? "bg-[#2ed573] text-[#0f2318] border-[#2ed573]"
+                : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"
+            }`}
+          >
+            Team summary
+          </button>
+        </div>
+      ) : null}
+
       {tab === "records" ? (
-        <PaymentRecordsTable
-          records={records}
-          team={team}
-          loading={loading}
-          period={period}
-          onPeriodChange={setPeriod}
-          filters={filters}
-          onFilterChange={setFilters}
-          onRefresh={loadData}
-          manualPayments={manuals}
-        />
+        teamView && teamSummaryMode && !drillMember ? (
+          <PaymentRecordsTable
+            records={records}
+            team={team}
+            candidates={candidates}
+            loading={loading}
+            period={period}
+            onPeriodChange={setPeriod}
+            filters={filters}
+            onFilterChange={setFilters}
+            onRefresh={loadData}
+            manualPayments={manuals}
+            onMemberClick={(row: MemberPaymentSummary) =>
+              setDrillMember({
+                id: row.creator.id,
+                name: row.creator.full_name || row.creator.email || "Member",
+              })
+            }
+          />
+        ) : (
+          <CandidatePaymentRecords
+            ownerUserId={drillMember?.id}
+            ownerName={drillMember?.name}
+            showOwnerColumn={teamView || orgCandidatesView}
+            onBack={
+              drillMember
+                ? () => setDrillMember(null)
+                : undefined
+            }
+            onRefreshParent={loadData}
+          />
+        )
       ) : (
         <ManualPaymentApprovalsTab
           rows={pending}

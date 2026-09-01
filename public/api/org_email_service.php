@@ -34,6 +34,7 @@ function syncpediaMailCategories(): array
         ['key' => 'form_campaigns', 'label' => 'Form email campaigns'],
         ['key' => 'marketing_campaigns', 'label' => 'Marketing email campaigns'],
         ['key' => 'hr_updates', 'label' => 'HR and fresher updates'],
+        ['key' => 'timetables', 'label' => 'Class timetables'],
         ['key' => 'notifications', 'label' => 'Email notifications'],
     ];
 }

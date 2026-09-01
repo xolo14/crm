@@ -54,12 +54,30 @@ export interface CreateCallLogInput {
   sales_rep_id?: string;
 }
 
-export type CallLogPeriod = "today" | "week" | "month";
+export type CallLogPeriod =
+  | "today"
+  | "yesterday"
+  | "last_7_days"
+  | "week"
+  | "month"
+  | "all"
+  | "custom";
+
+export const CALL_LOG_PERIODS: { value: CallLogPeriod; label: string }[] = [
+  { value: "today", label: "Today" },
+  { value: "yesterday", label: "Yesterday" },
+  { value: "last_7_days", label: "Last 7 days" },
+  { value: "week", label: "This Week" },
+  { value: "month", label: "This Month" },
+  { value: "all", label: "All calls" },
+  { value: "custom", label: "Custom range" },
+];
 
 export interface CallLogsQueryParams {
   period?: CallLogPeriod | string;
   date_from?: string;
   date_to?: string;
+  sales_rep_id?: string;
   call_type?: CallType;
   call_status?: CallStatus;
   page?: number;

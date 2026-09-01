@@ -8,6 +8,7 @@
  * Uses existing call_logs table; ensures mobile sync columns exist at runtime.
  */
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/lib/CallLogDailyReportSync.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -98,13 +99,60 @@ function callsStoreRecording(PDO $db, string $orgId, string $userId, array $file
     }
     $orig = (string) ($file['name'] ?? '');
     $ext = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
-    $allowed = ['mp3', 'm4a', 'amr', 'wav', '3gp'];
-    if (!in_array($ext, $allowed, true)) {
-        respond(['error' => 'Recording must be mp3, m4a, amr, wav, or 3gp'], 422);
-    }
+    // AAC/M4A from Android (audio/mp4) + legacy phone formats.
+    $allowedExt = ['mp3', 'm4a', 'aac', 'amr', 'wav', '3gp'];
+    $allowedMime = [
+        'audio/mpeg',
+        'audio/mp3',
+        'audio/mp4',
+        'audio/x-m4a',
+        'audio/aac',
+        'audio/aacp',
+        'audio/wav',
+        'audio/x-wav',
+        'audio/amr',
+        'audio/3gpp',
+        'audio/3gpp2',
+        'application/octet-stream', // Android sometimes omits a useful MIME
+    ];
     $tmp = (string) ($file['tmp_name'] ?? '');
     if ($tmp === '' || !is_uploaded_file($tmp)) {
         respond(['error' => 'Invalid recording upload'], 400);
+    }
+    $detectedMime = '';
+    if (function_exists('finfo_open')) {
+        $fi = finfo_open(FILEINFO_MIME_TYPE);
+        if ($fi) {
+            $detectedMime = strtolower(trim((string) finfo_file($fi, $tmp)));
+            finfo_close($fi);
+        }
+    }
+    if ($detectedMime === '' && !empty($file['type'])) {
+        $detectedMime = strtolower(trim((string) $file['type']));
+    }
+    // Derive extension from MIME when filename has none / unknown (e.g. audio/mp4 → m4a).
+    if ($ext === '' || !in_array($ext, $allowedExt, true)) {
+        if (in_array($detectedMime, ['audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/aacp'], true)) {
+            $ext = 'm4a';
+        } elseif (in_array($detectedMime, ['audio/mpeg', 'audio/mp3'], true)) {
+            $ext = 'mp3';
+        } elseif (in_array($detectedMime, ['audio/wav', 'audio/x-wav'], true)) {
+            $ext = 'wav';
+        } elseif ($detectedMime === 'audio/amr') {
+            $ext = 'amr';
+        } elseif (in_array($detectedMime, ['audio/3gpp', 'audio/3gpp2'], true)) {
+            $ext = '3gp';
+        }
+    }
+    if (!in_array($ext, $allowedExt, true)) {
+        respond(['error' => 'Recording must be mp3, m4a/aac, amr, wav, or 3gp'], 422);
+    }
+    if (
+        $detectedMime !== ''
+        && !in_array($detectedMime, $allowedMime, true)
+        && strpos($detectedMime, 'audio/') !== 0
+    ) {
+        respond(['error' => 'Recording MIME type not allowed', 'mime' => $detectedMime], 422);
     }
 
     $dirRel = callRecordingRelativeDir($db, $orgId, $userId);
@@ -306,6 +354,11 @@ if ($method === 'POST') {
 
     if ($callId <= 0) {
         respond(['error' => 'Could not resolve call id after save'], 500);
+    }
+
+    try {
+        syncpediaSyncDailyReportFromCallLogs($db, $userId, $callDate, $orgId);
+    } catch (Throwable $ignored) {
     }
 
     respond(['success' => true, 'callId' => $callId], 201);

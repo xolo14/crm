@@ -16,6 +16,9 @@ function normalizeRoleValue(string $value): string {
     if ($clean === 'team_lead' || $clean === 'sales_manager') {
         return 'manager';
     }
+    if ($clean === 'admin') {
+        return 'org';
+    }
     if (strpos($clean, 'marketing') === 0) {
         return 'marketing';
     }
@@ -49,7 +52,7 @@ function teamNormalizeRoleForRead(array $tokenData): string {
     if ($r === 'superadmin') {
         return 'super_admin';
     }
-    if ($r === 'organisation') {
+    if ($r === 'organisation' || $r === 'admin') {
         return 'org';
     }
     if (in_array($r, ['team_lead', 'sales_manager'], true)) {
@@ -80,7 +83,7 @@ function teamResolveCallerOrgId(PDO $db, array $tokenData): ?string {
 // GET - List team members (scoped by org when applicable)
 if ($method === 'GET') {
     $effRole = teamNormalizeRoleForRead($tokenData);
-    $allowedRead = ['admin', 'org', 'super_admin', 'manager', 'sales_representative', 'hr', 'marketing'];
+    $allowedRead = ['org', 'super_admin', 'manager', 'operational_manager', 'sales_representative', 'hr', 'marketing'];
     if (!in_array($effRole, $allowedRead, true)) {
         respond(['error' => 'Insufficient permissions'], 403);
     }
@@ -126,7 +129,7 @@ if ($method === 'GET') {
         $params = $orgFilter['params'];
 
         // L2 managers use dedicated org roster branch above; other non-admin roles use hierarchy subtree.
-        if (!in_array($effRole, ['super_admin', 'admin'], true)) {
+        if (!in_array($effRole, ['super_admin', 'org'], true)) {
             $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
             $scope = hierarchyBuildInClause('u.id', $visibleIds);
             $where .= $scope['sql'];
@@ -148,7 +151,7 @@ if ($method === 'GET') {
         LEFT JOIN organizations o ON u.org_id = o.id
         LEFT JOIN users adm ON o.owner_id = adm.id
         WHERE ($where)
-        ORDER BY FIELD(u.role, 'super_admin', 'admin', 'manager', 'marketing', 'hr', 'sales_representative', 'trainer', 'finance', 'student'), u.full_name
+        ORDER BY FIELD(u.role, 'super_admin', 'org', 'manager', 'operational_manager', 'marketing', 'hr', 'sales_representative', 'student'), u.full_name
     ";
     try {
         $stmt = $db->prepare($sql);
@@ -188,7 +191,7 @@ function teamCallerCanSendWelcomeTo(PDO $db, array $tokenData, array $targetUser
         return false;
     }
 
-    if ($callerRole === 'admin') {
+    if ($callerRole === 'org') {
         return true;
     }
 
@@ -298,8 +301,8 @@ if ($method === 'POST') {
 
     // Role hierarchy: L4/L3 may assign L2–L1 staff. Org admins are provisioned via Organizations, not Team.
     $allowedRoles = [];
-    if (in_array($callerRole, ['super_admin', 'admin'], true)) {
-        $allowedRoles = array_merge(['manager'], syncpediaL1AssignableRoles(), ['trainer', 'finance', 'student']);
+    if (in_array($callerRole, ['super_admin', 'org'], true)) {
+        $allowedRoles = array_merge(['manager', 'operational_manager'], syncpediaL1AssignableRoles(), ['student']);
     } elseif ($isManagerCreator) {
         $allowedRoles = syncpediaL1AssignableRoles();
     }
@@ -508,8 +511,8 @@ if ($method === 'PUT') {
         }
 
         $allowedRoles = [];
-        if (in_array($callerRole, ['super_admin', 'admin', 'org'], true)) {
-            $allowedRoles = array_merge(['manager'], syncpediaL1AssignableRoles(), ['trainer', 'finance', 'student']);
+        if (in_array($callerRole, ['super_admin', 'org'], true)) {
+            $allowedRoles = array_merge(['manager', 'operational_manager'], syncpediaL1AssignableRoles(), ['student']);
         } elseif ($callerRole === 'manager') {
             $allowedRoles = syncpediaL1AssignableRoles();
         }
@@ -523,8 +526,8 @@ if ($method === 'PUT') {
     }
     if (array_key_exists('reports_to_id', $input)) {
         $assignerRole = normalizeRoleValue((string) ($tokenData['role'] ?? ''));
-        if (!in_array($assignerRole, ['super_admin', 'admin'], true)) {
-            respond(['error' => 'Only Super Admin or Admin can assign team members to a manager'], 403);
+        if (!in_array($assignerRole, ['super_admin', 'org'], true)) {
+            respond(['error' => 'Only Super Admin or Org Admin can assign team members to a manager'], 403);
         }
         $rawRt = $input['reports_to_id'];
         $rt = is_string($rawRt) ? trim($rawRt) : '';
@@ -639,7 +642,7 @@ if ($method === 'PUT') {
 
 // DELETE - Remove team member (archive to trash, then hard delete)
 if ($method === 'DELETE') {
-    requireRole($tokenData, ['admin', 'super_admin']);
+    requireRole($tokenData, ['org', 'super_admin']);
     $id = $_GET['id'] ?? '';
     if (!$id) {
         respond(['error' => 'ID required'], 400);
@@ -664,7 +667,7 @@ if ($method === 'DELETE') {
         respond(['error' => 'Super admin cannot be removed from Team'], 403);
     }
     // Org admins can remove only members in their own organization.
-    if ($role === 'admin') {
+    if (syncpediaNormalizeRoleKey((string) $role) === 'org') {
         $adminOrg = resolveCreatorOrgId($db, $tokenData);
         $targetOrg = $target['org_id'] ?? null;
         if (!$adminOrg || !$targetOrg || $adminOrg !== $targetOrg) {

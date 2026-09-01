@@ -57,8 +57,8 @@ define('META_ADS_APP_ID', '');
 define('META_ADS_APP_SECRET', '');
 define('META_ADS_GRAPH_VERSION', 'v19.0');
 // OAuth scopes — start with ads_read only. After Meta App Review grants Advanced Access
-// for leads_retrieval, set:
-// define('META_ADS_OAUTH_SCOPES', 'ads_read,leads_retrieval');
+// for leads_retrieval + Pages permissions, set:
+// define('META_ADS_OAUTH_SCOPES', 'ads_read,leads_retrieval,pages_show_list,pages_manage_metadata,pages_read_engagement');
 // Optional Login for Business configuration id:
 // define('META_ADS_LOGIN_CONFIG_ID', '');
 // Optional explicit redirect (defaults to CRM_PUBLIC_URL/api/meta-ads.php?action=oauth_callback):
@@ -67,9 +67,13 @@ define('META_ADS_GRAPH_VERSION', 'v19.0');
 // define('META_ADS_WEBHOOK_VERIFY_TOKEN', '');
 
 // ── Website lead ingest (no CRM form required) ───────────────────────────────
-// Used by syncpedia.in / other sites: POST /api/lead-ingest.php with header X-Lead-Api-Key
+// Used by syncpedia.in / other sites: POST /api/lead-ingest.php
+// Auth header (either):
+//   Authorization: Bearer <PUBLIC_LEAD_API_KEY>
+//   X-Lead-Api-Key: <PUBLIC_LEAD_API_KEY>
 define('PUBLIC_LEAD_API_KEY', ''); // e.g. openssl rand -hex 24
-// Lock all ingest leads to one org (REQUIRED in multi-tenant production — client org_id is rejected):
+// Lock all ingest leads to one org (REQUIRED — client org_id is rejected). Syncpedia:
+// define('LEAD_INGEST_ORG_ID', 'ea27b26d-4d0b-11f1-b983-e3ef033e3038');
 define('LEAD_INGEST_ORG_ID', ''); // REQUIRED before enable: organizations.id UUID — POST returns 503 if empty
 // define('LEAD_INGEST_EXTRA_ORIGINS', 'https://syncpedia.in,https://www.syncpedia.in');
 // Optional comma-separated browser origins allowed to call lead-ingest from JS (server-side POST ignores CORS):

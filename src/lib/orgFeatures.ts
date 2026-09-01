@@ -9,6 +9,7 @@ export const FEATURE_CERTIFICATES = "certificates";
 export const FEATURE_MARKETING = "marketing_access";
 export const FEATURE_PAYSLIP = "payslip";
 export const FEATURE_FORM_MANAGEMENT = "form_management";
+export const FEATURE_TIMETABLES = "timetables";
 export const FEATURE_COMMUNICATIONS = "communications";
 
 /** Features that exist as pages in this CRM build. */
@@ -25,6 +26,7 @@ export const IMPLEMENTED_ORG_FEATURES: {
   { key: "students", section: "Learning", label: "Students", description: "Enrolled student profiles" },
   { key: "courses", section: "Learning", label: "Courses", description: "Course catalog" },
   { key: "batches", section: "Learning", label: "Batches", description: "Batch schedules and enrollment" },
+  { key: FEATURE_TIMETABLES, section: "Learning", label: "Timetables", description: "Weekly/monthly class schedules and email delivery" },
   { key: FEATURE_COMMUNICATIONS, section: "Engagement", label: "Communications", description: "WhatsApp hub and messaging" },
   { key: FEATURE_MARKETING, section: "Engagement", label: "Marketing Portal", description: "Email / WhatsApp marketing for org users" },
   { key: "payments", section: "Finance", label: "Payment Links", description: "Razorpay payment links and records" },
@@ -47,6 +49,7 @@ export const CORE_DEFAULT_FEATURES = [
   "students",
   "courses",
   "batches",
+  FEATURE_TIMETABLES,
   FEATURE_COMMUNICATIONS,
   "payments",
   "daily_reports",
@@ -104,10 +107,13 @@ export function featureKeyForPath(pathname: string): string | null {
     || p.startsWith("/my-referrals") || p.startsWith("/referral-analytics") || p.startsWith("/leads-management")) {
     return "leads";
   }
-  if (p.startsWith("/form-management") || p.startsWith("/form-api-integrations")) return FEATURE_FORM_MANAGEMENT;
+  if (p.startsWith("/form-management") || p.startsWith("/form-api-integrations") || p.startsWith("/hr/form-management")) {
+    return FEATURE_FORM_MANAGEMENT;
+  }
   if (p.startsWith("/students")) return "students";
   if (p.startsWith("/courses")) return "courses";
   if (p.startsWith("/batches")) return "batches";
+  if (p.startsWith("/timetables")) return FEATURE_TIMETABLES;
   if (p.startsWith("/tasks")) return "tasks";
   if (p.startsWith("/notifications")) return "notifications";
   if (p.startsWith("/payments") || p.startsWith("/payment-links")) return "payments";

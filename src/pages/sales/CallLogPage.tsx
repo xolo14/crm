@@ -20,15 +20,22 @@ import { useCallLogStats, useCallLogs, useDeleteCallLog } from "@/hooks/useCallL
 import LogCallDialog, { LEAD_PIPELINE_OPTIONS } from "@/components/sales/LogCallDialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCallDuration } from "@/lib/callDuration";
 import { ProtectedUploadPreviewDialog } from "@/components/ProtectedUploadPreviewDialog";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import type { CallLog, CallLogPeriod, CallLogStats } from "@/types/callLog";
+import { api } from "@/lib/api";
+import {
+  CALL_LOG_PERIODS,
+  type CallLog,
+  type CallLogPeriod,
+  type CallLogStats,
+  type CallLogsQueryParams,
+} from "@/types/callLog";
 
 function normalizeRole(role?: string | null) {
   const r = String(role || "").toLowerCase();
@@ -151,13 +158,13 @@ function callLogLeadStatusCell(log: { lead_id?: string | null; lead_status?: str
 }
 
 function DailyLogsStrip({
-  period,
+  query,
   showRepColumn,
   canMutate,
   onCreate,
   onEdit,
 }: {
-  period: CallLogPeriod;
+  query: CallLogsQueryParams;
   showRepColumn: boolean;
   canMutate: (log: CallLog) => boolean;
   onCreate: () => void;
@@ -171,9 +178,9 @@ function DailyLogsStrip({
 
   useEffect(() => {
     setPage(1);
-  }, [period]);
+  }, [query.period, query.date_from, query.date_to, query.sales_rep_id]);
 
-  const { data, isLoading } = useCallLogs({ period, page, limit });
+  const { data, isLoading } = useCallLogs({ ...query, page, limit });
   const logs = data?.logs ?? [];
   const total = data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / limit));
@@ -338,21 +345,69 @@ function DailyLogsStrip({
 export default function CallLogPage() {
   const { user } = useAuth();
   const role = normalizeRole(user?.role);
-  const showRepColumn = ["admin", "super_admin", "org", "manager"].includes(role);
+  const canFilterUsers = ["admin", "super_admin", "org", "manager"].includes(role);
+  const showRepColumn = canFilterUsers;
 
   const canMutate = useMemo(() => {
     return (log: CallLog) => {
-      if (["admin", "super_admin", "org", "manager"].includes(role)) return true;
+      if (canFilterUsers) return true;
       return log.sales_rep_id === user?.id;
     };
-  }, [role, user?.id]);
+  }, [canFilterUsers, user?.id]);
 
-  const [tab, setTab] = useState<CallLogPeriod>("today");
-  const { data: stats, isLoading: statsLoading } = useCallLogStats(tab);
+  const [period, setPeriod] = useState<CallLogPeriod>("today");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [selectedUser, setSelectedUser] = useState<string>("all");
+  const [accessibleUsers, setAccessibleUsers] = useState<{ id: string; full_name: string }[]>([]);
+
   const [logDialogOpen, setLogDialogOpen] = useState(false);
   const [editLog, setEditLog] = useState<CallLog | null>(null);
 
-  const periodTitle = tab === "today" ? "Today" : tab === "week" ? "This Week" : "This Month";
+  useEffect(() => {
+    if (!canFilterUsers) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await api.team.list();
+        const members = (data.data || []) as {
+          id: string;
+          full_name: string;
+          role?: string;
+          is_active?: boolean | number;
+        }[];
+        const list = members
+          .filter((m) => m.is_active === undefined || m.is_active === true || m.is_active === 1)
+          .map((m) => ({ id: m.id, full_name: m.full_name || m.id }))
+          .sort((a, b) => a.full_name.localeCompare(b.full_name));
+        if (!cancelled) setAccessibleUsers(list);
+      } catch {
+        if (!cancelled) setAccessibleUsers([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [canFilterUsers]);
+
+  const query: CallLogsQueryParams = useMemo(() => {
+    const q: CallLogsQueryParams = { period };
+    if (period === "custom") {
+      if (customFrom) q.date_from = customFrom;
+      if (customTo) q.date_to = customTo;
+    }
+    if (canFilterUsers && selectedUser !== "all") {
+      q.sales_rep_id = selectedUser;
+    }
+    return q;
+  }, [period, customFrom, customTo, canFilterUsers, selectedUser]);
+
+  const { data: stats, isLoading: statsLoading } = useCallLogStats(query);
+
+  const periodTitle =
+    period === "custom" && (customFrom || customTo)
+      ? `Custom ${customFrom || "…"} → ${customTo || "…"}`
+      : CALL_LOG_PERIODS.find((p) => p.value === period)?.label ?? "Today";
 
   const openCreate = () => {
     setEditLog(null);
@@ -370,34 +425,74 @@ export default function CallLogPage() {
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Call Log</h1>
           <p className="text-xs sm:text-sm text-muted-foreground">Track your daily call activity</p>
         </div>
-        <Button size="sm" className="bg-teal-500 hover:bg-teal-600 text-white gap-1.5 h-9 shrink-0" onClick={openCreate}>
-          <PhoneCall className="h-4 w-4" /> + Log Call
-        </Button>
+        <div className="flex flex-col items-stretch sm:items-end gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 justify-end">
+            <Select value={period} onValueChange={(v) => setPeriod(v as CallLogPeriod)}>
+              <SelectTrigger className="w-[140px] sm:w-[160px] h-9 text-xs">
+                <SelectValue placeholder="Timeline" />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {CALL_LOG_PERIODS.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {canFilterUsers && (
+              <Select value={selectedUser} onValueChange={setSelectedUser}>
+                <SelectTrigger className="w-[160px] sm:w-[200px] h-9 text-xs">
+                  <SelectValue placeholder="All users" />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="all">All users</SelectItem>
+                  {accessibleUsers.map((u) => (
+                    <SelectItem key={u.id} value={u.id}>
+                      {u.full_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Button size="sm" className="bg-teal-500 hover:bg-teal-600 text-white gap-1.5 h-9" onClick={openCreate}>
+              <PhoneCall className="h-4 w-4" /> + Log Call
+            </Button>
+          </div>
+          {period === "custom" && (
+            <div className="flex items-center gap-1.5 justify-end">
+              <Input
+                type="date"
+                className="h-8 w-[130px] text-xs"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                aria-label="From date"
+              />
+              <span className="text-xs text-muted-foreground">–</span>
+              <Input
+                type="date"
+                className="h-8 w-[130px] text-xs"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                aria-label="To date"
+              />
+            </div>
+          )}
+        </div>
       </div>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as CallLogPeriod)} className="w-full">
-        <TabsList className="mb-4">
-          <TabsTrigger value="today">Today</TabsTrigger>
-          <TabsTrigger value="week">This Week</TabsTrigger>
-          <TabsTrigger value="month">This Month</TabsTrigger>
-        </TabsList>
+      {statsLoading ? (
+        <p className="text-sm text-muted-foreground py-4 mb-4">Loading stats…</p>
+      ) : (
+        <StatsGrid stats={stats ?? emptyStats} periodTitle={periodTitle} />
+      )}
 
-        {statsLoading ? (
-          <p className="text-sm text-muted-foreground py-4 mb-4">Loading stats…</p>
-        ) : (
-          <StatsGrid stats={stats ?? emptyStats} periodTitle={periodTitle} />
-        )}
-
-        <TabsContent value="today" className="mt-0">
-          <DailyLogsStrip period="today" showRepColumn={showRepColumn} canMutate={canMutate} onCreate={openCreate} onEdit={openEdit} />
-        </TabsContent>
-        <TabsContent value="week" className="mt-0">
-          <DailyLogsStrip period="week" showRepColumn={showRepColumn} canMutate={canMutate} onCreate={openCreate} onEdit={openEdit} />
-        </TabsContent>
-        <TabsContent value="month" className="mt-0">
-          <DailyLogsStrip period="month" showRepColumn={showRepColumn} canMutate={canMutate} onCreate={openCreate} onEdit={openEdit} />
-        </TabsContent>
-      </Tabs>
+      <DailyLogsStrip
+        query={query}
+        showRepColumn={showRepColumn}
+        canMutate={canMutate}
+        onCreate={openCreate}
+        onEdit={openEdit}
+      />
 
       <LogCallDialog
         open={logDialogOpen}

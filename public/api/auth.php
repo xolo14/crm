@@ -171,6 +171,160 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
     ];
 }
 
+function ensureSuperAdminEmailLoginTables(PDO $db): void
+{
+    static $ok = false;
+    if ($ok) {
+        return;
+    }
+    try {
+        $db->exec(
+            "CREATE TABLE IF NOT EXISTS super_admin_allowed_emails (
+                id CHAR(36) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_by CHAR(36) DEFAULT NULL,
+                PRIMARY KEY (id),
+                UNIQUE KEY uq_super_admin_allowed_email (email)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        );
+        $db->exec(
+            "CREATE TABLE IF NOT EXISTS super_admin_login_approvals (
+                id CHAR(36) NOT NULL,
+                user_id CHAR(36) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                token_hash CHAR(64) NOT NULL,
+                ip VARCHAR(64) DEFAULT NULL,
+                user_agent VARCHAR(512) DEFAULT NULL,
+                status VARCHAR(24) NOT NULL DEFAULT 'pending',
+                expires_at DATETIME NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                approved_at DATETIME DEFAULT NULL,
+                PRIMARY KEY (id),
+                UNIQUE KEY uq_sa_login_token (token_hash),
+                KEY idx_sa_login_user (user_id),
+                KEY idx_sa_login_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        );
+    } catch (Throwable $e) {
+        error_log('[auth] super_admin email login tables: ' . $e->getMessage());
+    }
+    $ok = true;
+}
+
+function syncpediaAuthPublicOrigin(): string
+{
+    foreach (['FRONTEND_URL', 'CRM_PUBLIC_URL'] as $const) {
+        if (defined($const)) {
+            $v = trim((string) constant($const));
+            if ($v !== '' && stripos($v, 'your-domain') === false && stripos($v, 'example.com') === false) {
+                return rtrim($v, '/');
+            }
+        }
+    }
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (isset($_SERVER['SERVER_PORT']) && (string) $_SERVER['SERVER_PORT'] === '443')
+        || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower((string) $_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+    $host = trim((string) ($_SERVER['HTTP_HOST'] ?? ''));
+    if ($host === '') {
+        return '';
+    }
+    return ($https ? 'https' : 'http') . '://' . $host;
+}
+
+function syncpediaIsSuperAdminAllowedEmail(PDO $db, string $email): bool
+{
+    $email = strtolower(trim($email));
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+    ensureSuperAdminEmailLoginTables($db);
+    $st = $db->prepare('SELECT id FROM super_admin_allowed_emails WHERE LOWER(TRIM(email)) = ? LIMIT 1');
+    $st->execute([$email]);
+    return (bool) $st->fetchColumn();
+}
+
+function syncpediaSuperAdminEmailLoginHtml(string $title, string $body, bool $ok = false): void
+{
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+    http_response_code($ok ? 200 : 400);
+    header('Content-Type: text/html; charset=UTF-8');
+    $t = htmlspecialchars($title, ENT_QUOTES, 'UTF-8');
+    $b = htmlspecialchars($body, ENT_QUOTES, 'UTF-8');
+    $color = $ok ? '#15803d' : '#b91c1c';
+    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        . '<title>' . $t . '</title></head><body style="font-family:system-ui,sans-serif;max-width:28rem;margin:3rem auto;padding:0 1rem;">'
+        . '<h1 style="font-size:1.25rem;color:' . $color . ';">' . $t . '</h1>'
+        . '<p style="color:#334155;line-height:1.5;">' . $b . '</p>'
+        . '<p><a href="/super_admin" style="color:#2563eb;">Back to Super Admin login</a></p>'
+        . '</body></html>';
+    exit;
+}
+
+// GET: approve email login (link from inbox)
+if ($method === 'GET' && (($_GET['action'] ?? '') === 'approve_super_admin_login')) {
+    ensureSuperAdminEmailLoginTables($db);
+    $raw = trim((string) ($_GET['token'] ?? ''));
+    if ($raw === '' || !preg_match('/^[a-f0-9]{64}$/', $raw)) {
+        syncpediaSuperAdminEmailLoginHtml('Invalid link', 'This login link is invalid or incomplete.');
+    }
+    $hash = hash('sha256', $raw);
+    $st = $db->prepare(
+        "SELECT id, user_id, email, status, expires_at FROM super_admin_login_approvals
+         WHERE token_hash = ? LIMIT 1"
+    );
+    $st->execute([$hash]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        syncpediaSuperAdminEmailLoginHtml('Invalid link', 'This login link was not found. Request a new one from the login page.');
+    }
+    if (($row['status'] ?? '') !== 'pending') {
+        syncpediaSuperAdminEmailLoginHtml('Already used', 'This login link was already used. Request a new one if you need to sign in again.');
+    }
+    $exp = strtotime((string) ($row['expires_at'] ?? '') . ' UTC');
+    if ($exp === false || $exp < time()) {
+        $db->prepare("UPDATE super_admin_login_approvals SET status = 'expired' WHERE id = ?")->execute([(string) $row['id']]);
+        syncpediaSuperAdminEmailLoginHtml('Link expired', 'This login link has expired. Go back to the Super Admin login page and request a new email.');
+    }
+    $requestEmail = strtolower(trim((string) ($row['email'] ?? '')));
+    if ($requestEmail === '' || !syncpediaIsSuperAdminAllowedEmail($db, $requestEmail)) {
+        syncpediaSuperAdminEmailLoginHtml('Not allowed', 'This email is no longer on the Super Admin login allowlist.');
+    }
+    $ust = $db->prepare(
+        'SELECT id, email, password_hash, full_name, phone, avatar_url, role, referral_code, org_id, is_active
+         FROM users WHERE id = ? LIMIT 1'
+    );
+    $ust->execute([(string) $row['user_id']]);
+    $user = $ust->fetch(PDO::FETCH_ASSOC);
+    if (!$user || normalizeRoleForPortal((string) ($user['role'] ?? '')) !== 'super_admin') {
+        syncpediaSuperAdminEmailLoginHtml('Account unavailable', 'This Super Admin account is not available.');
+    }
+    if (!(int) ($user['is_active'] ?? 0)) {
+        syncpediaSuperAdminEmailLoginHtml('Account deactivated', 'This account is deactivated.');
+    }
+    $db->prepare(
+        "UPDATE super_admin_login_approvals SET status = 'approved', approved_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'pending'"
+    )->execute([(string) $row['id']]);
+    syncpediaAuditLog(
+        $db,
+        ['user_id' => $user['id'], 'org_id' => $user['org_id'] ?? null],
+        'logged_in',
+        'auth',
+        (string) $user['id'],
+        'Super admin email login approved'
+    );
+    authLoginSuccessResponse($db, $user); // sets HttpOnly cookie
+    $origin = syncpediaAuthPublicOrigin();
+    $dest = ($origin !== '' ? $origin : '') . '/super_admin?email_ok=1';
+    if ($origin === '') {
+        $dest = '/super_admin?email_ok=1';
+    }
+    header('Location: ' . $dest, true, 302);
+    exit;
+}
+
 if ($method === 'POST') {
     // Prefer query for backward compatibility; accept action in JSON body (Android app).
     $action = $_GET['action'] ?? ($input['action'] ?? '');
@@ -215,6 +369,190 @@ if ($method === 'POST') {
             ], 503);
         }
         respond(['message' => $genericMsg]);
+    }
+
+    if ($action === 'request_super_admin_email_login') {
+        syncpediaRateLimitConsume('sa_email_login', 5, 900);
+        ensureSuperAdminEmailLoginTables($db);
+        $email = strtolower(trim((string) ($input['email'] ?? '')));
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            respond(['error' => 'Enter a valid email address'], 400);
+        }
+        $generic = [
+            'status' => 'approval_sent',
+            'message' => 'If this email is allowed for Super Admin login, a confirmation link has been sent. Click Yes in the email to sign in.',
+        ];
+        if (!syncpediaIsSuperAdminAllowedEmail($db, $email)) {
+            // Same message to avoid email enumeration
+            respond($generic);
+        }
+        // Prefer a super_admin user with this email; else the allowlist owner (created_by).
+        $stmt = $db->prepare(
+            'SELECT id, email, password_hash, full_name, phone, avatar_url, role, referral_code, org_id, is_active
+             FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1'
+        );
+        $stmt->execute([$email]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (
+            !$user
+            || !(int) ($user['is_active'] ?? 0)
+            || normalizeRoleForPortal((string) ($user['role'] ?? '')) !== 'super_admin'
+        ) {
+            $own = $db->prepare(
+                'SELECT created_by FROM super_admin_allowed_emails WHERE LOWER(TRIM(email)) = ? LIMIT 1'
+            );
+            $own->execute([$email]);
+            $ownerId = trim((string) ($own->fetchColumn() ?: ''));
+            $user = null;
+            if ($ownerId !== '') {
+                $ust = $db->prepare(
+                    'SELECT id, email, password_hash, full_name, phone, avatar_url, role, referral_code, org_id, is_active
+                     FROM users WHERE id = ? LIMIT 1'
+                );
+                $ust->execute([$ownerId]);
+                $user = $ust->fetch(PDO::FETCH_ASSOC);
+            }
+            if (
+                !$user
+                || !(int) ($user['is_active'] ?? 0)
+                || normalizeRoleForPortal((string) ($user['role'] ?? '')) !== 'super_admin'
+            ) {
+                respond($generic);
+            }
+        }
+        $db->prepare(
+            "UPDATE super_admin_login_approvals SET status = 'expired'
+             WHERE user_id = ? AND status = 'pending'"
+        )->execute([(string) $user['id']]);
+        $rawToken = bin2hex(random_bytes(32));
+        $tokenHash = hash('sha256', $rawToken);
+        $aid = generateUUID();
+        $exp = gmdate('Y-m-d H:i:s', time() + 900);
+        $ip = function_exists('syncpediaClientIp') ? syncpediaClientIp() : (string) ($_SERVER['REMOTE_ADDR'] ?? '');
+        $ua = substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 512);
+        $db->prepare(
+            'INSERT INTO super_admin_login_approvals
+             (id, user_id, email, token_hash, ip, user_agent, status, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, \'pending\', ?)'
+        )->execute([$aid, $user['id'], $email, $tokenHash, $ip !== '' ? $ip : null, $ua !== '' ? $ua : null, $exp]);
+
+        $origin = syncpediaAuthPublicOrigin();
+        $approveUrl = ($origin !== '' ? $origin : '') . '/api/auth.php?action=approve_super_admin_login&token=' . rawurlencode($rawToken);
+        $name = trim((string) ($user['full_name'] ?? 'Super Admin'));
+        $safeName = htmlspecialchars($name, ENT_QUOTES, 'UTF-8');
+        $safeIp = htmlspecialchars($ip !== '' ? $ip : 'unknown', ENT_QUOTES, 'UTF-8');
+        $safeUrl = htmlspecialchars($approveUrl, ENT_QUOTES, 'UTF-8');
+        $html = '<div style="font-family:system-ui,sans-serif;max-width:32rem;margin:0 auto;color:#0f172a;">'
+            . '<h2 style="font-size:1.25rem;">Super Admin login request</h2>'
+            . '<p>Hi ' . $safeName . ',</p>'
+            . '<p>Someone requested access to the Syncpedia Super Admin portal with this email.</p>'
+            . '<p style="font-size:0.875rem;color:#64748b;">IP: ' . $safeIp . '<br>Link expires in 15 minutes.</p>'
+            . '<p style="margin:1.5rem 0;"><a href="' . $safeUrl . '" style="display:inline-block;background:#d97706;color:#fff;text-decoration:none;padding:0.75rem 1.25rem;border-radius:0.5rem;font-weight:600;">Yes, log me in</a></p>'
+            . '<p style="font-size:0.8rem;color:#64748b;">If you did not request this, ignore this email.</p>'
+            . '</div>';
+
+        $mailOrgId = '';
+        $syncOrg = $db->query("SELECT id FROM organizations WHERE LOWER(TRIM(slug)) = 'syncpedia' LIMIT 1");
+        $mailOrgId = trim((string) ($syncOrg ? ($syncOrg->fetchColumn() ?: '') : ''));
+        syncpediaSetMailContext($mailOrgId !== '' ? $mailOrgId : null, 'default');
+        $mail = syncpediaSendHtmlEmail($email, 'Approve Super Admin login — Syncpedia CRM', $html, 'default');
+        if (empty($mail['ok'])) {
+            $db->prepare('DELETE FROM super_admin_login_approvals WHERE id = ?')->execute([$aid]);
+            respond([
+                'error' => 'Could not send the login email. ' . (string) ($mail['error'] ?? 'SMTP failed'),
+            ], 503);
+        }
+        respond($generic);
+    }
+
+    if ($action === 'list_super_admin_login_emails') {
+        $tokenData = verifyToken();
+        requireRole($tokenData, ['super_admin']);
+        ensureSuperAdminEmailLoginTables($db);
+        $rows = $db->query(
+            'SELECT id, email, created_at FROM super_admin_allowed_emails ORDER BY created_at ASC'
+        )->fetchAll(PDO::FETCH_ASSOC);
+        respond(['emails' => $rows ?: [], 'max' => 2]);
+    }
+
+    if ($action === 'save_super_admin_login_emails') {
+        $tokenData = verifyToken();
+        requireRole($tokenData, ['super_admin']);
+        ensureSuperAdminEmailLoginTables($db);
+        $ownerId = trim((string) ($tokenData['user_id'] ?? ''));
+        if ($ownerId === '') {
+            respond(['error' => 'Unauthorized'], 401);
+        }
+        $raw = $input['emails'] ?? [];
+        if (!is_array($raw)) {
+            respond(['error' => 'emails must be an array'], 400);
+        }
+        $cleaned = [];
+        foreach ($raw as $item) {
+            $e = strtolower(trim((string) $item));
+            if ($e === '') {
+                continue;
+            }
+            if (!filter_var($e, FILTER_VALIDATE_EMAIL)) {
+                respond(['error' => "Invalid email: {$e}"], 400);
+            }
+            $cleaned[] = $e;
+        }
+        $cleaned = array_values(array_unique($cleaned));
+        if (count($cleaned) > 2) {
+            respond(['error' => 'Maximum of 2 Super Admin login emails'], 400);
+        }
+        $db->exec('DELETE FROM super_admin_allowed_emails');
+        $ins = $db->prepare(
+            'INSERT INTO super_admin_allowed_emails (id, email, created_by) VALUES (?, ?, ?)'
+        );
+        foreach ($cleaned as $e) {
+            $ins->execute([generateUUID(), $e, $ownerId]);
+        }
+        $rows = $db->query(
+            'SELECT id, email, created_at FROM super_admin_allowed_emails ORDER BY created_at ASC'
+        )->fetchAll(PDO::FETCH_ASSOC);
+        respond(['ok' => true, 'emails' => $rows ?: [], 'max' => 2]);
+    }
+
+    if ($action === 'add_super_admin_login_email') {
+        $tokenData = verifyToken();
+        requireRole($tokenData, ['super_admin']);
+        ensureSuperAdminEmailLoginTables($db);
+        $email = strtolower(trim((string) ($input['email'] ?? '')));
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            respond(['error' => 'Enter a valid email address'], 400);
+        }
+        $cnt = (int) $db->query('SELECT COUNT(*) FROM super_admin_allowed_emails')->fetchColumn();
+        if ($cnt >= 2) {
+            respond(['error' => 'Maximum of 2 Super Admin login emails. Remove one first.'], 400);
+        }
+        $id = generateUUID();
+        try {
+            $db->prepare(
+                'INSERT INTO super_admin_allowed_emails (id, email, created_by) VALUES (?, ?, ?)'
+            )->execute([$id, $email, (string) ($tokenData['user_id'] ?? '')]);
+        } catch (Throwable $e) {
+            respond(['error' => 'This email is already on the allowlist'], 409);
+        }
+        respond(['ok' => true, 'id' => $id, 'email' => $email]);
+    }
+
+    if ($action === 'remove_super_admin_login_email') {
+        $tokenData = verifyToken();
+        requireRole($tokenData, ['super_admin']);
+        ensureSuperAdminEmailLoginTables($db);
+        $id = trim((string) ($input['id'] ?? ''));
+        $email = strtolower(trim((string) ($input['email'] ?? '')));
+        if ($id === '' && $email === '') {
+            respond(['error' => 'id or email is required'], 400);
+        }
+        if ($id !== '') {
+            $db->prepare('DELETE FROM super_admin_allowed_emails WHERE id = ?')->execute([$id]);
+        } else {
+            $db->prepare('DELETE FROM super_admin_allowed_emails WHERE LOWER(TRIM(email)) = ?')->execute([$email]);
+        }
+        respond(['ok' => true]);
     }
 
     if ($action === 'verify_reset_otp') {

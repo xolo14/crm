@@ -134,7 +134,20 @@ function docFormsIsAdmin(array $tokenData): bool {
 }
 
 function docFormsIsManager(array $tokenData): bool {
-    return syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'manager';
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    return in_array($role, ['manager', 'operational_manager'], true);
+}
+
+/** Roles that may link templates, manage submissions, and issue documents. */
+function docFormsWorkflowRoles(): array
+{
+    return ['admin', 'super_admin', 'org', 'manager', 'operational_manager', 'hr'];
+}
+
+/** Roles that may create forms and manage assignments (not HR). */
+function docFormsManagerRoles(): array
+{
+    return ['admin', 'super_admin', 'org', 'manager', 'operational_manager'];
 }
 
 function docFormsUserOwnsForm(PDO $db, array $tokenData, string $formId): bool {
@@ -325,7 +338,7 @@ if ($method === 'GET') {
     }
 
     if ($action === 'access') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+        requireRole($tokenData, docFormsManagerRoles());
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $st = $db->prepare('SELECT * FROM doc_form_access WHERE form_id = ? ORDER BY created_at ASC');
@@ -334,7 +347,7 @@ if ($method === 'GET') {
     }
 
     if ($action === 'submissions') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+        requireRole($tokenData, docFormsWorkflowRoles());
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $st = $db->prepare('SELECT * FROM doc_form_submissions WHERE form_id = ? ORDER BY created_at DESC LIMIT 2000');
@@ -355,7 +368,7 @@ if ($method === 'GET') {
     }
 
     if ($action === 'issued') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager', 'hr']);
+        requireRole($tokenData, docFormsWorkflowRoles());
         $kind = trim((string) ($_GET['doc_kind'] ?? $_GET['kind'] ?? ''));
         $orgId = docFormsOrgId($tokenData);
         $params = [];
@@ -388,7 +401,7 @@ if ($method === 'POST') {
     if (!is_array($input)) $input = [];
 
     if ($action === 'create') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+        requireRole($tokenData, docFormsManagerRoles());
         $name = trim((string) ($input['name'] ?? ''));
         $formType = trim((string) ($input['form_type'] ?? ''));
         if ($name === '') respond(['error' => 'name is required'], 400);
@@ -444,7 +457,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'assign') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+        requireRole($tokenData, docFormsManagerRoles());
         $formId = trim((string) ($input['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         if (!docFormsFetchForm($db, $formId)) respond(['error' => 'Form not found'], 404);
@@ -522,7 +535,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'add_manual_row') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+        requireRole($tokenData, docFormsWorkflowRoles());
         $formId = trim((string) ($input['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $form = docFormsFetchForm($db, $formId);
@@ -573,7 +586,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'link_template') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+        requireRole($tokenData, docFormsWorkflowRoles());
         $formId = trim((string) ($input['form_id'] ?? ''));
         $templateId = trim((string) ($input['template_id'] ?? ''));
         $kind = trim((string) ($input['template_kind'] ?? ''));
@@ -615,7 +628,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'save_column_maps') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+        requireRole($tokenData, docFormsWorkflowRoles());
         $formId = trim((string) ($input['form_id'] ?? ''));
         $maps = $input['column_maps'] ?? [];
         if ($formId === '' || !is_array($maps)) respond(['error' => 'form_id and column_maps required'], 400);
@@ -628,7 +641,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'update_submission_values') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+        requireRole($tokenData, docFormsWorkflowRoles());
         $submissionId = trim((string) ($input['submission_id'] ?? ''));
         $values = $input['values'] ?? $input['values_json'] ?? null;
         if ($submissionId === '' || !is_array($values)) respond(['error' => 'submission_id and values required'], 400);
@@ -653,7 +666,7 @@ if ($method === 'POST') {
     }
 
     if ($action === 'issue') {
-        requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager', 'hr']);
+        requireRole($tokenData, docFormsWorkflowRoles());
         $submissionId = trim((string) ($input['submission_id'] ?? ''));
         if ($submissionId === '') respond(['error' => 'submission_id required'], 400);
         $st = $db->prepare('SELECT * FROM doc_form_submissions WHERE id = ? LIMIT 1');
@@ -742,7 +755,7 @@ if ($method === 'POST') {
 
 // ---------- PUT ----------
 if ($method === 'PUT') {
-    requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+    requireRole($tokenData, docFormsManagerRoles());
     $input = getInput();
     if (!is_array($input)) $input = [];
     $id = trim((string) ($_GET['id'] ?? $input['id'] ?? ''));
@@ -779,7 +792,7 @@ if ($method === 'PUT') {
 
 // ---------- DELETE ----------
 if ($method === 'DELETE') {
-    requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
+    requireRole($tokenData, docFormsWorkflowRoles());
     $id = trim((string) ($_GET['id'] ?? ''));
     if ($action === 'submission') {
         if ($id === '') respond(['error' => 'id required'], 400);

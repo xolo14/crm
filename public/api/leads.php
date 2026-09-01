@@ -244,7 +244,15 @@ if ($method === 'GET') {
     $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $limit . " OFFSET " . $offset);
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
-    $fetched = count($rows);
+
+    // Managers: form + assessment cards hidden unless granted / assigned / self-created.
+    if (syncpediaNormalizeRoleKey((string) $role) === 'manager' && function_exists('syncpediaFilterLeadsForManagerCardAccess')) {
+        $rows = syncpediaFilterLeadsForManagerCardAccess($db, $tokenData, is_array($rows) ? $rows : []);
+        $fetched = count($rows);
+        $total = $fetched;
+    } else {
+        $fetched = count($rows);
+    }
 
     // Resolve creator display names for "Created by" (Added leads card, managers).
     if ($fetched > 0 && syncpediaColumnExists($db, 'leads', 'created_by')) {

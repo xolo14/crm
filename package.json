@@ -8,12 +8,16 @@
     "sync:api": "node scripts/sync-api.mjs",
     "predev": "node scripts/sync-api.mjs",
     "build:vite": "vite build",
+    "build:decoy": "vite build --config decoy/vite.config.ts",
     "build": "node scripts/build-dist.mjs",
     "build:dev": "vite build --mode development",
+    "dev:decoy": "vite --config decoy/vite.config.ts",
+    "seed:decoy": "php scripts/seed-decoy.php",
     "lint": "eslint .",
     "check:api": "node scripts/check-api-files.mjs",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:decoy": "vitest run decoy",
     "test:watch": "vitest"
   },
   "dependencies": {

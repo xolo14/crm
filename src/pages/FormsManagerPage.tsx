@@ -31,7 +31,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormDetailDialog } from "@/components/forms/FormDetailDialog";
 import { FormPublishCampaignDialog } from "@/components/forms/FormPublishCampaignDialog";
 import { canManageFormCampaigns, parseFormCampaign, type FormCampaignConfig } from "@/components/forms/formCampaignTypes";
-import { isL3AdminRole, isMarketingFamilyRole, normalizeAppRole } from "@/lib/roleUtils";
+import { isL3AdminRole, isMarketingFamilyRole, isOperationalManagerRole, normalizeAppRole } from "@/lib/roleUtils";
 import { formsManagerCacheKey } from "@/lib/formsManagerCache";
 import DocFormsHubPage from "@/modules/docForms/DocFormsHub";
 import FormApiIntegrationsPage from "@/pages/FormApiIntegrationsPage";
@@ -57,6 +57,7 @@ interface LeadForm {
   submission_count?: number;
   created_at?: string;
   created_by?: string | null;
+  created_by_name?: string | null;
   org_id?: string | null;
   org_name?: string | null;
   meta_json?: {
@@ -592,11 +593,13 @@ export default function FormsManagerPage() {
   editingRef.current = editing;
 
   const isSuperAdmin = role === "super_admin";
+  const isAdmin = role === "org";
+  /** Created by column: admin + super_admin only (not org/manager/marketing). */
+  const showCreatedByColumn = isSuperAdmin || isAdmin;
   const normalizedRole = normalizeAppRole(role);
   const isManager = normalizedRole === "manager";
   const isOrgAdmin =
     role === "super_admin" ||
-    role === "admin" ||
     isL3AdminRole(normalizedRole);
   // Admins + managers can assign. L1 (marketing etc.) can create but not assign.
   const canAssignForms = isOrgAdmin || isManager;
@@ -604,9 +607,16 @@ export default function FormsManagerPage() {
     canAssignForms ||
     isL3AdminRole(normalizedRole) ||
     isMarketingFamilyRole(normalizedRole) ||
+    isOperationalManagerRole(normalizedRole) ||
+    normalizedRole === "hr" ||
     isManager;
   // Destination column omitted on Leads/HR tabs (already filtered by destination).
-  const tableColCount = 4 + (isSuperAdmin ? 1 : 0) + (canAssignForms ? 2 : 0) + (canEditForms ? 1 : 0);
+  const tableColCount =
+    4 +
+    (isSuperAdmin ? 1 : 0) +
+    (showCreatedByColumn ? 1 : 0) +
+    (canAssignForms ? 2 : 0) +
+    (canEditForms ? 1 : 0);
   const canAccess = canEditForms;
   const isMarketing = normalizeAppRole(role) === "marketing";
   const myReferralCode = String(profile?.referral_code ?? "").trim();
@@ -623,6 +633,19 @@ export default function FormsManagerPage() {
       return false;
     },
     [canAssignForms, isOrgAdmin, isManager, myUserId],
+  );
+
+  const resolveFormCreatorLabel = useCallback(
+    (form: LeadForm) => {
+      const fromApi = String(form.created_by_name || "").trim();
+      if (fromApi) return fromApi;
+      const uid = String(form.created_by || "").trim();
+      if (!uid) return "—";
+      const member = teamMembers.find((m) => String(m.id) === uid);
+      if (member) return member.full_name || member.email || "—";
+      return "—";
+    },
+    [teamMembers],
   );
 
   const baseApplyUrl = useMemo(() => `${window.location.origin}/apply`, []);
@@ -1130,7 +1153,7 @@ export default function FormsManagerPage() {
     if (r === "hr") return "HR";
     if (r === "trainer") return "Trainer";
     if (r === "finance") return "Finance";
-    if (r === "admin" || r === "org") return "Admin";
+    if (r === "org") return "Org Admin";
     return r ? r.replace(/_/g, " ") : "Member";
   }
 
@@ -1808,13 +1831,14 @@ export default function FormsManagerPage() {
           <Table className="w-full min-w-0 table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead className={canAssignForms ? "w-[24%]" : "w-[32%]"}>Name</TableHead>
-                {isSuperAdmin ? <TableHead className="w-[14%]">Organization</TableHead> : null}
+                <TableHead className={canAssignForms ? "w-[22%]" : "w-[30%]"}>Name</TableHead>
+                {isSuperAdmin ? <TableHead className="w-[12%]">Organization</TableHead> : null}
+                {showCreatedByColumn ? <TableHead className="w-[14%]">Created by</TableHead> : null}
                 <TableHead className="w-[10%]">Status</TableHead>
                 <TableHead className="w-[8%] text-right">Subs</TableHead>
                 <TableHead className="w-[8%]">Link</TableHead>
                 {canAssignForms ? <TableHead className="w-[10%]">Assign</TableHead> : null}
-                {canAssignForms ? <TableHead className="w-[16%]">Assigned</TableHead> : null}
+                {canAssignForms ? <TableHead className="w-[14%]">Assigned</TableHead> : null}
                 {canEditForms ? <TableHead className="w-[6%] text-right"> </TableHead> : null}
               </TableRow>
             </TableHeader>
@@ -1855,6 +1879,16 @@ export default function FormsManagerPage() {
                       {isSuperAdmin ? (
                         <TableCell className="align-top">
                           <span className="text-sm truncate block" title={form.org_name || undefined}>{form.org_name || "—"}</span>
+                        </TableCell>
+                      ) : null}
+                      {showCreatedByColumn ? (
+                        <TableCell className="align-top">
+                          <span
+                            className="text-sm truncate block"
+                            title={resolveFormCreatorLabel(form)}
+                          >
+                            {resolveFormCreatorLabel(form)}
+                          </span>
                         </TableCell>
                       ) : null}
                       <TableCell className="align-top">

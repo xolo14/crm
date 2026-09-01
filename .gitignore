@@ -10,6 +10,10 @@ server/.env
 # PHP API secrets (use config.example.php as template)
 public/api/config.php
 php-backend/api/config.php
+public/api-decoy/config.php
+
+# Decoy honeypot credentials (plaintext once after seed)
+decoy-credentials.txt
 
 # Logs
 logs

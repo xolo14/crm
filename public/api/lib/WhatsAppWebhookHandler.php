@@ -211,6 +211,16 @@ class WhatsAppWebhookHandler
                     }
                 }
 
+                // Meta coexistence / onboarding history sync (up to ~180 days when business shares history).
+                $field = (string) ($change['field'] ?? '');
+                if ($field === 'history' || !empty($value['history'])) {
+                    $n = WhatsAppInbox::ingestHistoryWebhook($db, $orgId, is_array($value) ? $value : []);
+                    WhatsAppInbox::logWebhook($db, 'history', $orgId, null, null, 'synced', null, [
+                        'stored' => $n,
+                        'field' => $field,
+                    ]);
+                }
+
                 if (($change['field'] ?? '') === 'message_template_status_update') {
                     self::processTemplateStatus($db, $value, $orgId, $wabaId, $phoneNumberId);
                 }

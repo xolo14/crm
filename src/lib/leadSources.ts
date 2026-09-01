@@ -22,6 +22,7 @@ export const LEAD_SOURCE_BUCKETS = [
   'meta_ads',
   'youtube',
   'website',
+  'api_ingest',
   'form_leads',
   'peaklyy',
   'import',
@@ -40,6 +41,7 @@ export const SOURCE_BUCKET_LABELS: Record<LeadSourceBucket, string> = {
   meta_ads: 'Meta Ads',
   youtube: 'YouTube',
   website: 'Website',
+  api_ingest: 'API / Website leads',
   form_leads: 'Form leads',
   peaklyy: 'Peaklyy Assessments',
   import: 'Import',
@@ -54,6 +56,8 @@ const KNOWN_DIRECT: Record<string, LeadSourceBucket> = {
   google_ads: 'google_ads',
   youtube: 'youtube',
   website: 'website',
+  api_ingest: 'api_ingest',
+  third_party: 'api_ingest',
   whatsapp: 'whatsapp',
   referral: 'referral',
   walkin: 'walkin',
@@ -324,8 +328,15 @@ function getMetaAdName(lead: { tags?: unknown; source?: string | null }): string
   return 'Meta Ad';
 }
 
-function isMetaAdSourceBucket(bucket: string | null | undefined): boolean {
+export function isMetaAdSourceBucket(bucket: string | null | undefined): boolean {
   return !!bucket && (bucket.startsWith(META_AD_SOURCE_PREFIX) || bucket === 'meta_ads');
+}
+
+/** Canonical Leads Management folder that auto-holds every Meta Ads source card. */
+export const META_ADS_FOLDER_NAME = 'Meta Ads';
+
+export function isMetaAdsFolderName(name: string | null | undefined): boolean {
+  return (name || '').trim().toLowerCase() === META_ADS_FOLDER_NAME.toLowerCase();
 }
 
 /**
@@ -344,6 +355,23 @@ export function getLeadSourceBucket(lead: {
   if (isImportedLead(lead)) return getImportSetTag(lead) || 'import';
   if (isPeaklyyLead(lead)) return getPeaklyySourceKey(lead);
   if (isMetaAdLead(lead)) return getMetaAdSourceKey(lead);
+
+  // Third-party API ingest — own card (before form/referral checks that use referred_by).
+  const sourceEarly = String(lead?.source || '').trim().toLowerCase();
+  if (sourceEarly === 'api_ingest' || sourceEarly === 'third_party') return 'api_ingest';
+  const tagsEarly = parseLeadTags(lead?.tags);
+  if (
+    tagsEarly.some(
+      (t) =>
+        t === 'ingest:api' ||
+        t === 'ingest:lead-ingest' ||
+        t === 'source:api_ingest' ||
+        t.toLowerCase() === 'api_ingest',
+    )
+  ) {
+    return 'api_ingest';
+  }
+
   if (isManuallyAddedLead(lead)) return ADDED_LEADS_BUCKET;
   if (isFormLead(lead)) return getFormSourceKey(lead);
 

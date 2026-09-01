@@ -44,7 +44,7 @@ export default function PayslipPage() {
     if (r === "organisation") return "org";
     return r;
   })();
-  const canAccess = normalizedRole === "super_admin" || normalizedRole === "admin" || normalizedRole === "org";
+  const canAccess = normalizedRole === "super_admin" || normalizedRole === "org";
 
   const employeesQ = usePayslipEmployees();
   const payslipsQ = usePayslips();
