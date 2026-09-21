@@ -18,6 +18,8 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { useToast } from '@/hooks/use-toast';
 import { isSalesRepRole, normalizeAppRole } from '@/lib/roleUtils';
 import { computeLeadKpis, normalizeLeadsByStatus } from '@/lib/dashboardKpis';
+import AssignedAssignmentsCard from '@/components/assignments/AssignedAssignmentsCard';
+import AssignedDocFormLinksCard from '@/components/forms/AssignedDocFormLinksCard';
 const COLORS = ['hsl(210, 70%, 50%)', 'hsl(162, 63%, 41%)', 'hsl(38, 92%, 50%)', 'hsl(0, 70%, 55%)', 'hsl(270, 60%, 55%)', 'hsl(330, 70%, 55%)', 'hsl(45, 80%, 50%)', 'hsl(180, 60%, 45%)'];
 const SOURCE_LABELS: Record<string, string> = { google_ads: 'Google Ads', instagram: 'Instagram', facebook: 'Facebook', youtube: 'YouTube', website: 'Website', google_forms: 'Google Forms', whatsapp: 'WhatsApp', referral: 'Referral', walkin: 'Walk-in', college_seminar: 'College Seminar', other: 'Other' };
 const STATUS_LABELS: Record<string, string> = { new: 'New Inquiry', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Counseling Scheduled', demo_attended: 'Counseling Done', considering: 'Application In Progress', enrolled: 'Enroll', converted: 'Visa Approved', lost: 'Dropped' };
@@ -199,6 +201,10 @@ export default function AbroadConsultantDashboard() {
           </Card>
         ))}
       </div>
+
+      {/* Assigned Assignments */}
+      <AssignedAssignmentsCard />
+      <AssignedDocFormLinksCard />
 
       {/* Application Pipeline - visual funnel */}
       <Card className="mb-5 border-border/50 shadow-none">

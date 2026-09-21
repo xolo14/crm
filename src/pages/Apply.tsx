@@ -12,12 +12,37 @@ import {
   type BuilderQuestion,
   type LegacyFormField,
 } from '@/components/forms/formBuilderTypes';
+import { validateAnswer } from '@/components/forms/formValidation';
+import { readPrefillFromSearch } from '@/components/forms/formPrefill';
+import {
+  formClosedReason,
+  hasLocalOneResponse,
+  markLocalOneResponse,
+  quizScore,
+  seededShuffle,
+} from '@/components/forms/formRuntime';
+import { resolveNextSection, splitIntoSections } from '@/components/forms/sectionFlow';
 import { isCompletePhoneFieldValue } from '@/components/forms/phoneCountries';
 import { DEFAULT_PUBLIC_FORM_BRAND, parseFormMetaJson, publicFormBrandFromMeta, type PublicFormBrand } from '@/components/forms/publicFormTypes';
 import { getApiBase } from '@/lib/apiBase';
 import { reportLeadFormConversion } from '@/lib/gtagConversion';
 import { loadPublicAnalytics } from '@/lib/loadPublicAnalytics';
 import { setPageMeta, SEO_CRM_ORIGIN } from '@/lib/seo';
+import {
+  computeLeadFormPaymentBreakdown,
+  couponMatchesForm,
+  formatInrAmount,
+  normalizeCouponCode,
+} from '@/lib/leadFormPayment';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 const SPECIALIZATIONS = [
   { group: 'AI & Data', options: ['Artificial Intelligence', 'Machine Learning', 'Data Science & Analytics', 'n8n Workflow Automation'] },
@@ -29,7 +54,8 @@ const SPECIALIZATIONS = [
 
 export default function Apply() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const ref = searchParams.get('ref') || '';
+  const refs = searchParams.getAll('ref').map((r) => r.trim()).filter(Boolean);
+  const ref = refs.length ? refs[refs.length - 1] : '';
   const formSlug = (searchParams.get('form') || '').trim().toLowerCase();
   const [apiKey, setApiKey] = useState(() => {
     if (typeof window === 'undefined') return '';
@@ -60,6 +86,27 @@ export default function Apply() {
   const [collectEmail, setCollectEmail] = useState(true);
   const [confirmationMessage, setConfirmationMessage] = useState('');
   const [formLoadState, setFormLoadState] = useState<'idle' | 'loading' | 'ready' | 'inactive' | 'error'>('idle');
+  const [formMeta, setFormMeta] = useState<Record<string, unknown>>({});
+  const [loadedFormId, setLoadedFormId] = useState('');
+  const [submissionCount, setSubmissionCount] = useState(0);
+  const [sectionIdx, setSectionIdx] = useState(0);
+  const [sectionHistory, setSectionHistory] = useState<number[]>([0]);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [quizResult, setQuizResult] = useState<{ earned: number; total: number } | null>(null);
+  const [couponInput, setCouponInput] = useState('');
+  const [couponApplied, setCouponApplied] = useState(false);
+  const [couponMessage, setCouponMessage] = useState('');
+  const [payDialogOpen, setPayDialogOpen] = useState(false);
+  const paidReturn = searchParams.get('paid') === '1';
+  const razorpayLinkStatus = (searchParams.get('razorpay_payment_link_status') || '').toLowerCase();
+  const paymentReturnPaid =
+    paidReturn &&
+    (razorpayLinkStatus === '' || razorpayLinkStatus === 'paid' || razorpayLinkStatus === 'partially_paid');
+  const paymentReturnFailed =
+    paidReturn &&
+    (razorpayLinkStatus === 'cancelled' ||
+      razorpayLinkStatus === 'expired' ||
+      searchParams.get('status') === 'failed');
   const apiBase = getApiBase();
 
   useEffect(() => {
@@ -67,18 +114,27 @@ export default function Apply() {
   }, []);
 
   // Prefer X-Form-Api-Key via sessionStorage; strip ?api_key= from the URL (access-log leak).
+  // Keep a single ?ref= (last wins) so assigned links never show creator + user together.
   useEffect(() => {
     const fromUrl = searchParams.get('api_key') || '';
     const storageKey = formSlug ? `form_api_key_${formSlug}` : 'form_api_key';
-    if (fromUrl) {
-      try {
-        sessionStorage.setItem(storageKey, fromUrl);
-      } catch {
-        /* ignore */
+    const allRefs = searchParams.getAll('ref').map((r) => r.trim()).filter(Boolean);
+    const needsRefCleanup = searchParams.getAll('ref').length > 1;
+    if (fromUrl || needsRefCleanup) {
+      if (fromUrl) {
+        try {
+          sessionStorage.setItem(storageKey, fromUrl);
+        } catch {
+          /* ignore */
+        }
+        setApiKey(fromUrl);
       }
-      setApiKey(fromUrl);
       const next = new URLSearchParams(searchParams);
       next.delete('api_key');
+      next.delete('ref');
+      if (allRefs.length) {
+        next.set('ref', allRefs[allRefs.length - 1]);
+      }
       setSearchParams(next, { replace: true });
       return;
     }
@@ -124,8 +180,20 @@ export default function Apply() {
         description: "you@domain.com",
       });
     }
+    if (formMeta.shuffle_questions) {
+      return next.map((s) => ({
+        ...s,
+        questions: seededShuffle(s.questions, `${loadedFormId}:${s.id}`),
+      }));
+    }
     return next;
-  }, [formSections, isCustomForm]);
+  }, [formSections, isCustomForm, formMeta.shuffle_questions, loadedFormId]);
+
+  const visibleSections = useMemo(() => {
+    if (displaySections.length <= 1) return displaySections;
+    const cur = displaySections[Math.min(sectionIdx, displaySections.length - 1)];
+    return cur ? [cur] : displaySections;
+  }, [displaySections, sectionIdx]);
 
   const effectiveQuestions = useMemo(
     () => displaySections.flatMap((s) => s.questions),
@@ -171,6 +239,7 @@ export default function Apply() {
   };
 
   const isQuestionAnswered = (q: BuilderQuestion, key: string) => {
+    if (q.type === 'image' || q.type === 'video' || q.type === 'section_break') return true;
     if (q.type === 'file_upload') return !!formFiles[key];
     const v = (formValues[key] || '').trim();
     if (!v) return false;
@@ -193,12 +262,36 @@ export default function Apply() {
     return true;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const finishSubmit = () => {
+    if (loadedFormId && formMeta.allow_multiple_responses === false) markLocalOneResponse(loadedFormId);
+    if (formMeta.is_quiz) {
+      setQuizResult(
+        quizScore(effectiveQuestions, (q) =>
+          isQuestionAnswered(q as BuilderQuestion, questionFieldKey(q as BuilderQuestion, effectiveQuestions.indexOf(q as BuilderQuestion))),
+        ),
+      );
+    }
+    setPayDialogOpen(false);
+    setSubmitted(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent, opts?: { fromPayDialog?: boolean }) => {
     e.preventDefault();
     if (isCustomForm && effectiveQuestions.length > 0) {
-      for (let i = 0; i < effectiveQuestions.length; i++) {
-        const q = effectiveQuestions[i];
-        const key = questionFieldKey(q, i);
+      const visitedIds = new Set(
+        displaySections.length <= 1
+          ? displaySections.map((s) => s.id)
+          : sectionHistory.map((i) => displaySections[i]?.id).filter(Boolean) as string[],
+      );
+      const questionsToCheck = effectiveQuestions.filter((q) => {
+        if (q.type === 'image' || q.type === 'video' || q.type === 'section_break') return false;
+        if (displaySections.length <= 1) return true;
+        const sec = displaySections.find((s) => s.questions.some((qq) => qq.id === q.id));
+        return !sec || visitedIds.has(sec.id);
+      });
+      for (let i = 0; i < questionsToCheck.length; i++) {
+        const q = questionsToCheck[i];
+        const key = questionFieldKey(q, effectiveQuestions.indexOf(q));
         if (q.required && !isQuestionAnswered(q, key)) {
           toast({
             title:
@@ -207,6 +300,12 @@ export default function Apply() {
                 : `${q.title} is required`,
             variant: 'destructive',
           });
+          return;
+        }
+        const vErr = validateAnswer(q.validation, formValues[key] || '');
+        if (vErr) {
+          setFieldErrors((p) => ({ ...p, [key]: vErr }));
+          toast({ title: `${q.title}: ${vErr}`, variant: 'destructive' });
           return;
         }
         if (q.type === 'phone_number') {
@@ -225,7 +324,7 @@ export default function Apply() {
         toast({ title: 'Full name is required', variant: 'destructive' });
         return;
       }
-      if (collectEmail) {
+      if (collectEmail || formMeta.payment_enabled) {
         if (!emailVal) {
           toast({ title: 'Email is required', variant: 'destructive' });
           return;
@@ -272,6 +371,18 @@ export default function Apply() {
       return;
     }
 
+    const payAmountCheck = Number(formMeta.payment_amount);
+    const paymentOn =
+      !!formMeta.payment_enabled && Number.isFinite(payAmountCheck) && payAmountCheck > 0;
+    const openPayPopup =
+      paymentOn &&
+      (!!formMeta.payment_gst_enabled || !!formMeta.payment_handling_enabled) &&
+      !opts?.fromPayDialog;
+    if (openPayPopup) {
+      setPayDialogOpen(true);
+      return;
+    }
+
     setLoading(true);
     try {
       const contact = isCustomForm && effectiveQuestions.length > 0
@@ -305,6 +416,9 @@ export default function Apply() {
         fd.append('source', formSlug ? `form_${formSlug}` : 'website');
         if (formSlug) fd.append('form', formSlug);
         if (ref) fd.append('ref', ref);
+        if (couponApplied && couponInput.trim()) {
+          fd.append('payment_coupon', normalizeCouponCode(couponInput));
+        }
         for (const [key, file] of Object.entries(formFiles)) {
           if (file) fd.append(`file_${key}`, file);
         }
@@ -312,7 +426,20 @@ export default function Apply() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Submission failed');
         reportLeadFormConversion();
-        setSubmitted(true);
+        if (data?.payment_already_paid || data?.payment_free) {
+          finishSubmit();
+          return;
+        }
+        const payUrl = String(data?.payment_url || '').trim();
+        if (payUrl) {
+          // Lead is already created — send applicant to Razorpay for this submission.
+          window.location.assign(payUrl);
+          return;
+        }
+        if (paymentOn || data?.payment_error) {
+          throw new Error(String(data?.payment_error || 'Could not start payment. Please try again.'));
+        }
+        finishSubmit();
         return;
       }
 
@@ -330,18 +457,110 @@ export default function Apply() {
           source: formSlug ? `form_${formSlug}` : 'website',
           form: formSlug || undefined,
           ref: ref || undefined,
+          payment_coupon: couponApplied && couponInput.trim() ? normalizeCouponCode(couponInput) : undefined,
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Submission failed');
       reportLeadFormConversion();
-      setSubmitted(true);
+      if (data?.payment_already_paid || data?.payment_free) {
+        finishSubmit();
+        return;
+      }
+      const payUrl = String(data?.payment_url || '').trim();
+      if (payUrl) {
+        window.location.assign(payUrl);
+        return;
+      }
+      if (paymentOn || data?.payment_error) {
+        throw new Error(String(data?.payment_error || 'Could not start payment. Please try again.'));
+      }
+      finishSubmit();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Something went wrong. Please try again.';
       toast({ title: message, variant: 'destructive' });
     } finally {
       setLoading(false);
     }
+  };
+
+  const closedReason = formClosedReason({ ...formMeta, submission_count: submissionCount });
+  const payAmount = Number(formMeta.payment_amount);
+  const paymentEnabled = !!formMeta.payment_enabled && Number.isFinite(payAmount) && payAmount > 0;
+  const paymentBreakdown = useMemo(
+    () =>
+      computeLeadFormPaymentBreakdown(formMeta, {
+        couponApplied,
+        couponCode: couponApplied ? couponInput : undefined,
+      }),
+    [formMeta, couponApplied, couponInput],
+  );
+  const couponEnabled = paymentEnabled && !!formMeta.payment_coupon_enabled;
+  const needsPayBreakdownPopup =
+    paymentEnabled &&
+    (!!formMeta.payment_gst_enabled || !!formMeta.payment_handling_enabled);
+  // Fee line items only appear in the Pay popup; button shows Pay / total only.
+  const payLabel = paymentEnabled
+    ? needsPayBreakdownPopup
+      ? "Pay"
+      : `Pay ${formatInrAmount(paymentBreakdown?.total ?? payAmount)}`
+    : "";
+  const oneResponseBlocked = formMeta.allow_multiple_responses === false && !!loadedFormId && hasLocalOneResponse(loadedFormId);
+
+  const applyCoupon = () => {
+    if (!couponEnabled) return;
+    if (couponMatchesForm(formMeta, couponInput)) {
+      setCouponApplied(true);
+      setCouponMessage('Coupon applied — amount set to ₹0');
+      toast({ title: 'Coupon applied', description: 'Amount set to ₹0' });
+    } else {
+      setCouponApplied(false);
+      setCouponMessage('Invalid coupon code');
+      toast({ title: 'Invalid coupon', variant: 'destructive' });
+    }
+  };
+
+  const goNextSection = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (displaySections.length <= 1 || sectionIdx >= displaySections.length - 1) {
+      void handleSubmit(e);
+      return;
+    }
+    const cur = displaySections[sectionIdx];
+    for (const q of cur?.questions || []) {
+      if (q.type === "image" || q.type === "video" || q.type === "section_break") continue;
+      const key = questionFieldKey(q, effectiveQuestions.findIndex((x) => x.id === q.id));
+      if (q.required && !isQuestionAnswered(q, key)) {
+        toast({ title: `${q.title} is required`, variant: "destructive" });
+        return;
+      }
+      const vErr = validateAnswer(q.validation, formValues[key] || "");
+      if (vErr) {
+        toast({ title: `${q.title}: ${vErr}`, variant: "destructive" });
+        return;
+      }
+    }
+    const flow = displaySections.map((s, i) => ({
+      id: s.id,
+      title: s.title,
+      description: s.description,
+      items: s.questions,
+      breakIndex: i === 0 ? -1 : i,
+    }));
+    const nxt = resolveNextSection(flow, sectionIdx, (item) => {
+      if (item.type !== "multiple_choice" && item.type !== "dropdown") return null;
+      const key = questionFieldKey(item, effectiveQuestions.findIndex((x) => x.id === item.id));
+      const ans = String(formValues[key] || "").trim();
+      if (!ans || !item.goTo) return null;
+      return item.goTo[ans] || null;
+    });
+    if (nxt === "submit") {
+      void handleSubmit(e);
+      return;
+    }
+    setSectionIdx(nxt);
+    setSectionHistory((h) => [...h, nxt]);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   useEffect(() => {
@@ -416,13 +635,31 @@ export default function Apply() {
         for (const f of customFields) {
           if (f.key && initVals[f.key] === undefined) initVals[f.key] = '';
         }
-        setFormValues(initVals);
+        setFormValues({ ...initVals, ...readPrefillFromSearch(window.location.search, Object.keys(initVals)) });
         setFormBrand(publicFormBrandFromMeta(meta));
         setFormDisplayTitle(String(row?.name || 'Application'));
         setFormDisplayDescription(String(row?.description || 'Fill in your details to submit this form.'));
-        setCollectEmail(meta.collect_email !== false);
+        setCollectEmail(meta.collect_email !== false || !!meta.payment_enabled);
         setConfirmationMessage(String(meta.confirmation_message || '').trim());
+        setFormMeta(meta);
+        setLoadedFormId(String(row?.id || ''));
+        setSubmissionCount(Number(row?.submission_count || 0));
+        setSectionIdx(0);
+        setSectionHistory([0]);
+        setCouponInput('');
+        setCouponApplied(false);
+        setCouponMessage('');
+        setPayDialogOpen(false);
         setFormLoadState('ready');
+        if (paymentReturnPaid) {
+          setSubmitted(true);
+        } else if (paymentReturnFailed || (paidReturn && razorpayLinkStatus && razorpayLinkStatus !== 'paid')) {
+          toast({
+            title: 'Payment not completed',
+            description: 'Your application was saved. Payment shows as Not paid until Razorpay confirms payment.',
+            variant: 'destructive',
+          });
+        }
       } catch {
         if (mounted) setFormLoadState('error');
       }
@@ -445,6 +682,7 @@ export default function Apply() {
       description,
       canonical: `${SEO_CRM_ORIGIN}/apply?form=${encodeURIComponent(formSlug)}`,
       robots: 'index, follow',
+      ogImage: `${SEO_CRM_ORIGIN}/api/public-og-image.php?form=${encodeURIComponent(formSlug)}`,
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'WebPage',
@@ -777,21 +1015,25 @@ export default function Apply() {
           </div>
         )}
 
-        {view === 'form' && !submitted && isDirectFormLink && (formLoadState === 'inactive' || formLoadState === 'error') && (
+        {view === 'form' && !submitted && isDirectFormLink && (formLoadState === 'inactive' || formLoadState === 'error' || !!closedReason || oneResponseBlocked) && (
           <div className="sp-slide-right sp-form-shell" style={{ padding: '48px 24px', textAlign: 'center', maxWidth: 480, margin: '0 auto' }}>
             <div style={{ fontSize: '2.5rem', marginBottom: 16 }}>⚠️</div>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 8 }}>
-              {formLoadState === 'inactive' ? 'This form is not available' : 'Could not load form'}
+              {formLoadState === 'inactive' || closedReason || oneResponseBlocked ? 'This form is not available' : 'Could not load form'}
             </h2>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.95rem', lineHeight: 1.5 }}>
-              {formLoadState === 'inactive'
+              {closedReason
+                ? closedReason
+                : oneResponseBlocked
+                  ? 'You have already submitted a response to this form.'
+                  : formLoadState === 'inactive'
                 ? 'The link may be incorrect, or the form has been deactivated by the organization.'
                 : 'Please check your connection and try again later.'}
             </p>
           </div>
         )}
 
-        {view === 'form' && !submitted && (!isDirectFormLink || formLoadState === 'ready' || formLoadState === 'idle') && (
+        {view === 'form' && !submitted && (!isDirectFormLink || formLoadState === 'ready' || formLoadState === 'idle') && !closedReason && !oneResponseBlocked && (
           <div className="sp-slide-right">
             {!isCustomForm && (
               <div className="sp-content" style={{ paddingBottom: 0 }}>
@@ -806,14 +1048,21 @@ export default function Apply() {
               formDescription={isCustomForm ? formDisplayDescription : 'Fill in your details to begin the screening process.'}
               fullPage
             >
-              <form onSubmit={handleSubmit}>
+              <form onSubmit={displaySections.length > 1 ? goNextSection : handleSubmit}>
+                {isCustomForm && formMeta.show_progress_bar && displaySections.length > 1 ? (
+                  <div className="sp-form-progress" aria-hidden>
+                    <div className="sp-form-progress-bar" style={{ width: `${Math.round(((sectionIdx + 1) / displaySections.length) * 100)}%` }} />
+                  </div>
+                ) : null}
                 {isCustomForm && effectiveQuestions.length > 0 ? (
                   <PublicFormFields
-                    sections={displaySections}
+                    sections={visibleSections}
                     values={formValues}
                     files={formFiles}
                     onChange={handleDynamicFieldChange}
                     onFileChange={handleFileFieldChange}
+                    errors={fieldErrors}
+                    shuffleSeed={`${loadedFormId}:${ref}`}
                   />
                 ) : (
                   <section className="sp-form-section">
@@ -889,9 +1138,76 @@ export default function Apply() {
                   <span style={{ color: formBrand.accentColor, fontSize: '1rem' }}>🔒</span>
                   <span className="sp-form-secure-text">Your data is ISO-protected and never shared with third parties.</span>
                 </div>
-                <button type="submit" className="sp-form-submit" disabled={loading}>
-                  {loading ? 'Submitting...' : 'Submit Application'}
-                </button>
+                {couponEnabled &&
+                (displaySections.length <= 1 || sectionIdx >= displaySections.length - 1) ? (
+                  <div className="sp-form-group" style={{ marginBottom: 12 }}>
+                    <label className="sp-form-label">Coupon code</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input
+                        className="sp-form-input"
+                        type="text"
+                        placeholder="Enter coupon"
+                        value={couponInput}
+                        disabled={loading}
+                        onChange={(e) => {
+                          setCouponInput(e.target.value);
+                          setCouponApplied(false);
+                          setCouponMessage('');
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="sp-form-submit"
+                        style={{ width: 'auto', padding: '0 16px', flexShrink: 0 }}
+                        disabled={loading || !couponInput.trim()}
+                        onClick={applyCoupon}
+                      >
+                        Apply
+                      </button>
+                    </div>
+                    {couponMessage ? (
+                      <p style={{ fontSize: 12, marginTop: 6, color: couponApplied ? formBrand.accentColor : '#b91c1c' }}>
+                        {couponMessage}
+                      </p>
+                    ) : null}
+                    {couponApplied && paymentBreakdown ? (
+                      <p style={{ fontSize: 14, marginTop: 8, fontWeight: 600 }}>
+                        <span style={{ textDecoration: 'line-through', opacity: 0.55, marginRight: 8 }}>
+                          {formatInrAmount(paymentBreakdown.originalBase)}
+                        </span>
+                        <span>{formatInrAmount(0)}</span>
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className="sp-form-nav">
+                  {sectionHistory.length > 1 ? (
+                    <button
+                      type="button"
+                      className="sp-form-submit"
+                      style={{ background: "transparent", color: "inherit", border: "1px solid currentColor" }}
+                      onClick={() => {
+                        setSectionHistory((h) => {
+                          if (h.length <= 1) return h;
+                          const next = h.slice(0, -1);
+                          setSectionIdx(next[next.length - 1]);
+                          return next;
+                        });
+                      }}
+                    >
+                      Back
+                    </button>
+                  ) : null}
+                  <button type="submit" className="sp-form-submit" disabled={loading}>
+                    {loading
+                      ? paymentEnabled
+                        ? "Redirecting to payment…"
+                        : "Submitting..."
+                      : isCustomForm && displaySections.length > 1 && sectionIdx < displaySections.length - 1
+                        ? "Next"
+                        : payLabel || (isCustomForm ? "Submit" : "Submit Application")}
+                  </button>
+                </div>
               </form>
             </PublicFormShell>
           </div>
@@ -903,6 +1219,29 @@ export default function Apply() {
             <div style={{ fontSize: '3rem', marginBottom: 16 }}>✓</div>
             <h2>Applied!</h2>
             <p>{confirmationMessage || 'Our counselor will call you within 24 hours.'}</p>
+            {quizResult && quizResult.total > 0 ? (
+              <p style={{ marginTop: 8 }}>Score: {quizResult.earned} / {quizResult.total}</p>
+            ) : null}
+            {formMeta.edit_after_submit ? (
+              <button type="button" className="sp-form-submit" style={{ marginTop: 16 }} onClick={() => setSubmitted(false)}>
+                Edit answers
+              </button>
+            ) : null}
+            {formMeta.allow_another_response !== false && formMeta.allow_multiple_responses !== false ? (
+              <button
+                type="button"
+                className="sp-form-submit"
+                style={{ marginTop: 12 }}
+                onClick={() => {
+                  setSubmitted(false);
+                  setQuizResult(null);
+                  setSectionIdx(0);
+                  setSectionHistory([0]);
+                }}
+              >
+                Submit another response
+              </button>
+            ) : null}
           </div>
         )}
 
@@ -915,6 +1254,69 @@ export default function Apply() {
           </div>
         )}
       </div>
+
+      <Dialog open={payDialogOpen} onOpenChange={setPayDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirm payment</DialogTitle>
+            <DialogDescription>Review charges before continuing to Razorpay.</DialogDescription>
+          </DialogHeader>
+          {paymentBreakdown ? (
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground">Amount</span>
+                <span className="font-medium tabular-nums">
+                  {paymentBreakdown.couponApplied ? (
+                    <>
+                      <span className="mr-2 text-muted-foreground line-through">
+                        {formatInrAmount(paymentBreakdown.originalBase)}
+                      </span>
+                      {formatInrAmount(0)}
+                    </>
+                  ) : (
+                    formatInrAmount(paymentBreakdown.base)
+                  )}
+                </span>
+              </div>
+              {paymentBreakdown.gstEnabled ? (
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">GST (18%)</span>
+                  <span className="font-medium tabular-nums">{formatInrAmount(paymentBreakdown.gst)}</span>
+                </div>
+              ) : null}
+              {paymentBreakdown.handlingEnabled ? (
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">Handling (2%)</span>
+                  <span className="font-medium tabular-nums">{formatInrAmount(paymentBreakdown.handling)}</span>
+                </div>
+              ) : null}
+              {paymentBreakdown.couponApplied ? (
+                <p className="text-xs text-emerald-700">Coupon applied — base amount is ₹0</p>
+              ) : null}
+              <div className="flex justify-between gap-4 border-t pt-2 text-base font-semibold">
+                <span>Pay total</span>
+                <span className="tabular-nums">{formatInrAmount(paymentBreakdown.total)}</span>
+              </div>
+            </div>
+          ) : null}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button type="button" variant="outline" onClick={() => setPayDialogOpen(false)} disabled={loading}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={loading}
+              onClick={(ev) => {
+                void handleSubmit(ev as unknown as React.FormEvent, { fromPayDialog: true });
+              }}
+            >
+              {loading
+                ? 'Redirecting…'
+                : `Pay total ${formatInrAmount(paymentBreakdown?.total ?? 0)}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -18,6 +18,8 @@ import {
   Shield,
   MessageSquare,
   ClipboardList,
+  ClipboardCheck,
+  Settings,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -34,6 +36,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
+
 const PLAN_COLORS = [
   "hsl(162, 63%, 41%)",
   "hsl(200, 70%, 50%)",
@@ -186,6 +189,8 @@ export default function SuperAdminDashboard() {
     { label: "Add organization", desc: "Provision a new tenant", to: "/organizations?create=1", icon: Plus },
     { label: "Form management", desc: "Forms & public links", to: "/form-management", icon: ClipboardList },
     { label: "Communications", desc: "WhatsApp & dialer hub", to: "/communications", icon: MessageSquare },
+    { label: "Assignments", desc: "Manage & assign assessments", to: "/assessments", icon: ClipboardCheck },
+    { label: "Settings", desc: "System & platform preferences", to: "/settings", icon: Settings },
   ];
 
   return (

@@ -149,6 +149,9 @@ export function applyRouteMeta(pathname: string, search: string) {
       description,
       canonical: `${base}/apply${formSlug ? `?form=${encodeURIComponent(formSlug)}` : ""}`,
       robots: "index, follow",
+      ogImage: formSlug
+        ? `${base}/api/public-og-image.php?form=${encodeURIComponent(formSlug)}`
+        : `${base}/logo.png`,
       jsonLd: formSlug
         ? {
             "@context": "https://schema.org",

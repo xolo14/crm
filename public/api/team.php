@@ -88,7 +88,7 @@ if ($method === 'GET') {
         respond(['error' => 'Insufficient permissions'], 403);
     }
 
-    /** Same-org roster for reps / HR / marketing (assign-to lists, read-only on Team page). */
+    /** Same-org roster for reps / HR / marketing / OM (assign-to lists, read-only). */
     $orgPeerRoles = ['sales_representative', 'hr', 'marketing'];
 
     // Super Admin: no ?org_id → all tenants (ignore JWT switch_org). Explicit ?org_id → that tenant only.
@@ -105,7 +105,7 @@ if ($method === 'GET') {
         }
         $where = "u.org_id = ? AND u.is_active = 1 AND LOWER(TRIM(u.role)) NOT IN ('super_admin')";
         $params = [$orgId];
-    } elseif ($effRole === 'manager') {
+    } elseif (in_array($effRole, ['manager', 'operational_manager'], true)) {
         /** L2: read-only roster — direct/indirect reports only (assigned team). */
         $orgId = teamResolveCallerOrgId($db, $tokenData);
         if ($orgId === null || $orgId === '') {
@@ -278,7 +278,7 @@ if ($method === 'POST') {
     $phone = $input['phone'] ?? null;
     $memberRole = normalizeRoleValue($input['role'] ?? 'sales_representative');
     $callerRole = normalizeRoleValue((string) $role);
-    $isManagerCreator = $callerRole === 'manager';
+    $isManagerCreator = in_array($callerRole, ['manager', 'operational_manager'], true);
 
     // Super_admin creates team members under the Syncpedia platform tenant — never under a switched-into tenant.
     if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
@@ -345,7 +345,7 @@ if ($method === 'POST') {
 
     $id = generateUUID();
     $hash = password_hash($password, PASSWORD_DEFAULT);
-    $refCode = generateUniqueSpReferralCode($db, $fullName);
+    $refCode = referralCodeForNewOrgUser($db, (string) $orgId, $memberRole, $fullName);
 
     try {
         $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, reports_to_id, referral_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");

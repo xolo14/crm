@@ -203,7 +203,7 @@ export function CanvasTextBoxFrame({
       ref={rootRef}
       className={cn(
         'absolute flex flex-col',
-        editable && !locked && 'select-none',
+        editable && !locked && !showMoveHandle && 'select-none',
         selected && editable && 'z-30',
         className,
       )}

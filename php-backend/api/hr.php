@@ -39,7 +39,7 @@ if ($action === 'create_hr' && $method === 'POST') {
     $hash = password_hash($password, PASSWORD_DEFAULT);
     $orgId = resolveCreatorOrgId($db, $tokenData);
     $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, created_by, referral_code) VALUES (?,?,?,?,?,?,?,?,?)");
-    $stmt->execute([$id, $email, $hash, $fullName, $input['phone'] ?? null, 'hr', $orgId, $userId, strtoupper(substr(str_replace('-', '', $id), 0, 8))]);
+    $stmt->execute([$id, $email, $hash, $fullName, $input['phone'] ?? null, 'hr', $orgId, $userId, referralCodeForNewOrgUser($db, (string) $orgId, 'hr', $fullName)]);
     syncpediaSetMailContext($orgId !== '' ? $orgId : null, 'member_welcome');
     $welcomeResult = syncpediaSendMemberWelcomeEmail($fullName, $email, $password, 'hr', $input['phone'] ?? null);
     $payload = ['id' => $id, 'message' => 'HR user created', 'email_sent' => $welcomeResult['email_sent'], 'email_from' => $welcomeResult['from']];

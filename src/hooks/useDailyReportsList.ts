@@ -65,13 +65,16 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
   const [reports, setReports] = useState<DailyReportRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedRep, setSelectedRep] = useState<string>('all');
-  const [timeline, setTimeline] = useState<DailyReportsTimeline>(opts?.initialTimeline ?? 'today');
+  const [timeline, setTimeline] = useState<DailyReportsTimeline>(opts?.initialTimeline ?? 'last_7_days');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [teamMembers, setTeamMembers] = useState<{ id: string; full_name: string; role?: string }[]>([]);
 
   const isManager =
-    role === 'org' || role === 'super_admin' || role === 'manager';
+    role === 'org' ||
+    role === 'super_admin' ||
+    role === 'manager' ||
+    role === 'operational_manager';
   const isSalesRep = role === 'sales_representative';
   /** Sales reps and managers can submit their own daily update. */
   const canSubmit = isSalesRep || role === 'manager';
@@ -79,24 +82,24 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
   const fetchReports = useCallback(async () => {
     setLoading(true);
     try {
-      // Ensure existing call-log days have matching daily reports before listing.
-      if (canSubmit) {
-        try {
-          await callLogsApi.syncDailyReportsFromCallLogs(60);
-        } catch {
-          /* non-blocking */
-        }
+      // Backfill daily_reports from call_logs before listing.
+      // Deep window so "All" / long timelines are not empty after sync.
+      // Org/manager/OM: sync all sales reps in scope. Sales: sync self only.
+      try {
+        await callLogsApi.syncDailyReportsFromCallLogs(730);
+      } catch {
+        /* non-blocking — list still loads if sync fails */
       }
       const params: { user_id?: string } = {};
       if (isSalesRep && user?.id) params.user_id = user.id;
       const data = await api.dailyReports.list(params);
-      setReports(data.data || []);
+      setReports(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
-  }, [canSubmit, isSalesRep, user?.id]);
+  }, [isSalesRep, user?.id]);
 
   const fetchTeam = useCallback(async () => {
     try {

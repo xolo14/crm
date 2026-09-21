@@ -407,10 +407,17 @@ function paymentLinksPublicFormUrl(array $form, array $link): string
     $url = rtrim($base, '/') . '/apply?form=' . rawurlencode((string) ($form['slug'] ?? ''));
 
     $notes = is_array($link['notes'] ?? null) ? $link['notes'] : [];
-    $referral = trim((string) ($notes['crm_referral'] ?? $notes['referral_code'] ?? ''));
+    $salespersonId = trim((string) ($notes['salesperson_id'] ?? ''));
+    $local = paymentLinkFindByRazorpayId((string) ($link['id'] ?? ''));
+    if ($salespersonId === '' && is_array($local)) {
+        $salespersonId = trim((string) ($local['salesperson_id'] ?? ''));
+    }
+    $referral = $salespersonId !== '' ? userStaffId(paymentLinksDb(), $salespersonId) : '';
     if ($referral === '') {
-        $local = paymentLinkFindByRazorpayId((string) ($link['id'] ?? ''));
-        $referral = trim((string) (is_array($local) ? ($local['salesperson_referral_code'] ?? '') : ''));
+        $referral = trim((string) ($notes['crm_referral'] ?? $notes['referral_code'] ?? ''));
+    }
+    if ($referral === '' && is_array($local)) {
+        $referral = trim((string) ($local['salesperson_referral_code'] ?? ''));
     }
     if ($referral !== '') {
         $url .= '&ref=' . rawurlencode($referral);
@@ -447,8 +454,8 @@ function handleSendPaidFormLinkEmail(array $tokenData): void
     $amount = (int) ($link['amount'] ?? 0);
     $amountPaid = (int) ($link['amount_paid'] ?? 0);
     $status = paymentLinkMapRazorpayStatus((string) ($link['status'] ?? ''), $amountPaid, $amount);
-    if ($status !== 'paid') {
-        paymentLinksError('Form links can only be emailed after the payment is fully paid', 409);
+    if ($status !== 'paid' && $status !== 'partially_paid') {
+        paymentLinksError('Form links can only be emailed after at least a partial payment', 409);
     }
 
     $customer = is_array($link['customer'] ?? null) ? $link['customer'] : [];
@@ -558,9 +565,13 @@ function handleCreateStandardPaymentLink(array $tokenData): void
     if ($creatorId !== '') {
         $userNotes['salesperson_id'] = $creatorId;
     }
-    $refCode = trim((string) ($body['referralCode'] ?? ''));
-    if ($refCode !== '') {
-        $userNotes['crm_referral'] = $refCode;
+    $staffId = $creatorId !== '' ? userStaffId(paymentLinksDb(), $creatorId) : '';
+    if ($staffId === '') {
+        $staffId = trim((string) ($body['referralCode'] ?? $userNotes['crm_referral'] ?? $userNotes['referral_code'] ?? ''));
+    }
+    if ($staffId !== '') {
+        $userNotes['crm_referral'] = $staffId;
+        $userNotes['referral_code'] = $staffId;
     }
     $writeOrg = resolveCreatorOrgId(paymentLinksDb(), $tokenData);
     if (is_string($writeOrg) && $writeOrg !== '') {

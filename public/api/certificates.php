@@ -90,7 +90,7 @@ if ($method === 'GET' && $action === 'email_logs') {
 }
 
 if ($method === 'GET' && $action === 'pdf') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org', 'operational_manager']);
     $certificateId = trim((string) ($_GET['certificate_id'] ?? ''));
     if ($certificateId === '') respond(['error' => 'certificate_id required'], 400);
     $org = orgFilter($tokenData, 'cia', $db);
@@ -99,11 +99,26 @@ if ($method === 'GET' && $action === 'pdf') {
     $stmt->execute($params);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
+        $fallback = $db->prepare('SELECT * FROM certificate_issue_artifacts WHERE sync_id = ? ORDER BY created_at DESC LIMIT 1');
+        $fallback->execute([$certificateId]);
+        $row = $fallback->fetch(PDO::FETCH_ASSOC);
+        if (is_array($row) && $org['where'] !== '1=1') {
+            $wantOrg = trim((string) ($org['params'][0] ?? ''));
+            $gotOrg = trim((string) ($row['org_id'] ?? ''));
+            if ($wantOrg !== '' && $gotOrg !== '' && $gotOrg !== $wantOrg) {
+                $row = false;
+            }
+        }
+    }
+    if (!$row) {
         respond(['error' => 'PDF not found'], 404);
     }
     $downloadName = 'Certificate_' . preg_replace('/[^A-Za-z0-9_-]/', '_', (string) ($row['sync_id'] ?? $certificateId)) . '.pdf';
     $localPath = trim((string) ($row['pdf_path'] ?? ''));
     $gcsObject = isset($row['gcs_object']) ? trim((string) $row['gcs_object']) : '';
+    if ($localPath !== '' && function_exists('syncpediaDocumentStorageFileExists') && syncpediaDocumentStorageFileExists($localPath)) {
+        syncpediaDocumentStorageStreamPdf($localPath, $downloadName);
+    }
     if ($localPath !== '' && is_file($localPath)) {
         syncpediaDocumentStorageStreamPdf($localPath, $downloadName);
     }

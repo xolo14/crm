@@ -44,7 +44,7 @@ function dailyReportsEnsureLostColumn(PDO $db): void
 
 // GET team members summary (must run before generic list GET)
 if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'team_summary') {
-    requireRole($tokenData, ['admin', 'manager', 'org']);
+    requireRole($tokenData, ['admin', 'manager', 'org', 'operational_manager']);
 
     $orgScope = hierarchyOrgUserIdsScopeSql($tokenData, 'u.id', $db);
     $stmt = $db->prepare("
@@ -97,7 +97,7 @@ if ($method === 'GET') {
         LEFT JOIN users u ON u.id = dr.user_id
         WHERE $where
         ORDER BY dr.report_date DESC, dr.created_at DESC
-        LIMIT 500
+        LIMIT 2000
     ");
     $stmt->execute($params);
     $reports = $stmt->fetchAll();
@@ -105,7 +105,11 @@ if ($method === 'GET') {
     // Parse JSON fields
     foreach ($reports as &$r) {
         $r['lead_updates'] = json_decode($r['lead_updates'] ?? '[]', true);
+        if (!is_array($r['lead_updates'])) {
+            $r['lead_updates'] = [];
+        }
     }
+    unset($r);
 
     respond(['data' => $reports]);
 }

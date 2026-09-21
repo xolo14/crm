@@ -21,6 +21,10 @@ type PublicFormShellProps = {
   fullPage?: boolean;
   /** Compact height for builder settings live preview. */
   preview?: boolean;
+  /** Google Forms style progress bar under the description (paged sections). */
+  progress?: { current: number; total: number; label?: string } | null;
+  /** Rendered above the title, inside the card (e.g. "Closed" notice, prefilled banner). */
+  notice?: ReactNode;
 };
 
 /**
@@ -38,6 +42,8 @@ export function PublicFormShell({
   className = "",
   fullPage = false,
   preview = false,
+  progress = null,
+  notice = null,
 }: PublicFormShellProps) {
   const pageStyle = publicFormBrandToStyle(brand);
   const pageClass = `sp-form-page${fullPage ? " sp-form-page--full" : ""}${preview ? " sp-form-page--preview" : ""}`;
@@ -145,6 +151,108 @@ export function PublicFormShell({
         .sp-form-desc div:last-child {
           margin-bottom: 0;
         }
+        .sp-form-desc a, .sp-form-hint a, .sp-form-section-desc a, .sp-form-notice a {
+          color: var(--sp-accent);
+          text-decoration: underline;
+          text-underline-offset: 2px;
+          word-break: break-all;
+        }
+        .sp-form-desc ul, .sp-form-desc ol { margin: 0.2em 0 0.5em; padding-left: 1.4em; }
+        .sp-form-desc li { margin: 0.15em 0; }
+        .sp-form-progress {
+          margin: -6px 0 18px;
+        }
+        .sp-form-progress-track {
+          width: 100%;
+          height: 6px;
+          border-radius: 999px;
+          background: color-mix(in srgb, var(--sp-accent) 18%, transparent);
+          overflow: hidden;
+        }
+        .sp-form-progress-fill {
+          height: 100%;
+          border-radius: 999px;
+          background: var(--sp-accent);
+          transition: width 0.25s ease;
+        }
+        .sp-form-progress-label {
+          margin: 6px 0 0;
+          font-size: 0.72rem;
+          color: var(--sp-text-muted);
+          text-align: right;
+        }
+        .sp-form-notice {
+          border: var(--sp-field-border-width) solid var(--sp-section-border);
+          border-left: 4px solid var(--sp-accent);
+          border-radius: 10px;
+          padding: 10px 12px;
+          margin: 0 0 14px;
+          font-size: 0.85rem;
+          color: var(--sp-text);
+          background: color-mix(in srgb, var(--sp-accent) 8%, var(--sp-form-bg));
+        }
+        .sp-form-nav {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 10px;
+          margin-top: 16px;
+        }
+        .sp-form-nav .sp-form-submit { margin-top: 0; width: auto; min-width: 120px; }
+        .sp-form-nav-back {
+          background: transparent;
+          color: var(--sp-text);
+          border: var(--sp-field-border-width) solid var(--sp-section-border);
+          border-radius: 10px;
+          padding: 12px 16px;
+          min-height: 48px;
+          font-weight: 700;
+          cursor: pointer;
+          font-size: 0.9rem;
+        }
+        .sp-form-nav-back:disabled { opacity: 0.5; cursor: not-allowed; }
+        .sp-form-error {
+          margin: 4px 0 0;
+          font-size: 0.78rem;
+          color: #dc2626;
+          font-weight: 600;
+        }
+        .sp-form-input.is-invalid { border-color: #dc2626; }
+        .sp-form-media { display: flex; margin: 0 0 4px; }
+        .sp-form-media-inner { display: flex; flex-direction: column; gap: 6px; max-width: 100%; }
+        .sp-form-media img, .sp-form-media video {
+          display: block; width: 100%; height: auto; border-radius: 10px;
+          border: var(--sp-field-border-width) solid var(--sp-section-border);
+          background: var(--sp-field-bg);
+        }
+        .sp-form-media-frame {
+          position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden;
+          border: var(--sp-field-border-width) solid var(--sp-section-border); background: #000;
+        }
+        .sp-form-media-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+        .sp-form-media-title { font-size: 0.95rem; font-weight: 700; color: var(--sp-text); }
+        .sp-form-media-caption { font-size: 0.78rem; color: var(--sp-text-muted); text-align: center; }
+        .sp-form-media--empty {
+          border: 1px dashed var(--sp-section-border); border-radius: 10px; padding: 18px;
+          justify-content: center; font-size: 0.8rem; color: var(--sp-text-muted);
+        }
+        .sp-form-rating { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+        .sp-form-rating-btn {
+          background: transparent; border: 0; padding: 4px; cursor: pointer; line-height: 0;
+          color: color-mix(in srgb, var(--sp-text) 35%, transparent); border-radius: 8px;
+        }
+        .sp-form-rating-btn.is-active { color: var(--sp-accent); }
+        .sp-form-rating-btn:disabled { cursor: not-allowed; }
+        .sp-form-rating-btn:focus-visible { outline: 2px solid var(--sp-accent); outline-offset: 1px; }
+        .sp-form-rating-icon { width: 30px; height: 30px; }
+        .sp-form-rating-value { margin-left: 6px; font-size: 0.8rem; color: var(--sp-text-muted); }
+        .sp-form-after-submit {
+          display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; font-size: 0.85rem;
+        }
+        .sp-form-after-submit a, .sp-form-after-submit button {
+          color: var(--sp-accent); text-decoration: underline; background: none; border: 0; padding: 0;
+          cursor: pointer; font: inherit; font-weight: 600;
+        }
         .sp-form-section {
           border: var(--sp-section-border-width) solid var(--sp-section-border);
           border-radius: 12px;
@@ -221,6 +329,30 @@ export function PublicFormShell({
           display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 0.85rem;
         }
         .sp-form-scale-label { font-size: 0.75rem; color: var(--sp-text-muted); }
+        .sp-form-error { font-size: 0.75rem; color: #dc2626; margin: 4px 0 0; }
+        .sp-form-desc-html a, .sp-form-hint a, .sp-form-section-desc a {
+          color: var(--sp-accent); text-decoration: underline;
+        }
+        .sp-form-progress { height: 6px; background: color-mix(in srgb, var(--sp-accent) 18%, transparent); border-radius: 99px; overflow: hidden; margin: 0 0 16px; }
+        .sp-form-progress-bar { height: 100%; background: var(--sp-accent); transition: width 0.2s ease; }
+        .sp-form-nav { display: flex; gap: 8px; margin-top: 8px; }
+        .sp-form-nav .sp-form-submit { flex: 1; }
+        .sp-form-media { display: flex; margin: 4px 0 8px; }
+        .sp-form-media-inner { max-width: 100%; }
+        .sp-form-media img, .sp-form-media video { display: block; width: 100%; height: auto; border-radius: 8px; }
+        .sp-form-media-frame { position: relative; width: 100%; padding-top: 56.25%; }
+        .sp-form-media-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 8px; }
+        .sp-form-media-title { font-size: 0.9rem; font-weight: 700; margin: 0 0 8px; color: var(--sp-text); }
+        .sp-form-media-caption { font-size: 0.75rem; color: var(--sp-text-muted); margin: 6px 0 0; }
+        .sp-form-media--empty { font-size: 0.85rem; color: var(--sp-text-muted); padding: 16px; border: 1px dashed var(--sp-section-border); border-radius: 8px; }
+        .sp-form-rating { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+        .sp-form-rating-btn {
+          background: transparent; border: 0; padding: 4px; cursor: pointer; color: var(--sp-text-muted);
+        }
+        .sp-form-rating-btn.is-active { color: var(--sp-accent); }
+        .sp-form-rating-icon { width: 28px; height: 28px; }
+        .sp-form-rating-value { font-size: 0.8rem; color: var(--sp-text-muted); margin-left: 6px; }
+        .sp-form-goto { font-size: 0.7rem; color: var(--sp-text-muted); }
         .sp-form-grid-wrap { overflow-x: auto; }
         .sp-form-grid { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
         .sp-form-grid th, .sp-form-grid td {
@@ -424,6 +556,7 @@ export function PublicFormShell({
         ) : null}
         <div className="sp-form-body-wrap">
           <div className="sp-form-body-card">
+            {notice ? <div className="sp-form-notice">{notice}</div> : null}
             <h2 className="sp-form-title">{formTitle}</h2>
             {formDescription ? (
               looksLikeHtml(formDescription) ? (
@@ -436,6 +569,19 @@ export function PublicFormShell({
               ) : (
                 <p className="sp-form-desc">{formDescription}</p>
               )
+            ) : null}
+            {progress && progress.total > 1 ? (
+              <div className="sp-form-progress" aria-label="Progress">
+                <div className="sp-form-progress-track">
+                  <div
+                    className="sp-form-progress-fill"
+                    style={{ width: `${Math.min(100, Math.max(4, Math.round((progress.current / progress.total) * 100)))}%` }}
+                  />
+                </div>
+                <p className="sp-form-progress-label">
+                  {progress.label || `Page ${progress.current} of ${progress.total}`}
+                </p>
+              </div>
             ) : null}
             {children}
           </div>

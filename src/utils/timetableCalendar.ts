@@ -53,6 +53,77 @@ export function formatPeriodLabel(type: PeriodType, start: string, end: string):
   return `${a} – ${b}`;
 }
 
+export type PeriodOption = { value: string; label: string };
+
+/** Monday YMD for the week containing `anchorYmd` (Mon–Sun). */
+export function weekPeriodStart(anchorYmd: string): string {
+  return periodBounds("week", anchorYmd).start;
+}
+
+/** First-of-month YMD for the month containing `anchorYmd`. */
+export function monthPeriodStart(anchorYmd: string): string {
+  return periodBounds("month", anchorYmd).start;
+}
+
+/** Default anchor: current week (Monday). */
+export function defaultWeekAnchor(): string {
+  return weekPeriodStart(toYmd(new Date()));
+}
+
+/** Default anchor: current month (1st). */
+export function defaultMonthAnchor(): string {
+  return monthPeriodStart(toYmd(new Date()));
+}
+
+/** Current + next 11 weeks (Mon–Sun), 12 options total. */
+export function weekPeriodOptions(count = 12): PeriodOption[] {
+  const out: PeriodOption[] = [];
+  let monday = parseYmd(defaultWeekAnchor());
+  for (let i = 0; i < count; i++) {
+    const startYmd = toYmd(monday);
+    const endYmd = periodBounds("week", startYmd).end;
+    out.push({ value: startYmd, label: formatPeriodLabel("week", startYmd, endYmd) });
+    monday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 7, 12, 0, 0, 0);
+  }
+  return out;
+}
+
+/** Current + next 11 months, 12 options total. */
+export function monthPeriodOptions(count = 12): PeriodOption[] {
+  const out: PeriodOption[] = [];
+  const seed = parseYmd(defaultMonthAnchor());
+  let y = seed.getFullYear();
+  let m = seed.getMonth();
+  for (let i = 0; i < count; i++) {
+    const startYmd = toYmd(new Date(y, m, 1, 12, 0, 0, 0));
+    const endYmd = periodBounds("month", startYmd).end;
+    out.push({ value: startYmd, label: formatPeriodLabel("month", startYmd, endYmd) });
+    m += 1;
+    if (m > 11) {
+      m = 0;
+      y += 1;
+    }
+  }
+  return out;
+}
+
+/** Keep edited timetables visible when their period falls outside the default window. */
+export function mergePeriodOption(
+  options: PeriodOption[],
+  periodStart: string,
+  type: PeriodType,
+): PeriodOption[] {
+  const start = periodStart.trim();
+  if (start === "" || options.some((o) => o.value === start)) {
+    return options;
+  }
+  const end = periodBounds(type, start).end;
+  return [
+    { value: start, label: formatPeriodLabel(type, start, end) },
+    ...options,
+  ].sort((a, b) => a.value.localeCompare(b.value));
+}
+
 export function formatTime12(t: string): string {
   const [h, m] = t.split(":").map(Number);
   if (Number.isNaN(h)) return t;

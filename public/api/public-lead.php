@@ -41,6 +41,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $meta = $tmp;
         }
     }
+    $dest = strtolower(trim((string) ($meta['lead_destination'] ?? '')));
+    if ($dest === 'hr_leads') {
+        $meta['payment_enabled'] = false;
+    }
+    if (!empty($meta['payment_enabled'])) {
+        $meta['collect_email'] = true;
+    }
+    $cnt = 0;
+    try {
+        $c = $db->prepare('SELECT COUNT(*) FROM leads WHERE source = ?');
+        $c->execute(['form_' . $slug]);
+        $cnt = (int) $c->fetchColumn();
+    } catch (Throwable $e) {
+        $cnt = 0;
+    }
     respond(['data' => [
         'id' => $row['id'],
         'name' => $row['name'],
@@ -50,9 +65,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         'meta_json' => $meta,
         'is_active' => (int) $row['is_active'],
         'org_name' => $row['org_name'] ?? null,
+        'org_logo_url' => $row['org_logo_url'] ?? null,
         'has_resume_field' => publicFormHasResumeField($row),
         'lead_destination' => publicFormLeadDestination($row) ?? 'form_leads',
         'routes_to_hr' => publicLeadShouldRouteToHr($row, (string) ($row['slug'] ?? ''), '', null, []),
+        'submission_count' => $cnt,
     ]]);
 }
 
@@ -146,6 +163,26 @@ if (is_array($formRow) && !empty($formRow['meta_json'])) {
 }
 $collectEmail = ($formMeta['collect_email'] ?? true) !== false;
 
+$closeAt = trim((string) ($formMeta['close_at'] ?? ''));
+if ($closeAt !== '') {
+    $ts = strtotime($closeAt);
+    if ($ts !== false && time() > $ts) {
+        respond(['error' => 'This form is no longer accepting responses'], 400);
+    }
+}
+$limit = (int) ($formMeta['response_limit'] ?? 0);
+if ($limit > 0 && $formSlug !== '') {
+    try {
+        $c = $db->prepare('SELECT COUNT(*) FROM leads WHERE source = ?');
+        $c->execute(['form_' . $formSlug]);
+        if ((int) $c->fetchColumn() >= $limit) {
+            respond(['error' => 'This form has reached its response limit'], 400);
+        }
+    } catch (Throwable $e) {
+        /* ignore */
+    }
+}
+
 if ($name === '') {
     respond(['error' => 'Name is required'], 400);
 }
@@ -199,9 +236,7 @@ $referredBy = $ref !== '' && $ref !== null ? $ref : null;
 $refUserOrgId = null;
 
 if ($ref) {
-    $stmt = $db->prepare('SELECT id, org_id, referral_code FROM users WHERE referral_code = ? LIMIT 1');
-    $stmt->execute([$ref]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    $user = findUserByReferralCode($db, (string) $ref);
     if ($user && is_array($user)) {
         $assignedTo = $user['id'];
         $rorg = trim((string) ($user['org_id'] ?? ''));
@@ -314,10 +349,194 @@ if ($attachmentPaths !== []) {
 }
 $notes = $notesParts !== [] ? implode("\n", $notesParts) : null;
 
+$publicLeadSendReceipt = static function () use ($formMeta, $email, $name, $extraAnswers, $formRow, $courseInterest, $phone): void {
+    if (empty($formMeta['send_receipt'])) {
+        return;
+    }
+    $to = trim((string) ($email ?? ''));
+    if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        return;
+    }
+    try {
+        if (!function_exists('syncpediaSendHtmlEmailViaSmtp')) {
+            require_once __DIR__ . '/mail_transport.php';
+        }
+        if (!function_exists('syncpediaSendHtmlEmailViaSmtp')) {
+            return;
+        }
+        $title = htmlspecialchars((string) ($formRow['name'] ?? 'Form'), ENT_QUOTES, 'UTF-8');
+        $pairs = array_merge(
+            [
+                'Name' => (string) $name,
+                'Email' => $to,
+                'Phone' => (string) ($phone ?? ''),
+                'Course' => (string) ($courseInterest ?? ''),
+            ],
+            is_array($extraAnswers) ? $extraAnswers : []
+        );
+        $rows = '';
+        foreach ($pairs as $k => $v) {
+            $val = is_array($v) ? json_encode($v, JSON_UNESCAPED_UNICODE) : (string) $v;
+            if ($val === '') {
+                continue;
+            }
+            $rows .= '<tr><td style="padding:6px 10px;border-bottom:1px solid #eee"><strong>'
+                . htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8')
+                . '</strong></td><td style="padding:6px 10px;border-bottom:1px solid #eee">'
+                . nl2br(htmlspecialchars($val, ENT_QUOTES, 'UTF-8'))
+                . '</td></tr>';
+        }
+        $html = '<p>Thanks for submitting <strong>' . $title . '</strong>.</p><table cellpadding="0" cellspacing="0">' . $rows . '</table>';
+        syncpediaSendHtmlEmailViaSmtp($to, 'Your response: ' . strip_tags((string) ($formRow['name'] ?? 'Form')), $html);
+    } catch (Throwable $e) {
+        /* receipt is best-effort */
+    }
+};
+
 $tags = null;
 if ($formSlug !== '') {
     $tags = json_encode(['form_slug' => $formSlug, 'form_id' => $formRow['id'] ?? null]);
 }
+
+$publicLeadStartPayment = static function (string $leadId) use (
+    $db,
+    $formMeta,
+    $formRow,
+    $formSlug,
+    $orgId,
+    $assignedTo,
+    $formCreatorId,
+    $referredBy,
+    $name,
+    $email,
+    $phone,
+    $input
+): array {
+    if (empty($formMeta['payment_enabled'])) {
+        return [];
+    }
+    $dest = strtolower(trim((string) ($formMeta['lead_destination'] ?? '')));
+    if ($dest === 'hr_leads') {
+        return ['payment_error' => 'Payment is not available on HR forms'];
+    }
+    $baseAmount = (float) ($formMeta['payment_amount'] ?? 0);
+    if ($baseAmount <= 0) {
+        return ['payment_error' => 'Payment amount is not configured on this form'];
+    }
+
+    $couponEnabled = !empty($formMeta['payment_coupon_enabled']);
+    $expectedCoupon = strtoupper(trim((string) ($formMeta['payment_coupon_code'] ?? '')));
+    $submittedCoupon = strtoupper(trim((string) ($input['payment_coupon'] ?? '')));
+    $couponApplied = $couponEnabled && $expectedCoupon !== '' && $submittedCoupon !== '' && hash_equals($expectedCoupon, $submittedCoupon);
+    // Coupon zeros the base only; GST / handling stay on the original amount.
+    $chargeBase = $couponApplied ? 0.0 : $baseAmount;
+
+    $gstEnabled = !empty($formMeta['payment_gst_enabled']);
+    $handlingEnabled = !empty($formMeta['payment_handling_enabled']);
+    $gst = $gstEnabled ? round($baseAmount * 0.18, 2) : 0.0;
+    $handling = $handlingEnabled ? round($baseAmount * 0.02, 2) : 0.0;
+    $amount = round($chargeBase + $gst + $handling, 2);
+
+    $salespersonId = trim((string) ($assignedTo ?: $formCreatorId ?: ''));
+    $refCode = trim((string) ($referredBy ?: ''));
+    if ($refCode === '' && $salespersonId !== '' && function_exists('userStaffId')) {
+        $refCode = userStaffId($db, $salespersonId);
+    }
+    if ($salespersonId === '') {
+        return ['payment_error' => 'Open this form with a staff ID link so payment can be attributed.'];
+    }
+
+    $tagPatch = static function (string $status, float $amt, string $plinkId = '', bool $free = false) use ($db, $leadId, $couponApplied, $submittedCoupon, $gst, $handling, $chargeBase, $baseAmount): void {
+        $tagArr = [];
+        $st = $db->prepare('SELECT tags FROM leads WHERE id = ? LIMIT 1');
+        $st->execute([$leadId]);
+        $rawTags = $st->fetchColumn();
+        $decoded = json_decode((string) $rawTags, true);
+        if (is_array($decoded)) {
+            $tagArr = $decoded;
+        }
+        if ($plinkId !== '') {
+            $tagArr['payment_link_id'] = $plinkId;
+        }
+        $tagArr['payment_status'] = $status;
+        $tagArr['payment_amount'] = $amt;
+        $tagArr['payment_base'] = $chargeBase;
+        $tagArr['payment_original_amount'] = $baseAmount;
+        $tagArr['payment_gst'] = $gst;
+        $tagArr['payment_handling'] = $handling;
+        if ($couponApplied) {
+            $tagArr['payment_coupon'] = $submittedCoupon;
+            $tagArr['payment_coupon_applied'] = true;
+        }
+        if ($free) {
+            $tagArr['payment_free'] = true;
+        }
+        try {
+            $db->prepare('UPDATE leads SET tags = ? WHERE id = ?')->execute([
+                json_encode($tagArr, JSON_UNESCAPED_UNICODE),
+                $leadId,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[public-lead] payment tags: ' . $e->getMessage());
+        }
+    };
+
+    // Coupon (or zero total): mark paid without Razorpay (min charge is ₹1).
+    // Only allow free checkout when a valid coupon was applied — never silently skip pay.
+    if ($amount < 1) {
+        if (!$couponApplied) {
+            return ['payment_error' => 'Payment amount must be at least ₹1'];
+        }
+        $tagPatch('paid', 0.0, '', true);
+        return [
+            'payment_already_paid' => true,
+            'payment_free' => true,
+            'payment_amount' => 0,
+            'payment_coupon_applied' => true,
+        ];
+    }
+
+    if (!function_exists('paymentLinkCreateForLeadForm')) {
+        require_once __DIR__ . '/payment_link_store.php';
+    }
+    $pay = paymentLinkCreateForLeadForm([
+        'org_id' => $orgId,
+        'salesperson_id' => $salespersonId,
+        'referral_code' => $refCode !== '' ? $refCode : '',
+        'amount' => $amount,
+        'customer_name' => $name,
+        'customer_email' => $email,
+        'customer_phone' => $phone,
+        'lead_id' => $leadId,
+        'form_slug' => $formSlug,
+        'form_name' => is_array($formRow) ? (string) ($formRow['name'] ?? 'Form payment') : 'Form payment',
+        'gst' => $gst,
+        'handling' => $handling,
+        'base_amount' => $chargeBase,
+        'coupon' => $couponApplied ? $submittedCoupon : '',
+    ]);
+    $plinkId = trim((string) ($pay['id'] ?? ''));
+    if ($plinkId !== '') {
+        $tagPatch(!empty($pay['already_paid']) ? 'paid' : 'created', $amount, $plinkId, false);
+    }
+    if (!empty($pay['already_paid'])) {
+        return ['payment_already_paid' => true, 'payment_amount' => $amount];
+    }
+    if (!empty($pay['url'])) {
+        return [
+            'payment_url' => $pay['url'],
+            'payment_link_id' => $plinkId,
+            'payment_amount' => $amount,
+            'payment_breakdown' => [
+                'base' => $chargeBase,
+                'gst' => $gst,
+                'handling' => $handling,
+                'total' => $amount,
+            ],
+        ];
+    }
+    return ['payment_error' => (string) ($pay['error'] ?? 'Could not start payment')];
+};
 
 $routesToHr = publicLeadShouldRouteToHr($formRow, $formSlug, $source, $resumePath, $attachmentPaths);
 
@@ -412,6 +631,7 @@ if ($routesToHr) {
                 error_log('[form campaign auto hr] ' . $e->getMessage());
             }
         }
+        $publicLeadSendReceipt();
         respond([
             'success' => true,
             'hr_lead_id' => $hrLeadId,
@@ -425,12 +645,26 @@ if ($routesToHr) {
 $dupOrgId = ($orgId !== null && $orgId !== '') ? $orgId : null;
 $dup = leadsFindDuplicateInOrg($db, $dupOrgId, (string) ($email ?? ''), (string) ($phone ?? ''));
 if (is_array($dup)) {
-    respond([
+    $publicLeadSendReceipt();
+    $payExtra = $publicLeadStartPayment((string) $dup['id']);
+    $isPaid = !empty($payExtra['payment_free']) || !empty($payExtra['payment_already_paid']);
+    if (!array_key_exists('payment_url', $payExtra) && !array_key_exists('payment_error', $payExtra) && !array_key_exists('payment_free', $payExtra) && !array_key_exists('payment_already_paid', $payExtra)) {
+        $isPaid = true;
+    }
+    if (is_array($formRow)) {
+        require_once __DIR__ . '/form_campaigns.php';
+        try {
+            leadFormQueueAutoDocuments($db, $formRow, (string) $dup['id'], $isPaid);
+        } catch (Throwable $e) {
+            error_log('[leadFormQueueAutoDocuments dup] ' . $e->getMessage());
+        }
+    }
+    respond(array_merge([
         'success' => true,
         'lead_id' => $dup['id'],
         'destination' => 'leads',
         'duplicate' => true,
-    ]);
+    ], $payExtra));
 }
 
 $id = generateUUID();
@@ -480,7 +714,21 @@ try {
         }
     }
 
-    respond(['success' => true, 'lead_id' => $id, 'destination' => 'leads']);
+    $publicLeadSendReceipt();
+    $payExtra = $publicLeadStartPayment($id);
+    $isPaid = !empty($payExtra['payment_free']) || !empty($payExtra['payment_already_paid']);
+    if (!array_key_exists('payment_url', $payExtra) && !array_key_exists('payment_error', $payExtra) && !array_key_exists('payment_free', $payExtra) && !array_key_exists('payment_already_paid', $payExtra)) {
+        // Payment not enabled on form — treat as no payment gate.
+        $isPaid = true;
+    }
+    if (is_array($formRow)) {
+        try {
+            leadFormQueueAutoDocuments($db, $formRow, $id, $isPaid);
+        } catch (Throwable $e) {
+            error_log('[leadFormQueueAutoDocuments] ' . $e->getMessage());
+        }
+    }
+    respond(array_merge(['success' => true, 'lead_id' => $id, 'destination' => 'leads'], $payExtra));
 } catch (PDOException $e) {
     respond(['error' => 'Failed to save lead'], 500);
 }

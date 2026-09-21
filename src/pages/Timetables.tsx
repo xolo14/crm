@@ -13,6 +13,8 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
 import syncpediaMark from "@/assets/syncpedia-mark.png";
+import { ProtectedUploadImage } from "@/components/ProtectedUploadImage";
+import { resolveUploadSrc } from "@/lib/resumeHref";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,11 +48,18 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import {
   eachDayInRange,
+  defaultMonthAnchor,
+  defaultWeekAnchor,
   formatDayLabel,
   formatPeriodLabel,
   formatTime12,
+  mergePeriodOption,
+  monthPeriodOptions,
+  monthPeriodStart,
   periodBounds,
   toYmd,
+  weekPeriodOptions,
+  weekPeriodStart,
   type PeriodType,
 } from "@/utils/timetableCalendar";
 
@@ -79,7 +88,11 @@ type TimetableRow = {
 };
 
 type BatchRow = { id: string; name?: string; course_id?: string; course_name?: string };
-type CourseRow = { id: string; name?: string };
+type TimetableRecipient = {
+  email: string;
+  name?: string;
+  source: "batch" | "manual";
+};
 
 const EMPTY_SESSION = (): TimetableSession => ({
   session_date: "",
@@ -101,7 +114,7 @@ export default function Timetables() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState("Offline Class Timetable");
   const [periodType, setPeriodType] = useState<PeriodType>("week");
-  const [anchorDate, setAnchorDate] = useState(toYmd(new Date()));
+  const [anchorDate, setAnchorDate] = useState(defaultWeekAnchor);
   const [batchId, setBatchId] = useState<string>("");
   const [courseId, setCourseId] = useState<string>("");
   const [sessions, setSessions] = useState<TimetableSession[]>([]);
@@ -114,7 +127,8 @@ export default function Timetables() {
   const [sendRow, setSendRow] = useState<TimetableRow | null>(null);
   const [sendBatchId, setSendBatchId] = useState("");
   const [manualEmail, setManualEmail] = useState("");
-  const [recipients, setRecipients] = useState<{ email: string; name?: string }[]>([]);
+  const [recipients, setRecipients] = useState<TimetableRecipient[]>([]);
+  const [loadingRecipients, setLoadingRecipients] = useState(false);
   const [previewHtml, setPreviewHtml] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -124,6 +138,10 @@ export default function Timetables() {
     () => eachDayInRange(period.start, period.end),
     [period.start, period.end],
   );
+  const periodOptions = useMemo(() => {
+    const base = periodType === "month" ? monthPeriodOptions(12) : weekPeriodOptions(12);
+    return mergePeriodOption(base, period.start, periodType);
+  }, [periodType, period.start]);
 
   const courseNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -172,7 +190,7 @@ export default function Timetables() {
     setEditingId(null);
     setTitle("Offline Class Timetable");
     setPeriodType("week");
-    setAnchorDate(toYmd(new Date()));
+    setAnchorDate(defaultWeekAnchor());
     setBatchId("");
     setCourseId("");
     setSessions([]);
@@ -184,8 +202,10 @@ export default function Timetables() {
       const data = res?.data || row;
       setEditingId(data.id);
       setTitle(data.title || "Class Timetable");
-      setPeriodType(data.period_type === "month" ? "month" : "week");
-      setAnchorDate(String(data.period_start || toYmd(new Date())).slice(0, 10));
+      const pType = data.period_type === "month" ? "month" : "week";
+      setPeriodType(pType);
+      const rawStart = String(data.period_start || (pType === "month" ? defaultMonthAnchor() : defaultWeekAnchor())).slice(0, 10);
+      setAnchorDate(pType === "month" ? monthPeriodStart(rawStart) : weekPeriodStart(rawStart));
       setBatchId(data.batch_id || "");
       setCourseId(data.course_id || "");
       setSessions(
@@ -305,7 +325,8 @@ export default function Timetables() {
 
   const openSend = async (row: TimetableRow) => {
     setSendRow(row);
-    setSendBatchId(row.batch_id || "");
+    const bid = row.batch_id || "";
+    setSendBatchId(bid);
     setRecipients([]);
     setManualEmail("");
     setPreviewHtml("");
@@ -318,35 +339,69 @@ export default function Timetables() {
     } finally {
       setPreviewLoading(false);
     }
+    if (bid) {
+      void loadBatchRecipients(bid, { replaceBatch: true });
+    }
   };
 
-  const loadBatchRecipients = async (bid: string) => {
+  const loadBatchRecipients = async (
+    bid: string,
+    opts?: { replaceBatch?: boolean },
+  ) => {
     if (!bid) return;
+    setLoadingRecipients(true);
     try {
       const res = (await api.timetables.batchStudents(bid)) as {
         data?: { email?: string; name?: string }[];
       };
-      const list = (res?.data || [])
-        .filter((s) => s.email)
-        .map((s) => ({ email: String(s.email).trim(), name: s.name || undefined }));
+      const raw = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+      const list: TimetableRecipient[] = (raw as { email?: string; name?: string }[])
+        .map((s) => ({
+          email: String(s.email || "").trim().toLowerCase(),
+          name: s.name ? String(s.name).trim() : undefined,
+          source: "batch" as const,
+        }))
+        .filter((s) => s.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.email));
+
       setRecipients((prev) => {
-        const seen = new Set(prev.map((r) => r.email.toLowerCase()));
-        const merged = [...prev];
+        const manuals = opts?.replaceBatch !== false
+          ? prev.filter((r) => r.source === "manual")
+          : prev;
+        const seen = new Set(manuals.map((r) => r.email.toLowerCase()));
+        const merged = [...manuals];
         for (const r of list) {
-          if (!seen.has(r.email.toLowerCase())) {
-            seen.add(r.email.toLowerCase());
+          if (!seen.has(r.email)) {
+            seen.add(r.email);
             merged.push(r);
           }
         }
         return merged;
       });
+
+      if (list.length === 0) {
+        toast({
+          title: "No students with email in this batch",
+          description: "Add emails on the Students page, or enter recipients manually.",
+        });
+      } else {
+        toast({
+          title: `Loaded ${list.length} student${list.length === 1 ? "" : "s"}`,
+          description: "You can remove anyone before sending.",
+        });
+      }
     } catch (e: unknown) {
       toast({
         variant: "destructive",
         title: "Could not load batch students",
         description: e instanceof Error ? e.message : "Unknown error",
       });
+    } finally {
+      setLoadingRecipients(false);
     }
+  };
+
+  const removeRecipient = (email: string) => {
+    setRecipients((p) => p.filter((x) => x.email.toLowerCase() !== email.toLowerCase()));
   };
 
   const addManualRecipient = () => {
@@ -359,7 +414,7 @@ export default function Timetables() {
       setManualEmail("");
       return;
     }
-    setRecipients((p) => [...p, { email }]);
+    setRecipients((p) => [...p, { email, source: "manual" }]);
     setManualEmail("");
   };
 
@@ -371,7 +426,7 @@ export default function Timetables() {
     setSending(true);
     try {
       const res = (await api.timetables.send(sendRow.id, {
-        recipients,
+        recipients: recipients.map((r) => ({ email: r.email, name: r.name || null })),
         batch_id: sendBatchId || null,
         subject: sendRow.title || "Offline Class Timetable",
       })) as { message?: string; sent?: number; failed?: { email: string; error: string }[] };
@@ -405,7 +460,8 @@ export default function Timetables() {
     return m;
   }, [sessions]);
 
-  const orgLogo = organization?.logo_url || syncpediaMark;
+  const orgLogoPath = organization?.logo_url?.trim() || "";
+  const orgLogoFallback = resolveUploadSrc(orgLogoPath) || syncpediaMark;
 
   return (
     <div className="space-y-6 pb-8">
@@ -423,7 +479,15 @@ export default function Timetables() {
               </p>
             </div>
           </div>
-          <img src={orgLogo} alt="" className="hidden h-10 object-contain sm:block max-w-[140px]" />
+          {orgLogoPath ? (
+            <ProtectedUploadImage
+              path={orgLogoPath}
+              alt=""
+              className="hidden h-10 object-contain sm:block max-w-[140px]"
+            />
+          ) : (
+            <img src={orgLogoFallback} alt="" className="hidden h-10 object-contain sm:block max-w-[140px]" />
+          )}
         </div>
       </div>
 
@@ -452,7 +516,14 @@ export default function Timetables() {
                 </div>
                 <div className="space-y-1.5">
                   <Label>Period</Label>
-                  <Select value={periodType} onValueChange={(v) => setPeriodType(v as PeriodType)}>
+                  <Select
+                    value={periodType}
+                    onValueChange={(v) => {
+                      const next = v as PeriodType;
+                      setPeriodType(next);
+                      setAnchorDate(next === "month" ? defaultMonthAnchor() : defaultWeekAnchor());
+                    }}
+                  >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -463,8 +534,19 @@ export default function Timetables() {
                   </Select>
                 </div>
                 <div className="space-y-1.5">
-                  <Label>{periodType === "month" ? "Month (pick any day)" : "Week (pick any day)"}</Label>
-                  <Input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
+                  <Label>{periodType === "month" ? "Month" : "Week"}</Label>
+                  <Select value={period.start} onValueChange={setAnchorDate}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={periodType === "month" ? "Select month" : "Select week"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {periodOptions.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="space-y-1.5 sm:col-span-2">
                   <Label>Batch (optional)</Label>
@@ -764,11 +846,15 @@ export default function Timetables() {
                     onValueChange={(v) => {
                       const bid = v === "__none__" ? "" : v;
                       setSendBatchId(bid);
-                      if (bid) void loadBatchRecipients(bid);
+                      if (!bid) {
+                        setRecipients((prev) => prev.filter((r) => r.source === "manual"));
+                        return;
+                      }
+                      void loadBatchRecipients(bid, { replaceBatch: true });
                     }}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Optional batch" />
+                      <SelectValue placeholder="Select a batch" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__none__">No batch</SelectItem>
@@ -779,6 +865,9 @@ export default function Timetables() {
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-[11px] text-muted-foreground">
+                    Selecting a batch loads all enrolled students with an email.
+                  </p>
                 </div>
                 <div className="space-y-1.5">
                   <Label>Add email manually</Label>
@@ -796,29 +885,50 @@ export default function Timetables() {
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <Label>Recipients ({recipients.length})</Label>
-                  <div className="max-h-36 overflow-y-auto rounded-lg border p-2 space-y-1">
-                    {recipients.length === 0 ? (
-                      <p className="text-xs text-muted-foreground px-1 py-2">No recipients yet</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Recipients ({recipients.length})</Label>
+                    {recipients.length > 0 ? (
+                      <button
+                        type="button"
+                        className="text-[11px] text-muted-foreground hover:text-destructive"
+                        onClick={() => setRecipients([])}
+                      >
+                        Clear all
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="max-h-52 overflow-y-auto rounded-lg border p-2 space-y-1">
+                    {loadingRecipients ? (
+                      <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading students…
+                      </div>
+                    ) : recipients.length === 0 ? (
+                      <p className="text-xs text-muted-foreground px-1 py-2">
+                        No recipients yet — pick a batch or add an email.
+                      </p>
                     ) : (
                       recipients.map((r) => (
                         <div
-                          key={r.email}
-                          className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1 text-xs"
+                          key={`${r.source}:${r.email}`}
+                          className="flex items-center justify-between gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-xs"
                         >
-                          <span className="truncate">
+                          <span className="min-w-0 truncate">
                             <Mail className="inline h-3 w-3 mr-1 opacity-60" />
                             {r.name ? `${r.name} · ` : ""}
                             {r.email}
+                            <span className="ml-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                              {r.source === "batch" ? "batch" : "manual"}
+                            </span>
                           </span>
                           <button
                             type="button"
-                            className="text-muted-foreground hover:text-destructive"
-                            onClick={() =>
-                              setRecipients((p) => p.filter((x) => x.email !== r.email))
-                            }
+                            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => removeRecipient(r.email)}
+                            title="Remove recipient"
                           >
                             <X className="h-3.5 w-3.5" />
+                            Remove
                           </button>
                         </div>
                       ))

@@ -120,8 +120,18 @@ export function filterLinksByPeriod<T extends { created_at: number }>(
 }
 
 /**
- * Filter manual/approval payment rows by period using paid_at (preferred) or created_at.
- * Accepts ISO / MySQL datetime strings.
+ * Effective payment date: paid-on date first, then upload/submit date.
+ */
+export function paymentRowEffectiveDate(row: {
+  paid_at?: string | null;
+  created_at?: string | null;
+  reviewed_at?: string | null;
+}): string {
+  return String(row.paid_at || row.created_at || "").trim();
+}
+
+/**
+ * Filter manual/approval payment rows by period using paid_at (preferred) or created_at (upload).
  */
 export function filterManualRowsByPeriod<
   T extends { paid_at?: string | null; created_at?: string | null; reviewed_at?: string | null },
@@ -129,23 +139,26 @@ export function filterManualRowsByPeriod<
   if (period === "all") return rows;
   const { from, to } = paymentLinkPeriodUnixRange(period, custom);
   return rows.filter((row) => {
-    const raw = String(row.paid_at || row.reviewed_at || row.created_at || "").trim();
+    const raw = paymentRowEffectiveDate(row);
     const ts = rowTimestampSeconds(raw);
     if (ts === null) return false;
     return inUnixRange(ts, from, to);
   });
 }
 
-/** Filter payment candidates by updated_at (fallback created_at). */
+/** Filter candidates by first installment date (timeline) instead of any payment. */
 export function filterCandidatesByPeriod<
-  T extends { updated_at?: string | null; created_at?: string | null },
+ T extends {
+ first_installment_date?: string | null;
+ created_at?: string | null;
+ },
 >(rows: T[], period: PaymentLinkPeriod, custom?: PaymentLinkCustomRange): T[] {
-  if (period === "all") return rows;
-  const { from, to } = paymentLinkPeriodUnixRange(period, custom);
-  return rows.filter((row) => {
-    const raw = String(row.updated_at || row.created_at || "").trim();
-    const ts = rowTimestampSeconds(raw);
-    if (ts === null) return false;
-    return inUnixRange(ts, from, to);
-  });
+ if (period === "all") return rows;
+ const { from, to } = paymentLinkPeriodUnixRange(period, custom);
+ return rows.filter((row) => {
+ const raw = String(row.first_installment_date || row.created_at || "").trim();
+ const ts = rowTimestampSeconds(raw);
+ if (ts === null) return false;
+ return inUnixRange(ts, from, to);
+ });
 }

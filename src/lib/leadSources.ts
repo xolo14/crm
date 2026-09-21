@@ -43,7 +43,7 @@ export const SOURCE_BUCKET_LABELS: Record<LeadSourceBucket, string> = {
   website: 'Website',
   api_ingest: 'API / Website leads',
   form_leads: 'Form leads',
-  peaklyy: 'Peaklyy Assessments',
+  peaklyy: 'Peaklyy Assignments',
   import: 'Import',
   whatsapp: 'WhatsApp',
   referral: 'Referral',
@@ -274,7 +274,7 @@ export function getPeaklyyAssessmentTitle(lead: { tags?: unknown; source?: strin
     const name = title.slice(PEAKLYY_TITLE_PREFIX.length).trim();
     if (name) return name;
   }
-  return 'Peaklyy Assessment';
+  return 'Peaklyy Assignment';
 }
 
 export function getPeaklyyAttemptCount(lead: { tags?: unknown }): number {
@@ -463,7 +463,7 @@ export function buildSourceSummaries(
             ? formatFormSourceLabel(key, formLabels)
             : SOURCE_BUCKET_LABELS[key as LeadSourceBucket] || key;
     const row = ensure(key, label, isImport, isPeaklyy, isForm, isAdded, isMetaAd);
-    if (isPeaklyy && row.label === 'Peaklyy Assessment') {
+    if (isPeaklyy && (row.label === 'Peaklyy Assessment' || row.label === 'Peaklyy Assignment')) {
       row.label = getPeaklyyAssessmentTitle(lead);
     }
     if (isMetaAd) {

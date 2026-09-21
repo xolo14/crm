@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/form_campaigns.php';
+require_once __DIR__ . '/lib/FormTemplatePlaceholders.php';
 cors();
 
 /** Shim when production helpers.php predates publicFormLeadDestination (submissions fatal otherwise). */
@@ -489,7 +490,7 @@ if ($method === 'GET') {
                 $cst->execute($countParams);
                 $total = (int) ($cst->fetchColumn() ?: 0);
 
-                $listSql = 'SELECT l.id, l.name, l.email, l.phone, l.status, l.source, l.notes,
+                $listSql = 'SELECT l.id, l.name, l.email, l.phone, l.status, l.source, l.notes, l.tags,
                                    l.resume_path, l.assigned_to, l.referred_by, l.created_at, l.updated_at,
                                    u.full_name AS assigned_to_name
                             FROM leads l
@@ -500,6 +501,17 @@ if ($method === 'GET') {
                 $lst = $db->prepare($listSql);
                 $lst->execute($countParams);
                 $submissions = $lst->fetchAll(PDO::FETCH_ASSOC);
+                if (is_array($submissions)) {
+                    foreach ($submissions as &$subRow) {
+                        if (isset($subRow['tags']) && is_string($subRow['tags'])) {
+                            $decodedTags = json_decode($subRow['tags'], true);
+                            $subRow['tags'] = is_array($decodedTags) ? $decodedTags : [];
+                        } elseif (!isset($subRow['tags']) || !is_array($subRow['tags'])) {
+                            $subRow['tags'] = [];
+                        }
+                    }
+                    unset($subRow);
+                }
             }
 
             respond([
@@ -536,6 +548,118 @@ if ($method === 'GET') {
             respond(['error' => 'Forbidden — super admin, org admin, or marketing users with access to this form can manage campaigns'], 403);
         }
         respond(['data' => formCampaignListTemplates($db, $tokenData, $formRow)]);
+    }
+
+    // Offer letter + certificate templates for form Automations (org-scoped; any form editor).
+    if ($action === 'automation_templates') {
+        formsRequireCallerAccess($db, $tokenData);
+        $formId = trim((string) ($_GET['form_id'] ?? ''));
+        $scopeOrgId = '';
+        if ($formId !== '') {
+            $formRow = formsGetScopedForm($db, $formId, $tokenData);
+            if (!$formRow) {
+                respond(['error' => 'Form not found'], 404);
+            }
+            $scopeOrgId = trim((string) ($formRow['org_id'] ?? ''));
+        }
+        if ($scopeOrgId === '') {
+            $scopeOrgId = trim((string) (resolveCreatorOrgId($db, $tokenData) ?? getOrgId($tokenData) ?? ''));
+        }
+
+        $offerLetters = [];
+        $certificates = [];
+        try {
+            if ($scopeOrgId !== '') {
+                $st = $db->prepare(
+                    'SELECT id, template_name, role_title, status, org_id, created_at, html_content, mail_json
+                     FROM offer_letter_templates
+                     WHERE org_id = ? OR org_id IS NULL OR TRIM(COALESCE(org_id, \'\')) = \'\'
+                     ORDER BY created_at DESC
+                     LIMIT 500'
+                );
+                $st->execute([$scopeOrgId]);
+            } elseif (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
+                $st = $db->query(
+                    'SELECT id, template_name, role_title, status, org_id, created_at, html_content, mail_json
+                     FROM offer_letter_templates
+                     ORDER BY created_at DESC
+                     LIMIT 500'
+                );
+            } else {
+                $st = null;
+            }
+            if ($st) {
+                foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $placeholders = [];
+                    try {
+                        $placeholders = formTplExtractOfferPlaceholders($row);
+                    } catch (Throwable $e) {
+                        $placeholders = [];
+                    }
+                    $offerLetters[] = [
+                        'id' => (string) ($row['id'] ?? ''),
+                        'name' => (string) ($row['template_name'] ?? 'Untitled'),
+                        'template_name' => (string) ($row['template_name'] ?? 'Untitled'),
+                        'role_title' => (string) ($row['role_title'] ?? ''),
+                        'status' => (string) ($row['status'] ?? ''),
+                        'org_id' => $row['org_id'] ?? null,
+                        'placeholders' => $placeholders,
+                    ];
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[forms automation_templates offer] ' . $e->getMessage());
+        }
+
+        try {
+            if ($scopeOrgId !== '') {
+                $st = $db->prepare(
+                    'SELECT id, name, status, cert_type, org_id, created_at, layers_json, fields_json, style_json
+                     FROM certificate_templates
+                     WHERE org_id = ? OR org_id IS NULL OR TRIM(COALESCE(org_id, \'\')) = \'\'
+                     ORDER BY created_at DESC
+                     LIMIT 500'
+                );
+                $st->execute([$scopeOrgId]);
+            } elseif (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
+                $st = $db->query(
+                    'SELECT id, name, status, cert_type, org_id, created_at, layers_json, fields_json, style_json
+                     FROM certificate_templates
+                     ORDER BY created_at DESC
+                     LIMIT 500'
+                );
+            } else {
+                $st = null;
+            }
+            if ($st) {
+                foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $placeholders = [];
+                    try {
+                        $placeholders = formTplExtractCertificatePlaceholders($row);
+                    } catch (Throwable $e) {
+                        $placeholders = [];
+                    }
+                    $certificates[] = [
+                        'id' => (string) ($row['id'] ?? ''),
+                        'name' => (string) ($row['name'] ?? 'Untitled'),
+                        'status' => (string) ($row['status'] ?? ''),
+                        'cert_type' => (string) ($row['cert_type'] ?? ''),
+                        'org_id' => $row['org_id'] ?? null,
+                        'placeholders' => $placeholders,
+                    ];
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[forms automation_templates cert] ' . $e->getMessage());
+        }
+
+        respond([
+            'data' => [
+                'offer_letters' => array_values(array_filter($offerLetters, static fn($r) => ($r['id'] ?? '') !== '')),
+                'certificates' => array_values(array_filter($certificates, static fn($r) => ($r['id'] ?? '') !== '')),
+                'org_id' => $scopeOrgId !== '' ? $scopeOrgId : null,
+            ],
+        ]);
     }
 
     $scope = formsBuildListScope($db, $tokenData);
@@ -586,6 +710,83 @@ if ($method === 'POST') {
         respond(['message' => 'Campaign sent', 'data' => $result]);
     }
 
+    // Re-run Automations (certificate / offer letter) for one existing form lead.
+    if ($action === 'retry_auto_documents') {
+        $formId = trim((string) ($input['form_id'] ?? ''));
+        $leadId = trim((string) ($input['lead_id'] ?? ''));
+        if ($formId === '' || $leadId === '') {
+            respond(['error' => 'form_id and lead_id are required'], 400);
+        }
+        $formRow = formsGetAccessibleFormDetail($db, $formId, $tokenData);
+        if (!$formRow) {
+            respond(['error' => 'Form not found'], 404);
+        }
+        formsNormalizeFormRow($formRow);
+        $slug = trim((string) ($formRow['slug'] ?? ''));
+        $leadSt = $db->prepare('SELECT id, source, tags, email FROM leads WHERE id = ? LIMIT 1');
+        $leadSt->execute([$leadId]);
+        $leadRow = $leadSt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($leadRow)) {
+            respond(['error' => 'Lead not found'], 404);
+        }
+        $expectedSource = $slug !== '' ? ('form_' . $slug) : '';
+        if ($expectedSource !== '' && trim((string) ($leadRow['source'] ?? '')) !== $expectedSource) {
+            respond(['error' => 'Lead does not belong to this form'], 400);
+        }
+        $meta = formsParseMetaJson($formRow['meta_json'] ?? null);
+        $isPaid = true;
+        if (!empty($meta['payment_enabled'])) {
+            $isPaid = false;
+            try {
+                if (function_exists('paymentLinkLeadIsPaid') && paymentLinkLeadIsPaid($db, $leadId)) {
+                    $isPaid = true;
+                }
+            } catch (Throwable $e) {
+                /* ignore */
+            }
+            // Certificate/offer Payment toggle off → still allow.
+            $needPayCert = !empty($meta['auto_certificate']) && !empty($meta['certificate_require_payment']);
+            $needPayOffer = !empty($meta['auto_offer_letter']) && !empty($meta['offer_letter_require_payment']);
+            if (!$needPayCert && !$needPayOffer) {
+                $isPaid = true;
+            }
+        }
+        try {
+            leadFormQueueAutoDocuments($db, $formRow, $leadId, $isPaid, true);
+        } catch (Throwable $e) {
+            error_log('[retry_auto_documents] ' . $e->getMessage());
+            respond(['error' => 'Auto documents failed: ' . $e->getMessage()], 500);
+        }
+        $tagsSt = $db->prepare('SELECT tags FROM leads WHERE id = ? LIMIT 1');
+        $tagsSt->execute([$leadId]);
+        $tagsRaw = $tagsSt->fetchColumn();
+        $tags = [];
+        if (is_string($tagsRaw)) {
+            $decoded = json_decode($tagsRaw, true);
+            $tags = is_array($decoded) ? $decoded : [];
+        }
+        $okCert = !empty($tags['auto_certificate_sent']);
+        $okOffer = !empty($tags['auto_offer_letter_sent']);
+        $err = (string) ($tags['auto_certificate_error'] ?? $tags['auto_offer_letter_error'] ?? '');
+        $warn = (string) ($tags['auto_certificate_warning'] ?? $tags['auto_offer_letter_warning'] ?? '');
+        respond([
+            'message' => $okCert || $okOffer
+                ? 'Auto documents processed'
+                : ($err !== '' ? $err : 'No auto documents were generated (check Automations toggles)'),
+            'data' => [
+                'certificate_sent' => $okCert,
+                'certificate_id' => $tags['auto_certificate_id'] ?? null,
+                'certificate_error' => $tags['auto_certificate_error'] ?? null,
+                'certificate_warning' => $tags['auto_certificate_warning'] ?? null,
+                'offer_letter_sent' => $okOffer,
+                'offer_letter_id' => $tags['auto_offer_letter_id'] ?? null,
+                'offer_letter_error' => $tags['auto_offer_letter_error'] ?? null,
+                'warning' => $warn !== '' ? $warn : null,
+                'tags' => $tags,
+            ],
+        ]);
+    }
+
     if ($action === 'campaign_settings') {
         $formId = trim((string) ($input['form_id'] ?? ''));
         $campaignInput = $input['campaign'] ?? null;
@@ -622,7 +823,7 @@ if ($method === 'POST') {
         if (!$formId || !is_array($memberIds)) respond(['error' => 'form_id and member_ids are required'], 400);
 
         $callerUserId = trim((string) ($tokenData['user_id'] ?? ''));
-        $isManagerAssign = $role === 'manager';
+        $isManagerAssign = in_array($role, ['manager', 'operational_manager'], true);
         $managerVisibleIds = $isManagerAssign ? hierarchyGetVisibleUserIds($db, $tokenData) : [];
         // Managers assign only their downline (never themselves).
         if ($isManagerAssign) {
@@ -1061,7 +1262,7 @@ if ($method === 'PUT') {
 if ($method === 'DELETE') {
     $action = $_GET['action'] ?? '';
     if ($action === 'revoke_api_key') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'hr']);
+        requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager', 'operational_manager', 'hr']);
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $row = formsGetScopedForm($db, $formId, $tokenData);
@@ -1074,14 +1275,14 @@ if ($method === 'DELETE') {
         respond(['message' => 'Form API key revoked']);
     }
 
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'hr']);
+    requireRole($tokenData, ['super_admin', 'admin', 'org', 'marketing', 'manager', 'operational_manager', 'hr']);
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'id required'], 400);
 
     $params = [$id];
     $orgClause = '';
     $roleNorm = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? $role ?? ''));
-    if ($roleNorm === 'marketing' || $roleNorm === 'hr') {
+    if (in_array($roleNorm, ['marketing', 'hr', 'manager', 'operational_manager'], true)) {
         $orgClause = ' AND created_by = ?';
         $params[] = $userId;
     } elseif ($roleNorm !== 'super_admin') {

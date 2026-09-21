@@ -10,6 +10,7 @@ import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X, 
 import { BulkAssignDialog } from '@/components/BulkAssignDialog';
 import { SOURCE_BUCKET_LABELS, getPeaklyyAttemptCount, isAddedSourceBucket, isPeaklyySourceBucket, type LeadSourceBucket } from '@/lib/leadSources';
 import { cn } from '@/lib/utils';
+import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
 
 const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
 
@@ -71,6 +72,7 @@ type SourceLeadsDialogProps = {
   canExport?: boolean;
   /** Export selected rows if any, otherwise the current filtered list. */
   onExport?: (leadsToExport: any[]) => void;
+  showPaymentColumn?: boolean;
 };
 
 export function SourceLeadsDialog({
@@ -103,6 +105,7 @@ export function SourceLeadsDialog({
   getCreatedByName,
   canExport = false,
   onExport,
+  showPaymentColumn = false,
 }: SourceLeadsDialogProps) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState(initialStatus || 'all');
@@ -571,6 +574,18 @@ export function SourceLeadsDialog({
                                   {formatLeadStatus(lead.status)}
                                 </Badge>
                               )}
+                              {showPaymentColumn && (() => {
+                                const pay = leadFormPaymentBadge(lead);
+                                if (!pay) return null;
+                                return (
+                                  <Badge
+                                    variant="outline"
+                                    className={`text-[11px] ${pay.paid ? 'border-emerald-500/40 text-emerald-700 bg-emerald-500/10' : 'border-amber-500/40 text-amber-700 bg-amber-500/10'}`}
+                                  >
+                                    {pay.label}
+                                  </Badge>
+                                );
+                              })()}
                               {isManager && (
                                 <span className={`text-[11px] font-medium ${isAssigned ? 'text-primary' : 'text-amber-600'}`}>
                                   {assignedLabel}
@@ -620,6 +635,7 @@ export function SourceLeadsDialog({
                       <TableHead>Contact</TableHead>
                       <TableHead>Status</TableHead>
                       {showAttempts && <TableHead>Attempts</TableHead>}
+                      {showPaymentColumn && <TableHead>Payment</TableHead>}
                       {isManager && <TableHead>Assigned</TableHead>}
                       {showCreatedBy && <TableHead>Created by</TableHead>}
                       <TableHead>Created</TableHead>
@@ -631,7 +647,11 @@ export function SourceLeadsDialog({
                       <TableRow>
                         <TableCell
                           colSpan={
-                            (isManager ? 7 : 5) + (showAttempts ? 1 : 0) + (showCreatedBy ? 1 : 0)
+                            (canSelect ? 1 : 0) +
+                            (isManager ? 7 : 5) +
+                            (showAttempts ? 1 : 0) +
+                            (showCreatedBy ? 1 : 0) +
+                            (showPaymentColumn ? 1 : 0)
                           }
                           className="text-center py-12"
                         >
@@ -707,6 +727,22 @@ export function SourceLeadsDialog({
                             </TableCell>
                             {showAttempts && (
                               <TableCell className="text-sm tabular-nums">{getPeaklyyAttemptCount(lead)}</TableCell>
+                            )}
+                            {showPaymentColumn && (
+                              <TableCell>
+                                {(() => {
+                                  const pay = leadFormPaymentBadge(lead);
+                                  if (!pay) return <span className="text-sm text-muted-foreground">—</span>;
+                                  return (
+                                    <Badge
+                                      variant="outline"
+                                      className={pay.paid ? 'border-emerald-500/40 text-emerald-700 bg-emerald-500/10' : 'border-amber-500/40 text-amber-700 bg-amber-500/10'}
+                                    >
+                                      {pay.label}
+                                    </Badge>
+                                  );
+                                })()}
+                              </TableCell>
                             )}
                             {isManager && (
                               <TableCell>

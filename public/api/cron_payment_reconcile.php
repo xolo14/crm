@@ -91,11 +91,29 @@ foreach ($rows as $row) {
     }
 }
 
+$certs = ['scanned' => 0, 'issued' => 0, 'skipped' => 0];
+try {
+    require_once __DIR__ . '/lib/LeadFormAutoDocs.php';
+    $certs = leadFormProcessDueAutoCertificates($db);
+} catch (Throwable $e) {
+    error_log('[cron_payment_reconcile] auto certs: ' . $e->getMessage());
+}
+
+$emails = ['scanned' => 0, 'sent' => 0, 'failed' => 0, 'skipped' => 0];
+try {
+    require_once __DIR__ . '/lib/MarketingEmailDispatch.php';
+    $emails = marketingProcessDueEmailSends($db);
+} catch (Throwable $e) {
+    error_log('[cron_payment_reconcile] email campaigns: ' . $e->getMessage());
+}
+
 $out = [
     'ok' => true,
     'checked' => $checked,
     'cleared' => $cleared,
     'still_needed' => $failed,
+    'auto_certificates' => $certs,
+    'email_campaigns' => $emails,
 ];
 if ($cli) {
     echo json_encode($out) . PHP_EOL;

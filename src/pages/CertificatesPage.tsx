@@ -521,6 +521,13 @@ const IMPORT_EDITABLE_LAYER_TYPES: CertLayerType[] = ["company", "name", "domain
 /** Built-in boxes always present on a certificate (position editable). */
 const CERT_BUILTIN_LAYER_TYPES: Array<Extract<CertLayerType, "date" | "certID" | "qr">> = ["date", "certID", "qr"];
 
+const CERT_FREE_TEXT_LAYER_TYPES = new Set(["text", "company", "name", "domain"]);
+const NEW_TEXT_BOX_HINT = "Type here… insert <<placeholders>> from the panel";
+
+function isCertFreeTextLayer(type: string | undefined): boolean {
+  return CERT_FREE_TEXT_LAYER_TYPES.has(String(type || ""));
+}
+
 /** Optional typed fields (prefer <<placeholders>> inside text boxes instead). */
 const TYPED_CERT_FIELD_TYPES: Array<{
   type: Extract<CertLayerType, "company" | "name" | "domain" | "date" | "certID">;
@@ -1360,7 +1367,7 @@ function CertificatePreview({
         </div>
       </div>
       )}
-      {layers.sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0)).map((layer) => {
+      {[...layers].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0)).map((layer) => {
         if (layer.type === "qr") {
           return (
             <CanvasTextBoxFrame
@@ -1413,6 +1420,8 @@ function CertificatePreview({
             </CanvasTextBoxFrame>
           );
         }
+        const canType = editable && isCertFreeTextLayer(layer.type);
+        const editing = canType && selectedLayerID === layer.id;
         return (
           <CanvasTextBoxFrame
             key={layer.id}
@@ -1421,6 +1430,8 @@ function CertificatePreview({
             locked={isLayerPositionLocked(layer)}
             editable={editable}
             centerOrigin
+            showMoveHandle={canType}
+            moveHandleLabel="Move text"
             contentOverflow="hidden"
             divider={normalizeTextBoxDivider(layer.divider)}
             className="whitespace-pre-wrap"
@@ -1441,36 +1452,34 @@ function CertificatePreview({
               onLayerMove?.(layer.id, g.x, g.y);
             }}
           >
-            <div
-              className="h-full w-full outline-none overflow-hidden"
-              onDoubleClick={(e) => {
-                e.stopPropagation();
-                onLayerSelect?.(layer.id);
-                if (layer.type !== "text") return;
-                const el = e.currentTarget;
-                el.contentEditable = "true";
-                el.focus();
-                const range = document.createRange();
-                range.selectNodeContents(el);
-                const sel = window.getSelection();
-                sel?.removeAllRanges();
-                sel?.addRange(range);
-              }}
-              onBlur={(e) => {
-                const el = e.currentTarget;
-                if (el.contentEditable === "true") {
-                  el.contentEditable = "false";
-                  if (layer.type === "text") {
-                    onLayerContentChange?.(layer.id, el.innerText);
-                  }
-                }
-              }}
-              onMouseDown={(e) => {
-                if ((e.target as HTMLElement)?.isContentEditable) e.stopPropagation();
-              }}
-            >
-              {resolveLayerContent(layer)}
-            </div>
+            {editing ? (
+              <textarea
+                className="h-full w-full resize-none border-0 outline-none shadow-none bg-transparent px-1 py-0.5"
+                style={{
+                  color: "inherit",
+                  fontSize: "inherit",
+                  fontFamily: "inherit",
+                  fontWeight: "inherit",
+                  fontStyle: "inherit",
+                  textAlign: "inherit",
+                  lineHeight: 1.35,
+                  cursor: "text",
+                }}
+                value={layer.content === NEW_TEXT_BOX_HINT ? "" : layer.content}
+                placeholder={NEW_TEXT_BOX_HINT}
+                autoFocus
+                onChange={(e) => onLayerContentChange?.(layer.id, e.target.value)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <div className="h-full w-full outline-none overflow-hidden px-1 py-0.5">
+                {resolveLayerContent(layer) ||
+                  (editable ? <span className="opacity-40">{NEW_TEXT_BOX_HINT}</span> : null)}
+              </div>
+            )}
           </CanvasTextBoxFrame>
         );
       })}
@@ -1487,7 +1496,7 @@ function CertificatePreview({
 }
 
 /** Offscreen render + html2canvas so issue works even when preview step is unmounted. */
-async function captureCertificatePdfBase64(opts: {
+export async function captureCertificatePdfBase64(opts: {
   template: CertTemplate;
   recipientName: string;
   domainName: string;
@@ -1868,11 +1877,11 @@ function TemplateBuilderModal({
       id: crypto.randomUUID(),
       type: "text",
       label: "Text",
-      content: "Type here… insert <<placeholders>> from the panel",
+      content: "",
       x: 50,
       y: 40,
       width: 55,
-      height: 10,
+      height: 14,
       color: "#111827",
       fontSize: 18,
       fontFamily: 'Georgia, "Times New Roman", serif',
@@ -2000,12 +2009,12 @@ function TemplateBuilderModal({
 
     const selected = (draft.layers || []).find((l) => l.id === selectedLayerID);
     // Only insert into free text boxes — builtins (date / certID / QR) stay dedicated boxes.
-    const canInsertInto = !!selected && selected.type === "text";
+    const canInsertInto = !!selected && isCertFreeTextLayer(selected.type);
 
     if (canInsertInto && selected) {
       const current = String(selected.content || "");
       const cleaned =
-        current === "Type here… insert <<placeholders>> from the panel" || current === "Type here…"
+        current === NEW_TEXT_BOX_HINT || current === "Type here…"
           ? ""
           : current;
       const spacer = cleaned && !/\s$/.test(cleaned) ? " " : "";
@@ -2124,6 +2133,10 @@ function TemplateBuilderModal({
     max-width: none !important;
     aspect-ratio: auto !important;
     border-radius: 0 !important;
+  }
+  #${styleId}-scope [data-move-handle],
+  #${styleId}-scope [data-resize-handle] {
+    display: none !important;
   }
 }`;
     document.head.appendChild(printStyle);
@@ -2291,7 +2304,7 @@ function TemplateBuilderModal({
                       <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
                         <Plus className="h-3 w-3" />Text box
                       </Button>
-                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addImageLayer}>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void addImageLayer()}>
                         <ImageIcon className="h-3 w-3" />Image
                       </Button>
                     </div>
@@ -2325,7 +2338,7 @@ function TemplateBuilderModal({
                       <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
                         <Plus className="h-3 w-3" />Text box
                       </Button>
-                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addImageLayer}>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void addImageLayer()}>
                         <ImageIcon className="h-3 w-3" />Image
                       </Button>
                     </div>
@@ -2337,7 +2350,7 @@ function TemplateBuilderModal({
                       <Type className="h-3.5 w-3.5" />
                       {layoutLocked
                         ? "Layout locked · unlock to move built-in fields · text/image still movable"
-                        : "Add Text box → insert <<placeholders>> · drag Date / Cert ID / QR to place"}
+                        : "Add Text box, click it, and type · drag Date / Cert ID / QR to place"}
                       <Button
                         type="button"
                         variant={layoutLocked ? "default" : "outline"}
@@ -2361,14 +2374,15 @@ function TemplateBuilderModal({
                       <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
                         <Plus className="h-3 w-3" /> Text box
                       </Button>
-                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addImageLayer}>
+                      <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void addImageLayer()}>
                         <ImageIcon className="h-3 w-3" />Image
                       </Button>
                     </div>
                   );
                 }
                 return (
-                  <div className="mb-2 flex flex-wrap items-center gap-1 rounded-md border bg-card px-2 py-1.5 shadow-sm">
+                  <div className="mb-2 space-y-1.5">
+                  <div className="flex flex-wrap items-center gap-1 rounded-md border bg-card px-2 py-1.5 shadow-sm">
                     <Button
                       type="button"
                       variant={layoutLocked ? "default" : "outline"}
@@ -2471,9 +2485,18 @@ function TemplateBuilderModal({
                     <Button type="button" variant="default" size="sm" className="h-7 text-xs ml-auto gap-1" onClick={addTextLayer}>
                       <Plus className="h-3 w-3" />Text box
                     </Button>
-                    <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={addImageLayer}>
+                    <Button type="button" variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void addImageLayer()}>
                       <ImageIcon className="h-3 w-3" />Image
                     </Button>
+                  </div>
+                  {isCertFreeTextLayer(selected.type) ? (
+                    <textarea
+                      className="w-full min-h-[72px] rounded-md border bg-background px-2 py-1.5 text-xs leading-relaxed"
+                      value={selected.content === NEW_TEXT_BOX_HINT ? "" : selected.content}
+                      placeholder={NEW_TEXT_BOX_HINT}
+                      onChange={(e) => setLayer(selected.id, { content: e.target.value })}
+                    />
+                  ) : null}
                   </div>
                 );
               })()}
@@ -2832,7 +2855,7 @@ function TemplateBuilderModal({
                       <strong className="text-foreground">Built-in (always on canvas):</strong> Issue date · Cert ID · QR — click their toolbar buttons to select, then drag.
                     </p>
                     <p>
-                      <strong className="text-foreground">Your text:</strong> use <strong>Text box</strong> / <strong>Image</strong> on the canvas toolbar. Double-click a text box to edit.
+                      <strong className="text-foreground">Your text:</strong> use <strong>Text box</strong> on the canvas toolbar, click the box, and type. Drag the blue <strong>Move text</strong> bar to reposition.
                     </p>
                   </div>
                 </CardContent>
@@ -5568,7 +5591,11 @@ export default function CertificatesPage() {
           certType: normalizeCertType(row?.cert_type || row?.certType || "CC"),
           issueDate: String(row?.issue_date || row?.issueDate || "").trim(),
           status: (String(row?.status || "issued").trim() as IssuedStatus),
-          verifyToken: row?.verify_token || row?.verifyToken || undefined,
+          verifyToken: typeof row?.verify_token === "string"
+            ? row.verify_token
+            : typeof row?.verifyToken === "string"
+              ? row.verifyToken
+              : undefined,
         }))
         .filter((c) => c.id && c.templateId && c.templateName && c.recipientName && c.courseName && c.issueDate && isIssuedCertificate(c));
       setIssuedCerts(normalized);

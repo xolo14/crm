@@ -89,7 +89,7 @@ export function useCreatePaymentLink() {
         const payload = buildPayload(
           form,
           user.id,
-          form.referralCode.trim() || profile?.referral_code?.trim() || "",
+          profile?.referral_code?.trim() || form.referralCode.trim() || "",
           profile?.full_name?.trim(),
         );
         const link = await createStandardPaymentLink(payload);

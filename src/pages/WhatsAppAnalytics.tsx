@@ -42,7 +42,8 @@ export default function WhatsAppAnalytics() {
   const [activeTab, setActiveTab] = useState('overview');
 
   const isSuperAdmin = role === 'super_admin' || role === 'org';
-  const isMarketing = role === 'marketing';
+  // Portal roles see own campaigns only (not org-wide admin list).
+  const isPortalMarketer = role === 'marketing' || role === 'operational_manager';
 
   useEffect(() => { fetchData(); }, [dateFilter, memberFilter, customFrom, customTo]);
 
@@ -79,7 +80,7 @@ export default function WhatsAppAnalytics() {
       } else {
         setMembers([]);
       }
-      let campData = phpList(await api.marketing.whatsappCampaigns(isMarketing ? { mine: true } : undefined));
+      let campData = phpList(await api.marketing.whatsappCampaigns(isPortalMarketer ? { mine: true } : undefined));
       campData = campData.filter((c) => inDateRange(c, from, to));
       if (memberFilter !== 'all' && isSuperAdmin) {
         const member = membersData.find((m: any) => m.id === memberFilter);
@@ -146,7 +147,7 @@ export default function WhatsAppAnalytics() {
     <div className="space-y-4 md:space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => navigate(isMarketing ? '/marketing/whatsapp' : '/marketing-admin')}>
+          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => navigate(isPortalMarketer ? '/marketing/whatsapp' : '/marketing-admin')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>

@@ -19,14 +19,35 @@ if ($method === 'GET' && $action === 'students') {
         respond(['error' => 'batch_id required'], 400);
     }
     $orgId = resolveCreatorOrgId($db, $tokenData);
-    $st = $db->prepare(
-        "SELECT id, name, email, phone FROM students
-         WHERE batch_id = ? AND org_id = ?
-           AND email IS NOT NULL AND TRIM(email) <> ''
-           AND LOWER(TRIM(COALESCE(status, 'active'))) NOT IN ('dropped', 'inactive', 'deleted')
-         ORDER BY name ASC"
-    );
-    $st->execute([$batchId, $orgId]);
+    // Prefer student email; fall back to linked lead email. Scope by batch + org when known.
+    $sql = "
+        SELECT t.id, t.name, t.email, t.phone FROM (
+            SELECT s.id,
+                   COALESCE(NULLIF(TRIM(s.name), ''), NULLIF(TRIM(l.name), ''), 'Student') AS name,
+                   COALESCE(NULLIF(TRIM(s.email), ''), NULLIF(TRIM(l.email), '')) AS email,
+                   COALESCE(NULLIF(TRIM(s.phone), ''), NULLIF(TRIM(l.phone), '')) AS phone
+            FROM students s
+            LEFT JOIN leads l ON l.id = s.lead_id
+            WHERE s.batch_id = ?
+              AND LOWER(TRIM(COALESCE(s.status, 'active'))) NOT IN ('dropped', 'inactive', 'deleted')
+    ";
+    $params = [$batchId];
+    if ($orgId !== null && trim((string) $orgId) !== '') {
+        $sql .= " AND (
+            s.org_id = ?
+            OR (s.org_id IS NULL OR TRIM(s.org_id) = '')
+            OR l.org_id = ?
+        )";
+        $params[] = $orgId;
+        $params[] = $orgId;
+    }
+    $sql .= "
+        ) t
+        WHERE t.email IS NOT NULL AND TRIM(t.email) <> ''
+        ORDER BY t.name ASC
+    ";
+    $st = $db->prepare($sql);
+    $st->execute($params);
     respond(['data' => $st->fetchAll(PDO::FETCH_ASSOC) ?: []]);
 }
 

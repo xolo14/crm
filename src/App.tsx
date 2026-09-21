@@ -38,6 +38,7 @@ import {
   FormLeads,
   FormsManagerPage,
   DocFormsHubPage,
+  MyDocForms,
   PublicDocFormPage,
   FresherSalaryTrackerPage,
   Holidays,
@@ -81,8 +82,8 @@ import {
   PrivacyPolicyPage,
   TermsOfServicePage,
   AssessmentsAdminPage,
-  PeaklyyAssessmentPage,
   SyncpediaFresherAssessmentPage,
+  PublicAssessmentPage,
 } from "@/routes/lazyPages";
 
 const queryClient = new QueryClient();
@@ -130,9 +131,6 @@ function RootHome() {
   const role = normalizeAppRole(user.role);
   if (role === "marketing") {
     return <Navigate to="/marketing/dashboard" replace />;
-  }
-  if (role === "operational_manager") {
-    return <Navigate to={firstAllowedOperationalManagerPath(user.page_access)} replace />;
   }
   if (role === "hr") {
     return <Navigate to={firstAllowedHrPath(user.page_access)} replace />;
@@ -191,7 +189,7 @@ function CertificatesGate({ children }: { children: ReactNode }) {
 function PayslipGate({ children }: { children: ReactNode }) {
   const { user, organization } = useAuth();
   const role = normalizePlatformRole(user);
-  if (!canAccessPayslip(role, organization)) return <Navigate to="/" replace />;
+  if (!canAccessPayslip(role, organization, user?.page_access)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
@@ -212,18 +210,31 @@ function TimetableGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function OmAccessBlocked() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center p-6 text-center text-sm text-muted-foreground">
+      This page is not enabled for your account. Ask an org admin to grant it under Team → Edit → Configure pages.
+    </div>
+  );
+}
+
 function OrgFeatureRoute({ children }: { children: ReactNode }) {
   const { user, organization } = useAuth();
   const location = useLocation();
   const role = normalizePlatformRole(user);
-  if (!isPathAllowedByOrgFeatures(role, organization, location.pathname)) {
+  const nRole = normalizeAppRole(user?.role);
+  const pathname = location.pathname;
+  // OM home is ops analytics — not gated by the Leads org module.
+  const omHome = nRole === "operational_manager" && (pathname === "/" || pathname === "");
+  if (!omHome && !isPathAllowedByOrgFeatures(role, organization, pathname)) {
     return <Navigate to="/" replace />;
   }
-  const nRole = normalizeAppRole(user?.role);
   if (nRole === "operational_manager") {
-    const key = managerFeatureKeyForPath(location.pathname);
+    const key = managerFeatureKeyForPath(pathname);
     if (key && !operationalManagerHasPageAccess(user?.page_access, key)) {
-      return <Navigate to={firstAllowedOperationalManagerPath(user?.page_access)} replace />;
+      const fallback = firstAllowedOperationalManagerPath(user?.page_access);
+      if (!fallback || fallback === pathname) return <OmAccessBlocked />;
+      return <Navigate to={fallback} replace />;
     }
   } else if (nRole === "manager") {
     const key = managerFeatureKeyForPath(location.pathname);
@@ -246,7 +257,7 @@ function CallLogAllowedRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <AuthLoading />;
   const n = normalizeAppRole(user?.role);
-  const ok = ["sales_representative", "super_admin", "manager", "org"].includes(n);
+  const ok = ["sales_representative", "super_admin", "manager", "org", "operational_manager"].includes(n);
   if (!ok) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
@@ -273,9 +284,14 @@ function FormManagementGate({ children }: { children: ReactNode }) {
 function TeamPageGate({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const normalized = normalizeAppRole(user?.role);
-  if (!["super_admin", "org", "manager"].includes(normalized)) return <Navigate to="/" replace />;
+  if (!["super_admin", "org", "manager", "operational_manager"].includes(normalized)) return <Navigate to="/" replace />;
   if (normalized === "manager" && !managerHasPageAccess(user?.page_access, "team")) {
     return <Navigate to="/" replace />;
+  }
+  if (normalized === "operational_manager" && !operationalManagerHasPageAccess(user?.page_access, "team")) {
+    const fallback = firstAllowedOperationalManagerPath(user?.page_access);
+    if (!fallback || fallback === "/team") return <OmAccessBlocked />;
+    return <Navigate to={fallback} replace />;
   }
   return <>{children}</>;
 }
@@ -317,7 +333,17 @@ function SettingsGate({ children }: { children: ReactNode }) {
 }
 
 function TrashGate({ children }: { children: ReactNode }) {
-  return <RoleGate allow={["super_admin", "manager", "org"]}>{children}</RoleGate>;
+  const { user } = useAuth();
+  const normalized = normalizeAppRole(user?.role);
+  if (!["super_admin", "manager", "org", "operational_manager"].includes(normalized)) {
+    return <Navigate to="/" replace />;
+  }
+  if (normalized === "operational_manager" && !operationalManagerHasPageAccess(user?.page_access, "trash")) {
+    const fallback = firstAllowedOperationalManagerPath(user?.page_access);
+    if (!fallback || fallback === "/trash") return <OmAccessBlocked />;
+    return <Navigate to={fallback} replace />;
+  }
+  return <>{children}</>;
 }
 
 function MarketingGate({ children }: { children: ReactNode }) {
@@ -393,7 +419,7 @@ const App = () => (
             <Route path="/apply" element={<Apply />} />
             <Route path="/doc-form/:slug" element={<PublicDocFormPage />} />
             <Route path="/assessment/syncpedia-fresher-basics" element={<SyncpediaFresherAssessmentPage />} />
-            <Route path="/assessment/:slug" element={<PeaklyyAssessmentPage />} />
+            <Route path="/assessment/:slug" element={<PublicAssessmentPage />} />
             <Route path="/privacy" element={<PrivacyPolicyPage />} />
             <Route path="/terms" element={<TermsOfServicePage />} />
             <Route path="/login" element={<LoginPortal />} />
@@ -435,7 +461,7 @@ const App = () => (
               <Route path="/daily-reports/analytics" element={<DailyReportsAnalytics />} />
               <Route path="/communications" element={<CommunicationsHubPage />} />
               <Route path="/communications/whatsapp-inbox" element={<WhatsAppInboxPage />} />
-              <Route path="/communications/whatsapp-setup" element={<RoleGate allow={["super_admin", "org", "manager", "marketing"]}><OrgWhatsAppSetupPage /></RoleGate>} />
+              <Route path="/communications/whatsapp-setup" element={<RoleGate allow={["super_admin", "org", "manager", "marketing", "operational_manager"]}><OrgWhatsAppSetupPage /></RoleGate>} />
               <Route path="/communications/template-library" element={<AdminSuperOrOrgGate><TemplateLibraryPage /></AdminSuperOrOrgGate>} />
               <Route path="/communications/meta-partner" element={<SuperAdminGate><MetaPartnerPage /></SuperAdminGate>} />
               <Route path="/communications/admin" element={<SuperAdminGate><CommunicationsAdminPage /></SuperAdminGate>} />
@@ -470,14 +496,22 @@ const App = () => (
               <Route path="/marketing/whatsapp-analytics" element={<MarketingGate><WhatsAppAnalytics /></MarketingGate>} />
               <Route path="/marketing/meta-ads" element={<MarketingGate><MarketingMetaAdsPage /></MarketingGate>} />
               <Route path="/holidays" element={<Holidays />} />
-              <Route path="/assessments" element={<SuperAdminGate><AssessmentsAdminPage /></SuperAdminGate>} />
+              <Route
+                path="/assessments"
+                element={
+                  <RoleGate allow={["super_admin", "org", "manager", "sales_representative", "marketing", "operational_manager"]}>
+                    <AssessmentsAdminPage />
+                  </RoleGate>
+                }
+              />
+              <Route path="/assignments" element={<Navigate to="/assessments" replace />} />
               <Route path="/trash" element={<TrashGate><Trash /></TrashGate>} />
               <Route path="/offer-letters" element={<OfferLettersGate><OfferLetters /></OfferLettersGate>} />
               <Route path="/certificates" element={<CertificatesGate><CertificatesPage /></CertificatesGate>} />
               <Route path="/payslip" element={<PayslipGate><PayslipPage /></PayslipGate>} />
               <Route path="/form-management" element={<FormManagementGate><FormsManagerPage /></FormManagementGate>} />
               <Route path="/form-management/doc-forms" element={<FormManagementGate><DocFormsHubPage /></FormManagementGate>} />
-              <Route path="/my-doc-forms" element={<Navigate to="/" replace />} />
+              <Route path="/my-doc-forms" element={<MyDocForms />} />
               <Route path="/form-api-integrations" element={<FormManagementGate><FormApiIntegrationsPage /></FormManagementGate>} />
               <Route path="*" element={<NotFound />} />
             </Route>

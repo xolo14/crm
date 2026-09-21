@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
 import { useSearchParams } from "react-router-dom";
 import { DndContext, PointerSensor, KeyboardSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { QRCodeCanvas } from "qrcode.react";
 import { PublicFormShell, builderBrandFromState } from "@/components/forms/PublicFormShell";
 import { PublicFormFields } from "@/components/forms/PublicFormFields";
 import { PhoneNumberField } from "@/components/forms/PhoneNumberField";
@@ -18,11 +20,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, MoreHorizontal, Pencil, Power } from "lucide-react";
+import { ValidationRuleEditor } from "@/components/forms/ValidationRuleEditor";
+import { ShareFormLinkDialog } from "@/components/forms/ShareFormLinkDialog";
+import { MediaBlock } from "@/components/forms/MediaBlock";
+import type { ValidationRule } from "@/components/forms/formValidation";
+import type { GoToTarget } from "@/components/forms/sectionFlow";
+import { goToChoices, splitIntoSections } from "@/components/forms/sectionFlow";
+import { Image as ImageIcon, Video, Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, MoreHorizontal, Pencil, Power, Share2, Mail, MessageSquare, QrCode } from "lucide-react";
 import { normalizeFormColor, parseFormMetaJson } from "@/components/forms/publicFormTypes";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
@@ -30,12 +39,26 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormDetailDialog } from "@/components/forms/FormDetailDialog";
 import { FormPublishCampaignDialog } from "@/components/forms/FormPublishCampaignDialog";
+import { FormCampaignSendDialog } from "@/components/forms/FormCampaignSendDialog";
 import { canManageFormCampaigns, parseFormCampaign, type FormCampaignConfig } from "@/components/forms/formCampaignTypes";
 import { isL3AdminRole, isMarketingFamilyRole, isOperationalManagerRole, normalizeAppRole } from "@/lib/roleUtils";
 import { formsManagerCacheKey } from "@/lib/formsManagerCache";
 import DocFormsHubPage from "@/modules/docForms/DocFormsHub";
 import FormApiIntegrationsPage from "@/pages/FormApiIntegrationsPage";
 import { filterAndSortAssignRoster } from "@/lib/assignRoster";
+import { buildPublicApplyUrl } from "@/lib/applyFormUrl";
+import { PlaceholderMatchDialog } from "@/components/forms/TemplatePlaceholderMap";
+import {
+  EMPTY_PLACEHOLDER_MAP,
+  coerceTemplatePlaceholders,
+  countMatchedPlaceholders,
+  formFieldsFromQuestions,
+  mergePlaceholderMappings,
+  parsePlaceholderMap,
+  placeholderMapsEqual,
+  serializePlaceholderMap,
+  type PlaceholderMapState,
+} from "@/lib/formTemplatePlaceholders";
 
 type LeadDestination = "form_leads" | "hr_leads";
 type FormMgmtTab = "leads" | "hr" | "doc" | "api";
@@ -114,7 +137,10 @@ type QuestionType =
   | "date"
   | "time"
   | "phone_number"
-  | "section_break";
+  | "section_break"
+  | "image"
+  | "video"
+  | "rating";
 
 interface FormField {
   id: string;
@@ -140,8 +166,13 @@ interface Question {
   scaleMinLabel?: string;
   scaleMaxLabel?: string;
   points?: number;
-  validation?: { kind?: "text" | "number" | "length" | "regex"; value?: string };
+  validation?: ValidationRule;
   includeOther?: boolean;
+  shuffleOptions?: boolean;
+  goTo?: Record<string, GoToTarget>;
+  media?: { url: string; caption?: string; align?: "left" | "center" | "right"; widthPct?: number };
+  ratingMax?: number;
+  ratingIcon?: "star" | "heart" | "thumb";
 }
 
 interface FormBuilderState {
@@ -156,6 +187,22 @@ interface FormBuilderState {
   fieldBg: string;
   textColor: string;
   isActive: boolean;
+  paymentEnabled: boolean;
+  paymentAmount: string;
+  paymentGstEnabled: boolean;
+  paymentHandlingEnabled: boolean;
+  paymentCouponEnabled: boolean;
+  paymentCouponCode: string;
+  autoOfferLetter: boolean;
+  offerLetterRequirePayment: boolean;
+  offerLetterTemplateId: string;
+  autoCertificate: boolean;
+  certificateRequirePayment: boolean;
+  certificateTemplateId: string;
+  certificateCourseName: string;
+  certificateIssueDelayMonths: number;
+  offerLetterPlaceholderMap: PlaceholderMapState;
+  certificatePlaceholderMap: PlaceholderMapState;
   collectEmail: boolean;
   allowMultipleResponses: boolean;
   editAfterSubmit: boolean;
@@ -173,6 +220,10 @@ interface FormBuilderState {
   questions: Question[];
   leadDestination: LeadDestination;
   orgId: string;
+  closeAt: string;
+  responseLimit: string;
+  sendReceipt: boolean;
+  allowAnotherResponse: boolean;
 }
 
 const PRIMARY_GREEN = "#1D9E75";
@@ -191,6 +242,9 @@ const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
   time: "Time",
   phone_number: "Number",
   section_break: "Section break",
+  image: "Image",
+  video: "Video",
+  rating: "Rating",
 };
 
 const NEW_QUESTION = (type: QuestionType = "short_answer"): Question => ({
@@ -232,9 +286,12 @@ function normalizeQuestionForType(question: Question, type: QuestionType): Quest
     options: type === "multiple_choice" || type === "checkboxes" || type === "dropdown" ? (question.options?.length ? question.options : ["Option 1"]) : [],
     rows: type === "mc_grid" || type === "checkbox_grid" ? (question.rows?.length ? question.rows : ["Row 1"]) : [],
     columns: type === "mc_grid" || type === "checkbox_grid" ? (question.columns?.length ? question.columns : ["Column 1"]) : [],
-    scaleMin: type === "linear_scale" ? (question.scaleMin ?? 1) : undefined,
-    scaleMax: type === "linear_scale" ? (question.scaleMax ?? 5) : undefined,
+    scaleMin: type === "linear_scale" || type === "rating" ? (question.scaleMin ?? 1) : undefined,
+    scaleMax: type === "linear_scale" ? (question.scaleMax ?? 5) : type === "rating" ? (question.ratingMax ?? question.scaleMax ?? 5) : undefined,
     includeOther: type === "multiple_choice" || type === "checkboxes" ? !!question.includeOther : false,
+    media: type === "image" || type === "video" ? (question.media || { url: "" }) : undefined,
+    ratingMax: type === "rating" ? (question.ratingMax ?? 5) : undefined,
+    required: type === "image" || type === "video" || type === "section_break" ? false : question.required,
   };
 }
 
@@ -250,6 +307,22 @@ const INITIAL_BUILDER: FormBuilderState = {
   fieldBg: "#ffffff",
   textColor: "#111827",
   isActive: true,
+  paymentEnabled: false,
+  paymentAmount: "",
+  paymentGstEnabled: false,
+  paymentHandlingEnabled: false,
+  paymentCouponEnabled: false,
+  paymentCouponCode: "",
+  autoOfferLetter: false,
+  offerLetterRequirePayment: false,
+  offerLetterTemplateId: "",
+  autoCertificate: false,
+  certificateRequirePayment: false,
+  certificateTemplateId: "",
+  certificateCourseName: "",
+  certificateIssueDelayMonths: 0,
+  offerLetterPlaceholderMap: EMPTY_PLACEHOLDER_MAP,
+  certificatePlaceholderMap: EMPTY_PLACEHOLDER_MAP,
   collectEmail: false,
   allowMultipleResponses: true,
   editAfterSubmit: false,
@@ -267,6 +340,10 @@ const INITIAL_BUILDER: FormBuilderState = {
   questions: DEFAULT_BUILDER_QUESTIONS(),
   leadDestination: "form_leads",
   orgId: "",
+  closeAt: "",
+  responseLimit: "",
+  sendReceipt: false,
+  allowAnotherResponse: true,
 };
 
 type BuilderAction =
@@ -301,6 +378,30 @@ function builderReducer(state: FormBuilderState, action: BuilderAction): FormBui
     return { ...state, questions: remaining.length ? remaining : [NEW_QUESTION("short_answer")] };
   }
   return action.next;
+}
+
+type AutomationTemplateRow = {
+  id: string;
+  name?: string;
+  template_name?: string;
+  status?: string;
+  placeholders?: unknown;
+};
+
+function buildDocPlaceholderMap(
+  templateId: string,
+  placeholdersRaw: unknown,
+  questions: Question[],
+  previous: PlaceholderMapState | undefined,
+  defaults?: { course?: string; company?: string },
+): PlaceholderMapState {
+  const placeholders = coerceTemplatePlaceholders(placeholdersRaw);
+  const prev =
+    previous && previous.template_id === templateId ? previous.mappings : undefined;
+  return serializePlaceholderMap(
+    templateId,
+    mergePlaceholderMappings(placeholders, formFieldsFromQuestions(questions), prev, defaults),
+  );
 }
 
 function mapLegacyFieldToQuestion(field: FormField): Question {
@@ -584,6 +685,14 @@ export default function FormsManagerPage() {
   const [publishCampaignOpen, setPublishCampaignOpen] = useState(false);
   const [organizations, setOrganizations] = useState<{ id: string; name: string; slug?: string }[]>([]);
   const [shareHint, setShareHint] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [builderCampaignChannel, setBuilderCampaignChannel] = useState<"email" | "whatsapp" | null>(null);
+  const [builderCampaignCfg, setBuilderCampaignCfg] = useState<FormCampaignConfig>(() => parseFormCampaign(null));
+  const [savingBuilderCampaign, setSavingBuilderCampaign] = useState(false);
+  const [offerTemplates, setOfferTemplates] = useState<AutomationTemplateRow[]>([]);
+  const [certTemplates, setCertTemplates] = useState<AutomationTemplateRow[]>([]);
+  const [loadingDocTemplates, setLoadingDocTemplates] = useState(false);
+  const [placeholderDialog, setPlaceholderDialog] = useState<null | "offer" | "certificate">(null);
   const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const builderRef = useRef(builder);
   const editingRef = useRef(editing);
@@ -594,10 +703,10 @@ export default function FormsManagerPage() {
 
   const isSuperAdmin = role === "super_admin";
   const isAdmin = role === "org";
-  /** Created by column: admin + super_admin only (not org/manager/marketing). */
-  const showCreatedByColumn = isSuperAdmin || isAdmin;
   const normalizedRole = normalizeAppRole(role);
-  const isManager = normalizedRole === "manager";
+  /** Created by column: admin / org / super_admin (same as Certificate & Offer Letter forms). */
+  const showCreatedByColumn = isSuperAdmin || isAdmin || isL3AdminRole(normalizedRole);
+  const isManager = normalizedRole === "manager" || isOperationalManagerRole(normalizedRole);
   const isOrgAdmin =
     role === "super_admin" ||
     isL3AdminRole(normalizedRole);
@@ -648,17 +757,13 @@ export default function FormsManagerPage() {
     [teamMembers],
   );
 
-  const baseApplyUrl = useMemo(() => `${window.location.origin}/apply`, []);
-
   const buildApplyLink = useCallback(
-    (slug: string) => {
-      const base = `${baseApplyUrl}?form=${encodeURIComponent(slug)}`;
-      if (isMarketing && myReferralCode) {
-        return `${base}&ref=${encodeURIComponent(myReferralCode)}`;
-      }
-      return base;
+    (slug: string, _form?: LeadForm | null) => {
+      // Every copied link carries the copier's own staff ID (one ref only) so the lead is
+      // attributed to whoever shared it. Per-member links in the assign column use that member's ID.
+      return buildPublicApplyUrl(window.location.origin, slug, myReferralCode);
     },
-    [baseApplyUrl, isMarketing, myReferralCode],
+    [myReferralCode],
   );
 
   const syncpediaOrgId = useMemo(() => {
@@ -685,6 +790,16 @@ export default function FormsManagerPage() {
       return String(form.created_by || "") === myUserId;
     },
     [canEditForms, isOrgAdmin, myUserId],
+  );
+
+  const canDuplicateFormRow = useCallback(
+    (form: LeadForm) => {
+      if (!canEditForms) return false;
+      const slug = String(form.slug || "").toLowerCase().trim();
+      if ((slug === "normal" || slug === "default") && !form.org_id) return false;
+      return true;
+    },
+    [canEditForms],
   );
 
   const canManageCampaignsForForm = useCallback(
@@ -796,6 +911,7 @@ export default function FormsManagerPage() {
     };
     allowAutosaveRef.current = false;
     setSaveStatus("idle");
+    setBuilderCampaignCfg(parseFormCampaign(null));
     dispatchBuilder({ type: "reset", next });
     setHistory([next]);
     setFuture([]);
@@ -827,6 +943,27 @@ export default function FormsManagerPage() {
       fieldBg: normalizeFormColor(meta.field_bg, "#ffffff"),
       textColor: normalizeFormColor(meta.text_color, "#111827"),
       isActive: toBool(form.is_active),
+      paymentEnabled: !!meta.payment_enabled,
+      paymentAmount: meta.payment_amount != null && meta.payment_amount !== "" ? String(meta.payment_amount) : "",
+      paymentGstEnabled: !!meta.payment_gst_enabled,
+      paymentHandlingEnabled: !!meta.payment_handling_enabled,
+      paymentCouponEnabled: !!meta.payment_coupon_enabled,
+      paymentCouponCode: String(meta.payment_coupon_code || ""),
+      autoOfferLetter: !!meta.auto_offer_letter,
+      offerLetterRequirePayment: !!meta.offer_letter_require_payment,
+      offerLetterTemplateId: String(meta.offer_letter_template_id || ""),
+      autoCertificate: !!meta.auto_certificate,
+      certificateRequirePayment: !!meta.certificate_require_payment,
+      certificateTemplateId: String(meta.certificate_template_id || ""),
+      certificateCourseName: String(meta.certificate_course_name || ""),
+      certificateIssueDelayMonths: Math.max(
+        0,
+        Math.floor(
+          Number(meta.certificate_issue_delay_months ?? meta.certificate_date_duration_days) || 0,
+        ),
+      ),
+      offerLetterPlaceholderMap: parsePlaceholderMap(meta.offer_letter_placeholder_map),
+      certificatePlaceholderMap: parsePlaceholderMap(meta.certificate_placeholder_map),
       collectEmail: !!meta.collect_email,
       allowMultipleResponses: meta.allow_multiple_responses !== false,
       editAfterSubmit: !!meta.edit_after_submit,
@@ -844,9 +981,14 @@ export default function FormsManagerPage() {
       questions,
       leadDestination: formLeadDestinationFromMeta(meta),
       orgId: String(form.org_id ?? "").trim(),
+      closeAt: String(meta.close_at || ""),
+      responseLimit: meta.response_limit ? String(meta.response_limit) : "",
+      sendReceipt: !!meta.send_receipt,
+      allowAnotherResponse: meta.allow_another_response !== false,
     };
     allowAutosaveRef.current = false;
     setSaveStatus("idle");
+    setBuilderCampaignCfg(parseFormCampaign(form.meta_json));
     dispatchBuilder({
       type: "reset",
       next: nextState,
@@ -868,6 +1010,53 @@ export default function FormsManagerPage() {
       const currentEditing = editingRef.current;
       if (!current.title.trim()) {
         setFormNameError("Form name is required");
+        return null;
+      }
+      if (current.paymentEnabled) {
+        const amt = Number(current.paymentAmount);
+        if (!Number.isFinite(amt) || amt <= 0) {
+          if (!quiet) {
+            toast({
+              variant: "destructive",
+              title: "Payment amount required",
+              description: "Turn Payment off, or enter an amount greater than 0.",
+            });
+          }
+          setSaveStatus("idle");
+          return null;
+        }
+        if (current.paymentCouponEnabled && !current.paymentCouponCode.trim()) {
+          if (!quiet) {
+            toast({
+              variant: "destructive",
+              title: "Coupon code required",
+              description: "Turn Coupon off, or enter the code applicants must use.",
+            });
+          }
+          setSaveStatus("idle");
+          return null;
+        }
+      }
+      if (current.autoOfferLetter && !current.offerLetterTemplateId.trim()) {
+        if (!quiet) {
+          toast({
+            variant: "destructive",
+            title: "Offer letter template required",
+            description: "Pick a template under Automations, or turn Auto offer letter off.",
+          });
+        }
+        setSaveStatus("idle");
+        return null;
+      }
+      if (current.autoCertificate && !current.certificateTemplateId.trim()) {
+        if (!quiet) {
+          toast({
+            variant: "destructive",
+            title: "Certificate template required",
+            description: "Pick a template under Automations, or turn Auto certificate off.",
+          });
+        }
+        setSaveStatus("idle");
         return null;
       }
       if (savingRef.current) return currentEditing?.id ?? null;
@@ -907,6 +1096,45 @@ export default function FormsManagerPage() {
           confirmation_message: current.confirmationMessage,
           is_quiz: current.isQuiz,
           lead_destination: current.leadDestination,
+          close_at: current.closeAt || "",
+          response_limit: current.responseLimit ? Number(current.responseLimit) : "",
+          send_receipt: current.sendReceipt,
+          allow_another_response: current.allowAnotherResponse,
+          payment_enabled: current.paymentEnabled && current.leadDestination !== "hr_leads",
+          payment_amount: current.paymentEnabled ? Number(current.paymentAmount) : "",
+          payment_gst_enabled: current.paymentEnabled && current.paymentGstEnabled,
+          payment_handling_enabled: current.paymentEnabled && current.paymentHandlingEnabled,
+          payment_coupon_enabled: current.paymentEnabled && current.paymentCouponEnabled,
+          payment_coupon_code:
+            current.paymentEnabled && current.paymentCouponEnabled
+              ? current.paymentCouponCode.trim().toUpperCase()
+              : "",
+          auto_offer_letter: current.autoOfferLetter,
+          offer_letter_require_payment:
+            current.autoOfferLetter &&
+            current.offerLetterRequirePayment &&
+            current.paymentEnabled &&
+            current.leadDestination !== "hr_leads",
+          offer_letter_template_id: current.autoOfferLetter ? current.offerLetterTemplateId.trim() : "",
+          offer_letter_placeholder_map: current.autoOfferLetter
+            ? current.offerLetterPlaceholderMap
+            : EMPTY_PLACEHOLDER_MAP,
+          auto_certificate: current.autoCertificate,
+          certificate_require_payment:
+            current.autoCertificate &&
+            current.certificateRequirePayment &&
+            current.paymentEnabled &&
+            current.leadDestination !== "hr_leads",
+          certificate_template_id: current.autoCertificate ? current.certificateTemplateId.trim() : "",
+          certificate_course_name: current.autoCertificate
+            ? current.certificateCourseName.trim() || current.title.trim()
+            : "",
+          certificate_placeholder_map: current.autoCertificate
+            ? current.certificatePlaceholderMap
+            : EMPTY_PLACEHOLDER_MAP,
+          certificate_issue_delay_months: current.autoCertificate
+            ? Math.max(0, Math.floor(Number(current.certificateIssueDelayMonths) || 0))
+            : 0,
           campaign: campaign ? { ...existingCampaign, ...campaign } : existingCampaign,
         };
         const payload = {
@@ -1004,6 +1232,132 @@ export default function FormsManagerPage() {
   }, [builder, builderOpen, saveForm]);
 
   useEffect(() => {
+    if (!builderOpen || builderTab !== "settings") return;
+    let cancelled = false;
+    setLoadingDocTemplates(true);
+    void (async () => {
+      try {
+        const res = await api.forms.automationTemplates(editing?.id ?? null);
+        if (cancelled) return;
+        const payload = (res as { data?: { offer_letters?: unknown[]; certificates?: unknown[] } })?.data;
+        const offerRows = Array.isArray(payload?.offer_letters) ? payload!.offer_letters! : [];
+        const certRows = Array.isArray(payload?.certificates) ? payload!.certificates! : [];
+        setOfferTemplates(
+          offerRows
+            .map((t: any) => ({
+              id: String(t.id || ""),
+              template_name: t.template_name || t.name,
+              name: t.name || t.template_name,
+              status: String(t.status || ""),
+              placeholders: t.placeholders,
+            }))
+            .filter((t: { id: string }) => t.id),
+        );
+        setCertTemplates(
+          certRows
+            .map((t: any) => ({
+              id: String(t.id || ""),
+              name: t.name || t.template_name,
+              status: String(t.status || ""),
+              placeholders: t.placeholders,
+            }))
+            .filter((t: { id: string }) => t.id),
+        );
+      } catch (error: unknown) {
+        if (!cancelled) {
+          setOfferTemplates([]);
+          setCertTemplates([]);
+          const message = error instanceof Error ? error.message : "Try again.";
+          toast({
+            variant: "destructive",
+            title: "Could not load document templates",
+            description: message,
+          });
+        }
+      } finally {
+        if (!cancelled) setLoadingDocTemplates(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [builderOpen, builderTab, editing?.id, toast]);
+
+  const formFieldOptions = useMemo(
+    () => formFieldsFromQuestions(builder.questions),
+    [builder.questions],
+  );
+  const selectedOfferTemplate = offerTemplates.find((t) => t.id === builder.offerLetterTemplateId);
+  const selectedCertTemplate = certTemplates.find((t) => t.id === builder.certificateTemplateId);
+  const offerPlaceholders = coerceTemplatePlaceholders(selectedOfferTemplate?.placeholders);
+  const certPlaceholders = coerceTemplatePlaceholders(selectedCertTemplate?.placeholders);
+
+  useEffect(() => {
+    if (!builderOpen) return;
+    const id = builder.offerLetterTemplateId.trim();
+    if (!id) {
+      if (builder.offerLetterPlaceholderMap.template_id) {
+        dispatchBuilder({ type: "set", patch: { offerLetterPlaceholderMap: EMPTY_PLACEHOLDER_MAP } });
+      }
+      return;
+    }
+    const tpl = offerTemplates.find((t) => t.id === id);
+    const placeholders = coerceTemplatePlaceholders(tpl?.placeholders);
+    if (!placeholders.length) return;
+    const next = buildDocPlaceholderMap(id, placeholders, builder.questions, builder.offerLetterPlaceholderMap, {
+      company: builder.companyName,
+    });
+    if (
+      next.template_id === builder.offerLetterPlaceholderMap.template_id &&
+      placeholderMapsEqual(next.mappings, builder.offerLetterPlaceholderMap.mappings)
+    ) {
+      return;
+    }
+    dispatchBuilder({ type: "set", patch: { offerLetterPlaceholderMap: next } });
+  }, [
+    builderOpen,
+    builder.offerLetterTemplateId,
+    builder.offerLetterPlaceholderMap,
+    builder.questions,
+    builder.companyName,
+    offerTemplates,
+  ]);
+
+  useEffect(() => {
+    if (!builderOpen) return;
+    const id = builder.certificateTemplateId.trim();
+    if (!id) {
+      if (builder.certificatePlaceholderMap.template_id) {
+        dispatchBuilder({ type: "set", patch: { certificatePlaceholderMap: EMPTY_PLACEHOLDER_MAP } });
+      }
+      return;
+    }
+    const tpl = certTemplates.find((t) => t.id === id);
+    const placeholders = coerceTemplatePlaceholders(tpl?.placeholders);
+    if (!placeholders.length) return;
+    const next = buildDocPlaceholderMap(id, placeholders, builder.questions, builder.certificatePlaceholderMap, {
+      course: builder.certificateCourseName || builder.title,
+      company: builder.companyName,
+    });
+    if (
+      next.template_id === builder.certificatePlaceholderMap.template_id &&
+      placeholderMapsEqual(next.mappings, builder.certificatePlaceholderMap.mappings)
+    ) {
+      return;
+    }
+    dispatchBuilder({ type: "set", patch: { certificatePlaceholderMap: next } });
+  }, [
+    builderOpen,
+    builder.certificateTemplateId,
+    builder.certificatePlaceholderMap,
+    builder.questions,
+    builder.certificateCourseName,
+    builder.title,
+    builder.companyName,
+    certTemplates,
+  ]);
+
+  useEffect(() => {
     if (!builderOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
@@ -1023,6 +1377,7 @@ export default function FormsManagerPage() {
     };
     const formId = await saveForm(true, true, merged, false);
     if (!formId) return;
+    setBuilderCampaignCfg(merged);
     if (merged.assign_email || merged.assign_whatsapp) {
       try {
         const res = await api.forms.saveCampaignSettings({
@@ -1044,9 +1399,46 @@ export default function FormsManagerPage() {
         toast({
           variant: "destructive",
           title: "Published but campaign send failed",
-          description: error?.message || "Try sending manually from form details.",
+          description: error?.message || "Try sending manually from form settings.",
         });
       }
+    }
+  }
+
+  async function patchBuilderCampaign(patch: Partial<FormCampaignConfig>) {
+    const formId = editing?.id;
+    if (!formId) {
+      toast({
+        variant: "destructive",
+        title: "Save the form first",
+        description: "Save once, then configure campaigns.",
+      });
+      return;
+    }
+    const previous = builderCampaignCfg;
+    const next = { ...previous, ...patch };
+    setBuilderCampaignCfg(next);
+    setSavingBuilderCampaign(true);
+    try {
+      await api.forms.saveCampaignSettings({ form_id: formId, campaign: next });
+      setEditing((prev) =>
+        prev
+          ? {
+              ...prev,
+              meta_json: {
+                ...(prev.meta_json || {}),
+                campaign: next,
+              } as LeadForm["meta_json"],
+            }
+          : prev,
+      );
+      toast({ title: "Campaign settings saved" });
+    } catch (error: unknown) {
+      setBuilderCampaignCfg(previous);
+      const message = error instanceof Error ? error.message : "Try again.";
+      toast({ variant: "destructive", title: "Save failed", description: message });
+    } finally {
+      setSavingBuilderCampaign(false);
     }
   }
 
@@ -1065,9 +1457,16 @@ export default function FormsManagerPage() {
       toast({ variant: "destructive", title: "Form link unavailable" });
       return;
     }
-    await copy(buildApplyLink(slug), "Form link");
-    setShareHint(true);
-    window.setTimeout(() => setShareHint(false), 2000);
+    const url = buildApplyLink(slug, editing);
+    if (!/[?&]ref=[^&]+/.test(url)) {
+      toast({
+        variant: "destructive",
+        title: "Staff ID missing",
+        description: "Your account has no staff ID yet. Refresh the page; if it is still blank ask your admin to save the Company Profile.",
+      });
+      return;
+    }
+    setShareOpen(true);
   }
 
   async function toggleFormStatus(form: LeadForm) {
@@ -1184,11 +1583,69 @@ export default function FormsManagerPage() {
   }
 
   async function copy(text: string, label: string) {
+    // Form links must carry a staff ID so we always know who collected the lead.
+    if (label === "Form link" && !/[?&]ref=[^&]+/.test(text)) {
+      toast({
+        variant: "destructive",
+        title: "Staff ID missing",
+        description: "Your account has no staff ID yet. Refresh the page; if it is still blank ask your admin to save the Company Profile.",
+      });
+      return;
+    }
     try {
       await navigator.clipboard.writeText(text);
       toast({ title: `${label} copied` });
     } catch {
       toast({ variant: "destructive", title: "Copy failed" });
+    }
+  }
+
+  async function copyFormQr(url: string, formTitle: string) {
+    if (!url || !/[?&]ref=[^&]+/.test(url)) {
+      toast({
+        variant: "destructive",
+        title: "Staff ID missing",
+        description: "Cannot build a QR until your form link includes a staff ID.",
+      });
+      return;
+    }
+    const host = document.createElement("div");
+    host.style.cssText = "position:fixed;left:-9999px;top:0;pointer-events:none;opacity:0;";
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await new Promise<void>((resolve) => {
+        root.render(<QRCodeCanvas value={url} size={512} level="M" includeMargin />);
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+      });
+      const canvas = host.querySelector("canvas");
+      if (!canvas) throw new Error("QR canvas missing");
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) throw new Error("QR blob failed");
+      const canWriteImage =
+        typeof ClipboardItem !== "undefined" &&
+        !!navigator.clipboard?.write &&
+        (typeof window.isSecureContext === "undefined" || window.isSecureContext);
+      if (canWriteImage) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+          toast({ title: "QR code copied" });
+          return;
+        } catch {
+          /* fall through to download */
+        }
+      }
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${formTitle.replace(/[^\w.-]+/g, "_").slice(0, 60) || "form"}-qr.png`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast({ title: "QR code downloaded" });
+    } catch {
+      toast({ variant: "destructive", title: "QR copy failed" });
+    } finally {
+      root.unmount();
+      host.remove();
     }
   }
 
@@ -1212,6 +1669,7 @@ export default function FormsManagerPage() {
 
   if (builderOpen) {
     return (
+      <>
       <div className="min-h-[calc(100dvh-120px)] bg-muted/40 dark:bg-background -mx-4 sm:-mx-6 lg:-mx-8" onClick={() => setSelectedQuestionId(null)}>
         <div className="sticky top-0 z-20 h-[72px] backdrop-blur-xl bg-background/90 border-b border-border">
           <div className="px-4 sm:px-6 h-full flex items-center justify-between gap-3">
@@ -1302,9 +1760,9 @@ export default function FormsManagerPage() {
                                 <CardContent className="p-2 space-y-2">
                                   <Button variant="ghost" size="icon" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "short_answer" }))}><Plus className="h-4 w-4" /></Button>
                                   <Button variant="ghost" size="icon" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "section_break" }))}>T</Button>
-                                  <Button variant="ghost" size="icon">Img</Button>
-                                  <Button variant="ghost" size="icon">Vid</Button>
-                                  <Button variant="ghost" size="icon">Sec</Button>
+                                  <Button variant="ghost" size="icon" title="Add image" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "image" }))}><ImageIcon className="h-4 w-4" /></Button>
+                                  <Button variant="ghost" size="icon" title="Add video" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "video" }))}><Video className="h-4 w-4" /></Button>
+                                  <Button variant="ghost" size="icon" title="Add section" onClick={() => applyBuilderUpdate(() => dispatchBuilder({ type: "add_question", questionType: "section_break" }))}>Sec</Button>
                                 </CardContent>
                               </Card>
                             </div>
@@ -1460,6 +1918,75 @@ export default function FormsManagerPage() {
                   <div className="flex items-center justify-between"><span>Allow only one response</span><Checkbox checked={!builder.allowMultipleResponses} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { allowMultipleResponses: c !== true } })} /></div>
                   <div className="flex items-center justify-between"><span>Edit after submit</span><Checkbox checked={builder.editAfterSubmit} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { editAfterSubmit: c === true } })} /></div>
                   <div className="flex items-center justify-between"><span>Form is active</span><Checkbox checked={builder.isActive} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { isActive: c === true } })} /></div>
+                  <div className="flex items-center justify-between"><span>Payment</span><Checkbox checked={builder.paymentEnabled} disabled={builder.leadDestination === "hr_leads"} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { paymentEnabled: c === true, collectEmail: c === true ? true : builder.collectEmail, offerLetterRequirePayment: c === true ? builder.offerLetterRequirePayment : false, certificateRequirePayment: c === true ? builder.certificateRequirePayment : false } })} /></div>
+                  {builder.paymentEnabled && builder.leadDestination !== "hr_leads" ? (
+                    <div className="space-y-3">
+                      <div>
+                        <Label>Amount to collect (₹)</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          step="0.01"
+                          className="mt-1"
+                          placeholder="e.g. 5000"
+                          value={builder.paymentAmount}
+                          onChange={(e) => dispatchBuilder({ type: "set", patch: { paymentAmount: e.target.value } })}
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Public form shows Pay instead of Submit. Unpaid form links stay off Payment Links until Razorpay marks them paid.
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>18% GST</span>
+                        <Checkbox
+                          checked={builder.paymentGstEnabled}
+                          onCheckedChange={(c) =>
+                            dispatchBuilder({ type: "set", patch: { paymentGstEnabled: c === true } })
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>2% handling</span>
+                        <Checkbox
+                          checked={builder.paymentHandlingEnabled}
+                          onCheckedChange={(c) =>
+                            dispatchBuilder({ type: "set", patch: { paymentHandlingEnabled: c === true } })
+                          }
+                        />
+                      </div>
+                      {(builder.paymentGstEnabled || builder.paymentHandlingEnabled) && (
+                        <p className="text-xs text-muted-foreground">
+                          Pay opens a breakdown popup (amount{builder.paymentGstEnabled ? ", GST" : ""}
+                          {builder.paymentHandlingEnabled ? ", handling" : ""}, total) before Razorpay.
+                        </p>
+                      )}
+                      <div className="flex items-center justify-between">
+                        <span>Coupon</span>
+                        <Checkbox
+                          checked={builder.paymentCouponEnabled}
+                          onCheckedChange={(c) =>
+                            dispatchBuilder({ type: "set", patch: { paymentCouponEnabled: c === true } })
+                          }
+                        />
+                      </div>
+                      {builder.paymentCouponEnabled ? (
+                        <div>
+                          <Label>Coupon code</Label>
+                          <Input
+                            className="mt-1"
+                            placeholder="e.g. FREE100"
+                            value={builder.paymentCouponCode}
+                            onChange={(e) =>
+                              dispatchBuilder({ type: "set", patch: { paymentCouponCode: e.target.value } })
+                            }
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Applicants enter this code above Pay. A match sets the amount to ₹0.
+                          </p>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </CardContent></Card>
                 <Card>
                   <CardHeader><CardTitle className="text-base">Lead destination</CardTitle></CardHeader>
@@ -1583,6 +2110,16 @@ export default function FormsManagerPage() {
                   </div>
                   <div className="flex items-center justify-between"><span>Show progress bar</span><Checkbox checked={builder.showProgressBar} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { showProgressBar: c === true } })} /></div>
                   <div className="flex items-center justify-between"><span>Shuffle question order</span><Checkbox checked={builder.shuffleQuestions} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { shuffleQuestions: c === true } })} /></div>
+                  <div className="flex items-center justify-between"><span>Email a copy of responses</span><Checkbox checked={builder.sendReceipt} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { sendReceipt: c === true } })} /></div>
+                  <div className="flex items-center justify-between"><span>Allow another response</span><Checkbox checked={builder.allowAnotherResponse} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { allowAnotherResponse: c === true } })} /></div>
+                  <div>
+                    <Label>Close form on</Label>
+                    <Input type="datetime-local" className="mt-1" value={builder.closeAt} onChange={(e) => dispatchBuilder({ type: "set", patch: { closeAt: e.target.value } })} />
+                  </div>
+                  <div>
+                    <Label>Response limit</Label>
+                    <Input type="number" min={0} className="mt-1" placeholder="Unlimited" value={builder.responseLimit} onChange={(e) => dispatchBuilder({ type: "set", patch: { responseLimit: e.target.value } })} />
+                  </div>
                   <div><Label>Confirmation message</Label><Textarea value={builder.confirmationMessage} onChange={(e) => dispatchBuilder({ type: "set", patch: { confirmationMessage: e.target.value } })} /></div>
                 </CardContent></Card>
                 <Card><CardHeader><CardTitle className="text-base">Quizzes</CardTitle></CardHeader><CardContent>
@@ -1618,10 +2155,362 @@ export default function FormsManagerPage() {
           <div className="col-span-3 hidden lg:block">
             <AnimatePresence>
             <motion.div initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 14 }} transition={{ duration: 0.22 }}>
-            <Card className="rounded-none sticky top-20 bg-card/95 backdrop-blur-xl border-l border-border border-y-0 border-r-0 shadow-none">
-              <CardHeader><CardTitle className="text-sm">Field Settings</CardTitle></CardHeader>
+            <Card
+              className={cn(
+                "rounded-none bg-card/95 backdrop-blur-xl border-l border-border border-y-0 border-r-0 shadow-none",
+                builderTab === "settings"
+                  ? "self-start"
+                  : "sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto",
+              )}
+            >
+              <CardHeader>
+                <CardTitle className="text-sm">
+                  {builderTab === "settings" ? "Automations" : "Field Settings"}
+                </CardTitle>
+              </CardHeader>
               <CardContent className="space-y-3">
-                {!selectedQuestion ? <p className="text-xs text-muted-foreground">Select a question card to edit settings.</p> : (
+                {builderTab === "settings" ? (
+                  <div className="space-y-5">
+                    {editing && canManageCampaignsForForm(editing) ? (
+                      <div className="space-y-3">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Campaigns</p>
+                        <div className="flex flex-col gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="justify-start"
+                            disabled={!editing?.id}
+                            onClick={() => setBuilderCampaignChannel("email")}
+                          >
+                            <Mail className="h-3.5 w-3.5 mr-1.5" />
+                            Email Campaign
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="justify-start"
+                            disabled={!editing?.id}
+                            onClick={() => setBuilderCampaignChannel("whatsapp")}
+                          >
+                            <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-emerald-600" />
+                            WhatsApp Campaign
+                          </Button>
+                        </div>
+                        <div className="rounded-md border bg-muted/30 p-3 space-y-3">
+                          <p className="text-xs font-medium">Auto-send for new submissions</p>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label htmlFor="builder-auto-email" className="text-xs font-normal">
+                              Auto send email
+                            </Label>
+                            <Switch
+                              id="builder-auto-email"
+                              checked={Boolean(builderCampaignCfg.auto_send_email)}
+                              disabled={savingBuilderCampaign || !builderCampaignCfg.email_template_id || !editing?.id}
+                              onCheckedChange={(v) => void patchBuilderCampaign({ auto_send_email: v })}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label htmlFor="builder-auto-wa" className="text-xs font-normal">
+                              Auto send WhatsApp
+                            </Label>
+                            <Switch
+                              id="builder-auto-wa"
+                              checked={Boolean(builderCampaignCfg.auto_send_whatsapp)}
+                              disabled={savingBuilderCampaign || !builderCampaignCfg.whatsapp_template_id || !editing?.id}
+                              onCheckedChange={(v) => void patchBuilderCampaign({ auto_send_whatsapp: v })}
+                            />
+                          </div>
+                          {!builderCampaignCfg.email_template_id && !builderCampaignCfg.whatsapp_template_id ? (
+                            <p className="text-[11px] text-muted-foreground">
+                              Assign templates on Share / publish to enable auto-send.
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="space-y-3 border-t pt-4">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Documents</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        Assign a template, then turn Auto on. Matching form fields fill placeholders; unmatched ones stay on the template prefill.
+                      </p>
+
+                      <div className="rounded-md border p-3 space-y-3">
+                        <p className="text-sm font-medium">Offer letter</p>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Template</Label>
+                          <Select
+                            value={builder.offerLetterTemplateId || undefined}
+                            onValueChange={(v) => {
+                              const tpl = offerTemplates.find((t) => t.id === v);
+                              dispatchBuilder({
+                                type: "set",
+                                patch: {
+                                  offerLetterTemplateId: v,
+                                  autoOfferLetter: true,
+                                  offerLetterPlaceholderMap: buildDocPlaceholderMap(
+                                    v,
+                                    tpl?.placeholders,
+                                    builder.questions,
+                                    undefined,
+                                    { company: builder.companyName },
+                                  ),
+                                },
+                              });
+                              setPlaceholderDialog("offer");
+                            }}
+                            disabled={loadingDocTemplates}
+                          >
+                            <SelectTrigger className="h-9 text-xs">
+                              <SelectValue
+                                placeholder={
+                                  loadingDocTemplates
+                                    ? "Loading templates…"
+                                    : offerTemplates.length
+                                      ? "Select offer letter template"
+                                      : "No templates yet"
+                                }
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {offerTemplates.map((t) => (
+                                <SelectItem key={t.id} value={t.id}>
+                                  {(t.template_name || t.name || t.id) +
+                                    (t.status && t.status !== "active" ? ` (${t.status})` : "")}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {!loadingDocTemplates && offerTemplates.length === 0 ? (
+                            <p className="text-[11px] text-muted-foreground">
+                              Create a template in Offer Letters first.
+                            </p>
+                          ) : null}
+                          {builder.offerLetterTemplateId && offerPlaceholders.length ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 w-full text-xs"
+                              onClick={() => setPlaceholderDialog("offer")}
+                            >
+                              Match placeholders
+                              {(() => {
+                                const s = countMatchedPlaceholders(
+                                  offerPlaceholders,
+                                  builder.offerLetterPlaceholderMap.mappings,
+                                  formFieldOptions,
+                                );
+                                return s.total ? ` (${s.matched}/${s.total})` : "";
+                              })()}
+                            </Button>
+                          ) : builder.offerLetterTemplateId && !loadingDocTemplates ? (
+                            <p className="text-[11px] text-muted-foreground">
+                              This template has no fillable placeholders.
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <Label htmlFor="auto-offer" className="text-xs font-normal">Auto</Label>
+                          <Switch
+                            id="auto-offer"
+                            checked={builder.autoOfferLetter}
+                            disabled={!builder.offerLetterTemplateId}
+                            onCheckedChange={(v) =>
+                              dispatchBuilder({
+                                type: "set",
+                                patch: {
+                                  autoOfferLetter: v,
+                                  offerLetterRequirePayment: v ? builder.offerLetterRequirePayment : false,
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <Label htmlFor="offer-pay" className="text-xs font-normal">Payment</Label>
+                          <Switch
+                            id="offer-pay"
+                            checked={builder.offerLetterRequirePayment}
+                            disabled={
+                              !builder.autoOfferLetter ||
+                              !builder.offerLetterTemplateId ||
+                              !builder.paymentEnabled ||
+                              builder.leadDestination === "hr_leads"
+                            }
+                            onCheckedChange={(v) =>
+                              dispatchBuilder({ type: "set", patch: { offerLetterRequirePayment: v } })
+                            }
+                          />
+                        </div>
+                        {builder.autoOfferLetter && builder.offerLetterRequirePayment ? (
+                          <p className="text-[11px] text-muted-foreground">Only after successful payment.</p>
+                        ) : null}
+                        {builder.autoOfferLetter && !builder.offerLetterTemplateId ? (
+                          <p className="text-[11px] text-amber-700 dark:text-amber-400">Select a template to enable auto.</p>
+                        ) : null}
+                      </div>
+
+                      <div className="rounded-md border p-3 space-y-3">
+                        <p className="text-sm font-medium">Certificate</p>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Template</Label>
+                          <Select
+                            value={builder.certificateTemplateId || undefined}
+                            onValueChange={(v) => {
+                              const tpl = certTemplates.find((t) => t.id === v);
+                              dispatchBuilder({
+                                type: "set",
+                                patch: {
+                                  certificateTemplateId: v,
+                                  autoCertificate: true,
+                                  certificatePlaceholderMap: buildDocPlaceholderMap(
+                                    v,
+                                    tpl?.placeholders,
+                                    builder.questions,
+                                    undefined,
+                                    {
+                                      course: builder.certificateCourseName || builder.title,
+                                      company: builder.companyName,
+                                    },
+                                  ),
+                                },
+                              });
+                              setPlaceholderDialog("certificate");
+                            }}
+                            disabled={loadingDocTemplates}
+                          >
+                            <SelectTrigger className="h-9 text-xs">
+                              <SelectValue
+                                placeholder={
+                                  loadingDocTemplates
+                                    ? "Loading templates…"
+                                    : certTemplates.length
+                                      ? "Select certificate template"
+                                      : "No templates yet"
+                                }
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {certTemplates.map((t) => (
+                                <SelectItem key={t.id} value={t.id}>
+                                  {(t.name || t.id) +
+                                    (t.status && t.status !== "active" ? ` (${t.status})` : "")}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {!loadingDocTemplates && certTemplates.length === 0 ? (
+                            <p className="text-[11px] text-muted-foreground">
+                              Create a template in Certificates first.
+                            </p>
+                          ) : null}
+                          {builder.certificateTemplateId && certPlaceholders.length ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 w-full text-xs"
+                              onClick={() => setPlaceholderDialog("certificate")}
+                            >
+                              Match placeholders
+                              {(() => {
+                                const s = countMatchedPlaceholders(
+                                  certPlaceholders,
+                                  builder.certificatePlaceholderMap.mappings,
+                                  formFieldOptions,
+                                );
+                                return s.total ? ` (${s.matched}/${s.total})` : "";
+                              })()}
+                            </Button>
+                          ) : builder.certificateTemplateId && !loadingDocTemplates ? (
+                            <p className="text-[11px] text-muted-foreground">
+                              This template has no fillable placeholders.
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Course / program name</Label>
+                          <Input
+                            className="h-8 text-xs"
+                            placeholder={builder.title || "Program name"}
+                            value={builder.certificateCourseName}
+                            onChange={(e) =>
+                              dispatchBuilder({ type: "set", patch: { certificateCourseName: e.target.value } })
+                            }
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Duration (months)</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            className="h-8 text-xs"
+                            value={String(builder.certificateIssueDelayMonths ?? 0)}
+                            onChange={(e) => {
+                              const n = Number(e.target.value);
+                              dispatchBuilder({
+                                type: "set",
+                                patch: {
+                                  certificateIssueDelayMonths:
+                                    Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0,
+                                },
+                              });
+                            }}
+                          />
+                          <p className="text-[11px] text-muted-foreground leading-snug">
+                            Controls when the certificate is auto-created and the issued date printed on it.
+                            0 = create immediately on lead creation (issued date = that date).
+                            2 = wait 2 months from lead creation, then create it.
+                          </p>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <Label htmlFor="auto-cert" className="text-xs font-normal">Auto</Label>
+                          <Switch
+                            id="auto-cert"
+                            checked={builder.autoCertificate}
+                            disabled={!builder.certificateTemplateId}
+                            onCheckedChange={(v) =>
+                              dispatchBuilder({
+                                type: "set",
+                                patch: {
+                                  autoCertificate: v,
+                                  certificateRequirePayment: v ? builder.certificateRequirePayment : false,
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <Label htmlFor="cert-pay" className="text-xs font-normal">Payment</Label>
+                          <Switch
+                            id="cert-pay"
+                            checked={builder.certificateRequirePayment}
+                            disabled={
+                              !builder.autoCertificate ||
+                              !builder.certificateTemplateId ||
+                              !builder.paymentEnabled ||
+                              builder.leadDestination === "hr_leads"
+                            }
+                            onCheckedChange={(v) =>
+                              dispatchBuilder({ type: "set", patch: { certificateRequirePayment: v } })
+                            }
+                          />
+                        </div>
+                        {builder.autoCertificate && builder.certificateRequirePayment ? (
+                          <p className="text-[11px] text-muted-foreground">Only after successful payment.</p>
+                        ) : null}
+                        {builder.autoCertificate && !builder.certificateTemplateId ? (
+                          <p className="text-[11px] text-amber-700 dark:text-amber-400">Select a template to enable auto.</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : !selectedQuestion ? (
+                  <p className="text-xs text-muted-foreground">Select a question card to edit settings.</p>
+                ) : (
                   <>
                     <div><Label className="text-xs">Field type</Label>
                       <Select value={selectedQuestion.type} onValueChange={(v) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: normalizeQuestionForType(selectedQuestion, v as QuestionType) })}>
@@ -1636,19 +2525,146 @@ export default function FormsManagerPage() {
                         Shows a country-code dropdown (with flag) and a 10-digit number input on the public form.
                       </p>
                     ) : null}
-                    {selectedQuestion.type === "short_answer" ? (
+                    {selectedQuestion.type === "short_answer" || selectedQuestion.type === "paragraph" ? (
+                      <ValidationRuleEditor
+                        value={selectedQuestion.validation}
+                        onChange={(validation) =>
+                          dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { validation } })
+                        }
+                      />
+                    ) : null}
+                    {selectedQuestion.type === "linear_scale" || selectedQuestion.type === "rating" ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs">{selectedQuestion.type === "rating" ? "Icons" : "From"}</Label>
+                          <Input
+                            type="number"
+                            className="h-8 text-xs"
+                            value={selectedQuestion.type === "rating" ? (selectedQuestion.ratingMax ?? 5) : (selectedQuestion.scaleMin ?? 1)}
+                            onChange={(e) =>
+                              dispatchBuilder({
+                                type: "update_question",
+                                id: selectedQuestion.id,
+                                patch: selectedQuestion.type === "rating"
+                                  ? { ratingMax: Number(e.target.value) || 5 }
+                                  : { scaleMin: Number(e.target.value) },
+                              })
+                            }
+                          />
+                        </div>
+                        {selectedQuestion.type === "linear_scale" ? (
+                          <div>
+                            <Label className="text-xs">To</Label>
+                            <Input
+                              type="number"
+                              className="h-8 text-xs"
+                              value={selectedQuestion.scaleMax ?? 5}
+                              onChange={(e) =>
+                                dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { scaleMax: Number(e.target.value) } })
+                              }
+                            />
+                          </div>
+                        ) : null}
+                        {selectedQuestion.type === "linear_scale" ? (
+                          <>
+                            <Input className="h-8 text-xs" placeholder="Low label" value={selectedQuestion.scaleMinLabel || ""} onChange={(e) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { scaleMinLabel: e.target.value } })} />
+                            <Input className="h-8 text-xs" placeholder="High label" value={selectedQuestion.scaleMaxLabel || ""} onChange={(e) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { scaleMaxLabel: e.target.value } })} />
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {(selectedQuestion.type === "mc_grid" || selectedQuestion.type === "checkbox_grid") ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs">Rows (one per line)</Label>
+                          <Textarea
+                            className="mt-1 min-h-[72px] text-xs"
+                            value={(selectedQuestion.rows || []).join("\n")}
+                            onChange={(e) =>
+                              dispatchBuilder({
+                                type: "update_question",
+                                id: selectedQuestion.id,
+                                patch: { rows: e.target.value.split("\n") },
+                              })
+                            }
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-xs">Columns (one per line)</Label>
+                          <Textarea
+                            className="mt-1 min-h-[72px] text-xs"
+                            value={(selectedQuestion.columns || []).join("\n")}
+                            onChange={(e) =>
+                              dispatchBuilder({
+                                type: "update_question",
+                                id: selectedQuestion.id,
+                                patch: { columns: e.target.value.split("\n") },
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    ) : null}
+                    {(selectedQuestion.type === "image" || selectedQuestion.type === "video") ? (
                       <div className="space-y-2">
-                        <Label className="text-xs">Validation rule</Label>
-                        <Select value={selectedQuestion.validation?.kind || "text"} onValueChange={(v) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { validation: { ...(selectedQuestion.validation || {}), kind: v as "text" | "number" | "length" | "regex" } } })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="text">Text</SelectItem>
-                            <SelectItem value="number">Number</SelectItem>
-                            <SelectItem value="length">Length</SelectItem>
-                            <SelectItem value="regex">Regex</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Input placeholder="Validation value (optional)" value={selectedQuestion.validation?.value || ""} onChange={(e) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { validation: { ...(selectedQuestion.validation || {}), value: e.target.value } } })} />
+                        <Label className="text-xs">{selectedQuestion.type === "image" ? "Image URL" : "YouTube / Vimeo URL"}</Label>
+                        <Input
+                          className="h-8 text-xs"
+                          value={selectedQuestion.media?.url || ""}
+                          onChange={(e) =>
+                            dispatchBuilder({
+                              type: "update_question",
+                              id: selectedQuestion.id,
+                              patch: { media: { ...(selectedQuestion.media || { url: "" }), url: e.target.value } },
+                            })
+                          }
+                        />
+                        <Input
+                          className="h-8 text-xs"
+                          placeholder="Caption (optional)"
+                          value={selectedQuestion.media?.caption || ""}
+                          onChange={(e) =>
+                            dispatchBuilder({
+                              type: "update_question",
+                              id: selectedQuestion.id,
+                              patch: { media: { ...(selectedQuestion.media || { url: "" }), caption: e.target.value } },
+                            })
+                          }
+                        />
+                      </div>
+                    ) : null}
+                    {(selectedQuestion.type === "multiple_choice" || selectedQuestion.type === "dropdown") && builder.questions.some((q) => q.type === "section_break") ? (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Go to section based on answer</Label>
+                        {(selectedQuestion.options || []).map((opt) => (
+                          <div key={opt} className="flex items-center gap-1">
+                            <span className="text-[11px] w-24 truncate">{opt || "Option"}</span>
+                            <Select
+                              value={selectedQuestion.goTo?.[opt] || "next"}
+                              onValueChange={(v) =>
+                                dispatchBuilder({
+                                  type: "update_question",
+                                  id: selectedQuestion.id,
+                                  patch: { goTo: { ...(selectedQuestion.goTo || {}), [opt]: v as GoToTarget } },
+                                })
+                              }
+                            >
+                              <SelectTrigger className="h-7 text-[11px]"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {goToChoices(
+                                  splitIntoSections(builder.questions, {
+                                    isBreak: (q) => q.type === "section_break",
+                                    id: (q) => q.id,
+                                    title: (q) => q.title,
+                                  }),
+                                  "section-default",
+                                ).map((c) => (
+                                  <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        ))}
                       </div>
                     ) : null}
                     {(selectedQuestion.type === "multiple_choice" || selectedQuestion.type === "checkboxes" || selectedQuestion.type === "dropdown") ? (
@@ -1708,12 +2724,12 @@ export default function FormsManagerPage() {
                         <div className="flex items-center justify-between">
                           <span className="text-sm">Shuffle options</span>
                           <Checkbox
-                            checked={selectedQuestion.validation?.kind === "text" && selectedQuestion.validation?.value === "shuffle"}
+                            checked={!!selectedQuestion.shuffleOptions || (selectedQuestion.validation?.kind === "text" && selectedQuestion.validation?.value === "shuffle")}
                             onCheckedChange={(c) =>
                               dispatchBuilder({
                                 type: "update_question",
                                 id: selectedQuestion.id,
-                                patch: { validation: c === true ? { kind: "text", value: "shuffle" } : undefined },
+                                patch: { shuffleOptions: c === true },
                               })
                             }
                           />
@@ -1736,6 +2752,65 @@ export default function FormsManagerPage() {
           </div>
         </div>
       </div>
+      <PlaceholderMatchDialog
+        open={placeholderDialog === "offer"}
+        onOpenChange={(o) => setPlaceholderDialog(o ? "offer" : null)}
+        title="Match offer letter placeholders"
+        placeholders={offerPlaceholders}
+        fields={formFieldOptions}
+        mappings={builder.offerLetterPlaceholderMap.mappings}
+        onChange={(next) =>
+          dispatchBuilder({
+            type: "set",
+            patch: {
+              offerLetterPlaceholderMap: serializePlaceholderMap(builder.offerLetterTemplateId, next),
+            },
+          })
+        }
+      />
+      <PlaceholderMatchDialog
+        open={placeholderDialog === "certificate"}
+        onOpenChange={(o) => setPlaceholderDialog(o ? "certificate" : null)}
+        title="Match certificate placeholders"
+        showDuration
+        durationMonths={builder.certificateIssueDelayMonths}
+        onDurationChange={(months) =>
+          dispatchBuilder({ type: "set", patch: { certificateIssueDelayMonths: months } })
+        }
+        placeholders={certPlaceholders}
+        fields={formFieldOptions}
+        mappings={builder.certificatePlaceholderMap.mappings}
+        onChange={(next) =>
+          dispatchBuilder({
+            type: "set",
+            patch: {
+              certificatePlaceholderMap: serializePlaceholderMap(builder.certificateTemplateId, next),
+            },
+          })
+        }
+      />
+      <ShareFormLinkDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        url={buildApplyLink(builder.slug || builder.title, editing)}
+        title={builder.title || "Form"}
+        hint="This link includes your staff ID so submissions are attributed to you."
+        prefillFields={builder.questions
+          .filter((q) => q.type !== "section_break" && q.type !== "image" && q.type !== "video")
+          .map((q) => ({ key: q.title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || q.id, label: q.title }))}
+      />
+      {editing?.id && builderCampaignChannel ? (
+        <FormCampaignSendDialog
+          open={Boolean(builderCampaignChannel)}
+          onOpenChange={(o) => {
+            if (!o) setBuilderCampaignChannel(null);
+          }}
+          formId={editing.id}
+          channel={builderCampaignChannel}
+          submissionCount={editing.submission_count || 0}
+        />
+      ) : null}
+      </>
     );
   }
 
@@ -1746,14 +2821,23 @@ export default function FormsManagerPage() {
         onOpenChange={setDetailOpen}
         form={detailForm}
         assignments={detailForm ? assignmentsByForm[detailForm.id] || [] : []}
-        publicLink={detailForm ? buildApplyLink(detailForm.slug) : ""}
+        publicLink={detailForm ? buildApplyLink(detailForm.slug, detailForm) : ""}
         canEdit={detailForm ? canEditFormRow(detailForm) : false}
-        canManageCampaigns={detailForm ? canManageCampaignsForForm(detailForm) : false}
+        createdByLabel={detailForm ? resolveFormCreatorLabel(detailForm) : undefined}
         onEdit={() => {
           if (!detailForm) return;
           setDetailOpen(false);
           openEdit(detailForm);
         }}
+        onDuplicate={
+          detailForm && canDuplicateFormRow(detailForm)
+            ? () => {
+                const f = detailForm;
+                setDetailOpen(false);
+                void duplicateForm(f);
+              }
+            : undefined
+        }
         onCopyLink={copy}
       />
 
@@ -1770,13 +2854,13 @@ export default function FormsManagerPage() {
         <p className="text-sm text-muted-foreground">
           {canAssignForms
             ? "Create/edit forms and assign personalized form links to team members."
-            : "Create and edit your forms. Copy link includes your referral code so leads appear in My Leads."}
+            : "Create and edit your forms. Copy link includes your staff ID so leads appear in My Leads."}
         </p>
       </div>
 
       {isMarketing && !myReferralCode ? (
         <p className="text-sm text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-md px-3 py-2">
-          Your account has no referral code yet. Ask an admin to set one so copied form links attribute leads to you in My Leads.
+          Your account has no staff ID yet. Ask an admin to set the org prefix so copied form links attribute leads to you.
         </p>
       ) : null}
 
@@ -1852,7 +2936,7 @@ export default function FormsManagerPage() {
               ) : (
                 rows.map((form) => {
                   const isOn = toBool(form.is_active);
-                  const directLink = buildApplyLink(form.slug);
+                  const directLink = buildApplyLink(form.slug, form);
                   const assigned = assignmentsByForm[form.id] || [];
                   const selectedIds = assigned.map((a) => a.member_id);
                   const assignableMembers = getAssignableMembersForForm(form);
@@ -1898,15 +2982,26 @@ export default function FormsManagerPage() {
                         {Number(form.submission_count ?? 0)}
                       </TableCell>
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-8 w-8"
-                          title="Copy public link"
-                          onClick={() => copy(directLink, "Form link")}
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                        </Button>
+                        <div className="flex flex-col items-start gap-1">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            title="Copy public link"
+                            onClick={() => copy(directLink, "Form link")}
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-8 w-8"
+                            title="Copy form QR code"
+                            onClick={() => void copyFormQr(directLink, form.name)}
+                          >
+                            <QrCode className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
                       </TableCell>
                       {canAssignForms ? (
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
@@ -1978,8 +3073,9 @@ export default function FormsManagerPage() {
                         ) : (
                           <div className="space-y-1 min-w-0">
                             {assigned.slice(0, 2).map((a) => {
-                              const memberRef = a.referral_code || "";
-                              const memberLink = `${baseApplyUrl}?form=${encodeURIComponent(form.slug)}${memberRef ? `&ref=${encodeURIComponent(memberRef)}` : ""}`;
+                              const fromTeam = teamMembers.find((m) => String(m.id) === String(a.member_id));
+                              const memberRef = String(a.referral_code || fromTeam?.referral_code || "").trim();
+                              const memberLink = buildPublicApplyUrl(window.location.origin, form.slug, memberRef);
                               return (
                                 <div key={a.id} className="flex items-center gap-1 min-w-0">
                                   <span className="text-xs truncate" title={a.full_name || a.email || "Member"}>{a.full_name || a.email || "Member"}</span>
@@ -1996,7 +3092,7 @@ export default function FormsManagerPage() {
                       ) : null}
                       {canEditForms ? (
                       <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
-                        {canEditFormRow(form) ? (
+                        {canEditFormRow(form) || canDuplicateFormRow(form) ? (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button variant="ghost" size="icon" className="h-8 w-8" title="Actions">
@@ -2005,26 +3101,34 @@ export default function FormsManagerPage() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-44">
-                              <DropdownMenuItem onClick={() => openEdit(form)}>
-                                <Pencil className="h-3.5 w-3.5 mr-2" />
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => void duplicateForm(form)}>
-                                <Copy className="h-3.5 w-3.5 mr-2" />
-                                Duplicate
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => void toggleFormStatus(form)}>
-                                <Power className="h-3.5 w-3.5 mr-2" />
-                                {isOn ? "Set Inactive" : "Set Active"}
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                className="text-destructive focus:text-destructive"
-                                onClick={() => void deleteForm(form)}
-                              >
-                                <Trash2 className="h-3.5 w-3.5 mr-2" />
-                                Delete
-                              </DropdownMenuItem>
+                              {canEditFormRow(form) ? (
+                                <DropdownMenuItem onClick={() => openEdit(form)}>
+                                  <Pencil className="h-3.5 w-3.5 mr-2" />
+                                  Edit
+                                </DropdownMenuItem>
+                              ) : null}
+                              {canDuplicateFormRow(form) ? (
+                                <DropdownMenuItem onClick={() => void duplicateForm(form)}>
+                                  <Copy className="h-3.5 w-3.5 mr-2" />
+                                  Duplicate
+                                </DropdownMenuItem>
+                              ) : null}
+                              {canEditFormRow(form) ? (
+                                <>
+                                  <DropdownMenuItem onClick={() => void toggleFormStatus(form)}>
+                                    <Power className="h-3.5 w-3.5 mr-2" />
+                                    {isOn ? "Set Inactive" : "Set Active"}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    onClick={() => void deleteForm(form)}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5 mr-2" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </>
+                              ) : null}
                             </DropdownMenuContent>
                           </DropdownMenu>
                         ) : (

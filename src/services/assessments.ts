@@ -75,8 +75,29 @@ export const assessmentsApi = {
     }),
   update: (body: Partial<PeaklyyAssessment> & { id: string }) =>
     req<{ message: string }>("?action=update", { method: "POST", body: JSON.stringify(body) }),
+  delete: (id: string) =>
+    req<{ message: string; id: string }>("?action=delete", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
+  assignUsers: (assessmentId: string, userIds: string[]) =>
+    req<{ message: string; count: number; user_ids?: string[] }>("?action=assign_users", {
+      method: "POST",
+      body: JSON.stringify({ assessment_id: assessmentId, user_ids: userIds }),
+    }),
+  assignedUsers: (assessmentId: string) =>
+    req<{ data: Array<{ user_id: string; full_name?: string; email?: string; role?: string }> }>(
+      `?action=assigned_users&assessment_id=${encodeURIComponent(assessmentId)}`,
+    ),
+  myAssignments: () =>
+    req<{ data: PeaklyyAssessment[] }>("?action=my_assignments"),
   attempts: (assessmentId: string) =>
     req<{ data: PeaklyyAttemptRow[] }>(`?action=attempts&assessment_id=${encodeURIComponent(assessmentId)}`),
+  deleteAttempt: (attemptId: string) =>
+    req<{ message: string; attempt_id: string }>("?action=delete_attempt", {
+      method: "POST",
+      body: JSON.stringify({ attempt_id: attemptId }),
+    }),
   attemptDetail: (attemptId: string) =>
     req<{
       data: PeaklyyAttemptRow;
@@ -127,6 +148,7 @@ export const assessmentsApi = {
     domain_key: string;
     degree_branch?: string;
     college_name?: string;
+    graduation_year?: string;
   }) =>
     req<{ attempt_token: string }>("?action=register", {
       method: "POST",
@@ -250,6 +272,7 @@ export interface PeaklyyAssessment {
   ui_theme?: string;
   interest_options?: string[];
   require_post_interests?: boolean;
+  assigned_user_ids?: string[];
 }
 
 export type PeaklyyAssessmentPublic = Omit<PeaklyyAssessment, "result_api_key">;
@@ -269,6 +292,10 @@ export interface PeaklyyAttemptRow {
   domain_key: string;
   degree_branch?: string | null;
   college_name?: string | null;
+  graduation_year?: string | null;
+  interest_topics?: string[] | null;
+  interest_selected_json?: unknown;
+  violation_count?: number | null;
   status: string;
   attempt_phase?: string;
   score: number | null;

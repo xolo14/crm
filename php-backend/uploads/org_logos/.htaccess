@@ -1,0 +1,9 @@
+# Org branding logos — public read for email templates, timetable posters, and same-origin <img>.
+# Parent /uploads denies direct access; allow this folder only.
+<IfModule mod_authz_core.c>
+  Require all granted
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order allow,deny
+  Allow from all
+</IfModule>

@@ -790,6 +790,8 @@ CREATE TABLE IF NOT EXISTS `email_campaigns` (
   `failed_count` INT NOT NULL DEFAULT 0,
   `pending_count` INT NOT NULL DEFAULT 0,
   `status` VARCHAR(20) NOT NULL DEFAULT 'draft',
+  `smtp_account_id` CHAR(36) DEFAULT NULL,
+  `scheduled_at` DATETIME DEFAULT NULL,
   `created_by` CHAR(36) NOT NULL,
   `org_id` CHAR(36) DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -812,10 +814,16 @@ CREATE TABLE IF NOT EXISTS `email_sends` (
   `recipient_email` VARCHAR(255) NOT NULL,
   `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
   `sent_at` TIMESTAMP NULL DEFAULT NULL,
+  `scheduled_at` DATETIME DEFAULT NULL,
+  `sent_subject` VARCHAR(500) DEFAULT NULL,
+  `sent_html` LONGTEXT DEFAULT NULL,
+  `values_json` TEXT DEFAULT NULL,
+  `smtp_account_id` CHAR(36) DEFAULT NULL,
   `error_message` TEXT DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `idx_es_campaign` (`campaign_id`),
+  INDEX `idx_es_pending_due` (`status`, `scheduled_at`),
   FOREIGN KEY (`campaign_id`) REFERENCES `email_campaigns`(`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

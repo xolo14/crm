@@ -11,10 +11,16 @@ if ($method === 'GET') {
     try {
         syncpediaDispatchDueReminders($db, $tokenData);
     } catch (Throwable $e) {
+        error_log('[notifications] dispatch: ' . $e->getMessage());
     }
-    $stmt = $db->prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 200");
-    $stmt->execute([$userId]);
-    respond($stmt->fetchAll());
+    try {
+        $stmt = $db->prepare("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 200");
+        $stmt->execute([$userId]);
+        respond($stmt->fetchAll());
+    } catch (Throwable $e) {
+        error_log('[notifications] list: ' . $e->getMessage());
+        respond(['error' => 'Could not load notifications'], 500);
+    }
 }
 
 if ($method === 'POST') {

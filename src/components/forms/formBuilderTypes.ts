@@ -1,3 +1,8 @@
+import type { MediaBlockData } from "@/components/forms/MediaBlock";
+import type { RatingIcon } from "@/components/forms/StarRating";
+import type { GoToTarget } from "@/components/forms/sectionFlow";
+import type { ValidationRule } from "@/components/forms/formValidation";
+
 export type QuestionType =
   | "short_answer"
   | "paragraph"
@@ -11,7 +16,10 @@ export type QuestionType =
   | "date"
   | "time"
   | "phone_number"
-  | "section_break";
+  | "section_break"
+  | "image"
+  | "video"
+  | "rating";
 
 export interface BuilderQuestion {
   id: string;
@@ -27,8 +35,14 @@ export interface BuilderQuestion {
   scaleMinLabel?: string;
   scaleMaxLabel?: string;
   points?: number;
-  validation?: { kind?: "text" | "number" | "length" | "regex"; value?: string };
+  validation?: ValidationRule;
   includeOther?: boolean;
+  shuffleOptions?: boolean;
+  /** option value → section id | next | submit */
+  goTo?: Record<string, GoToTarget>;
+  media?: MediaBlockData;
+  ratingMax?: number;
+  ratingIcon?: RatingIcon;
 }
 
 export interface LegacyFormField {

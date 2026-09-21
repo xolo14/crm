@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import type { RazorpayPaymentLink } from "@/types/paymentLinks";
 import { api } from "@/lib/api";
 import {
   canApproveManualPayments,
@@ -10,11 +9,7 @@ import {
   isPaymentRecordsTeamView,
 } from "@/lib/orgAccess";
 import { normalizeAppRole } from "@/lib/roleUtils";
-import { getAllPaymentLinks } from "@/utils/paymentLinksApi";
 import {
-  buildMemberPaymentSummaries,
-  buildPaymentRecords,
-  mergeManualPaymentsIntoSummaries,
   type ManualPaymentRow,
   type MemberPaymentSummary,
   type PaymentCandidateSummaryInput,
@@ -22,8 +17,7 @@ import {
 } from "@/utils/normalizePaymentLink";
 import {
   filterCandidatesByPeriod,
-  filterLinksByPeriod,
-  filterManualRowsByPeriod,
+  paymentLinkPeriodUnixRange,
   type PaymentLinkPeriod,
 } from "@/utils/paymentLinkPeriod";
 import PaymentRecordsTable, {
@@ -77,10 +71,9 @@ export default function PaymentLinksRecordsPage() {
   const showApprovals = canApproveManualPayments(role);
   const canDeleteApproved = role === "org" || role === "super_admin";
 
-  const [links, setLinks] = useState<RazorpayPaymentLink[]>([]);
   const [team, setTeam] = useState<TeamMemberLookup[]>([]);
-  const [manuals, setManuals] = useState<ManualPaymentRow[]>([]);
   const [candidates, setCandidates] = useState<PaymentCandidateSummaryInput[]>([]);
+  const [candidatesAllTime, setCandidatesAllTime] = useState<PaymentCandidateSummaryInput[]>([]);
   const [pending, setPending] = useState<ManualPaymentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [approvalsLoading, setApprovalsLoading] = useState(false);
@@ -100,12 +93,16 @@ export default function PaymentLinksRecordsPage() {
     setLoading(true);
     setError(null);
     try {
-      // Team summary needs payment links; L1 candidate view does not (avoids 403 noise).
       if (!teamView) {
-        setLinks([]);
-        setManuals([]);
         setCandidates([]);
         setTeam([]);
+        setLoading(false);
+        return;
+      }
+
+      // Candidates tab loads itself via CandidatePaymentRecords.
+      if (!teamSummaryMode) {
+        setCandidates([]);
         setLoading(false);
         return;
       }
@@ -117,50 +114,24 @@ export default function PaymentLinksRecordsPage() {
         period === "custom"
           ? { from: filters.from || undefined, to: filters.to || undefined }
           : undefined;
-
-      const [linksOutcome, manualsOutcome, candidatesOutcome] = await Promise.allSettled([
-        getAllPaymentLinks({ period, forRecords: true, customRange }),
-        api.manualPayments.list("approved"),
-        api.paymentCandidates.list(),
-      ]);
-
-      if (linksOutcome.status === "fulfilled") {
-        setLinks(linksOutcome.value.items ?? []);
-      } else {
-        setLinks([]);
+      const unixRange = paymentLinkPeriodUnixRange(period, customRange);
+      const candidateQuery: { from?: number; to?: number } = {};
+      if (period !== "all") {
+        if (unixRange.from !== undefined) candidateQuery.from = unixRange.from;
+        if (unixRange.to !== undefined) candidateQuery.to = unixRange.to;
       }
 
-      if (manualsOutcome.status === "fulfilled") {
-        setManuals(parseManualList(manualsOutcome.value));
-      } else {
-        setManuals([]);
-      }
-
-      if (candidatesOutcome.status === "fulfilled") {
-        const raw = candidatesOutcome.value as { data?: PaymentCandidateSummaryInput[] };
-        setCandidates(Array.isArray(raw?.data) ? raw.data : []);
-      } else {
-        setCandidates([]);
-      }
-
-      if (
-        linksOutcome.status === "rejected" &&
-        manualsOutcome.status === "rejected" &&
-        candidatesOutcome.status === "rejected"
-      ) {
-        const msg =
-          manualsOutcome.reason instanceof Error
-            ? manualsOutcome.reason.message
-            : "Failed to load records";
-        setError(msg);
-      }
+      const res = (await api.paymentCandidates.list(candidateQuery)) as {
+        data?: PaymentCandidateSummaryInput[];
+      };
+      setCandidates(Array.isArray(res?.data) ? res.data : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load records");
-      setLinks([]);
+      setCandidates([]);
     } finally {
       setLoading(false);
     }
-  }, [period, teamView, filters.from, filters.to]);
+  }, [period, teamView, teamSummaryMode, filters.from, filters.to]);
 
   const loadApprovals = useCallback(async () => {
     if (!showApprovals) return;
@@ -179,40 +150,32 @@ export default function PaymentLinksRecordsPage() {
     void loadData();
   }, [loadData]);
 
+  /** All-time candidate pitch for Team summary (collected still uses period filter). */
+  useEffect(() => {
+    if (!teamView) return;
+    void api.paymentCandidates
+      .list()
+      .then((res) => {
+        const raw = res as { data?: PaymentCandidateSummaryInput[] };
+        setCandidatesAllTime(Array.isArray(raw?.data) ? raw.data : []);
+      })
+      .catch(() => {});
+  }, [teamView]);
+
   useEffect(() => {
     void loadApprovals();
   }, [loadApprovals]);
-
-  const records = useMemo(
-    () => buildPaymentRecords(links, team),
-    [links, team],
-  );
 
   const memberCount = useMemo(() => {
     const customRange =
       period === "custom"
         ? { from: filters.from || undefined, to: filters.to || undefined }
         : undefined;
-    const periodLinkIds = new Set(
-      filterLinksByPeriod(
-        records.map((r) => r.link),
-        period,
-        customRange,
-      ).map((l) => l.id),
-    );
-    const periodRecords = records.filter((r) =>
-      periodLinkIds.has(r.link.id),
-    );
-    const linkSummaries = buildMemberPaymentSummaries(periodRecords);
-    const manualsInPeriod = filterManualRowsByPeriod(manuals, period, customRange);
     const fromCandidates = filterCandidatesByPeriod(candidates, period, customRange);
-    const ownerIds = new Set([
-      ...linkSummaries.map((s) => s.creator.id),
-      ...manualsInPeriod.map((m) => String(m.submitted_by)),
-      ...fromCandidates.map((c) => String(c.owner_user_id || "")),
-    ]);
-    return ownerIds.size;
-  }, [records, period, manuals, candidates, filters.from, filters.to]);
+    return new Set(
+      fromCandidates.map((c) => String(c.owner_user_id || "")).filter(Boolean),
+    ).size;
+  }, [candidates, period, filters.from, filters.to]);
   const pendingCount = useMemo(
     () => pending.filter((r) => String(r.status || "").toLowerCase() === "pending").length,
     [pending],
@@ -338,16 +301,15 @@ export default function PaymentLinksRecordsPage() {
       {tab === "records" ? (
         teamView && teamSummaryMode && !drillMember ? (
           <PaymentRecordsTable
-            records={records}
             team={team}
             candidates={candidates}
+            candidatesAllTime={candidatesAllTime}
             loading={loading}
             period={period}
             onPeriodChange={setPeriod}
             filters={filters}
             onFilterChange={setFilters}
             onRefresh={loadData}
-            manualPayments={manuals}
             onMemberClick={(row: MemberPaymentSummary) =>
               setDrillMember({
                 id: row.creator.id,

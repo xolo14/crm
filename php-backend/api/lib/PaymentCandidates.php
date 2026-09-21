@@ -235,13 +235,96 @@ function paymentCandidatesLinkPaymentCount(PDO $db, string $candidateId): int
 {
     try {
         $st = $db->prepare(
-            'SELECT COUNT(*) FROM payment_candidate_link_payments WHERE candidate_id = ?'
+            'SELECT COUNT(*) FROM payment_candidate_link_payments lp
+             WHERE lp.candidate_id = ?
+               AND (
+                 lp.razorpay_payment_id NOT LIKE \'delta:%\'
+                 OR NOT EXISTS (
+                   SELECT 1 FROM payment_candidate_link_payments x
+                   WHERE x.candidate_id = lp.candidate_id
+                     AND x.razorpay_payment_link_id = lp.razorpay_payment_link_id
+                     AND x.razorpay_payment_id NOT LIKE \'delta:%\'
+                 )
+               )'
         );
         $st->execute([$candidateId]);
         return (int) $st->fetchColumn();
     } catch (Throwable $e) {
         return 0;
     }
+}
+
+/**
+ * Razorpay collected for a candidate (rupees).
+ * Ignores legacy delta: placeholder rows when real Razorpay payment ids exist for the same link.
+ * Never exceeds SUM(payment_links.amount_paid) for that candidate.
+ *
+ * @return array{paid: float, count: int}
+ */
+function paymentCandidatesSumLinkPaidRupees(PDO $db, string $candidateId, ?int $fromUnix = null, ?int $toUnix = null): array
+{
+    $empty = ['paid' => 0.0, 'count' => 0];
+    $candidateId = trim($candidateId);
+    if ($candidateId === '') {
+        return $empty;
+    }
+
+    $periodSql = '';
+    $periodParams = [];
+    if ($fromUnix !== null || $toUnix !== null) {
+        $from = $fromUnix ?? 0;
+        $to = $toUnix ?? PHP_INT_MAX;
+        $periodSql = ' AND UNIX_TIMESTAMP(COALESCE(lp.paid_at, lp.created_at)) >= ? AND UNIX_TIMESTAMP(COALESCE(lp.paid_at, lp.created_at)) <= ?';
+        $periodParams = [$from, $to];
+    }
+
+    $installments = 0.0;
+    $count = 0;
+    try {
+        $st = $db->prepare(
+            'SELECT COALESCE(SUM(lp.amount_paise), 0) AS s, COUNT(*) AS c
+             FROM payment_candidate_link_payments lp
+             WHERE lp.candidate_id = ?' . $periodSql . '
+               AND (
+                 lp.razorpay_payment_id NOT LIKE \'delta:%\'
+                 OR NOT EXISTS (
+                   SELECT 1 FROM payment_candidate_link_payments x
+                   WHERE x.candidate_id = lp.candidate_id
+                     AND x.razorpay_payment_link_id = lp.razorpay_payment_link_id
+                     AND x.razorpay_payment_id NOT LIKE \'delta:%\'
+                 )
+               )'
+        );
+        $st->execute(array_merge([$candidateId], $periodParams));
+        $row = $st->fetch(PDO::FETCH_ASSOC) ?: [];
+        $installments = round((float) ($row['s'] ?? 0) / 100, 2);
+        $count = (int) ($row['c'] ?? 0);
+    } catch (Throwable $e) {
+        $installments = 0.0;
+        $count = 0;
+    }
+
+    $linkPaidCap = 0.0;
+    if (syncpediaColumnExists($db, 'payment_links', 'candidate_id')) {
+        try {
+            $cap = $db->prepare(
+                'SELECT COALESCE(SUM(amount_paid), 0) FROM payment_links
+                 WHERE candidate_id = ? AND amount_paid > 0'
+            );
+            $cap->execute([$candidateId]);
+            $linkPaidCap = round((float) ($cap->fetchColumn() ?: 0) / 100, 2);
+        } catch (Throwable $e) {
+            $linkPaidCap = 0.0;
+        }
+    }
+
+    if ($installments <= 0 && $linkPaidCap > 0 && $fromUnix === null && $toUnix === null) {
+        return ['paid' => $linkPaidCap, 'count' => max(1, $count)];
+    }
+    if ($linkPaidCap > 0 && $installments > $linkPaidCap) {
+        return ['paid' => $linkPaidCap, 'count' => $count];
+    }
+    return ['paid' => $installments, 'count' => $count];
 }
 
 function paymentCandidatesNextInstallmentNumber(PDO $db, string $candidateId): int
@@ -319,6 +402,16 @@ function paymentCandidatesRecordLinkPayment(
             $amountPaise,
             $paidAt,
         ]);
+        // Real Razorpay ids replace the legacy full-amount delta: placeholder for this link.
+        if (strpos($paymentId, 'delta:') !== 0) {
+            try {
+                $db->prepare(
+                    "DELETE FROM payment_candidate_link_payments
+                     WHERE candidate_id = ? AND razorpay_payment_link_id = ? AND razorpay_payment_id LIKE 'delta:%'"
+                )->execute([$candidateId, $razorpayLinkId]);
+            } catch (Throwable $ignored) {
+            }
+        }
         return true;
     } catch (Throwable $e) {
         error_log('[payment_candidates] record link payment: ' . $e->getMessage());
@@ -454,6 +547,15 @@ function paymentCandidatesBackfillLegacy(PDO $db, ?string $orgId, ?array $ownerU
             $linkOrg = trim((string) ($link['org_id'] ?? $orgId));
             $plinkId = trim((string) ($link['razorpay_payment_link_id'] ?? ''));
             if ($owner === '' || $owner === 'unknown' || $linkOrg === '' || $plinkId === '') {
+                continue;
+            }
+            $linkNotes = json_decode((string) ($link['notes'] ?? ''), true);
+            $linkSource = is_array($linkNotes)
+                ? strtolower(trim((string) ($linkNotes['source'] ?? $linkNotes['crm_source'] ?? '')))
+                : '';
+            $linkPaid = (int) ($link['amount_paid'] ?? 0);
+            $linkStatus = strtolower(trim((string) ($link['status'] ?? '')));
+            if ($linkSource === 'lead_form' && $linkPaid <= 0 && !in_array($linkStatus, ['paid', 'partially_paid'], true)) {
                 continue;
             }
             $name = trim((string) ($link['customer_name'] ?? '')) ?: 'Customer';
@@ -727,6 +829,93 @@ function paymentCandidatesLinkPaymentLink(
 }
 
 /**
+ * Candidate IDs that only have unpaid lead-form payment links (hide until Razorpay marks paid).
+ *
+ * @param array<int, array<string, mixed>> $rows
+ * @return array<string, true>
+ */
+function paymentCandidatesUnpaidLeadFormOnlyIds(PDO $db, array $rows): array
+{
+    $ids = [];
+    foreach ($rows as $row) {
+        $id = trim((string) ($row['id'] ?? ''));
+        if ($id !== '') {
+            $ids[] = $id;
+        }
+    }
+    if ($ids === [] || !syncpediaColumnExists($db, 'payment_links', 'candidate_id')) {
+        return [];
+    }
+    $hide = [];
+    foreach (array_chunk($ids, 200) as $chunk) {
+        $ph = implode(',', array_fill(0, count($chunk), '?'));
+        try {
+            $st = $db->prepare(
+                "SELECT candidate_id, notes, amount_paid, status FROM payment_links WHERE candidate_id IN ($ph)"
+            );
+            $st->execute($chunk);
+            $by = [];
+            while ($r = $st->fetch(PDO::FETCH_ASSOC)) {
+                if (!is_array($r)) {
+                    continue;
+                }
+                $cid = trim((string) ($r['candidate_id'] ?? ''));
+                if ($cid !== '') {
+                    $by[$cid][] = $r;
+                }
+            }
+            foreach ($by as $cid => $links) {
+                $hasLeadForm = false;
+                $onlyUnpaidLeadForm = true;
+                foreach ($links as $link) {
+                    $notes = json_decode((string) ($link['notes'] ?? ''), true);
+                    $src = is_array($notes)
+                        ? strtolower(trim((string) ($notes['source'] ?? $notes['crm_source'] ?? '')))
+                        : '';
+                    $paid = (int) ($link['amount_paid'] ?? 0);
+                    $status = strtolower(trim((string) ($link['status'] ?? '')));
+                    $isPaid = $paid > 0 || in_array($status, ['paid', 'partially_paid'], true);
+                    if ($src === 'lead_form') {
+                        $hasLeadForm = true;
+                        if ($isPaid) {
+                            $onlyUnpaidLeadForm = false;
+                            break;
+                        }
+                    } else {
+                        $onlyUnpaidLeadForm = false;
+                        break;
+                    }
+                }
+                if ($hasLeadForm && $onlyUnpaidLeadForm) {
+                    $hide[$cid] = true;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[payment_candidates] unpaid lead_form filter: ' . $e->getMessage());
+        }
+    }
+    if ($hide === []) {
+        return [];
+    }
+    $hideIds = array_keys($hide);
+    foreach (array_chunk($hideIds, 200) as $chunk) {
+        $ph = implode(',', array_fill(0, count($chunk), '?'));
+        try {
+            $st = $db->prepare(
+                "SELECT candidate_id FROM manual_payments WHERE candidate_id IN ($ph) AND status = 'approved' LIMIT 500"
+            );
+            $st->execute($chunk);
+            while ($cid = $st->fetchColumn()) {
+                unset($hide[(string) $cid]);
+            }
+        } catch (Throwable $e) {
+            /* ignore */
+        }
+    }
+    return $hide;
+}
+
+/**
  * @return array{sql: string, params: array, owner_only: bool}
  */
 function paymentCandidatesListScope(PDO $db, array $tokenData): array
@@ -762,7 +951,133 @@ function paymentCandidatesListScope(PDO $db, array $tokenData): array
     ];
 }
 
-function paymentCandidatesTotalsForRow(PDO $db, array $candidate): array
+function paymentCandidatesTotalsForRow(PDO $db, array $candidate, ?int $fromUnix = null, ?int $toUnix = null): array
+{
+    $lifetime = paymentCandidatesComputeTotals($db, $candidate);
+    if ($fromUnix === null && $toUnix === null) {
+        return $lifetime;
+    }
+    $periodPaid = paymentCandidatesSumPaidInPeriod($db, (string) ($candidate['id'] ?? ''), $fromUnix, $toUnix);
+    return array_merge($lifetime, $periodPaid, [
+ 'first_installment_date' => paymentCandidatesFirstInstallmentDate($db, (string) ($candidate['id'] ?? '')),
+ ]);
+}
+/**
+ * Date (YYYY-MM-DD) of the candidate's first paid installment.
+ * Used for timeline scoping so a candidate belongs to the period of their 1st payment,
+ * not every period in which they happen to have any installment.
+ */
+function paymentCandidatesFirstInstallmentDate(PDO $db, string $candidateId): ?string
+{
+ $candidateId = trim($candidateId);
+ if ($candidateId === '') return null;
+ try {
+ $st = $db->prepare(
+ "SELECT DATE_FORMAT(COALESCE(mp.paid_at, mp.created_at), '%Y-%m-%d') AS d
+ FROM manual_payments mp
+ WHERE mp.candidate_id = ? AND mp.status = 'approved'
+ ORDER BY COALESCE(mp.paid_at, mp.created_at) ASC, mp.installment_number ASC
+ LIMIT 1"
+ );
+ $st->execute([$candidateId]);
+ $manual = $st->fetchColumn();
+ } catch (Throwable $e) {
+ $manual = false;
+ }
+ if ($manual) return (string) $manual;
+
+ try {
+ $ls = $db->prepare(
+ "SELECT DATE_FORMAT(COALESCE(lp.paid_at, lp.created_at), '%Y-%m-%d') AS d
+ FROM payment_candidate_link_payments lp
+ WHERE lp.candidate_id = ?
+ ORDER BY COALESCE(lp.paid_at, lp.created_at) ASC
+ LIMIT 1"
+ );
+ $ls->execute([$candidateId]);
+ $link = $ls->fetchColumn();
+ } catch (Throwable $e) {
+ $link = false;
+ }
+ if ($link) return (string) $link;
+
+ if (syncpediaColumnExists($db, 'payment_links', 'candidate_id')) {
+ try {
+ $fb = $db->prepare(
+ "SELECT DATE_FORMAT(COALESCE(pl.updated_at, pl.created_at), '%Y-%m-%d') AS d
+ FROM payment_links pl
+ WHERE pl.candidate_id = ? AND pl.amount_paid > 0
+ ORDER BY COALESCE(pl.updated_at, pl.created_at) ASC
+ LIMIT 1"
+ );
+ $fb->execute([$candidateId]);
+ $fallback = $fb->fetchColumn();
+ } catch (Throwable $e) {
+ $fallback = false;
+ }
+ if ($fallback) return (string) $fallback;
+ }
+ return null;
+}
+
+
+/**
+ * Sum approved manual + link payments in a period (paid_at, else upload/created_at).
+ *
+ * @return array{total_paid: float, installment_count: int, manual_count: int, link_count: int}
+ */
+function paymentCandidatesSumPaidInPeriod(
+    PDO $db,
+    string $candidateId,
+    ?int $fromUnix,
+    ?int $toUnix
+): array {
+    $candidateId = trim($candidateId);
+    if ($candidateId === '') {
+        return ['total_paid' => 0.0, 'installment_count' => 0, 'manual_count' => 0, 'link_count' => 0];
+    }
+    $from = $fromUnix ?? 0;
+    $to = $toUnix ?? PHP_INT_MAX;
+
+    $manualPaid = 0.0;
+    $manualCount = 0;
+    try {
+        $st = $db->prepare(
+            "SELECT
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN amount ELSE 0 END), 0) AS s,
+                SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS c_ok
+             FROM manual_payments
+             WHERE candidate_id = ?
+               AND UNIX_TIMESTAMP(COALESCE(paid_at, created_at)) >= ?
+               AND UNIX_TIMESTAMP(COALESCE(paid_at, created_at)) <= ?"
+        );
+        $st->execute([$candidateId, $from, $to]);
+        $mr = $st->fetch(PDO::FETCH_ASSOC) ?: [];
+        $manualPaid = round((float) ($mr['s'] ?? 0), 2);
+        $manualCount = (int) ($mr['c_ok'] ?? 0);
+    } catch (Throwable $e) {
+        // ignore
+    }
+
+    $linkSum = paymentCandidatesSumLinkPaidRupees($db, $candidateId, $fromUnix, $toUnix);
+    $linkPaid = (float) ($linkSum['paid'] ?? 0);
+    $linkCount = (int) ($linkSum['count'] ?? 0);
+
+    $totalPaid = round($manualPaid + $linkPaid, 2);
+    return [
+        'total_paid' => $totalPaid,
+        'installment_count' => $manualCount + $linkCount,
+        'manual_count' => $manualCount,
+        'link_count' => $linkCount,
+    ];
+}
+
+/**
+ * Lifetime totals for a candidate (pitch, paid, status). Payment dates: paid_at then created_at.
+ *
+ * @return array<string, mixed>
+ */
+function paymentCandidatesComputeTotals(PDO $db, array $candidate): array
 {
     $id = (string) ($candidate['id'] ?? '');
     $pitch = paymentCandidatesEffectivePitch($db, $candidate);
@@ -770,46 +1085,39 @@ function paymentCandidatesTotalsForRow(PDO $db, array $candidate): array
     $manualPaid = 0.0;
     $manualCount = 0;
     $manualPending = 0;
-    $st = $db->prepare(
-        "SELECT
-            COALESCE(SUM(CASE WHEN status = 'approved' THEN amount ELSE 0 END), 0) AS s,
-            SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS c_ok,
-            SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS c_pending
-         FROM manual_payments WHERE candidate_id = ?"
-    );
-    $st->execute([$id]);
-    $mr = $st->fetch(PDO::FETCH_ASSOC) ?: [];
-    $manualPaid = round((float) ($mr['s'] ?? 0), 2);
-    $manualCount = (int) ($mr['c_ok'] ?? 0);
-    $manualPending = (int) ($mr['c_pending'] ?? 0);
-
-    $linkPaid = 0.0;
-    $linkCount = paymentCandidatesLinkPaymentCount($db, $id);
     try {
-        $ls = $db->prepare(
-            'SELECT COALESCE(SUM(amount_paise), 0) AS s
-             FROM payment_candidate_link_payments WHERE candidate_id = ?'
+        $st = $db->prepare(
+            "SELECT
+                COALESCE(SUM(CASE WHEN status = 'approved' THEN amount ELSE 0 END), 0) AS s,
+                SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS c_ok,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS c_pending
+             FROM manual_payments WHERE candidate_id = ?"
         );
-        $ls->execute([$id]);
-        $linkPaid = round((float) ($ls->fetchColumn() ?: 0) / 100, 2);
+        $st->execute([$id]);
+        $mr = $st->fetch(PDO::FETCH_ASSOC) ?: [];
+        $manualPaid = round((float) ($mr['s'] ?? 0), 2);
+        $manualCount = (int) ($mr['c_ok'] ?? 0);
+        $manualPending = (int) ($mr['c_pending'] ?? 0);
     } catch (Throwable $e) {
-        // Fallback: sum payment_links.amount_paid if installments table missing.
-        if (syncpediaColumnExists($db, 'payment_links', 'candidate_id')) {
-            $fb = $db->prepare(
-                'SELECT COALESCE(SUM(amount_paid), 0) FROM payment_links
-                 WHERE candidate_id = ? AND amount_paid > 0'
-            );
-            $fb->execute([$id]);
-            $linkPaid = round((float) ($fb->fetchColumn() ?: 0) / 100, 2);
-            $linkCount = $linkPaid > 0 ? max(1, $linkCount) : 0;
-        }
+        // candidate_id column may be missing on older DBs before ensureSchema runs.
     }
+
+    $linkSum = paymentCandidatesSumLinkPaidRupees($db, $id);
+    $linkPaid = (float) ($linkSum['paid'] ?? 0);
+    $linkCount = (int) ($linkSum['count'] ?? 0);
 
     $totalPaid = round($manualPaid + $linkPaid, 2);
     $remaining = $pitch > 0 ? max(0, round($pitch - $totalPaid, 2)) : 0;
     $installments = $manualCount + $manualPending + $linkCount;
     $enrolled = paymentCandidatesIsEnrolled($db, $candidate);
-    $cleared = $enrolled;
+
+    if ($pitch <= 0) {
+        $status = 'no_pitch';
+    } elseif ($totalPaid + 0.001 >= $pitch) {
+        $status = 'cleared';
+    } else {
+        $status = 'in_progress';
+    }
 
     return [
         'pitch_price' => $pitch,
@@ -819,7 +1127,7 @@ function paymentCandidatesTotalsForRow(PDO $db, array $candidate): array
         'manual_count' => $manualCount,
         'manual_pending_count' => $manualPending,
         'link_count' => $linkCount,
-        'status' => $cleared ? 'cleared' : ($pitch > 0 ? 'in_progress' : 'no_pitch'),
+        'status' => $status,
         'enrolled' => $enrolled,
     ];
 }
@@ -849,45 +1157,70 @@ function paymentCandidatesIsEnrolled(PDO $db, array $candidate): bool
     }
 
     $email = paymentCandidatesNormEmail(
-        (string) ($candidate['customer_email'] ?? '')
+        (string) ($candidate['customer_email'] ?? ($candidate['email_norm'] ?? ''))
     );
     $phone = paymentCandidatesNormPhone(
-        (string) ($candidate['customer_phone'] ?? '')
+        (string) ($candidate['customer_phone'] ?? ($candidate['phone_norm'] ?? ''))
     );
 
-    if ($orgId !== '' && $email !== '') {
-        try {
-            $st = $db->prepare(
-                "SELECT id FROM students
-                 WHERE org_id = ? AND LOWER(TRIM(COALESCE(email, ''))) = ?
-                 LIMIT 1"
-            );
-            $st->execute([$orgId, $email]);
-            if ($st->fetchColumn()) {
-                return true;
-            }
-        } catch (Throwable $e) {
-            // ignore
-        }
+    if ($orgId === '' || ($email === '' && $phone === '')) {
+        return false;
     }
 
-    if ($orgId !== '' && $phone !== '') {
-        try {
-            $st = $db->prepare(
-                "SELECT id, phone FROM students WHERE org_id = ? AND phone IS NOT NULL AND TRIM(phone) <> '' LIMIT 500"
-            );
-            $st->execute([$orgId]);
-            foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $sr) {
-                if (paymentCandidatesNormPhone((string) ($sr['phone'] ?? '')) === $phone) {
-                    return true;
-                }
-            }
-        } catch (Throwable $e) {
-            // ignore
-        }
+    $index = paymentCandidatesOrgStudentContactIndex($db, $orgId);
+    if ($email !== '' && isset($index['emails'][$email])) {
+        return true;
+    }
+    if ($phone !== '' && isset($index['phones'][$phone])) {
+        return true;
     }
 
     return false;
+}
+
+/**
+ * One students contact scan per org per request (avoids N×500 row loads on list).
+ *
+ * @return array{emails: array<string,true>, phones: array<string,true>}
+ */
+function paymentCandidatesOrgStudentContactIndex(PDO $db, string $orgId): array
+{
+    static $cache = [];
+    $orgId = trim($orgId);
+    if ($orgId === '') {
+        return ['emails' => [], 'phones' => []];
+    }
+    if (isset($cache[$orgId])) {
+        return $cache[$orgId];
+    }
+    $emails = [];
+    $phones = [];
+    try {
+        $st = $db->prepare(
+            "SELECT email, phone FROM students
+             WHERE org_id = ?
+               AND (
+                 (email IS NOT NULL AND TRIM(email) <> '')
+                 OR (phone IS NOT NULL AND TRIM(phone) <> '')
+               )
+             LIMIT 5000"
+        );
+        $st->execute([$orgId]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $sr) {
+            $em = paymentCandidatesNormEmail((string) ($sr['email'] ?? ''));
+            if ($em !== '') {
+                $emails[$em] = true;
+            }
+            $ph = paymentCandidatesNormPhone((string) ($sr['phone'] ?? ''));
+            if ($ph !== '') {
+                $phones[$ph] = true;
+            }
+        }
+    } catch (Throwable $e) {
+        // ignore
+    }
+    $cache[$orgId] = ['emails' => $emails, 'phones' => $phones];
+    return $cache[$orgId];
 }
 
 /**
@@ -1015,6 +1348,15 @@ function paymentCandidatesFetchInstallments(PDO $db, string $candidateId): array
                     'razorpay' AS payment_method
              FROM payment_candidate_link_payments lp
              WHERE lp.candidate_id = ?
+               AND (
+                 lp.razorpay_payment_id NOT LIKE 'delta:%'
+                 OR NOT EXISTS (
+                   SELECT 1 FROM payment_candidate_link_payments x
+                   WHERE x.candidate_id = lp.candidate_id
+                     AND x.razorpay_payment_link_id = lp.razorpay_payment_link_id
+                     AND x.razorpay_payment_id NOT LIKE 'delta:%'
+                 )
+               )
              ORDER BY COALESCE(lp.paid_at, lp.created_at) ASC"
         );
         $ls->execute([$candidateId]);

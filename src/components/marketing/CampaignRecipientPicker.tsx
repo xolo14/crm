@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Upload, Search } from "lucide-react";
+import { Upload, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -14,6 +14,10 @@ export type CampaignPickPerson = {
   email?: string;
   phone?: string;
   group: "leads" | "members";
+  college?: string;
+  course?: string;
+  company?: string;
+  source?: string;
 };
 
 type Props = {
@@ -25,6 +29,14 @@ type Props = {
   onManualTextChange: (value: string) => void;
   onUploadFile?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   fileInputRef?: React.RefObject<HTMLInputElement | null>;
+  /** Override list section title (default: Select leads / members). */
+  listLabel?: string;
+  /** Override empty-state hint inside the scroll list. */
+  emptyHint?: string;
+  /** Called when the list search query changes (for remote lead lookup). */
+  onSearchChange?: (query: string) => void;
+  /** Hide the people list until the user types a search (email Send Campaign). */
+  hideListUntilSearch?: boolean;
 };
 
 function normalizeEmail(v: string) {
@@ -72,12 +84,18 @@ export function CampaignRecipientPicker({
   onManualTextChange,
   onUploadFile,
   fileInputRef,
+  listLabel,
+  emptyHint,
+  onSearchChange,
+  hideListUntilSearch,
 }: Props) {
   const [query, setQuery] = useState("");
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const searchActive = query.trim().length > 0;
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+    if (hideListUntilSearch && !q) return [];
     return people.filter((p) => {
       if (mode === "email" && !String(p.email || "").includes("@")) return false;
       if (mode === "phone") {
@@ -92,7 +110,7 @@ export function CampaignRecipientPicker({
         p.group.includes(q)
       );
     });
-  }, [people, query, mode]);
+  }, [people, query, mode, hideListUntilSearch]);
 
   const selectableIds = filtered.map((p) => p.id);
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
@@ -136,85 +154,121 @@ export function CampaignRecipientPicker({
       <div>
         <div className="flex items-center justify-between gap-2 mb-1">
           <Label className="text-xs font-medium">
-            {mode === "email" ? "Select leads / members" : "Select leads / members"}
+            {listLabel || (hideListUntilSearch ? "Search leads / members" : "Select leads / members")}
           </Label>
-          <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={toggleAll} disabled={selectableIds.length === 0}>
-            {allSelected ? "Clear filtered" : "Select filtered"}
-          </Button>
+          {searchActive ? (
+            <Button type="button" size="sm" variant="ghost" className="h-7 text-xs" onClick={toggleAll} disabled={selectableIds.length === 0}>
+              {allSelected ? "Clear filtered" : "Select filtered"}
+            </Button>
+          ) : null}
         </div>
         <div className="relative mb-2">
           <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
           <Input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by name, email, or phone…"
+            onChange={(e) => {
+              const v = e.target.value;
+              setQuery(v);
+              onSearchChange?.(v);
+            }}
+            placeholder={
+              hideListUntilSearch
+                ? "Type to search by name, email, or phone…"
+                : "Search all leads and members by name, email, or phone…"
+            }
             className="h-9 pl-8 text-sm"
           />
         </div>
-        <ScrollArea className="h-[160px] rounded-md border">
-          <div className="p-2 space-y-3">
-            {leads.length === 0 && members.length === 0 ? (
-              <p className="text-xs text-muted-foreground px-1 py-4 text-center">
-                No {mode === "email" ? "emails" : "phone numbers"} found on leads/members.
-              </p>
-            ) : null}
-            {leads.length > 0 ? (
-              <div>
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1 mb-1">Leads ({leads.length})</p>
-                <div className="space-y-0.5">
-                  {leads.map((p) => (
-                    <label
-                      key={p.id}
-                      className={cn(
-                        "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer hover:bg-muted/60",
-                        selected.has(p.id) && "bg-emerald-50",
-                      )}
-                    >
-                      <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggle(p.id)} className="mt-0.5" />
-                      <span className="min-w-0">
-                        <span className="font-medium block truncate">{p.name || "Unnamed"}</span>
-                        <span className="text-[11px] text-muted-foreground block truncate">
-                          {mode === "email" ? p.email : p.phone}
+        {hideListUntilSearch && !searchActive ? (
+          <p className="text-[11px] text-muted-foreground">
+            {emptyHint ||
+              `Type to search, or enter ${mode === "email" ? "emails" : "phone numbers"} manually below. No list is shown until you search.`}
+          </p>
+        ) : (
+          <ScrollArea className="h-[220px] rounded-md border">
+            <div className="p-2 space-y-3">
+              {leads.length === 0 && members.length === 0 ? (
+                <p className="text-xs text-muted-foreground px-1 py-4 text-center">
+                  {hideListUntilSearch
+                    ? "No matches. Try another search, or enter recipients manually below."
+                    : emptyHint ||
+                      `Search your leads, or enter ${mode === "email" ? "emails" : "phone numbers"} manually below.`}
+                </p>
+              ) : null}
+              {leads.length > 0 ? (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1 mb-1">Leads ({leads.length})</p>
+                  <div className="space-y-0.5">
+                    {leads.map((p) => (
+                      <label
+                        key={p.id}
+                        className={cn(
+                          "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer hover:bg-muted/60",
+                          selected.has(p.id) && "bg-emerald-50",
+                        )}
+                      >
+                        <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggle(p.id)} className="mt-0.5" />
+                        <span className="min-w-0">
+                          <span className="font-medium block truncate">{p.name || "Unnamed"}</span>
+                          <span className="text-[11px] text-muted-foreground block truncate">
+                            {mode === "email" ? p.email : p.phone}
+                          </span>
                         </span>
-                      </span>
-                    </label>
-                  ))}
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : null}
-            {members.length > 0 ? (
-              <div>
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1 mb-1">Members ({members.length})</p>
-                <div className="space-y-0.5">
-                  {members.map((p) => (
-                    <label
-                      key={p.id}
-                      className={cn(
-                        "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer hover:bg-muted/60",
-                        selected.has(p.id) && "bg-emerald-50",
-                      )}
-                    >
-                      <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggle(p.id)} className="mt-0.5" />
-                      <span className="min-w-0">
-                        <span className="font-medium block truncate">{p.name || "Unnamed"}</span>
-                        <span className="text-[11px] text-muted-foreground block truncate">
-                          {mode === "email" ? p.email : p.phone}
+              ) : null}
+              {members.length > 0 ? (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1 mb-1">Members ({members.length})</p>
+                  <div className="space-y-0.5">
+                    {members.map((p) => (
+                      <label
+                        key={p.id}
+                        className={cn(
+                          "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer hover:bg-muted/60",
+                          selected.has(p.id) && "bg-emerald-50",
+                        )}
+                      >
+                        <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggle(p.id)} className="mt-0.5" />
+                        <span className="min-w-0">
+                          <span className="font-medium block truncate">{p.name || "Unnamed"}</span>
+                          <span className="text-[11px] text-muted-foreground block truncate">
+                            {mode === "email" ? p.email : p.phone}
+                          </span>
                         </span>
-                      </span>
-                    </label>
-                  ))}
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
+          </ScrollArea>
+        )}
+        {selectedContacts.length > 0 ? (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {selectedContacts.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2 py-0.5 text-[11px] hover:bg-muted"
+                onClick={() => toggle(p.id)}
+                title="Remove"
+              >
+                <span className="max-w-[140px] truncate">{p.name || (mode === "email" ? p.email : p.phone)}</span>
+                <X className="h-3 w-3 shrink-0" />
+              </button>
+            ))}
           </div>
-        </ScrollArea>
-        <p className="text-[10px] text-muted-foreground mt-1">{selectedIds.length} selected from list</p>
+        ) : null}
+        <p className="text-[10px] text-muted-foreground mt-1">{selectedIds.length} selected from search</p>
       </div>
 
       <div>
         <div className="flex items-center justify-between mb-1">
           <Label className="text-xs font-medium">
-            {mode === "email" ? "Or enter emails manually" : "Or enter phones manually"} *
+            {mode === "email" ? "Or enter emails manually" : "Or enter phones manually"}
           </Label>
           {onUploadFile && fileInputRef ? (
             <>
@@ -241,6 +295,47 @@ export function CampaignRecipientPicker({
       </div>
     </div>
   );
+}
+
+export type CampaignEmailRecipient = {
+  email: string;
+  name?: string;
+  personId?: string;
+  group?: CampaignPickPerson["group"] | "manual";
+};
+
+/** Merge picker + manual into unique email recipients with names when known. */
+export function mergeCampaignEmailRecipients(
+  people: CampaignPickPerson[],
+  selectedIds: string[],
+  manualText: string,
+): CampaignEmailRecipient[] {
+  const selected = new Set(selectedIds);
+  const byEmail = new Map<string, CampaignEmailRecipient>();
+
+  for (const p of people) {
+    if (!selected.has(p.id)) continue;
+    const email = String(p.email || "").trim();
+    if (!email.includes("@")) continue;
+    const key = normalizeEmail(email);
+    if (!byEmail.has(key)) {
+      byEmail.set(key, {
+        email,
+        name: p.name || undefined,
+        personId: p.id,
+        group: p.group,
+      });
+    }
+  }
+
+  for (const email of parseManualEmails(manualText)) {
+    const key = normalizeEmail(email);
+    if (!byEmail.has(key)) {
+      byEmail.set(key, { email, group: "manual" });
+    }
+  }
+
+  return Array.from(byEmail.values());
 }
 
 /** Merge picker + manual into a unique recipient list. */

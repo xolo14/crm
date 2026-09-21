@@ -12,9 +12,48 @@ const ALLOWED_TAGS = new Set([
   "OL",
   "LI",
   "FONT",
+  "A",
 ]);
 
 const ALLOWED_STYLES = new Set(["font-family", "font-size", "font-weight", "font-style", "text-decoration", "color"]);
+
+/** Only web / mail / phone links survive sanitising; everything else (javascript:, data:) is dropped. */
+export function sanitizeLinkHref(raw: string): string {
+  const href = String(raw || "").trim();
+  if (!href) return "";
+  if (/^(https?:)?\/\//i.test(href)) return href.startsWith("//") ? `https:${href}` : href;
+  if (/^(mailto:|tel:)/i.test(href)) return href;
+  // "www.example.com" or "example.com/path" typed without a scheme.
+  if (/^[a-z0-9.-]+\.[a-z]{2,}([/?#].*)?$/i.test(href)) return `https://${href}`;
+  return "";
+}
+
+const URL_IN_TEXT_RE = /(https?:\/\/[^\s<]+|www\.[^\s<]+\.[a-z]{2,}[^\s<]*)/gi;
+
+/** Plain text → escaped HTML with bare URLs turned into safe links (used for question hints). */
+export function linkifyPlainText(text: string): string {
+  const raw = String(text || "");
+  if (!raw) return "";
+  let out = "";
+  let last = 0;
+  for (const m of raw.matchAll(URL_IN_TEXT_RE)) {
+    const idx = m.index ?? 0;
+    out += escapeText(raw.slice(last, idx));
+    const trailing = m[0].match(/[.,;:!?)]+$/)?.[0] || "";
+    const url = m[0].slice(0, m[0].length - trailing.length);
+    const href = sanitizeLinkHref(url);
+    out += href
+      ? `<a href="${escapeText(href)}" target="_blank" rel="noopener noreferrer">${escapeText(url)}</a>${escapeText(trailing)}`
+      : escapeText(m[0]);
+    last = idx + m[0].length;
+  }
+  out += escapeText(raw.slice(last));
+  return out.replace(/\r?\n/g, "<br>");
+}
+
+export function textHasLink(text: string): boolean {
+  return URL_IN_TEXT_RE.test(String(text || ""));
+}
 
 export function looksLikeHtml(value: string): boolean {
   return /<\/?[a-z][\s\S]*>/i.test(String(value || "").trim());
@@ -61,6 +100,25 @@ function sanitizeNode(node: Node, out: DocumentFragment | Element): void {
   const tag = el.tagName.toUpperCase();
   if (!ALLOWED_TAGS.has(tag)) {
     for (const child of Array.from(el.childNodes)) sanitizeNode(child, out);
+    return;
+  }
+
+  if (tag === "A") {
+    const href = sanitizeLinkHref(el.getAttribute("href") || "");
+    if (!href) {
+      // Unsafe or empty link: keep the text, drop the anchor.
+      for (const child of Array.from(el.childNodes)) sanitizeNode(child, out);
+      return;
+    }
+    const a = document.createElement("a");
+    a.setAttribute("href", href);
+    a.setAttribute("target", "_blank");
+    a.setAttribute("rel", "noopener noreferrer");
+    const style = sanitizeStyle(el.getAttribute("style") || "");
+    if (style) a.setAttribute("style", style);
+    for (const child of Array.from(el.childNodes)) sanitizeNode(child, a);
+    if (!a.textContent?.trim()) a.textContent = href;
+    out.appendChild(a);
     return;
   }
 

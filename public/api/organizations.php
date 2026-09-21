@@ -41,6 +41,8 @@ if ($method === 'GET') {
         }
         $org['profile'] = organizationsDecodeProfile($org['profile_json'] ?? null);
         unset($org['profile_json']);
+        // Prefix in effect (saved, or derived from the company name) so Settings can show it before anyone saves.
+        $org['staff_id_prefix_effective'] = orgStaffIdPrefix($db, (string) $orgId, false);
         respond(['data' => $org]);
     }
 
@@ -359,7 +361,7 @@ if ($method === 'POST') {
             }
 
             $adminId = generateUUID();
-            $refCode = strtoupper(substr(str_replace('-', '', $adminId), 0, 8));
+            $refCode = referralCodeForNewOrgUser($db, $orgId, 'admin', $adminName);
             $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, referral_code) VALUES (?, ?, ?, ?, ?, 'admin', ?, ?)")
                 ->execute([$adminId, $adminEmail, $hash, $adminName, $adminPhone, $orgId, $refCode]);
             syncpediaStoreUserLoginPassword($db, $adminId, $adminPassword);
@@ -443,7 +445,7 @@ if ($method === 'POST') {
         if ($createAdmin && $adminEmail && $adminName && $adminPhone !== null) {
             $adminId = generateUUID();
             $hash = password_hash($adminPassword, PASSWORD_DEFAULT);
-            $refCode = strtoupper(substr(str_replace('-', '', $adminId), 0, 8));
+            $refCode = referralCodeForNewOrgUser($db, $orgId, 'admin', $adminName);
             
             $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, referral_code) VALUES (?, ?, ?, ?, ?, 'admin', ?, ?)");
             $stmt->execute([$adminId, $adminEmail, $hash, $adminName, $adminPhone, $orgId, $refCode]);
@@ -592,11 +594,52 @@ if ($method === 'PUT' && ($_GET['action'] ?? '') === 'profile') {
             $current[$k] = $val;
         }
     }
+
+    $assignPrefix = '';
+    if (array_key_exists('staff_id_prefix', $input)) {
+        $rawPrefix = trim((string) $input['staff_id_prefix']);
+        if ($rawPrefix === '') {
+            // Cleared: fall back to the prefix derived from the company name (re-established below).
+            unset($current['staff_id_prefix'], $current['staff_id_prefix_auto']);
+        } else {
+            $assignPrefix = normalizeStaffIdPrefix($rawPrefix);
+            if ($assignPrefix === '') {
+                respond(['error' => 'Org ID prefix must be 2 to 4 letters'], 400);
+            }
+            if (staffIdPrefixTakenByOtherOrg($db, $orgId, $assignPrefix)) {
+                respond(['error' => 'This org ID prefix is already used by another organisation'], 409);
+            }
+            $current['staff_id_prefix'] = $assignPrefix;
+            unset($current['staff_id_prefix_auto']);
+        }
+    }
+
     $json = json_encode($current, JSON_UNESCAPED_UNICODE);
     $db->prepare('UPDATE organizations SET profile_json = ? WHERE id = ?')->execute([$json, $orgId]);
 
+    if ($assignPrefix === '') {
+        // No explicit prefix: use the saved/derived one so every member still gets an ID.
+        $assignPrefix = orgStaffIdPrefix($db, $orgId, true);
+        if ($assignPrefix !== '' && normalizeStaffIdPrefix((string) ($current['staff_id_prefix'] ?? '')) === '') {
+            $current['staff_id_prefix'] = $assignPrefix;
+            $current['staff_id_prefix_auto'] = true;
+        }
+    }
+    $assigned = 0;
+    if ($assignPrefix !== '') {
+        $assigned = assignOrgStaffIds($db, $orgId, $assignPrefix);
+    }
+    $mine = $db->prepare('SELECT referral_code FROM users WHERE id = ? LIMIT 1');
+    $mine->execute([$userId]);
+    $myStaffId = trim((string) ($mine->fetchColumn() ?: ''));
+
     syncpediaAuditLog($db, $tokenData, 'updated', 'organization_profile', $orgId, 'Updated company profile / data settings');
-    respond(['message' => 'Settings saved', 'data' => $current]);
+    respond([
+        'message' => 'Settings saved',
+        'data' => $current,
+        'staff_ids_assigned' => $assigned,
+        'my_staff_id' => $myStaffId,
+    ]);
 }
 
 if ($method === 'PUT') {

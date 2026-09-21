@@ -12,8 +12,17 @@ spl_autoload_register(static function (string $class): void {
     }
 });
 
-// Dompdf (optional) — load full Composer autoload if present alongside this file
-$composerAutoload = __DIR__ . '/../composer/autoload_real.php';
-if (is_file($composerAutoload)) {
-    require $composerAutoload;
+// Dompdf / full Composer autoload when present (after `composer install` in php-backend
+// or when vendor/ is uploaded next to this stub).
+$composerCandidates = [
+    __DIR__ . '/composer/autoload_real.php',
+    __DIR__ . '/../composer/autoload_real.php',
+    __DIR__ . '/../../php-backend/vendor/autoload.php',
+    dirname(__DIR__, 2) . '/php-backend/vendor/autoload.php',
+];
+foreach ($composerCandidates as $composerAutoload) {
+    if (is_file($composerAutoload)) {
+        require_once $composerAutoload;
+        break;
+    }
 }

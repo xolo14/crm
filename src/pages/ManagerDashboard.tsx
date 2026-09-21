@@ -19,6 +19,9 @@ import { useToast } from '@/hooks/use-toast';
 import { useCallLogStats } from '@/hooks/useCallLogs';
 import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import { computeLeadKpis, normalizeLeadsByStatus } from '@/lib/dashboardKpis';
+import AssignedAssignmentsCard from '@/components/assignments/AssignedAssignmentsCard';
+import AssignedFormLinksCard from '@/components/forms/AssignedFormLinksCard';
+import AssignedDocFormLinksCard from '@/components/forms/AssignedDocFormLinksCard';
 const STATUS_LABELS: Record<string, string> = { new: 'New', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Demo Sched.', demo_attended: 'Demo Attend.', considering: 'Considering', enrolled: 'Enroll', converted: 'Enroll', lost: 'Lost' };
 
 export default function ManagerDashboard() {
@@ -288,6 +291,11 @@ export default function ManagerDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Assigned Assignments */}
+      <AssignedAssignmentsCard />
+      <AssignedFormLinksCard />
+      <AssignedDocFormLinksCard />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-5">
         <Card className="border-border/50 shadow-none">

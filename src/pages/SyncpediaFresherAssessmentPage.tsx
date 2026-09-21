@@ -7,7 +7,32 @@ import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import "./SyncpediaFresherAssessment.css";
 
-type Step = "register" | "instructions" | "test" | "interests" | "result";
+type Step = "register" | "instructions" | "test" | "result";
+
+async function enterFullscreen(): Promise<boolean> {
+  const el = document.documentElement as HTMLElement & {
+    webkitRequestFullscreen?: () => Promise<void> | void;
+  };
+  try {
+    if (document.fullscreenElement) return true;
+    if (el.requestFullscreen) {
+      await el.requestFullscreen();
+      return true;
+    }
+    if (el.webkitRequestFullscreen) {
+      await Promise.resolve(el.webkitRequestFullscreen());
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function exitFullscreenSafe() {
+  if (!document.fullscreenElement) return;
+  void document.exitFullscreen?.().catch(() => undefined);
+}
 
 const SLUG = "syncpedia-fresher-basics";
 
@@ -105,11 +130,16 @@ function FresherSideArt({ variant }: { variant: "left" | "right" }) {
   );
 }
 
+interface SyncpediaFresherAssessmentPageProps {
+  defaultSlug?: string;
+}
+
 /**
- * Syncpedia fresher basics assessment — dedicated Syncpedia UI (not Peaklyy).
+ * Syncpedia assessment — dedicated Syncpedia UI (not Peaklyy).
  */
-export default function SyncpediaFresherAssessmentPage() {
-  const { slug = SLUG } = useParams();
+export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: SyncpediaFresherAssessmentPageProps = {}) {
+  const { slug: routeSlug } = useParams();
+  const slug = routeSlug || defaultSlug;
   const [searchParams, setSearchParams] = useSearchParams();
   const accessKey = useMemo(() => {
     const fromQuery = searchParams.get("key") || "";
@@ -119,8 +149,14 @@ export default function SyncpediaFresherAssessmentPage() {
       const hp = new URLSearchParams(raw.includes("=") ? raw : `key=${raw}`);
       fromHash = hp.get("key") || (raw.startsWith("key=") ? decodeURIComponent(raw.slice(4)) : "");
     }
-    return fromHash || fromQuery || "syncpedia_fresher_basics_v1";
-  }, [searchParams]);
+    const defaultKey =
+      slug === "syncpedia-assignment"
+        ? "syncpedia_assignment_v1"
+        : slug === "syncpedia-fresher-basics"
+          ? "syncpedia_fresher_basics_v1"
+          : "";
+    return fromHash || fromQuery || defaultKey;
+  }, [searchParams, slug]);
 
   useEffect(() => {
     const qKey = searchParams.get("key");
@@ -137,6 +173,7 @@ export default function SyncpediaFresherAssessmentPage() {
   const { toast } = useToast();
   const [step, setStep] = useState<Step>("register");
   const [attemptToken, setAttemptToken] = useState("");
+  const isBasics = slug === SLUG;
   const [reg, setReg] = useState({
     full_name: "",
     email: "",
@@ -144,6 +181,7 @@ export default function SyncpediaFresherAssessmentPage() {
     degree_branch: "",
     graduation_year: "",
     college_name: "",
+    domain_key: "",
   });
   const [busy, setBusy] = useState(false);
   const [questions, setQuestions] = useState<PeaklyyQuestion[]>([]);
@@ -151,8 +189,6 @@ export default function SyncpediaFresherAssessmentPage() {
   const [idx, setIdx] = useState(0);
   const [endsAt, setEndsAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
-  const [interestOptions, setInterestOptions] = useState<string[]>([]);
-  const [interestSelected, setInterestSelected] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<{
     score: number;
     stars: number;
@@ -169,6 +205,7 @@ export default function SyncpediaFresherAssessmentPage() {
   });
 
   const assessment = data?.data;
+  const domainEntries = Object.entries(data?.domains || {});
 
   useEffect(() => {
     if (!endsAt || step !== "test") return;
@@ -184,30 +221,30 @@ export default function SyncpediaFresherAssessmentPage() {
   const current = questions[idx];
   const progress = questions.length ? Math.round(((idx + 1) / questions.length) * 100) : 0;
 
+  const stepRef = useRef<Step>(step);
+  useEffect(() => {
+    stepRef.current = step;
+  }, [step]);
+
+  const answersRef = useRef(answers);
+  useEffect(() => {
+    answersRef.current = answers;
+  }, [answers]);
+
   const submitAll = async () => {
     if (!attemptToken || submittingRef.current) return;
     submittingRef.current = true;
     setBusy(true);
+    exitFullscreenSafe();
     try {
-      const res = await assessmentsApi.submit(attemptToken, answers);
+      const res = await assessmentsApi.submit(attemptToken, answersRef.current);
       setResult({
         score: res.score,
         stars: res.stars,
         passed: res.passed,
         time_taken_seconds: res.time_taken_seconds,
       });
-      const opts =
-        Array.isArray(res.interest_options) && res.interest_options.length > 0
-          ? res.interest_options.map(String)
-          : Array.isArray(assessment?.interest_options)
-            ? assessment!.interest_options!.map(String)
-            : ["Cybersecurity", "Ethical Hacking", "Artificial Intelligence"];
-      setInterestOptions(opts);
-      if (res.require_interests && opts.length > 0) {
-        setStep("interests");
-      } else {
-        setStep("result");
-      }
+      setStep("result");
     } catch (e) {
       toast({
         variant: "destructive",
@@ -219,23 +256,195 @@ export default function SyncpediaFresherAssessmentPage() {
     }
   };
 
+  const forceSubmit = (reason: string) => {
+    if (submittingRef.current || stepRef.current !== "test") return;
+    toast({
+      variant: "destructive",
+      title: "Disturbance detected",
+      description: `${reason}. Test auto-submitted.`,
+    });
+    void submitAll();
+  };
+
+  useEffect(() => {
+    if (step !== "test") {
+      exitFullscreenSafe();
+      return;
+    }
+
+    try {
+      document.body.style.userSelect = "none";
+      (document.body.style as unknown as Record<string, string>).webkitUserSelect = "none";
+    } catch {}
+
+    const onVis = () => {
+      if (document.hidden && stepRef.current === "test") {
+        forceSubmit("Tab or window switch detected");
+      }
+    };
+
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    };
+
+    const onFsChange = () => {
+      if (!document.fullscreenElement && stepRef.current === "test") {
+        forceSubmit("Fullscreen exited");
+      }
+    };
+
+    const clearSelection = () => {
+      try {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          sel.removeAllRanges();
+        }
+      } catch {}
+    };
+
+    const block = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clearSelection();
+      return false;
+    };
+
+    // Completely disable all keyboard input during the test (only mouse selection allowed)
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    };
+
+    const onBlur = () => {
+      if (stepRef.current === "test") {
+        forceSubmit("Focus lost: window switch, external application, or extension interaction detected");
+      }
+    };
+
+    const onResize = () => {
+      if (stepRef.current !== "test") return;
+      const threshold = 160;
+      if (
+        window.outerWidth - window.innerWidth > threshold ||
+        window.outerHeight - window.innerHeight > threshold
+      ) {
+        forceSubmit("Developer tools or screen split detected");
+      }
+    };
+
+    const onClickCapture = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("a")) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
+    // Remove or suppress extension injection popups/sidebars/iframes
+    const extObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const node of Array.from(m.addedNodes)) {
+          if (node instanceof HTMLElement) {
+            const tag = node.tagName.toLowerCase();
+            const id = (node.id || "").toLowerCase();
+            const cls = (node.className && typeof node.className === "string" ? node.className : "").toLowerCase();
+            const src = (node.getAttribute("src") || "").toLowerCase();
+            if (
+              tag === "iframe" ||
+              src.includes("chrome-extension://") ||
+              src.includes("moz-extension://") ||
+              src.includes("edge-extension://") ||
+              tag.includes("-") ||
+              tag.includes("extension") ||
+              tag.includes("monica") ||
+              tag.includes("grammarly") ||
+              tag.includes("translate") ||
+              tag.includes("chatgpt") ||
+              id.includes("extension") ||
+              id.includes("monica") ||
+              id.includes("grammarly") ||
+              id.includes("translate") ||
+              id.includes("chatgpt") ||
+              cls.includes("extension") ||
+              cls.includes("monica") ||
+              cls.includes("grammarly") ||
+              cls.includes("translate") ||
+              cls.includes("chatgpt")
+            ) {
+              try {
+                node.remove();
+              } catch {
+                node.style.display = "none";
+                node.style.pointerEvents = "none";
+              }
+            }
+          }
+        }
+      }
+    });
+
+    try {
+      extObserver.observe(document.body, { childList: true, subtree: true });
+    } catch {}
+
+    window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("resize", onResize);
+    document.addEventListener("click", onClickCapture, true);
+    document.addEventListener("visibilitychange", onVis);
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("copy", block, true);
+    document.addEventListener("paste", block, true);
+    document.addEventListener("cut", block, true);
+    document.addEventListener("contextmenu", block, true);
+    document.addEventListener("selectstart", block, true);
+    document.addEventListener("selectionchange", clearSelection, true);
+    document.addEventListener("dragstart", block, true);
+    document.addEventListener("drop", block, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKey, true);
+    window.addEventListener("keypress", onKey, true);
+
+    return () => {
+      try {
+        document.body.style.userSelect = "";
+        (document.body.style as unknown as Record<string, string>).webkitUserSelect = "";
+      } catch {}
+      try {
+        extObserver.disconnect();
+      } catch {}
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("resize", onResize);
+      document.removeEventListener("click", onClickCapture, true);
+      document.removeEventListener("visibilitychange", onVis);
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("copy", block, true);
+      document.removeEventListener("paste", block, true);
+      document.removeEventListener("cut", block, true);
+      document.removeEventListener("contextmenu", block, true);
+      document.removeEventListener("selectstart", block, true);
+      document.removeEventListener("selectionchange", clearSelection, true);
+      document.removeEventListener("dragstart", block, true);
+      document.removeEventListener("drop", block, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKey, true);
+      window.removeEventListener("keypress", onKey, true);
+    };
+  }, [step]);
+
   useEffect(() => {
     if (step !== "test" || remainingSec == null || remainingSec > 0) return;
     void submitAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- auto-submit once at 0
   }, [remainingSec, step]);
 
-  const toggleInterest = (topic: string) => {
-    setInterestSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(topic)) next.delete(topic);
-      else next.add(topic);
-      return next;
-    });
-  };
-
-  const shell = (title: string, desc: string | undefined, body: ReactNode, eyebrow = "Fresher assessment") => (
-    <div className="sf-page">
+  const defaultEyebrow = slug === "syncpedia-assignment" ? "Syncpedia assignment" : "Fresher assignment";
+  const shell = (title: string, desc: string | undefined, body: ReactNode, eyebrow = defaultEyebrow) => (
+    <div className={cn("sf-page", step === "test" && "sf-page--test notranslate")} translate="no">
       <div className="sf-topbar">
         <span className="sf-topbar-brand">Syncpedia</span>
       </div>
@@ -259,15 +468,15 @@ export default function SyncpediaFresherAssessmentPage() {
   );
 
   if (isLoading) {
-    return shell("Loading…", "Preparing your assessment.", <p className="sf-card-desc">Please wait…</p>);
+    return shell("Loading…", "Preparing your assignment.", <p className="sf-card-desc">Please wait…</p>);
   }
 
   if (error || !assessment) {
     return shell(
-      "Assessment unavailable",
+      "Assignment unavailable",
       undefined,
       <p className="sf-card-desc" style={{ color: "#b91c1c" }}>
-        {error instanceof Error ? error.message : "Invalid or inactive assessment link"}
+        {error instanceof Error ? error.message : "Invalid or inactive assignment link"}
       </p>,
     );
   }
@@ -275,7 +484,7 @@ export default function SyncpediaFresherAssessmentPage() {
   if (step === "register") {
     return shell(
       "Candidate registration",
-      "Enter your details to begin. Required fields are marked. Topic interests are selected after the test.",
+      "Enter your details to begin. Required fields are marked.",
       <div className="sf-fields">
         <div className="sf-field sf-field--half">
           <label className="sf-label">Full name *</label>
@@ -348,6 +557,23 @@ export default function SyncpediaFresherAssessmentPage() {
             ))}
           </select>
         </div>
+        {isBasics ? (
+          <div className="sf-field">
+            <label className="sf-label">Domain *</label>
+            <select
+              className="sf-input"
+              value={reg.domain_key}
+              onChange={(e) => setReg((r) => ({ ...r, domain_key: e.target.value }))}
+            >
+              <option value="">Select domain</option>
+              {domainEntries.map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
         <button
           type="button"
           className="sf-btn"
@@ -365,6 +591,10 @@ export default function SyncpediaFresherAssessmentPage() {
               toast({ variant: "destructive", title: "College name is required" });
               return;
             }
+            if (isBasics && !reg.domain_key) {
+              toast({ variant: "destructive", title: "Select a domain" });
+              return;
+            }
             setBusy(true);
             try {
               const degreeParts = [reg.degree_branch.trim(), reg.graduation_year.trim()].filter(Boolean);
@@ -375,7 +605,8 @@ export default function SyncpediaFresherAssessmentPage() {
                 phone: reg.phone.trim(),
                 college_name: reg.college_name.trim(),
                 degree_branch: degreeParts.join(" · "),
-                domain_key: "custom",
+                graduation_year: reg.graduation_year.trim(),
+                domain_key: isBasics ? reg.domain_key : "custom",
               });
               setAttemptToken(res.attempt_token);
               setStep("instructions");
@@ -401,6 +632,14 @@ export default function SyncpediaFresherAssessmentPage() {
       "Please review before starting.",
       <>
         <ul className="sf-list">
+          <li key="fs-rule">
+            <ShieldAlert className="h-4 w-4" />
+            <span>Full screen mode is mandatory throughout the test duration. Exiting full screen, minimizing, or switching tabs will be detected and will automatically submit your test.</span>
+          </li>
+          <li key="mouse-only-rule">
+            <ShieldAlert className="h-4 w-4" />
+            <span>Keyboard, text selection, and browser extensions are strictly disabled. Only the mouse can be used to select answers and navigate during the test.</span>
+          </li>
           {(data?.instructions || []).map((line) => (
             <li key={line}>
               <ShieldAlert className="h-4 w-4" />
@@ -415,6 +654,16 @@ export default function SyncpediaFresherAssessmentPage() {
           onClick={async () => {
             setBusy(true);
             try {
+              const ok = await enterFullscreen();
+              if (!ok) {
+                toast({
+                  variant: "destructive",
+                  title: "Fullscreen required",
+                  description: "Please allow fullscreen mode to start the test without disturbances.",
+                });
+                setBusy(false);
+                return;
+              }
               const res = await assessmentsApi.start(attemptToken);
               setQuestions(res.questions);
               setEndsAt(res.ends_at ? new Date(res.ends_at).getTime() : null);
@@ -422,6 +671,7 @@ export default function SyncpediaFresherAssessmentPage() {
               setIdx(0);
               setStep("test");
             } catch (e) {
+              exitFullscreenSafe();
               toast({
                 variant: "destructive",
                 title: e instanceof Error ? e.message : "Could not start",
@@ -502,47 +752,6 @@ export default function SyncpediaFresherAssessmentPage() {
     );
   }
 
-  if (step === "interests" && result) {
-    return shell(
-      "Select your interests",
-      "Test completed. Choose one or more topics, then submit.",
-      <>
-        {interestOptions.map((topic) => (
-          <label key={topic} className={cn("sf-choice", interestSelected.has(topic) && "active")}>
-            <input
-              type="checkbox"
-              checked={interestSelected.has(topic)}
-              onChange={() => toggleInterest(topic)}
-            />
-            <span>{topic}</span>
-          </label>
-        ))}
-        <button
-          type="button"
-          className="sf-btn"
-          disabled={busy || interestSelected.size === 0}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await assessmentsApi.saveInterests(attemptToken, Array.from(interestSelected));
-              toast({ title: "Interests saved" });
-              setStep("result");
-            } catch (e) {
-              toast({
-                variant: "destructive",
-                title: e instanceof Error ? e.message : "Could not save interests",
-              });
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Submit interests
-        </button>
-      </>,
-    );
-  }
-
   if (step === "result" && result) {
     return shell(
       "Test completed",
@@ -551,12 +760,12 @@ export default function SyncpediaFresherAssessmentPage() {
         <p style={{ fontWeight: 800, fontSize: "1.25rem", marginTop: 4, marginBottom: 10 }}>
           Your test is completed
         </p>
-        <p className="sf-card-desc" style={{ marginBottom: 0 }}>
-          Thank you for completing the assessment. Our team will review your submission.
+        <p className="sf-card-desc" style={{ marginBottom: 8 }}>
+          Thank you for completing the assignment. Our team will review your submission.
         </p>
       </div>,
     );
   }
 
-  return shell("Assessment", undefined, <p className="sf-card-desc">Something went wrong. Refresh and try again.</p>);
+  return shell("Assignment", undefined, <p className="sf-card-desc">Something went wrong. Refresh and try again.</p>);
 }

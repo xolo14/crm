@@ -7,12 +7,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { UserCheck, ClipboardList, Loader2, Phone, PhoneCall, Link as LinkIcon, Copy, ExternalLink, Target } from 'lucide-react';
+import { UserCheck, ClipboardList, Loader2, Phone, PhoneCall, Target } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useCallLogStats } from '@/hooks/useCallLogs';
 import LogCallDialog from '@/components/sales/LogCallDialog';
 import { isSameAppCalendarDay } from '@/lib/dateTime';
+import AssignedAssignmentsCard from '@/components/assignments/AssignedAssignmentsCard';
+import AssignedFormLinksCard from '@/components/forms/AssignedFormLinksCard';
+import AssignedDocFormLinksCard from '@/components/forms/AssignedDocFormLinksCard';
 
 const STATUS_LABELS: Record<string, string> = {
   new: 'New', contacted: 'Contacted', interested: 'Interested', demo_scheduled: 'Demo Sched.', demo_attended: 'Demo Attend.',
@@ -23,8 +26,6 @@ const statusColors: Record<string, string> = {
   interested: 'bg-emerald-500/10 text-emerald-700 border-emerald-200', demo_scheduled: 'bg-indigo-500/10 text-indigo-700 border-indigo-200',
   enrolled: 'bg-teal-500/10 text-teal-800 border-teal-200', converted: 'bg-teal-500/10 text-teal-800 border-teal-200', lost: 'bg-red-500/10 text-red-700 border-red-200',
 };
-
-type AssignedLeadForm = { id: string; name: string; slug: string; is_active?: number | boolean | string };
 
 type FresherMyProgress = {
   enrolled: boolean;
@@ -53,7 +54,6 @@ export default function SalesRepDashboard() {
   const [loading, setLoading] = useState(true);
   const [leads, setLeads] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
-  const [assignedForms, setAssignedForms] = useState<AssignedLeadForm[]>([]);
   const [fresherProgress, setFresherProgress] = useState<FresherMyProgress | null>(null);
 
   const referralCode = profile?.referral_code || '';
@@ -65,10 +65,9 @@ export default function SalesRepDashboard() {
     if (!user) return;
     setLoading(true);
     try {
-      const [dashData, tasksData, formsRes, fresherRes] = await Promise.all([
+      const [dashData, tasksData, fresherRes] = await Promise.all([
         api.profiles.dashboard(),
         api.tasks.list(),
-        api.forms.list().catch(() => ({ data: [] as AssignedLeadForm[] })),
         api.fresherSalary.myProgress().catch(() => ({ enrolled: false } as FresherMyProgress)),
       ]);
       setLeads(dashData.leads || []);
@@ -79,10 +78,6 @@ export default function SalesRepDashboard() {
         allTasks
           .filter((t: any) => t.assigned_to === user.id || t.created_by === user.id)
           .slice(0, 8),
-      );
-      const raw = Array.isArray(formsRes?.data) ? formsRes.data : [];
-      setAssignedForms(
-        raw.filter((f: AssignedLeadForm) => f.is_active !== 0 && f.is_active !== false && f.is_active !== '0'),
       );
       setFresherProgress(fresherRes?.enrolled ? fresherRes : null);
     } catch (err) { console.error(err); }
@@ -119,22 +114,6 @@ export default function SalesRepDashboard() {
   }, [allMyLeads]);
 
   const pendingTasks = tasks.filter(t => t.status !== 'completed');
-
-  const personalFormUrl = (slug: string) => {
-    const base = `${window.location.origin}/apply`;
-    const q = new URLSearchParams({ form: slug });
-    if (referralCode) q.set('ref', referralCode);
-    return `${base}?${q.toString()}`;
-  };
-
-  const copyFormLink = async (slug: string) => {
-    try {
-      await navigator.clipboard.writeText(personalFormUrl(slug));
-      toast({ title: 'Link copied', description: 'Share this URL to collect form leads credited to you.' });
-    } catch {
-      toast({ variant: 'destructive', title: 'Could not copy', description: 'Copy the link manually from the preview.' });
-    }
-  };
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
@@ -225,82 +204,10 @@ export default function SalesRepDashboard() {
         </Card>
       )}
 
-      {/* Personalized apply links (Form Management assignments) — applies to all sales reps / execs / team leads on this dashboard */}
-      <Card className="mb-4 border-border/50 shadow-none border-teal-500/20 bg-teal-500/[0.03]">
-        <CardHeader className="px-3 sm:px-4 pb-2 pt-4">
-          <CardTitle className="text-sm font-semibold flex items-center gap-2">
-            <LinkIcon className="h-4 w-4 text-teal-600" />
-            Your form links
-          </CardTitle>
-          <p className="text-xs text-muted-foreground font-normal leading-snug mt-1">
-            Forms your admin assigned in Form Management. Each URL includes your referral code so submissions appear under Form Leads for you.
-          </p>
-          {!referralCode && assignedForms.length > 0 && (
-            <p className="text-[11px] text-amber-700 bg-amber-500/10 border border-amber-200/60 rounded-md px-2 py-1.5 mt-2">
-              Your profile has no referral code yet — links may not attribute leads. Ask your admin to fix your account.
-            </p>
-          )}
-        </CardHeader>
-        <CardContent className="px-3 sm:px-4 pb-4">
-          {assignedForms.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-2">
-              No forms assigned yet. When an admin assigns you in <span className="font-medium text-foreground">Form Management</span>, your personal links will show here for everyone on this dashboard role (sales reps, sales executives, team leads).
-            </p>
-          ) : isMobile ? (
-            <div className="space-y-2">
-              {assignedForms.map((f) => (
-                <div key={f.id} className="rounded-lg border border-border/60 bg-background p-3 space-y-2">
-                  <p className="text-sm font-medium">{f.name}</p>
-                  <p className="text-[10px] text-muted-foreground font-mono break-all">{personalFormUrl(f.slug)}</p>
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="outline" className="h-8 text-xs flex-1 gap-1" onClick={() => copyFormLink(f.slug)}>
-                      <Copy className="h-3 w-3" /> Copy
-                    </Button>
-                    <Button size="sm" variant="outline" className="h-8 text-xs flex-1 gap-1" asChild>
-                      <a href={personalFormUrl(f.slug)} target="_blank" rel="noopener noreferrer">
-                        <ExternalLink className="h-3 w-3" /> Open
-                      </a>
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead>Form</TableHead>
-                  <TableHead className="min-w-[200px]">Your link</TableHead>
-                  <TableHead className="w-[140px] text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {assignedForms.map((f) => (
-                  <TableRow key={f.id}>
-                    <TableCell className="font-medium text-sm">{f.name}</TableCell>
-                    <TableCell className="text-xs font-mono text-muted-foreground break-all max-w-md">{personalFormUrl(f.slug)}</TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => copyFormLink(f.slug)}>
-                          <Copy className="h-3 w-3" /> Copy
-                        </Button>
-                        <Button size="sm" variant="outline" className="h-7 text-xs gap-1" asChild>
-                          <a href={personalFormUrl(f.slug)} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="h-3 w-3" /> Open
-                          </a>
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-
-      {/* Today's Calls — below lead summary (replaces former KPI row) */}
+      {/* Assigned Assignments */}
+      <AssignedAssignmentsCard />
+      <AssignedFormLinksCard showEmpty />
+      <AssignedDocFormLinksCard />
       <Card className="mb-5 border border-border">
         <CardHeader className="flex flex-row items-center justify-between pb-3 px-4 pt-4">
           <div className="flex flex-wrap items-center gap-2">

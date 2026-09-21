@@ -92,7 +92,7 @@ function validateForm(form: StandardPaymentLinkFormState): Record<string, string
     e.phone = "Enter a valid 10-digit phone number";
   }
   if (!form.referralCode.trim()) {
-    e.referralCode = "Referral code is required";
+    e.referralCode = "Staff ID is required";
   }
   if (!form.noExpiry) {
     if (!form.expiryDate) {
@@ -611,7 +611,7 @@ export default function CreatePaymentLinkModal({
           {/* Referral Code */}
           <div>
             <label className={labelCls} htmlFor="pl-referral">
-              Referral Code
+              Staff ID
             </label>
             <input
               id="pl-referral"
@@ -624,7 +624,7 @@ export default function CreatePaymentLinkModal({
               <p className={errCls}>{errors.referralCode}</p>
             )}
             <p className={hintCls}>
-              Pre-filled from your profile — editable before sending
+              Your org staff ID — used so this payment is attributed to you
             </p>
           </div>
 

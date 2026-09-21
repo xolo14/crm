@@ -29,6 +29,8 @@ import { featureKeyForPath, isOrgFeatureEnabled } from '@/lib/orgFeatures';
 import { managerFeatureKeyForPath, managerHasPageAccess, operationalManagerHasPageAccess } from '@/lib/managerPageAccess';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import { useFresherSalaryAccess } from '@/hooks/useFresherSalaryAccess';
+import { useQuery } from '@tanstack/react-query';
+import { assessmentsApi } from '@/services/assessments';
 import type { PageAccess } from '@/lib/orgAccess';
 
 /** Shell pages not stored in org_features — always on for admins; managers need page grants. */
@@ -132,9 +134,9 @@ const navItems: NavItem[] = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard', roles: ['super_admin', 'org', 'manager', 'operational_manager', 'sales_representative'] },
   { to: '/organizations', icon: Building2, label: 'Organizations', roles: ['super_admin'] },
   {
-    to: '/leads', icon: Users, label: 'Leads', roles: ['super_admin', 'org', 'manager', 'marketing'],
+    to: '/leads', icon: Users, label: 'Leads', roles: ['super_admin', 'org', 'manager', 'marketing', 'operational_manager'],
     children: [
-      { to: '/leads/form-leads', icon: FileText, label: 'Form Leads', roles: ['super_admin', 'org', 'manager'] },
+      { to: '/leads/form-leads', icon: FileText, label: 'Form Leads', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
       { to: '/leads/hr-leads', icon: UserCheck, label: 'HR Leads', roles: ['super_admin', 'org'] },
     ],
   },
@@ -166,12 +168,12 @@ const navItems: NavItem[] = [
     ],
   },
   { to: '/students', icon: GraduationCap, label: 'Students', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
-  { to: '/courses', icon: BookOpen, label: 'Courses', roles: ['super_admin', 'org', 'manager'] },
+  { to: '/courses', icon: BookOpen, label: 'Courses', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
   {
     to: '/batches',
     icon: Layers,
     label: 'Batches',
-    roles: ['super_admin', 'org', 'manager', 'sales_representative'],
+    roles: ['super_admin', 'org', 'manager', 'sales_representative', 'operational_manager'],
   },
   {
     to: '/timetables',
@@ -183,7 +185,7 @@ const navItems: NavItem[] = [
     to: '/payments',
     icon: Link2,
     label: 'Payment links',
-    roles: ['super_admin', 'org', 'manager', 'sales_representative'],
+    roles: ['super_admin', 'org', 'manager', 'sales_representative', 'operational_manager'],
   },
   {
     to: '/payments/records',
@@ -193,14 +195,14 @@ const navItems: NavItem[] = [
   },
   { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'],
     children: [
-      { to: '/communications/whatsapp-inbox', icon: MessageSquare, label: 'WhatsApp Inbox', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing'] },
+      { to: '/communications/whatsapp-inbox', icon: MessageSquare, label: 'WhatsApp Inbox', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
     ],
   },
   {
-    to: '/daily-reports', icon: ClipboardList, label: 'Daily Reports', roles: ['super_admin', 'org', 'manager', 'sales_representative'],
+    to: '/daily-reports', icon: ClipboardList, label: 'Daily Reports', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'operational_manager'],
     children: [
       { to: '/sales/call-log', icon: PhoneCall, label: 'Call Log', roles: ['super_admin', 'org', 'manager', 'sales_representative'] },
-      { to: '/daily-reports/analytics', icon: BarChart2, label: 'Analytics', roles: ['super_admin', 'org', 'manager', 'sales_representative'] },
+      { to: '/daily-reports/analytics', icon: BarChart2, label: 'Analytics', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'operational_manager'] },
     ],
   },
   {
@@ -229,34 +231,34 @@ const navItems: NavItem[] = [
   { to: '/marketing/imported-leads', icon: Users, label: 'Imported Leads', roles: ['marketing'] },
   { to: '/marketing/meta-ads', icon: Megaphone, label: 'Meta Ads', roles: ['marketing'] },
   { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
-  { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'org', 'manager'] },
-  { to: '/payslip', icon: Receipt, label: 'Payslip', roles: ['super_admin', 'org'] },
+  { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
+  { to: '/payslip', icon: Receipt, label: 'Payslip', roles: ['super_admin', 'org', 'operational_manager'] },
   {
     to: '/team',
     icon: Users,
     label: 'Team',
-    roles: ['super_admin', 'org', 'manager'],
+    roles: ['super_admin', 'org', 'manager', 'operational_manager'],
   },
   {
     to: '/fresher-salary-tracker',
     icon: IndianRupee,
     label: 'Fresher Salary',
-    roles: ['super_admin', 'org', 'manager', 'sales_representative'],
+    roles: ['super_admin', 'org', 'manager', 'sales_representative', 'operational_manager'],
   },
   { to: '/tasks', icon: CheckSquare, label: 'Tasks', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
   { to: '/notifications', icon: Bell, label: 'Notifications', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
   { to: '/holidays', icon: CalendarDays, label: 'Holidays', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
-  { to: '/assessments', icon: ClipboardCheck, label: 'Assessments', roles: ['super_admin'] },
-  { to: '/trash', icon: Trash2, label: 'Trash', roles: ['super_admin', 'org', 'manager'] },
+  { to: '/assessments', icon: ClipboardCheck, label: 'Assignments', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
+  { to: '/trash', icon: Trash2, label: 'Trash', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
   { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
 ];
 
-function SidebarNavItem({ item, collapsed, role, organization, pageAccess, currentPath, onNavigate, showNewBadge, fresherEnrolled }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; pageAccess?: PageAccess | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean; fresherEnrolled?: boolean }) {
+function SidebarNavItem({ item, collapsed, role, organization, pageAccess, currentPath, onNavigate, showNewBadge, fresherEnrolled, hasAssignedAssignments }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; pageAccess?: PageAccess | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean; fresherEnrolled?: boolean; hasAssignedAssignments?: boolean }) {
   const hasChildren = item.children && item.children.length > 0;
   const filteredChildren = hasChildren
-    ? item.children!.filter((c) => navItemAllowed(c, role as AppRole | null, organization, pageAccess, fresherEnrolled))
+    ? item.children!.filter((c) => navItemAllowed(c, role as AppRole | null, organization, pageAccess, fresherEnrolled, hasAssignedAssignments))
     : [];
-  const isActive = currentPath === item.to;
+  const isActive = currentPath === item.to || (item.to === '/assessments' && currentPath === '/assignments');
   const isChildActive = filteredChildren.some(c => currentPath === c.to);
   const open = isActive || isChildActive || currentPath.startsWith(item.to + '/');
 
@@ -348,9 +350,17 @@ function navItemAllowed(
   organization: { slug?: string | null; features?: Record<string, boolean> | null } | null,
   pageAccess?: PageAccess | null,
   fresherEnrolled?: boolean,
+  hasAssignedAssignments?: boolean,
 ): boolean {
   const normalized = normalizeAppRole(role);
   if (!normalized || !item.roles.includes(normalized)) return false;
+
+  // Assignments / Assessments: SuperAdmin always; other roles only if an assignment has been assigned to them
+  if (item.to === "/assessments" || item.to === "/assignments") {
+    if (normalized === "super_admin") return true;
+    return Boolean(hasAssignedAssignments);
+  }
+
   if (item.to === "/offer-letters") return canAccessOfferLetters(normalized, organization, pageAccess);
   if (item.to === "/fresher-salary-tracker") {
     if (!canAccessFresherSalary(normalized, organization, pageAccess)) return false;
@@ -361,7 +371,7 @@ function navItemAllowed(
     return true;
   }
   if (item.to === "/certificates") return canAccessCertificates(normalized, organization, pageAccess);
-  if (item.to === "/payslip") return canAccessPayslip(normalized, organization);
+  if (item.to === "/payslip") return canAccessPayslip(normalized, organization, pageAccess);
   if (item.to === "/payments/records") {
     if (!canAccessPaymentRecords(normalized, pageAccess)) return false;
     return isOrgFeatureEnabled(normalized, organization, "payments");
@@ -393,7 +403,7 @@ function navItemAllowed(
 
   if (item.children) {
     const visibleChildren = item.children.filter((c) =>
-      navItemAllowed(c, normalized, organization, pageAccess, fresherEnrolled),
+      navItemAllowed(c, normalized, organization, pageAccess, fresherEnrolled, hasAssignedAssignments),
     );
     if (visibleChildren.length === 0 && item.children.length > 0) return false;
   }
@@ -423,8 +433,17 @@ function SidebarContent({
   const location = useLocation();
   const currentPath = location.pathname;
   const fresherAccess = useFresherSalaryAccess();
+  const isSuperAdmin = normalizeAppRole(role) === "super_admin";
+  const { data: myAssignmentsRes } = useQuery({
+    queryKey: ["my_assignments"],
+    queryFn: () => assessmentsApi.myAssignments(),
+    enabled: Boolean(role && !isSuperAdmin),
+    staleTime: 60_000,
+  });
+  const hasAssignedAssignments = isSuperAdmin || Boolean(myAssignmentsRes?.data && myAssignmentsRes.data.length > 0);
+
   const filteredNav = navItems.filter((item) =>
-    navItemAllowed(item, role, organization, pageAccess, fresherAccess.enrolled),
+    navItemAllowed(item, role, organization, pageAccess, fresherAccess.enrolled, hasAssignedAssignments),
   );
   const [showNewBadge, setShowNewBadge] = React.useState<boolean>(
     !localStorage.getItem("cert_nav_seen")
@@ -490,7 +509,7 @@ function SidebarContent({
 
       <nav className="flex-1 py-1 px-2 space-y-0.5 overflow-y-auto pb-3">
         {filteredNav.map(item => (
-          <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} fresherEnrolled={fresherAccess.enrolled} />
+          <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} fresherEnrolled={fresherAccess.enrolled} hasAssignedAssignments={hasAssignedAssignments} />
         ))}
       </nav>
     </div>

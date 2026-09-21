@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import type { WhatsappTemplate } from "@/types/communications";
 import { privacyPolicyUrl } from "@/lib/siteLegal";
+import { normalizeAppRole } from "@/lib/roleUtils";
 
 const STATUS_COLORS: Record<string, string> = {
   draft: "secondary",
@@ -29,7 +30,9 @@ export default function OrgWhatsAppSetupPage() {
   const { user, organization } = useAuth();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const isOrgAdmin = ["admin", "org", "super_admin"].includes(user?.role || "");
+  const role = normalizeAppRole(user?.role);
+  const canConnectMeta = role === "super_admin" || role === "org";
+  const canManageTemplates = ["super_admin", "org", "manager", "operational_manager", "marketing"].includes(role);
 
   const [tplForm, setTplForm] = useState({ name: "", body: "", category: "utility", language: "en" });
   const [tplOpen, setTplOpen] = useState(false);
@@ -41,12 +44,12 @@ export default function OrgWhatsAppSetupPage() {
   const { data: configRes } = useQuery({
     queryKey: ["comm", "org-config"],
     queryFn: () => communicationsApi.orgConfig(),
-    enabled: isOrgAdmin,
+    enabled: canManageTemplates,
   });
   const { data: templatesRes } = useQuery({
     queryKey: ["comm", "org-templates"],
     queryFn: () => communicationsApi.templates(),
-    enabled: isOrgAdmin,
+    enabled: canManageTemplates,
   });
 
   const config = configRes?.data;
@@ -55,12 +58,13 @@ export default function OrgWhatsAppSetupPage() {
   const waConnected = Boolean(config?.is_active) && config?.connection_status === "connected";
 
   useEffect(() => {
-    if (waConnected || !isOrgAdmin) return;
+    // Only auto-open setup wizard for roles that can connect Meta (org / super_admin).
+    if (waConnected || !canConnectMeta) return;
     const key = `wa_setup_prompt_${organization?.id || "default"}`;
     if (sessionStorage.getItem(key)) return;
     setWizardOpen(true);
     sessionStorage.setItem(key, "1");
-  }, [waConnected, isOrgAdmin, organization?.id]);
+  }, [waConnected, canConnectMeta, organization?.id]);
 
   const invalidateTemplates = () => qc.invalidateQueries({ queryKey: ["comm", "org-templates"] });
 
@@ -143,10 +147,10 @@ export default function OrgWhatsAppSetupPage() {
   const canSubmit = (t: WhatsappTemplate) =>
     t.status === "draft" || t.status === "rejected" || (t.status === "pending_approval" && !t.meta_template_id);
 
-  if (!isOrgAdmin) {
+  if (!canManageTemplates) {
     return (
       <div className="mx-auto max-w-lg py-16 text-center">
-        <p className="text-muted-foreground">Only organization admins can connect Meta WhatsApp.</p>
+        <p className="text-muted-foreground">You do not have access to WhatsApp setup.</p>
         <Button className="mt-4" asChild><Link to="/communications">Back to Communications</Link></Button>
       </div>
     );
@@ -170,8 +174,28 @@ export default function OrgWhatsAppSetupPage() {
         userName={user?.full_name}
         connected={waConnected}
         businessPhone={config?.business_phone}
-        onConnect={() => setWizardOpen(true)}
-        onManage={() => setWizardOpen(true)}
+        onConnect={() => {
+          if (!canConnectMeta) {
+            toast({
+              variant: "destructive",
+              title: "Ask an org admin",
+              description: "Only organization admins can connect or update Meta credentials.",
+            });
+            return;
+          }
+          setWizardOpen(true);
+        }}
+        onManage={() => {
+          if (!canConnectMeta) {
+            toast({
+              variant: "destructive",
+              title: "Ask an org admin",
+              description: "Only organization admins can connect or update Meta credentials.",
+            });
+            return;
+          }
+          setWizardOpen(true);
+        }}
       />
 
       {waConnected && config ? (
@@ -187,21 +211,27 @@ export default function OrgWhatsAppSetupPage() {
           <CardContent className="text-sm text-muted-foreground space-y-2">
             <p>Callback URL: <code className="text-xs break-all">{webhookUrl}</code></p>
             <p>Privacy Policy: <code className="text-xs break-all">{privacyPolicyUrl()}</code></p>
-            <Button variant="outline" size="sm" onClick={() => setWizardOpen(true)}>
-              Update API credentials
-            </Button>
+            {canConnectMeta ? (
+              <Button variant="outline" size="sm" onClick={() => setWizardOpen(true)}>
+                Update API credentials
+              </Button>
+            ) : (
+              <p className="text-xs">Credential updates require an organization admin.</p>
+            )}
           </CardContent>
         </Card>
       ) : null}
 
-      <WhatsAppSetupWizard
-        open={wizardOpen}
-        onOpenChange={setWizardOpen}
-        orgId={organization?.id}
-        orgName={organization?.name}
-        existingConfig={config}
-        onConnected={() => qc.invalidateQueries({ queryKey: ["comm"] })}
-      />
+      {canConnectMeta ? (
+        <WhatsAppSetupWizard
+          open={wizardOpen}
+          onOpenChange={setWizardOpen}
+          orgId={organization?.id}
+          orgName={organization?.name}
+          existingConfig={config}
+          onConnected={() => qc.invalidateQueries({ queryKey: ["comm"] })}
+        />
+      ) : null}
 
       <Card className="border-primary/20 bg-primary/5">
         <CardContent className="pt-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm text-muted-foreground">

@@ -10,6 +10,7 @@ import {
   resolveLeadEmail,
   resolveLeadPhone,
 } from '@/lib/parseFormLeadNotes';
+import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
 
 export type LeadExportNameResolvers = {
   /** Primary assignee display name(s). */
@@ -86,6 +87,7 @@ export function buildLeadsDetailExportCsv(rows: any[], resolvers: LeadExportName
     'S.No',
     'Name',
     'Status',
+    'Payment',
     'Course / Program Interest',
     'Email',
     'Phone',
@@ -124,6 +126,7 @@ export function buildLeadsDetailExportCsv(rows: any[], resolvers: LeadExportName
       index + 1,
       lead?.name || '',
       formatStatus(lead?.status),
+      leadFormPaymentBadge(lead)?.label || '',
       courseInterest,
       email,
       phone,

@@ -623,7 +623,12 @@ export const api = {
     create: (data: any) => request('/courses.php', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) => request(`/courses.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/courses.php?id=${id}`, { method: 'DELETE' }),
-  },
+ bulkCreate: (courses: any[], opts?: { org_id?: string }) =>
+ request('/courses.php?action=bulk', {
+ method: 'POST',
+ body: JSON.stringify({ courses, ...(opts?.org_id ? { org_id: opts.org_id } : {}) }),
+ }),
+ },
 
   // Batches
   batches: {
@@ -634,7 +639,12 @@ export const api = {
     create: (data: any) => request('/batches.php', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: any) => request(`/batches.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => request(`/batches.php?id=${id}`, { method: 'DELETE' }),
-  },
+ bulkCreate: (batches: any[], opts?: { org_id?: string }) =>
+ request('/batches.php?action=bulk', {
+ method: 'POST',
+ body: JSON.stringify({ batches, ...(opts?.org_id ? { org_id: opts.org_id } : {}) }),
+ }),
+ },
 
   // Payments
   payments: {
@@ -699,10 +709,12 @@ export const api = {
   },
 
   paymentCandidates: {
-    list: (params?: { owner_user_id?: string; search?: string }) => {
+    list: (params?: { owner_user_id?: string; search?: string; from?: number; to?: number }) => {
       const q = new URLSearchParams({ action: 'list' });
       if (params?.owner_user_id) q.set('owner_user_id', params.owner_user_id);
       if (params?.search) q.set('search', params.search);
+      if (params?.from !== undefined) q.set('from', String(params.from));
+      if (params?.to !== undefined) q.set('to', String(params.to));
       return request(`/payment-candidates.php?${q.toString()}`);
     },
     detail: (id: string) =>
@@ -941,8 +953,21 @@ export const api = {
     },
     createEmailSends: (campaignId: string, recipients: Array<string | { recipient_email?: string; email?: string; status?: string }>) =>
       request('/marketing.php?action=email_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
-    dispatchEmailCampaign: (data: { draft_id: string; recipients: Array<string | { email?: string; recipient_email?: string }> }) =>
-      request('/marketing.php?action=dispatch_email_campaign', { method: 'POST', body: JSON.stringify(data) }),
+    dispatchEmailCampaign: (data: {
+      draft_id: string;
+      smtp_account_id?: string;
+      scheduled_at?: string | null;
+      recipients: Array<
+        | string
+        | {
+            email?: string;
+            recipient_email?: string;
+            values?: Record<string, string>;
+            scheduled_at?: string | null;
+          }
+      >;
+    }) => request('/marketing.php?action=dispatch_email_campaign', { method: 'POST', body: JSON.stringify(data) }),
+    orgMailboxes: () => request('/marketing.php?action=org_mailboxes'),
     whatsappDrafts: (params?: { mine?: boolean }) =>
       request(`/marketing.php?action=whatsapp_drafts${params?.mine ? '&mine=1' : ''}`),
     createWhatsappDraft: (data: any) => request('/marketing.php?action=whatsapp_drafts', { method: 'POST', body: JSON.stringify(data) }),
@@ -1058,6 +1083,10 @@ export const api = {
       template_kind?: 'offer_letter' | 'certificate';
       column_maps?: unknown[];
     }) => request('/doc-forms.php?action=link_template', { method: 'POST', body: JSON.stringify(data) }),
+    unlinkTemplate: (formId: string) =>
+      request('/doc-forms.php?action=unlink_template', { method: 'POST', body: JSON.stringify({ form_id: formId }) }),
+    duplicate: (formId: string) =>
+      request('/doc-forms.php?action=duplicate', { method: 'POST', body: JSON.stringify({ id: formId }) }),
     saveColumnMaps: (formId: string, columnMaps: unknown[]) =>
       request('/doc-forms.php?action=save_column_maps', {
         method: 'POST',
@@ -1139,6 +1168,18 @@ export const api = {
       request<{ data: { email: unknown[]; whatsapp: unknown[] } }>(
         `/forms.php?action=campaign_templates&form_id=${encodeURIComponent(formId)}`,
       ),
+    /** Org offer-letter + certificate templates for form Automations. */
+    automationTemplates: (formId?: string | null) => {
+      const q = new URLSearchParams({ action: 'automation_templates' });
+      if (formId) q.set('form_id', formId);
+      return request<{
+        data: {
+          offer_letters: Array<{ id: string; name?: string; template_name?: string; status?: string }>;
+          certificates: Array<{ id: string; name?: string; status?: string }>;
+          org_id?: string | null;
+        };
+      }>(`/forms.php?${q.toString()}`);
+    },
     sendCampaign: (body: {
       form_id: string;
       channel: 'email' | 'whatsapp';
@@ -1152,6 +1193,24 @@ export const api = {
       send_to_existing?: boolean;
     }) =>
       request('/forms.php?action=campaign_settings', { method: 'POST', body: JSON.stringify(body) }),
+    retryAutoDocuments: (body: { form_id: string; lead_id: string }) =>
+      request<{
+        message?: string;
+        data?: {
+          certificate_sent?: boolean;
+          certificate_id?: string | null;
+          certificate_error?: string | null;
+          certificate_warning?: string | null;
+          offer_letter_sent?: boolean;
+          offer_letter_id?: string | null;
+          offer_letter_error?: string | null;
+          warning?: string | null;
+          tags?: Record<string, unknown>;
+        };
+      }>('/forms.php?action=retry_auto_documents', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
   },
 
   trash: {

@@ -37,6 +37,7 @@ export const CertificatesPage = lazyWithRetry(() => import("@/pages/Certificates
 export const PayslipPage = lazyWithRetry(() => import("@/pages/payslip/PayslipPage"));
 export const FormsManagerPage = lazyWithRetry(() => import("@/pages/FormsManagerPage"));
 export const DocFormsHubPage = lazyWithRetry(() => import("@/pages/DocFormsHubPage"));
+export const MyDocForms = lazyWithRetry(() => import("@/pages/MyDocForms"));
 export const PublicDocFormPage = lazyWithRetry(() => import("@/pages/PublicDocFormPage"));
 export const FormApiIntegrationsPage = lazyWithRetry(() => import("@/pages/FormApiIntegrationsPage"));
 export const SuperAdminPanel = lazyWithRetry(() => import("@/pages/SuperAdminPanel"));
@@ -62,6 +63,7 @@ export const CallLogPage = lazyWithRetry(() => import("@/pages/sales/CallLogPage
 export const AssessmentsAdminPage = lazyWithRetry(() => import("@/pages/AssessmentsAdminPage"));
 export const PeaklyyAssessmentPage = lazyWithRetry(() => import("@/pages/PeaklyyAssessmentPage"));
 export const SyncpediaFresherAssessmentPage = lazyWithRetry(() => import("@/pages/SyncpediaFresherAssessmentPage"));
+export const PublicAssessmentPage = lazyWithRetry(() => import("@/pages/PublicAssessmentPage"));
 
 /** Certificate verify is a named export on CertificatesPage. */
 export const CertificateVerifyPage = lazyWithRetry(() =>

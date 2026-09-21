@@ -147,9 +147,9 @@ export default function PeaklyyAssessmentPage() {
       "No tab switching or leaving the page",
       "Copy and paste is disabled",
       "Leaving or switching tabs auto-submits the test",
-      "Uploading a task file stays in the test — it does not submit the whole assessment",
+      "Uploading a task file stays in the test — it does not submit the whole assignment",
       assessment.once_per_candidate
-        ? "Test allowed only once per candidate"
+        ? "Test allowed only once per candidate — submit only when you are done with the entire assignment"
         : "Multiple attempts may be allowed",
       `Score ${pass}+ to pass (1★ at 70, 2★ at 80, 3★ at 90, 4★ at 100). Below ${pass} = Not pass`,
     );
@@ -458,7 +458,7 @@ export default function PeaklyyAssessmentPage() {
       <div className="pk-page pk-center-wrap">
         <div className="pk-card">
           <div className="pk-body text-center text-sm" style={{ color: "var(--pk-muted)" }}>
-            Loading assessment…
+            Loading assignment…
           </div>
         </div>
       </div>
@@ -469,7 +469,7 @@ export default function PeaklyyAssessmentPage() {
       <div className="pk-page pk-center-wrap">
         <div className="pk-card">
           <div className="pk-body text-center space-y-2">
-            <p className="font-semibold">Assessment not found</p>
+            <p className="font-semibold">Assignment not found</p>
             <p className="text-sm" style={{ color: "var(--pk-muted)" }}>
               {error instanceof Error ? error.message : "Invalid link"}
             </p>
@@ -494,12 +494,12 @@ export default function PeaklyyAssessmentPage() {
       <p>
         {assessment.brand_tagline || "Learn · Earn · Grow"} —{" "}
         {isCustom
-          ? "custom assessment with your questions, timed scoring, and star ratings."
+          ? "custom assignment with your questions, timed scoring, and star ratings."
           : "beginner-friendly domain screening with 15 MCQs + 1 practical task."}
       </p>
       <div className="pk-social-row">
         <span className="pk-social-dot" aria-hidden />
-        <span className="pk-social-label">Assessment portal</span>
+        <span className="pk-social-label">Assignment portal</span>
       </div>
       <div className="pk-feature">
         <strong>Candidates</strong>
@@ -520,7 +520,7 @@ export default function PeaklyyAssessmentPage() {
                 <div className="pk-header">Candidate Registration</div>
                 <div className="pk-body space-y-3">
                   <p className="text-xs text-center font-medium" style={{ color: "var(--pk-muted)" }}>
-                    {isCustom ? "Custom assessment · Peaklyy" : "Domain screening · Peaklyy"}
+                    {isCustom ? "Custom assignment · Peaklyy" : "Domain screening · Peaklyy"}
                   </p>
                   <Field label="Full Name">
                     <Input
@@ -608,7 +608,7 @@ export default function PeaklyyAssessmentPage() {
                       }
                     }}
                   >
-                    Begin Assessment →
+                    Begin Assignment →
                   </Button>
                 </div>
               </div>
@@ -618,7 +618,7 @@ export default function PeaklyyAssessmentPage() {
                 <div className="pk-body space-y-5">
                   <div>
                     <h2 className="text-xl font-bold tracking-tight">
-                      {assessment.title || "Domain Screening Assessment"}
+                      {assessment.title || "Domain Screening Assignment"}
                     </h2>
                     <p className="text-sm mt-1" style={{ color: "var(--pk-muted)" }}>
                       Please review the instructions below before proceeding.
@@ -643,7 +643,7 @@ export default function PeaklyyAssessmentPage() {
                           toast({
                             variant: "destructive",
                             title: "Fullscreen required",
-                            description: "Allow fullscreen to start the assessment.",
+                            description: "Allow fullscreen to start the assignment.",
                           });
                           setBusy(false);
                           return;
@@ -658,7 +658,7 @@ export default function PeaklyyAssessmentPage() {
                           | "task"
                           | "single";
                         setTestPhase(p);
-                        setPartTitle(res.title || (p === "mcq" ? "Part 1 — MCQ test" : "Assessment"));
+                        setPartTitle(res.title || (p === "mcq" ? "Part 1 — MCQ test" : "Assignment"));
                         setAnswers({});
                         setSavedIds({});
                         setIdx(0);
@@ -826,7 +826,7 @@ export default function PeaklyyAssessmentPage() {
                       ? "Submit tasks →"
                       : testPhase === "mcq"
                         ? "Submit MCQ test →"
-                        : "Submit assessment →"}
+                        : "Submit assignment →"}
                   </Button>
                 )}
               </div>
@@ -977,7 +977,7 @@ export default function PeaklyyAssessmentPage() {
               <div className="pk-header text-center py-5 space-y-1">
                 <Trophy className="h-8 w-8 mx-auto text-white" />
                 <div className="text-lg font-bold">
-                  {result.tasks_submitted ? "All parts completed" : "Assessment Completed"}
+                  {result.tasks_submitted ? "All parts completed" : "Assignment Completed"}
                 </div>
               </div>
               <div className="pk-body text-center space-y-3">

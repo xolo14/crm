@@ -3,6 +3,7 @@ import { format, endOfDay } from 'date-fns';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api } from '@/lib/api';
+import { callLogsApi } from '@/services/callLogs';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -49,6 +50,13 @@ export default function MyReferrals() {
   const fetchData = async () => {
     setLoading(true);
     try {
+      // Backfill daily_reports from call_logs (All Time needs a deep window).
+      // Non-blocking if sync fails — list still loads.
+      try {
+        await callLogsApi.syncDailyReportsFromCallLogs(730);
+      } catch {
+        /* ignore */
+      }
       const [leadsData, profilesData, reportsData] = await Promise.all([
         api.leads.list(),
         api.profiles.list(),
@@ -58,7 +66,11 @@ export default function MyReferrals() {
       const profiles = Array.isArray(profilesData)
         ? profilesData
         : profilesData.data || profilesData.profiles || [];
-      const reports = Array.isArray(reportsData) ? reportsData : reportsData.data || reportsData.reports || [];
+      const reports = Array.isArray(reportsData)
+        ? reportsData
+        : Array.isArray(reportsData?.data)
+          ? reportsData.data
+          : reportsData?.reports || [];
       setAllLeads(leads);
       setDailyReports(reports);
       setTeamMembers(profiles.filter((p: any) => p.user_id));
@@ -69,8 +81,14 @@ export default function MyReferrals() {
   const userIdToName = useMemo(() => {
     const map: Record<string, string> = {};
     for (const p of teamMembers) map[p.user_id] = p.full_name || p.email || 'Unknown';
+    // Prefer API join names when profile roster is incomplete (e.g. manager downline).
+    for (const r of dailyReports) {
+      if (r.user_id && !map[r.user_id] && (r.user_name || r.user_email)) {
+        map[r.user_id] = r.user_name || r.user_email;
+      }
+    }
     return map;
-  }, [teamMembers]);
+  }, [teamMembers, dailyReports]);
 
   const codeToUserId = useMemo(() => {
     const map: Record<string, string> = {};
@@ -153,17 +171,25 @@ export default function MyReferrals() {
     }
 
     for (const report of dateFilteredReports) {
-      if (report.user_id && stats[report.user_id]) {
-        stats[report.user_id].totalCalls += Number(report.total_calls) || 0;
-        stats[report.user_id].totalFollowups += Number(report.total_followups) || 0;
-        stats[report.user_id].totalDemos += Number(report.total_demos) || 0;
-        stats[report.user_id].totalConversions += Number(report.total_conversions) || 0;
-        stats[report.user_id].reportCount++;
+      if (!report.user_id) continue;
+      if (!stats[report.user_id]) {
+        stats[report.user_id] = {
+          name: report.user_name || report.user_email || userIdToName[report.user_id] || 'Unknown',
+          email: report.user_email || '',
+          userId: report.user_id,
+          totalAssigned: 0, formGenerated: 0, converted: 0, lost: 0, contacted: 0, newLeads: 0,
+          totalCalls: 0, totalFollowups: 0, totalDemos: 0, totalConversions: 0, reportCount: 0,
+        };
       }
+      stats[report.user_id].totalCalls += Number(report.total_calls) || 0;
+      stats[report.user_id].totalFollowups += Number(report.total_followups) || 0;
+      stats[report.user_id].totalDemos += Number(report.total_demos) || 0;
+      stats[report.user_id].totalConversions += Number(report.total_conversions) || 0;
+      stats[report.user_id].reportCount++;
     }
 
     return Object.values(stats).sort((a, b) => b.totalAssigned - a.totalAssigned);
-  }, [salesReps, dateFilteredLeads, dateFilteredReports, codeToUserId]);
+  }, [salesReps, dateFilteredLeads, dateFilteredReports, codeToUserId, userIdToName]);
 
   const filteredStats = useMemo(() => {
     if (selectedRep === 'all') return repStats;
@@ -189,10 +215,10 @@ export default function MyReferrals() {
     });
   }, [selectedRep, dateFilteredLeads, codeToUserId]);
 
-  // Get daily reports for selected rep
+  // Get daily reports for selected rep (All Time / long ranges need a higher cap)
   const selectedRepReports = useMemo(() => {
-    if (selectedRep === 'all') return dateFilteredReports.slice(0, 10);
-    return dateFilteredReports.filter(r => r.user_id === selectedRep).slice(0, 20);
+    if (selectedRep === 'all') return dateFilteredReports.slice(0, 100);
+    return dateFilteredReports.filter(r => r.user_id === selectedRep).slice(0, 200);
   }, [selectedRep, dateFilteredReports]);
 
   const totalCollectedLeads = useMemo(() => {
@@ -425,7 +451,7 @@ export default function MyReferrals() {
                     <div key={report.id} className="border border-border/50 rounded-lg p-3 cursor-pointer hover:bg-muted/30 transition-colors" onClick={() => setViewReport(report)}>
                       <div className="flex items-center justify-between mb-2">
                         <p className="font-medium text-sm">{new Date(report.report_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</p>
-                        <p className="text-xs text-muted-foreground">{userIdToName[report.user_id] || 'Unknown'}</p>
+                        <p className="text-xs text-muted-foreground">{userIdToName[report.user_id] || report.user_name || 'Unknown'}</p>
                       </div>
                       <div className="grid grid-cols-4 gap-1 text-xs text-center">
                         <div><p className="font-bold">{report.total_calls || 0}</p><p className="text-muted-foreground">Calls</p></div>
@@ -458,7 +484,7 @@ export default function MyReferrals() {
                       <TableRow key={report.id}>
                         <TableCell className="text-muted-foreground text-sm">{i + 1}</TableCell>
                         <TableCell className="font-medium text-sm">{new Date(report.report_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</TableCell>
-                        <TableCell className="text-sm">{userIdToName[report.user_id] || 'Unknown'}</TableCell>
+                        <TableCell className="text-sm">{userIdToName[report.user_id] || report.user_name || 'Unknown'}</TableCell>
                         <TableCell className="text-center">{report.total_calls || 0}</TableCell>
                         <TableCell className="text-center">{report.total_followups || 0}</TableCell>
                         <TableCell className="text-center">{report.total_demos || 0}</TableCell>

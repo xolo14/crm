@@ -10,11 +10,18 @@ ini_set('log_errors', '1');
 
 class Database {
     private $conn;
+    /** @var PDO|null Shared across Database instances in the same PHP request (cuts Hostinger connection spikes). */
+    private static $shared = null;
 
     public function getConnection() {
+        if (self::$shared instanceof PDO) {
+            $this->conn = self::$shared;
+            return $this->conn;
+        }
         if ($this->conn === null) {
             try {
                 $this->conn = syncpediaCreatePdo();
+                self::$shared = $this->conn;
             } catch (PDOException $e) {
                 error_log('[Database] connect failed: ' . $e->getMessage());
                 $msg = 'Database connection failed';
@@ -315,17 +322,22 @@ function verifyToken() {
         if (isset($row['role']) && trim((string) $row['role']) !== '') {
             $data['role'] = (string) $row['role'];
         }
-        // Prefer live users.org_id. For super_admin, keep JWT switch_org when DB org is empty
-        // so tenant lists (batches/courses) stay scoped to the switched organization.
+        // Prefer live users.org_id for tenant users.
+        // Super admin: keep JWT as-is (null = master panel; set = switch_org). Never overwrite
+        // with users.org_id or master-view / switched-tenant list APIs scope to the wrong org.
         if (array_key_exists('org_id', $row)) {
             $dbOrg = $row['org_id'];
             $dbOrgTrim = is_string($dbOrg) || is_numeric($dbOrg) ? trim((string) $dbOrg) : '';
             $jwtOrgTrim = trim((string) ($data['org_id'] ?? ''));
             $normRole = syncpediaNormalizeRoleKey((string) ($data['role'] ?? ''));
-            if ($dbOrgTrim !== '') {
+            if ($normRole === 'super_admin') {
+                if ($jwtOrgTrim !== '') {
+                    $data['org_id'] = $jwtOrgTrim;
+                } else {
+                    $data['org_id'] = null;
+                }
+            } elseif ($dbOrgTrim !== '') {
                 $data['org_id'] = (string) $dbOrg;
-            } elseif ($normRole === 'super_admin' && $jwtOrgTrim !== '') {
-                $data['org_id'] = $jwtOrgTrim;
             } else {
                 $data['org_id'] = $dbOrg;
             }
@@ -463,6 +475,29 @@ function syncpediaRateLimitConsume(string $bucket, int $maxAttempts = 10, int $w
     }
     $attempts[] = $now;
     @file_put_contents($file, json_encode(['attempts' => $attempts, 'blocked_until' => 0]));
+}
+
+/** Run heavy due-reminder scan at most once per org per interval (notification polls hit this often). */
+function syncpediaShouldRunDispatchReminders(string $orgId, int $intervalSeconds = 600): bool
+{
+    $orgId = trim($orgId);
+    if ($orgId === '') {
+        return false;
+    }
+    $dir = dirname(__DIR__) . '/storage/reminder_dispatch';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0750, true);
+    }
+    $file = $dir . '/' . hash('sha256', $orgId) . '.ts';
+    $now = time();
+    if (is_file($file)) {
+        $last = (int) trim((string) @file_get_contents($file));
+        if ($last > 0 && ($now - $last) < $intervalSeconds) {
+            return false;
+        }
+    }
+    @file_put_contents($file, (string) $now);
+    return true;
 }
 
 /**
@@ -632,7 +667,7 @@ function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): ar
         if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
             return hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
         }
-        if (hierarchyRoleUsesDownlineScope($tokenData) && $effRole !== 'manager') {
+        if (hierarchyRoleUsesDownlineScope($tokenData) && !in_array($effRole, ['manager', 'operational_manager'], true)) {
             return hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias, $db);
         }
         return ['sql' => '', 'params' => []];
@@ -647,7 +682,7 @@ function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): ar
         return ['sql' => $sql . $l1['sql'], 'params' => array_merge($params, $l1['params'])];
     }
     // Managers see all leads in their org (same as admin/org), not downline-only.
-    if (hierarchyRoleUsesDownlineScope($tokenData) && $effRole !== 'manager') {
+    if (hierarchyRoleUsesDownlineScope($tokenData) && !in_array($effRole, ['manager', 'operational_manager'], true)) {
         $dl = hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias, $db);
         return ['sql' => $sql . $dl['sql'], 'params' => array_merge($params, $dl['params'])];
     }
@@ -674,7 +709,7 @@ function tenantStudentListScopeSql(PDO $db, array $tokenData): array
     }
     if (hierarchyRoleUsesDownlineScope($tokenData)) {
         // Managers see all org students (aligned with org-wide leads visibility).
-        if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) !== 'manager') {
+        if (!in_array(syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')), ['manager', 'operational_manager'], true)) {
             $scope = hierarchyStudentListScopeSql(hierarchyGetVisibleUserIds($db, $tokenData));
             $sql .= $scope['sql'];
             $params = array_merge($params, $scope['params']);
@@ -733,6 +768,7 @@ function tenantTaskListScopeSql(PDO $db, array $tokenData): array
 
 /**
  * Daily reports list scope: tenant org + hierarchy.
+ * Align with leads: managers / org / OM see the full tenant; sales see own rows only.
  *
  * @return array{sql: string, params: array}
  */
@@ -740,26 +776,41 @@ function tenantDailyReportsScopeSql(PDO $db, array $tokenData): array
 {
     $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     $userId = (string) ($tokenData['user_id'] ?? '');
+
+    // Super-admin master panel (no switched tenant): all reports.
     if (tenantIsMasterView($tokenData)) {
         return ['sql' => '', 'params' => []];
     }
 
-    $orgId = resolveCreatorOrgId($db, $tokenData);
-    if ($orgId === null || $orgId === '') {
+    // Prefer getOrgId (JWT / ?org_id=) so super_admin switch_org matches leads scoping.
+    // Do not invent a platform org via resolveCreatorOrgId for list reads.
+    $orgId = getOrgId($tokenData);
+    if ($orgId === null || trim((string) $orgId) === '') {
+        $orgId = resolveCreatorOrgId($db, $tokenData);
+    }
+    // Super-admin with no tenant selected → unscoped (same as leads 1=1).
+    if (($orgId === null || trim((string) $orgId) === '')
+        && $effRole === 'super_admin'
+    ) {
+        return ['sql' => '', 'params' => []];
+    }
+    if ($orgId === null || trim((string) $orgId) === '') {
         return ['sql' => ' AND 1=0', 'params' => []];
     }
+    $orgId = (string) $orgId;
 
-    $sql = ' AND (dr.org_id = ? OR (dr.org_id IS NULL AND dr.user_id IN (SELECT id FROM users WHERE org_id = ?)))';
+    // Match report.org_id OR any report filed by a user in this tenant
+    // (covers NULL / mismatched org_id on older rows).
+    $sql = ' AND (dr.org_id = ? OR dr.user_id IN (SELECT id FROM users WHERE org_id = ?))';
     $params = [$orgId, $orgId];
 
     if (in_array($effRole, ['sales_representative'], true)) {
         $sql .= ' AND dr.user_id = ?';
         $params[] = $userId;
-    } elseif (hierarchyRoleUsesDownlineScope($tokenData)) {
-        $scope = hierarchyBuildInClause('dr.user_id', hierarchyGetVisibleUserIds($db, $tokenData));
-        $sql .= $scope['sql'];
-        $params = array_merge($params, $scope['params']);
-    } elseif (!in_array($effRole, ['admin', 'org'], true)) {
+    } elseif (in_array($effRole, ['admin', 'org', 'manager', 'operational_manager', 'super_admin'], true)) {
+        // Full tenant — managers see org-wide reports (same as leads), not downline-only.
+    } else {
+        // Unknown / L1-like roles: own rows only.
         $sql .= ' AND dr.user_id = ?';
         $params[] = $userId;
     }
@@ -3313,19 +3364,12 @@ function userNormalizePageAccessInput($input, string $memberRole): array {
     if ($role !== 'manager' && $role !== 'operational_manager' && $role !== 'hr') {
         $access['pages'] = [];
     }
-    if ($role === 'operational_manager') {
-        $filtered = [];
-        foreach (userOperationalManagerOptionalPageKeys() as $key) {
-            $filtered[$key] = !empty($access['pages'][$key]);
-        }
-        $access['pages'] = $filtered;
-    }
     return $access;
 }
 
 function userOperationalManagerOptionalPageKeys(): array
 {
-    return ['communications', 'courses', 'batches', 'daily_reports', 'leads'];
+    return ['courses', 'batches', 'daily_reports', 'leads'];
 }
 
 /** HR portal page grant — communications / form_management / offer_letters are opt-in. */
@@ -3492,7 +3536,7 @@ function userCanAccessMarketingPage(array $tokenData, ?array $userRow = null): b
     if ($role === 'operational_manager') {
         return true;
     }
-    if ($role !== 'manager') {
+    if (!in_array($role, ['manager', 'operational_manager'])) {
         return false;
     }
     $access = null;
@@ -4761,7 +4805,7 @@ function publicLeadFetchFormBySlug(PDO $db, string $slug): ?array {
     }
     $stmt = $db->prepare(
         'SELECT lf.id, lf.name, lf.slug, lf.description, lf.fields_json, lf.meta_json, lf.is_active, lf.org_id, lf.created_by,
-                o.name AS org_name
+                o.name AS org_name, o.logo_url AS org_logo_url
          FROM lead_forms lf
          LEFT JOIN organizations o ON o.id = lf.org_id
          WHERE LOWER(TRIM(lf.slug)) = LOWER(TRIM(?)) AND lf.is_active = 1
@@ -5411,6 +5455,375 @@ function deletePaymentProofIfExists(?string $relativePath): void
 }
 
 /**
+ * Org staff ID prefix: 2–4 letters, stored on organizations.profile_json.staff_id_prefix.
+ * Staff ID format is PREFIX + 4 digits and is stored in users.referral_code so form/payment refs keep working.
+ * Bands: org/admin 0001–0100, manager/operational_manager 0101–1000, sales/hr/marketing 1001–9999.
+ */
+function normalizeStaffIdPrefix(string $raw): string
+{
+    $prefix = strtoupper(preg_replace('/[^A-Za-z]/', '', $raw) ?? '');
+    if (strlen($prefix) < 2 || strlen($prefix) > 4) {
+        return '';
+    }
+    return $prefix;
+}
+
+function staffIdBandFloor(string $role): ?int
+{
+    $clean = strtolower(trim($role));
+    if ($clean === 'sales_executive') {
+        $clean = 'sales_representative';
+    }
+    if ($clean === 'team_lead' || $clean === 'sales_manager') {
+        $clean = 'manager';
+    }
+    if ($clean === 'ops_manager' || $clean === 'l2_operational_manager' || $clean === 'operational manager') {
+        $clean = 'operational_manager';
+    }
+    if ($clean === 'organization') {
+        $clean = 'org';
+    }
+    if (strpos($clean, 'marketing') === 0) {
+        $clean = 'marketing';
+    }
+    if (in_array($clean, ['org', 'admin'], true)) {
+        return 1;
+    }
+    if (in_array($clean, ['manager', 'operational_manager'], true)) {
+        return 101;
+    }
+    if (in_array($clean, ['sales_representative', 'hr', 'marketing', 'sales_marketing'], true)) {
+        return 1001;
+    }
+    return null;
+}
+
+/**
+ * Default prefix from the company name when the admin has not set one:
+ * one word → first 2 letters (Syncpedia → SY); several words → first letter of each word (Peakly Academy → PA), max 4.
+ */
+function deriveStaffIdPrefixFromName(string $name): string
+{
+    $words = preg_split('/[^A-Za-z]+/', $name, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    if ($words === []) {
+        return '';
+    }
+    $candidate = '';
+    if (count($words) >= 2) {
+        foreach ($words as $w) {
+            $candidate .= substr($w, 0, 1);
+            if (strlen($candidate) >= 4) {
+                break;
+            }
+        }
+    }
+    if (strlen($candidate) < 2) {
+        $candidate = substr($words[0], 0, 2);
+    }
+    return normalizeStaffIdPrefix($candidate);
+}
+
+function staffIdBandCeiling(int $floor): int
+{
+    if ($floor <= 1) {
+        return 100;
+    }
+    if ($floor <= 101) {
+        return 1000;
+    }
+    return 9999;
+}
+
+/**
+ * Prefix in effect for an org: the saved one, else one derived from the company name.
+ * When $persistDerived is true the derived prefix is stored (flagged staff_id_prefix_auto) so a later
+ * company rename does not renumber staff.
+ */
+function orgStaffIdPrefix(PDO $db, string $orgId, bool $persistDerived = true): string
+{
+    if ($orgId === '') {
+        return '';
+    }
+    try {
+        ensureOrganizationsProfileColumn($db);
+        $st = $db->prepare('SELECT name, profile_json FROM organizations WHERE id = ? LIMIT 1');
+        $st->execute([$orgId]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            return '';
+        }
+        $profile = organizationsDecodeProfile(isset($row['profile_json']) ? (string) $row['profile_json'] : null);
+        $saved = normalizeStaffIdPrefix((string) ($profile['staff_id_prefix'] ?? ''));
+        if ($saved !== '') {
+            return $saved;
+        }
+        $derived = deriveStaffIdPrefixFromName((string) ($row['name'] ?? ''));
+        if ($derived === '') {
+            return '';
+        }
+        // Avoid clashing with another company's IDs: extend with more letters of the name.
+        $letters = strtoupper(preg_replace('/[^A-Za-z]/', '', (string) ($row['name'] ?? '')) ?? '');
+        $candidates = [$derived];
+        for ($len = strlen($derived) + 1; $len <= 4; $len++) {
+            if (strlen($letters) >= $len) {
+                $candidates[] = substr($letters, 0, $len);
+            }
+        }
+        $chosen = '';
+        foreach ($candidates as $c) {
+            if ($c !== '' && !staffIdPrefixTakenByOtherOrg($db, $orgId, $c)) {
+                $chosen = $c;
+                break;
+            }
+        }
+        if ($chosen === '') {
+            return '';
+        }
+        if ($persistDerived) {
+            $profile['staff_id_prefix'] = $chosen;
+            $profile['staff_id_prefix_auto'] = true;
+            $db->prepare('UPDATE organizations SET profile_json = ? WHERE id = ?')
+                ->execute([json_encode($profile, JSON_UNESCAPED_UNICODE), $orgId]);
+        }
+        return $chosen;
+    } catch (Throwable $e) {
+        return '';
+    }
+}
+
+function staffIdPrefixTakenByOtherOrg(PDO $db, string $orgId, string $prefix): bool
+{
+    $prefix = normalizeStaffIdPrefix($prefix);
+    if ($prefix === '') {
+        return false;
+    }
+    $st = $db->prepare('SELECT org_id, referral_code FROM users WHERE org_id <> ? AND UPPER(referral_code) LIKE ? LIMIT 20');
+    $st->execute([$orgId, $prefix . '%']);
+    while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
+        $code = strtoupper(trim((string) ($row['referral_code'] ?? '')));
+        if (!preg_match('/^' . preg_quote($prefix, '/') . '\d{4}$/', $code)) {
+            continue;
+        }
+        $other = trim((string) ($row['org_id'] ?? ''));
+        if ($other !== '' && $other !== $orgId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function staffIdsRewriteAttribution(PDO $db, string $orgId, string $userId, string $old, string $new): void
+{
+    $old = trim($old);
+    $new = trim($new);
+    if ($old === '' || strcasecmp($old, $new) === 0 || strlen($old) < 4) {
+        return;
+    }
+    try {
+        $db->prepare('UPDATE leads SET referred_by = ? WHERE org_id = ? AND referred_by = ?')
+            ->execute([$new, $orgId, $old]);
+    } catch (Throwable $e) {
+    }
+    try {
+        $db->prepare('UPDATE payment_links SET salesperson_referral_code = ? WHERE salesperson_id = ?')
+            ->execute([$new, $userId]);
+    } catch (Throwable $e) {
+    }
+    try {
+        $db->prepare('UPDATE payment_links SET notes = REPLACE(notes, ?, ?) WHERE salesperson_id = ? AND notes LIKE ?')
+            ->execute([$old, $new, $userId, '%' . $old . '%']);
+    } catch (Throwable $e) {
+    }
+}
+
+function nextStaffIdForRole(PDO $db, string $orgId, string $role, string $prefix): ?string
+{
+    $prefix = normalizeStaffIdPrefix($prefix);
+    $floor = staffIdBandFloor($role);
+    if ($prefix === '' || $floor === null || $orgId === '') {
+        return null;
+    }
+    $ceil = staffIdBandCeiling($floor);
+    $st = $db->prepare('SELECT referral_code FROM users WHERE org_id = ? AND UPPER(referral_code) LIKE ?');
+    $st->execute([$orgId, $prefix . '%']);
+    $used = [];
+    while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
+        $code = strtoupper(trim((string) ($row['referral_code'] ?? '')));
+        if (preg_match('/^' . preg_quote($prefix, '/') . '(\d{4})$/', $code, $m)) {
+            $n = (int) $m[1];
+            if ($n >= $floor && $n <= $ceil) {
+                $used[$n] = true;
+            }
+        }
+    }
+    for ($n = $floor; $n <= $ceil; $n++) {
+        if (isset($used[$n])) {
+            continue;
+        }
+        $candidate = $prefix . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+        $chk = $db->prepare('SELECT id FROM users WHERE UPPER(referral_code) = ? LIMIT 1');
+        $chk->execute([$candidate]);
+        if (!$chk->fetch()) {
+            return $candidate;
+        }
+    }
+    return null;
+}
+
+function referralCodeForNewOrgUser(PDO $db, string $orgId, string $role, string $fullName): string
+{
+    $prefix = orgStaffIdPrefix($db, $orgId);
+    if ($prefix !== '') {
+        $staffId = nextStaffIdForRole($db, $orgId, $role, $prefix);
+        if ($staffId) {
+            return $staffId;
+        }
+    }
+    return generateUniqueSpReferralCode($db, $fullName);
+}
+
+/** Reissue PREFIX#### staff IDs for org members. Returns how many codes changed. */
+function assignOrgStaffIds(PDO $db, string $orgId, string $prefix): int
+{
+    $prefix = normalizeStaffIdPrefix($prefix);
+    if ($prefix === '' || $orgId === '') {
+        return 0;
+    }
+    $st = $db->prepare('SELECT id, role, referral_code FROM users WHERE org_id = ? ORDER BY created_at ASC, id ASC');
+    $st->execute([$orgId]);
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $byBand = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $floor = staffIdBandFloor((string) ($row['role'] ?? ''));
+        if ($floor === null) {
+            continue;
+        }
+        $byBand[$floor][] = $row;
+    }
+    $changed = 0;
+    $upd = $db->prepare('UPDATE users SET referral_code = ? WHERE id = ?');
+    $taken = $db->prepare('SELECT id FROM users WHERE UPPER(referral_code) = ? AND id <> ? LIMIT 1');
+    foreach ($byBand as $floor => $members) {
+        $ceil = staffIdBandCeiling((int) $floor);
+        $used = [];
+        $kept = [];
+        foreach ($members as $m) {
+            $code = strtoupper(trim((string) ($m['referral_code'] ?? '')));
+            if (!preg_match('/^' . preg_quote($prefix, '/') . '(\d{4})$/', $code, $mm)) {
+                continue;
+            }
+            $n = (int) $mm[1];
+            $id = (string) ($m['id'] ?? '');
+            if ($n < (int) $floor || $n > $ceil || isset($used[$n]) || $id === '') {
+                continue;
+            }
+            $used[$n] = $id;
+            $kept[$id] = true;
+        }
+        $next = (int) $floor;
+        foreach ($members as $m) {
+            $id = (string) ($m['id'] ?? '');
+            if ($id === '' || isset($kept[$id])) {
+                continue;
+            }
+            $new = '';
+            while ($next <= $ceil) {
+                if (isset($used[$next])) {
+                    $next++;
+                    continue;
+                }
+                $candidate = $prefix . str_pad((string) $next, 4, '0', STR_PAD_LEFT);
+                $taken->execute([$candidate, $id]);
+                if ($taken->fetch()) {
+                    $used[$next] = 'other';
+                    $next++;
+                    continue;
+                }
+                $new = $candidate;
+                break;
+            }
+            if ($new === '') {
+                continue;
+            }
+            $old = trim((string) ($m['referral_code'] ?? ''));
+            $upd->execute([$new, $id]);
+            staffIdsRewriteAttribution($db, $orgId, $id, $old, $new);
+            $used[$next] = $id;
+            $next++;
+            $changed++;
+        }
+    }
+    return $changed;
+}
+
+function findUserByReferralCode(PDO $db, string $ref, bool $activeOnly = false): ?array
+{
+    $ref = trim($ref);
+    if ($ref === '') {
+        return null;
+    }
+    $sql = 'SELECT id, org_id, referral_code FROM users WHERE UPPER(TRIM(referral_code)) = UPPER(?)';
+    if ($activeOnly) {
+        $sql .= ' AND is_active = 1';
+    }
+    $sql .= ' LIMIT 1';
+    $st = $db->prepare($sql);
+    $st->execute([$ref]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
+}
+
+function userStaffId(PDO $db, string $userId): string
+{
+    $userId = trim($userId);
+    if ($userId === '') {
+        return '';
+    }
+    try {
+        $st = $db->prepare('SELECT referral_code FROM users WHERE id = ? LIMIT 1');
+        $st->execute([$userId]);
+        return trim((string) ($st->fetchColumn() ?: ''));
+    } catch (Throwable $e) {
+        return '';
+    }
+}
+
+/**
+ * Attribution stored on leads/payments should be the person's current org staff ID
+ * (users.referral_code), not an old SP- code or a made-up reference.
+ */
+function attributionStaffId(PDO $db, string $submittedRef, string $actorUserId = '', bool $stampActorIfMissing = false): string
+{
+    $submittedRef = trim($submittedRef);
+    if ($submittedRef !== '') {
+        $found = findUserByReferralCode($db, $submittedRef);
+        if (is_array($found)) {
+            $current = trim((string) ($found['referral_code'] ?? ''));
+            if ($current !== '') {
+                return $current;
+            }
+        }
+        $isStaffIdShape = (bool) preg_match('/^[A-Z]{2,4}\d{4}$/i', $submittedRef);
+        $looksLegacy = !$isStaffIdShape
+            && ((bool) preg_match('/^SP-/i', $submittedRef) || (bool) preg_match('/^[A-F0-9]{6,8}$/i', $submittedRef));
+        if ($stampActorIfMissing || $looksLegacy) {
+            $actor = userStaffId($db, $actorUserId);
+            if ($actor !== '') {
+                return $actor;
+            }
+        }
+        return $submittedRef;
+    }
+    if ($stampActorIfMissing) {
+        return userStaffId($db, $actorUserId);
+    }
+    return '';
+}
+
+/**
  * Referral code format SP-{FIRSTNAME}-{4 digits}, unique in users.referral_code.
  */
 function generateUniqueSpReferralCode(PDO $db, string $fullName): string {
@@ -5437,13 +5850,29 @@ function generateUniqueSpReferralCode(PDO $db, string $fullName): string {
  * Ensure user has an SP-* style referral code (upgrades legacy short codes when safe).
  */
 function ensureUserSpReferralCode(PDO $db, string $userId): string {
-    $st = $db->prepare('SELECT referral_code, full_name FROM users WHERE id = ? LIMIT 1');
+    $st = $db->prepare('SELECT referral_code, full_name, org_id, role FROM users WHERE id = ? LIMIT 1');
     $st->execute([$userId]);
     $row = $st->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
         return '';
     }
-    $existing = trim((string) ($row['referral_code'] ?? ''));
+    $existing = strtoupper(trim((string) ($row['referral_code'] ?? '')));
+    if ($existing !== '' && preg_match('/^[A-Z]{2,4}\d{4}$/', $existing)) {
+        return $existing;
+    }
+    $orgId = trim((string) ($row['org_id'] ?? ''));
+    $role = (string) ($row['role'] ?? '');
+    $prefix = ($orgId !== '' && staffIdBandFloor($role) !== null) ? orgStaffIdPrefix($db, $orgId) : '';
+    if ($prefix !== '') {
+        // Number the whole org in join order so IDs do not depend on who signs in first.
+        assignOrgStaffIds($db, $orgId, $prefix);
+        $re = $db->prepare('SELECT referral_code FROM users WHERE id = ? LIMIT 1');
+        $re->execute([$userId]);
+        $now = strtoupper(trim((string) ($re->fetchColumn() ?: '')));
+        if ($now !== '' && preg_match('/^[A-Z]{2,4}\d{4}$/', $now)) {
+            return $now;
+        }
+    }
     if ($existing !== '' && preg_match('/^SP-[A-Z0-9]+-\d{4}$/', $existing)) {
         return $existing;
     }
@@ -6738,6 +7167,9 @@ function syncpediaDispatchDueReminders(PDO $db, array $tokenData): void {
     if ($orgId === '') {
         return;
     }
+    if (!syncpediaShouldRunDispatchReminders($orgId)) {
+        return;
+    }
     $today = (new DateTimeImmutable('now'))->format('Y-m-d');
     $tomorrow = (new DateTimeImmutable('now'))->modify('+1 day')->format('Y-m-d');
     $nowTs = time();
@@ -7131,7 +7563,7 @@ function syncpediaLeadFormOrAssessmentSourceKey(array $row): ?string
 function syncpediaFilterLeadsForManagerCardAccess(PDO $db, array $tokenData, array $rows): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    if ($role !== 'manager') {
+ if (!in_array($role, ['manager', 'operational_manager'])) {
         $out = [];
         foreach ($rows as $row) {
             if (is_array($row)) {

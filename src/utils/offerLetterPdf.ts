@@ -14,7 +14,7 @@ export function splitOfferHtmlPages(html: string): string[] {
   return parts.length > 0 ? parts : [String(html || "")];
 }
 
-function ensureHtmlDocument(pageHtml: string): string {
+export function ensureHtmlDocument(pageHtml: string): string {
   const raw = String(pageHtml || "").trim();
   if (/<html[\s>]/i.test(raw)) {
     // Ensure charset meta for reliable rendering

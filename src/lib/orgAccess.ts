@@ -126,7 +126,9 @@ export function canAccessMarketing(
   if (!isOrgFeatureEnabled(role, org, FEATURE_MARKETING)) return false;
   const r = normalizeAppRole(role);
   if (r === "super_admin" || r === "org" || r === "marketing") return true;
-  if (r === "operational_manager") return true;
+  if (r === "operational_manager") {
+    return operationalManagerHasPageAccess(pageAccess, FEATURE_MARKETING);
+  }
   if (r === "manager") {
     return managerPagesAllow(pageAccess, FEATURE_MARKETING);
   }
@@ -136,10 +138,11 @@ export function canAccessMarketing(
 export function canAccessFresherSalary(role: string | null, org: OrgAccessLite | null, pageAccess?: PageAccess | null): boolean {
   const r = normalizeAppRole(role);
   // Org admins manage roster; enrolled sales reps / managers open their own progress view.
-  if (r !== "super_admin" && r !== "org" && r !== "sales_representative" && r !== "manager") {
+  if (r !== "super_admin" && r !== "org" && r !== "sales_representative" && r !== "manager" && r !== "operational_manager") {
     return false;
   }
   if (r === "manager" && !managerPagesAllow(pageAccess, FEATURE_FRESHER_SALARY)) return false;
+  if (r === "operational_manager" && !operationalManagerHasPageAccess(pageAccess, FEATURE_FRESHER_SALARY)) return false;
   return isOrgFeatureEnabled(role, org, FEATURE_FRESHER_SALARY);
 }
 
@@ -157,21 +160,23 @@ export function canEditFresherSalaryPolicy(role: string | null): boolean {
 export function canAccessCertificates(role: string | null, org: OrgAccessLite | null, pageAccess?: PageAccess | null): boolean {
   if (role === "super_admin" && !org) return true;
   const r = normalizeAppRole(role);
-  if (r !== "super_admin" && r !== "org" && r !== "manager") return false;
+  if (r !== "super_admin" && r !== "org" && r !== "manager" && r !== "operational_manager") return false;
   if (r === "manager" && !managerPagesAllow(pageAccess, FEATURE_CERTIFICATES)) return false;
+  if (r === "operational_manager" && !operationalManagerHasPageAccess(pageAccess, FEATURE_CERTIFICATES)) return false;
   return isOrgFeatureEnabled(role, org, FEATURE_CERTIFICATES);
 }
 
-export function canAccessPayslip(role: string | null, org: OrgAccessLite | null): boolean {
-  const r = normalizeAppRole(role);
-  if (r !== "super_admin" && r !== "org") return false;
-  return isOrgFeatureEnabled(role, org, FEATURE_PAYSLIP);
+export function canAccessPayslip(role: string | null, org: OrgAccessLite | null, pageAccess?: PageAccess | null): boolean {
+	const r = normalizeAppRole(role);
+	if (r !== "super_admin" && r !== "org" && r !== "operational_manager") return false;
+	if (r === "operational_manager" && !operationalManagerHasPageAccess(pageAccess, "payslip")) return false;
+	return isOrgFeatureEnabled(role, org, FEATURE_PAYSLIP);
 }
-
 export function canAccessPaymentsPage(role: string | null, pageAccess?: PageAccess | null): boolean {
   const r = normalizeAppRole(role);
   if (["super_admin", "org"].includes(r)) return true;
   if (r === "manager") return managerPagesAllow(pageAccess, "payments");
+  if (r === "operational_manager") return operationalManagerHasPageAccess(pageAccess, "payments");
   if (r === "sales_representative") return normalizePageAccess(pageAccess).payments;
   return false;
 }
@@ -202,16 +207,16 @@ export function canSubmitManualPayment(role: string | null): boolean {
   return canAccessPaymentRecords(role);
 }
 
-/** Approvals tab for manager / org / super_admin (not Operational Manager). */
+/** Approvals tab for manager / org / super_admin / operational_manager. */
 export function canApproveManualPayments(role: string | null): boolean {
   const r = normalizeAppRole(role);
-  return r === "super_admin" || r === "org" || r === "manager";
+  return r === "super_admin" || r === "org" || r === "manager" || r === "operational_manager";
 }
 
-/** Team summary table on Payment Records (org/manager); L1 + Operational Manager see candidate list. */
+/** Team summary table on Payment Records (org/manager/OM). */
 export function isPaymentRecordsTeamView(role: string | null): boolean {
   const r = normalizeAppRole(role ?? "");
-  return r === "org" || r === "manager" || r === "super_admin";
+  return r === "org" || r === "manager" || r === "super_admin" || r === "operational_manager";
 }
 
 /** Org-wide candidate list (all reps) on Payment Records — Operational Manager. */

@@ -12,14 +12,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import {
   LayoutDashboard, Mail, Send, CheckCircle2, XCircle, Clock, Users,
   TrendingUp, MessageSquare, FileText, Loader2, BarChart3, ArrowUpRight, ArrowDownRight,
-  Upload, UserPlus, Download, Link as LinkIcon, Copy, ExternalLink
+  Upload, UserPlus, Download
 } from 'lucide-react';
 import { format, subDays, startOfMonth, endOfMonth } from 'date-fns';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { useIsMobile } from '@/hooks/use-mobile';
+import AssignedAssignmentsCard from '@/components/assignments/AssignedAssignmentsCard';
+import AssignedFormLinksCard from '@/components/forms/AssignedFormLinksCard';
+import AssignedDocFormLinksCard from '@/components/forms/AssignedDocFormLinksCard';
 const COLORS = ['hsl(var(--primary))', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
 const LEAD_SOURCES = [
@@ -27,20 +28,16 @@ const LEAD_SOURCES = [
   'google_forms', 'whatsapp', 'referral', 'walkin', 'college_seminar', 'other',
 ];
 
-type AssignedLeadForm = { id: string; name: string; slug: string; is_active?: number | boolean | string };
-
 export default function MarketingPortalDashboard() {
   const { user, profile } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
 
   const [loading, setLoading] = useState(true);
   const [referralCode, setReferralCode] = useState('');
   const [formLeads, setFormLeads] = useState<any[]>([]);
   const [emailCampaigns, setEmailCampaigns] = useState<any[]>([]);
   const [waCampaigns, setWaCampaigns] = useState<any[]>([]);
-  const [assignedForms, setAssignedForms] = useState<AssignedLeadForm[]>([]);
 
   // Import dialog
   const [showImport, setShowImport] = useState(false);
@@ -55,17 +52,12 @@ export default function MarketingPortalDashboard() {
     try {
       const code = user?.referral_code || profile?.referral_code || '';
       setReferralCode(code);
-      const [emailRes, waRes, formsRes] = await Promise.all([
+      const [emailRes, waRes] = await Promise.all([
         api.marketing.emailCampaigns({ mine: true }),
         api.marketing.whatsappCampaigns({ mine: true }),
-        api.forms.list().catch(() => ({ data: [] as AssignedLeadForm[] })),
       ]);
       setEmailCampaigns(phpList(emailRes));
       setWaCampaigns(phpList(waRes));
-      const raw = Array.isArray(formsRes?.data) ? formsRes.data : [];
-      setAssignedForms(
-        raw.filter((f: AssignedLeadForm) => f.is_active !== 0 && f.is_active !== false && f.is_active !== '0'),
-      );
 
       if (code) {
         const leadsRes = await api.leads.list({ referred_by: code });
@@ -75,22 +67,6 @@ export default function MarketingPortalDashboard() {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
     } finally {
       setLoading(false);
-    }
-  };
-
-  const personalFormUrl = (slug: string) => {
-    const base = `${window.location.origin}/apply`;
-    const q = new URLSearchParams({ form: slug });
-    if (referralCode) q.set('ref', referralCode);
-    return `${base}?${q.toString()}`;
-  };
-
-  const copyFormLink = async (slug: string) => {
-    try {
-      await navigator.clipboard.writeText(personalFormUrl(slug));
-      toast({ title: 'Link copied', description: 'Share this URL to collect form leads credited to you.' });
-    } catch {
-      toast({ variant: 'destructive', title: 'Could not copy', description: 'Copy the link manually from the preview.' });
     }
   };
 
@@ -222,76 +198,11 @@ export default function MarketingPortalDashboard() {
         </div>
       </div>
 
-      {assignedForms.length > 0 ? (
-        <Card className="border-border/50 shadow-none border-primary/20 bg-primary/[0.03]">
-          <CardHeader className="px-3 sm:px-4 pb-2 pt-4">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <LinkIcon className="h-4 w-4 text-primary" />
-              Your form links
-            </CardTitle>
-            <p className="text-xs text-muted-foreground font-normal leading-snug mt-1">
-              Forms assigned to you in Form Management. Share these links so submissions are credited to you.
-            </p>
-            {!referralCode ? (
-              <p className="text-[11px] text-amber-700 bg-amber-500/10 border border-amber-200/60 rounded-md px-2 py-1.5 mt-2">
-                Your profile has no referral code yet — links may not attribute leads. Ask your admin to fix your account.
-              </p>
-            ) : null}
-          </CardHeader>
-          <CardContent className="px-3 sm:px-4 pb-4">
-            {isMobile ? (
-              <div className="space-y-2">
-                {assignedForms.map((f) => (
-                  <div key={f.id} className="rounded-lg border border-border/60 bg-background p-3 space-y-2">
-                    <p className="text-sm font-medium">{f.name}</p>
-                    <p className="text-[10px] text-muted-foreground font-mono break-all">{personalFormUrl(f.slug)}</p>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline" className="h-8 text-xs flex-1 gap-1" onClick={() => void copyFormLink(f.slug)}>
-                        <Copy className="h-3 w-3" /> Copy
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-8 text-xs flex-1 gap-1" asChild>
-                        <a href={personalFormUrl(f.slug)} target="_blank" rel="noopener noreferrer">
-                          <ExternalLink className="h-3 w-3" /> Open
-                        </a>
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow className="hover:bg-transparent">
-                    <TableHead>Form</TableHead>
-                    <TableHead className="min-w-[200px]">Your link</TableHead>
-                    <TableHead className="w-[140px] text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {assignedForms.map((f) => (
-                    <TableRow key={f.id}>
-                      <TableCell className="font-medium text-sm">{f.name}</TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground break-all max-w-md">{personalFormUrl(f.slug)}</TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => void copyFormLink(f.slug)}>
-                            <Copy className="h-3 w-3" /> Copy
-                          </Button>
-                          <Button size="sm" variant="outline" className="h-7 text-xs gap-1" asChild>
-                            <a href={personalFormUrl(f.slug)} target="_blank" rel="noopener noreferrer">
-                              <ExternalLink className="h-3 w-3" /> Open
-                            </a>
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      ) : null}
+      <AssignedFormLinksCard />
+      <AssignedDocFormLinksCard />
+
+      {/* Assigned Assignments */}
+      <AssignedAssignmentsCard />
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -514,7 +425,7 @@ export default function MarketingPortalDashboard() {
           <DialogHeader><DialogTitle>Import Leads from CSV</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              {importPreview.length} leads found. They will be linked to your referral code <Badge variant="outline" className="text-[10px]">{referralCode}</Badge>
+              {importPreview.length} leads found. They will be linked to your staff ID <Badge variant="outline" className="text-[10px]">{referralCode}</Badge>
             </p>
             <div className="max-h-60 overflow-y-auto border rounded-lg">
               <table className="w-full text-xs">

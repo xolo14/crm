@@ -460,9 +460,16 @@ select.sf-input {
   margin-right: 8px;
 }
 
+.sf-option:hover:not(.active) {
+  background: #f3f4f6;
+  border-color: #333;
+}
+
 .sf-option.active {
   border-color: #000;
-  background: var(--sf-soft);
+  background: #d4d7dc;
+  color: #000;
+  font-weight: 500;
 }
 
 .sf-choice {
@@ -485,7 +492,7 @@ select.sf-input {
 
 .sf-choice.active {
   border-color: #000;
-  background: var(--sf-soft);
+  background: #d4d7dc;
 }
 
 .sf-choice input {
@@ -663,4 +670,46 @@ select.sf-input {
   .sf-side-art {
     min-height: 420px;
   }
+}
+
+/* ==========================================================================
+   Test-Mode Lock: Disable Text Selection & Extension Overlays
+   Only mouse clicks/selection allowed. Keyboard & selection disabled.
+   ========================================================================== */
+.sf-page--test,
+.sf-page--test * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+
+.sf-page--test ::selection {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+.sf-page--test ::-moz-selection {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+/* Hide / neutralize browser extension injection toolbars, sidebars, and overlays */
+div[id*="extension" i],
+div[class*="extension" i],
+div[class*="monica" i],
+div[id*="monica" i],
+div[class*="grammarly" i],
+div[id*="grammarly" i],
+div[id*="immersive-translate" i],
+div[class*="immersive-translate" i],
+monica-chat,
+chatgpt-sidebar,
+chatgpt-floating-button,
+[data-installed-extension] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  opacity: 0 !important;
 }

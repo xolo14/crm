@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/lib/MarketingEmailDispatch.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -179,6 +180,37 @@ if ($action === 'members') {
         $stmt->execute([$id]);
         respond(['message' => 'Member deleted']);
     }
+}
+
+// ---- Org mailboxes (Email Setup accounts, no secrets) ----
+if ($action === 'org_mailboxes') {
+    if ($method !== 'GET') {
+        respond(['error' => 'Method not allowed'], 405);
+    }
+    requireRole($tokenData, marketingGateRoles());
+    require_once __DIR__ . '/org_email_service.php';
+    $orgId = marketingRequireOrgId($tokenData, [], $db);
+    syncpediaEnsureOrgEmailSchema($db);
+    $st = $db->prepare(
+        'SELECT id, slot, label, email, from_name FROM org_smtp_accounts
+         WHERE org_id = ? AND is_active = 1 ORDER BY slot ASC'
+    );
+    $st->execute([$orgId]);
+    $rows = [];
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $email = trim((string) ($row['email'] ?? ''));
+        if ($email === '') {
+            continue;
+        }
+        $rows[] = [
+            'id' => (string) ($row['id'] ?? ''),
+            'slot' => (int) ($row['slot'] ?? 0),
+            'label' => trim((string) ($row['label'] ?? '')),
+            'email' => $email,
+            'from_name' => trim((string) ($row['from_name'] ?? '')),
+        ];
+    }
+    respond(['data' => $rows]);
 }
 
 // ---- Email Drafts ----
@@ -577,142 +609,25 @@ if ($action === 'dispatch_email_campaign' && $method === 'POST') {
     $input = getInput();
     $draftId = trim((string) ($input['draft_id'] ?? ''));
     $recipientsIn = $input['recipients'] ?? [];
+    $smtpAccountId = trim((string) ($input['smtp_account_id'] ?? $input['from_account_id'] ?? ''));
+    $campaignScheduledAt = marketingParseScheduleAt((string) ($input['scheduled_at'] ?? $input['schedule'] ?? ''));
     if ($draftId === '' || !is_array($recipientsIn)) {
         respond(['error' => 'draft_id and recipients array required'], 400);
     }
 
-    $draft = marketingAssertRowInScope($db, 'email_drafts', $draftId, $tokenData);
-    $orgId = trim((string) ($draft['org_id'] ?? ''));
-    if ($orgId === '') {
-        respond(['error' => 'This draft is not linked to an organization. Create a new draft for your organization.'], 400);
-    }
-
-    $emails = [];
-    foreach ($recipientsIn as $row) {
-        $email = is_array($row)
-            ? trim((string) ($row['recipient_email'] ?? $row['email'] ?? ''))
-            : trim((string) $row);
-        if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            $emails[strtolower($email)] = $email;
-        }
-    }
-    $emails = array_values($emails);
-    if ($emails === []) {
-        respond(['error' => 'No valid recipient emails'], 400);
-    }
-
-    $campaignId = generateUUID();
-    $subject = (string) ($draft['subject'] ?? $draft['name'] ?? 'Campaign');
-    $html = (string) ($draft['html_body'] ?? '');
-    if ($html === '') {
-        $html = '<p>' . nl2br(htmlspecialchars((string) ($draft['plain_text'] ?? ''), ENT_QUOTES, 'UTF-8')) . '</p>';
-    }
-
-    $db->prepare('INSERT INTO email_campaigns (id, subject, draft_id, recipient_count, pending_count, sent_count, failed_count, status, created_by, org_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
-        ->execute([
-            $campaignId,
-            $subject,
-            $draftId,
-            count($emails),
-            count($emails),
-            0,
-            0,
-            'sending',
-            $userId,
-            $orgId !== '' ? $orgId : null,
-        ]);
-
-    $sendStmt = $db->prepare('INSERT INTO email_sends (id, campaign_id, recipient_email, status, error_message) VALUES (?,?,?,?,?)');
-    $sent = 0;
-    $failed = 0;
-    $firstError = null;
-    $fromAddr = function_exists('syncpediaSupportMailAddress') ? syncpediaSupportMailAddress() : 'support@syncpedia.in';
-    $fromName = 'Syncpedia';
-
-    if ($orgId !== '') {
-        syncpediaSetMailContext($orgId, 'marketing_campaigns');
-    } else {
-        syncpediaSetMailContext(null, 'marketing_campaigns');
-    }
-
-    foreach ($emails as $email) {
-        $res = syncpediaSendHtmlEmailViaSmtp($email, $subject, $html, $fromAddr, $fromName);
-        $ok = !empty($res['ok']);
-        if ($ok) {
-            $sent++;
-        } else {
-            $failed++;
-            if ($firstError === null) {
-                $firstError = trim((string) ($res['error'] ?? 'SMTP send failed'));
-            }
-        }
-        $sendStmt->execute([
-            generateUUID(),
-            $campaignId,
-            $email,
-            $ok ? 'sent' : 'failed',
-            $ok ? null : ($res['error'] ?? 'Send failed'),
-        ]);
-    }
-
-    $pending = max(0, count($emails) - $sent - $failed);
-    $status = ($sent === 0 && $failed > 0) ? 'failed' : 'completed';
-    $db->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
-        ->execute([$sent, $failed, $pending, $status, $campaignId]);
-
-    // Optional n8n mirror (does not block SMTP delivery)
-    $n8nUrl = (defined('N8N_EMAIL_WEBHOOK') ? trim((string) N8N_EMAIL_WEBHOOK) : '');
-    if ($n8nUrl !== '' && preg_match('#^https?://#i', $n8nUrl)) {
-        $ch = curl_init($n8nUrl);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-            CURLOPT_POSTFIELDS => json_encode([
-                'campaign_id' => $campaignId,
-                'subject' => $subject,
-                'html_body' => $html,
-                'recipients' => $emails,
-            ]),
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 12,
-        ]);
-        curl_exec($ch);
-        curl_close($ch);
-    }
-
-    if ($sent >= 2) {
-        syncpediaNotifyOrgAdminsOfBulkKind(
-            $db,
-            (string) $userId,
-            $orgId !== '' ? $orgId : null,
-            'marketing_email',
-            (int) $sent,
-        );
-    }
-    if ($sent === 0 && $failed > 0) {
-        $today = (new DateTimeImmutable('now'))->format('Y-m-d');
-        syncpediaNotifyOrgAdminsOps(
-            $db,
-            $orgId !== '' ? $orgId : null,
-            'Email SMTP failed',
-            'Bulk email campaign sent 0 messages. Check Email Setup / SMTP.',
-            '/settings',
-            '/settings#smtp-fail-' . $today,
-            (string) $userId,
-        );
-    }
-
-    respond([
-        'ok' => $sent > 0,
-        'campaign_id' => $campaignId,
-        'sent' => $sent,
-        'failed' => $failed,
-        'pending' => $pending,
-        'error' => $sent === 0 ? ($firstError ?: 'No emails were sent. Configure Email Setup for your organization.') : null,
-        'message' => $sent > 0
-            ? "Sent {$sent} email(s)" . ($failed ? ", {$failed} failed" : '')
-            : ($firstError ?: 'Send failed'),
-    ], $sent > 0 ? 200 : 502);
+    $result = marketingDispatchEmailCampaign(
+        $db,
+        $tokenData,
+        (string) $userId,
+        $draftId,
+        $recipientsIn,
+        $smtpAccountId,
+        $campaignScheduledAt
+    );
+    $ok = !empty($result['ok']);
+    $sent = (int) ($result['sent'] ?? 0);
+    $pending = (int) ($result['pending'] ?? 0);
+    respond($result, $ok ? 200 : (($sent === 0 && $pending === 0) ? 400 : 502));
 }
 
 // ---- Dispatch WhatsApp campaign via Meta (templates) or session text (drafts) ----
@@ -1005,4 +920,4 @@ if ($action === 'dispatch_whatsapp_campaign' && $method === 'POST') {
     ], $sent > 0 ? 200 : 502);
 }
 
-respond(['error' => 'Invalid action. Use ?action=members|email_drafts|email_campaigns|email_sends|whatsapp_drafts|whatsapp_campaigns|whatsapp_sends|upload_resume|n8n_webhook|dispatch_email_campaign|dispatch_whatsapp_campaign'], 400);
+respond(['error' => 'Invalid action. Use ?action=members|org_mailboxes|email_drafts|email_campaigns|email_sends|whatsapp_drafts|whatsapp_campaigns|whatsapp_sends|upload_resume|n8n_webhook|dispatch_email_campaign|dispatch_whatsapp_campaign'], 400);

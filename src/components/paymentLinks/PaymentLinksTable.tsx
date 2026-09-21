@@ -263,7 +263,7 @@ export default function PaymentLinksTable({
                 <th className="px-3 py-3 font-semibold">Amount</th>
                 <th className="px-3 py-3 font-semibold">Paid</th>
                 <th className="px-3 py-3 font-semibold">Description</th>
-                <th className="px-3 py-3 font-semibold">Referral</th>
+                <th className="px-3 py-3 font-semibold">Staff ID</th>
                 <th className="px-3 py-3 font-semibold">Status</th>
                 <th className="px-3 py-3 font-semibold">Created</th>
                 <th className="px-3 py-3 font-semibold">Expires</th>

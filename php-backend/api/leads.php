@@ -245,8 +245,15 @@ if ($method === 'GET') {
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
 
+    if (is_array($rows) && $rows !== []) {
+        if (!function_exists('leadsAttachFormPaymentFields')) {
+            require_once __DIR__ . '/payment_link_store.php';
+        }
+        leadsAttachFormPaymentFields($db, $rows);
+    }
+
     // Managers: form + assessment cards hidden unless granted / assigned / self-created.
-    if (syncpediaNormalizeRoleKey((string) $role) === 'manager' && function_exists('syncpediaFilterLeadsForManagerCardAccess')) {
+    if (in_array(syncpediaNormalizeRoleKey((string) $role), ['manager', 'operational_manager'], true) && function_exists('syncpediaFilterLeadsForManagerCardAccess')) {
         $rows = syncpediaFilterLeadsForManagerCardAccess($db, $tokenData, is_array($rows) ? $rows : []);
         $fetched = count($rows);
         $total = $fetched;
@@ -460,7 +467,7 @@ if ($method === 'POST') {
                         continue;
                     }
                 }
-                $referredBy = trim((string) ($row['referred_by'] ?? ''));
+                $referredBy = attributionStaffId($db, trim((string) ($row['referred_by'] ?? '')), (string) $userId, hierarchyRoleUsesL1OwnLeadsScope($tokenData));
                 $referredBy = $referredBy !== '' ? $referredBy : null;
                 // Imports always land unassigned unless a row explicitly names an assignee.
                 // Admins/managers assign to L1 members later via bulk assign.
@@ -720,21 +727,9 @@ if ($method === 'POST') {
         ], 409);
     }
 
-    $referredBy = trim((string) ($input['referred_by'] ?? ''));
+    $stampActor = hierarchyRoleUsesL1OwnLeadsScope($tokenData);
+    $referredBy = attributionStaffId($db, trim((string) ($input['referred_by'] ?? '')), (string) $userId, $stampActor);
     $referredBy = $referredBy !== '' ? $referredBy : null;
-    // Manual L1 entries: stamp referral attribution like form/referral leads (My Leads / analytics).
-    if (hierarchyRoleUsesL1OwnLeadsScope($tokenData) && ($referredBy === null || $referredBy === '')) {
-        try {
-            $rcStmt = $db->prepare('SELECT referral_code FROM users WHERE id = ? LIMIT 1');
-            $rcStmt->execute([$userId]);
-            $rcRow = $rcStmt->fetch(PDO::FETCH_ASSOC);
-            $autoRef = trim((string) (($rcRow && is_array($rcRow)) ? ($rcRow['referral_code'] ?? '') : ''));
-            if ($autoRef !== '') {
-                $referredBy = $autoRef;
-            }
-        } catch (Throwable $ignored) {
-        }
-    }
 
     $orgId = resolveCreatorOrgId($db, $tokenData);
     if ($orgId === null && !empty($assignedTo) && is_array($assigneeRow ?? null)) {

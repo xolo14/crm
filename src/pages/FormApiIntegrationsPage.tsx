@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
+import { buildPublicApplyUrl } from "@/lib/applyFormUrl";
 
 type LeadForm = {
   id: string;
@@ -201,7 +202,7 @@ export default function FormApiIntegrationsPage({ embedded = false }: { embedded
                     const enabled = Boolean(meta.external_api_enabled);
                     const hasKey = String(meta.external_api_key_hash || "").trim() !== "";
                     const plainKey = freshKeys[form.id] || "";
-                    const integrationUrl = `${origin}/apply?form=${encodeURIComponent(form.slug)}`;
+                    const integrationUrl = buildPublicApplyUrl(origin, form.slug);
                     return (
                       <TableRow key={form.id}>
                         <TableCell>

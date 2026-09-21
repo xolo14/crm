@@ -38,54 +38,34 @@ export const MANAGER_PAGE_ACCESS_OPTIONS: ManagerPageOption[] = [
 
 export const MANAGER_PAGE_ACCESS_KEYS = MANAGER_PAGE_ACCESS_OPTIONS.map((o) => o.key);
 
-/** Always on for Operational Manager — not shown in Configure pages. */
-export const OPERATIONAL_MANAGER_AUTO_GRANTED_PAGE_KEYS = [
-  FEATURE_MARKETING,
-  FEATURE_FORM_MANAGEMENT,
+/** Core/needed pages toggled ON by default for Operational Manager (others default OFF). */
+export const OPERATIONAL_MANAGER_DEFAULT_ON_PAGE_KEYS: readonly string[] = [
   "dashboard",
-  "payments",
   "students",
-  FEATURE_OFFER_LETTERS,
   FEATURE_TIMETABLES,
-  "settings",
+  FEATURE_FORM_MANAGEMENT,
+  "payments",
+  FEATURE_COMMUNICATIONS,
+  FEATURE_OFFER_LETTERS,
+  FEATURE_MARKETING,
   "tasks",
   "notifications",
   "holidays",
-] as const;
-
-/**
- * Optional pages — shown in Configure pages (OFF until org admin toggles ON).
- */
-export const OPERATIONAL_MANAGER_PAGE_ACCESS_OPTIONS: ManagerPageOption[] = [
-  {
-    key: FEATURE_COMMUNICATIONS,
-    section: "Engagement",
-    label: "Communications",
-    description: "Calls and messaging hub",
-  },
-  { key: "courses", section: "Learning", label: "Courses", description: "Course catalog" },
-  { key: "batches", section: "Learning", label: "Batches", description: "Batch schedules" },
-  { key: "daily_reports", section: "Reports", label: "Daily Reports", description: "Daily activity reports" },
-  { key: "leads", section: "CRM", label: "Leads & Dashboard", description: "Lead lists and referrals" },
+  "settings",
+ "team",
 ];
 
-export const OPERATIONAL_MANAGER_PAGE_ACCESS_KEYS =
-  OPERATIONAL_MANAGER_PAGE_ACCESS_OPTIONS.map((o) => o.key);
+/** Operational Manager has the full page list configurable like Manager/Admin. */
+export const OPERATIONAL_MANAGER_PAGE_ACCESS_OPTIONS: ManagerPageOption[] =
+  MANAGER_PAGE_ACCESS_OPTIONS;
 
-/** Always-on OM pages — shown read-only in Configure pages (not persisted). */
-export const OPERATIONAL_MANAGER_ALWAYS_ON_OPTIONS: ManagerPageOption[] = [
-  { key: "dashboard", section: "Always on", label: "Dashboard", description: "Payments overview home" },
-  { key: FEATURE_FORM_MANAGEMENT, section: "Always on", label: "Form Management", description: "Lead / HR capture forms" },
-  { key: "payments", section: "Always on", label: "Payment Records", description: "Candidate pitches and collections" },
-  { key: "students", section: "Always on", label: "Students", description: "Enrolled students roster" },
-  { key: FEATURE_TIMETABLES, section: "Always on", label: "Timetables", description: "Class schedules and email delivery" },
-  { key: FEATURE_OFFER_LETTERS, section: "Always on", label: "Offer Letters", description: "Templates and sending" },
-  { key: FEATURE_MARKETING, section: "Always on", label: "Email & WhatsApp marketing", description: "Marketing portal" },
-  { key: "tasks", section: "Always on", label: "Tasks", description: "Assigned tasks" },
-  { key: "notifications", section: "Always on", label: "Notifications", description: "In-app alerts" },
-  { key: "holidays", section: "Always on", label: "Holidays", description: "Holiday calendar" },
-  { key: "settings", section: "Always on", label: "Settings", description: "Profile and preferences" },
-];
+export const OPERATIONAL_MANAGER_PAGE_ACCESS_KEYS = MANAGER_PAGE_ACCESS_KEYS;
+
+/** Legacy reference kept for backward compatibility */
+export const OPERATIONAL_MANAGER_AUTO_GRANTED_PAGE_KEYS = OPERATIONAL_MANAGER_DEFAULT_ON_PAGE_KEYS;
+
+/** Legacy reference kept for backward compatibility */
+export const OPERATIONAL_MANAGER_ALWAYS_ON_OPTIONS: ManagerPageOption[] = [];
 
 export function defaultManagerPages(allOn = true): Record<string, boolean> {
   const out: Record<string, boolean> = {};
@@ -108,23 +88,33 @@ export function resolveManagerPagesForEdit(pageAccess?: PageAccess | null): Reco
   return { ...defaultManagerPages(false), ...stored };
 }
 
-export function defaultOperationalManagerPages(allOn = false): Record<string, boolean> {
+/**
+ * Default pages for Operational Manager:
+ * - allOn === true: all pages ON
+ * - allOn === false: all pages OFF
+ * - allOn === undefined: needed pages ON, other admin pages OFF
+ */
+export function defaultOperationalManagerPages(allOn?: boolean): Record<string, boolean> {
   const out: Record<string, boolean> = {};
   for (const key of OPERATIONAL_MANAGER_PAGE_ACCESS_KEYS) {
-    out[key] = allOn;
+    out[key] =
+      allOn !== undefined
+        ? allOn
+        : OPERATIONAL_MANAGER_DEFAULT_ON_PAGE_KEYS.includes(key);
   }
   return out;
 }
 
-/** Keep only optional OM page keys from a stored pages map. */
 export function pickOperationalManagerPages(
   pages?: Record<string, boolean> | null,
 ): Record<string, boolean> {
-  const out = defaultOperationalManagerPages(false);
+  const out = defaultOperationalManagerPages();
   if (!pages || typeof pages !== "object") return out;
   for (const key of OPERATIONAL_MANAGER_PAGE_ACCESS_KEYS) {
-    const v = pages[key];
-    out[key] = v === true || v === 1 || v === "1" || v === "true";
+    if (key in pages) {
+      const v = pages[key];
+      out[key] = v === true || v === 1 || v === "1" || v === "true";
+    }
   }
   return out;
 }
@@ -140,43 +130,62 @@ export function buildOperationalManagerPageAccessPayload(
 }
 
 /**
- * Merge stored pages for the Configure pages UI (Operational Manager).
- * Only optional pages appear; all default OFF until toggled on.
+ * Merge stored pages for Configure pages UI (Operational Manager).
+ * Unconfigured/new shows needed pages ON, others OFF.
  */
 export function resolveOperationalManagerPagesForEdit(
   pageAccess?: PageAccess | null,
 ): Record<string, boolean> {
   const stored = pageAccess?.pages;
+  const defaults = defaultOperationalManagerPages();
   if (!stored || typeof stored !== "object" || Object.keys(stored).length === 0) {
-    return defaultOperationalManagerPages(false);
+    return defaults;
   }
-  return pickOperationalManagerPages(stored);
+  return { ...defaults, ...stored };
 }
 
 /**
- * Operational Manager page grant:
- * - Core ops + email/WhatsApp marketing: always on (auto-granted).
- * - Optional pages (in Configure): OFF unless explicitly toggled on.
+ * Operational Manager page grant check:
+ * - If admin saved a configured page map, honors exact toggles.
+ * - Otherwise defaults to needed pages ON, others OFF.
  */
 export function operationalManagerHasPageAccess(
   pageAccess: PageAccess | null | undefined,
   featureKey: string | null | undefined,
 ): boolean {
   if (!featureKey) return true;
-  if ((OPERATIONAL_MANAGER_AUTO_GRANTED_PAGE_KEYS as readonly string[]).includes(featureKey)) {
-    return true;
-  }
   const pages = pageAccess?.pages;
-  if (!pages || Object.keys(pages).length === 0) return false;
+  if (!pages || Object.keys(pages).length === 0) {
+    return OPERATIONAL_MANAGER_DEFAULT_ON_PAGE_KEYS.includes(featureKey);
+  }
   const v = pages[featureKey];
   return v === true || v === 1 || v === "1" || v === "true";
 }
 
-/** Operational Manager home — dashboard is auto-granted. */
+/** Operational Manager home is always `/` (auto-granted dashboard). */
 export function firstAllowedOperationalManagerPath(
-  _pageAccess?: PageAccess | null,
+ pageAccess?: PageAccess | null,
 ): string {
-  return "/";
+ const order = [
+ { key: "dashboard", path: "/" },
+ { key: "students", path: "/students" },
+ { key: FEATURE_TIMETABLES, path: "/timetables" },
+ { key: FEATURE_FORM_MANAGEMENT, path: "/form-management" },
+ { key: "payments", path: "/payments" },
+ { key: FEATURE_COMMUNICATIONS, path: "/communications" },
+ { key: FEATURE_OFFER_LETTERS, path: "/offer-letters" },
+ { key: FEATURE_MARKETING, path: "/marketing/portal" },
+ { key: "tasks", path: "/tasks" },
+ { key: "notifications", path: "/notifications" },
+ { key: "holidays", path: "/holidays" },
+ { key: "team", path: "/team" },
+ { key: "trash", path: "/trash" },
+ { key: "settings", path: "/settings" },
+ ];
+ for (const item of order) {
+ if (operationalManagerHasPageAccess(pageAccess, item.key)) return item.path;
+ }
+ return "";
 }
 
 /**

@@ -80,6 +80,91 @@ function timetablesRequireAccess(array $tokenData): void
     respond(['error' => 'Forbidden — Timetables access is restricted to Org Admin and Operational Manager'], 403);
 }
 
+/**
+ * Resolve org logo for email HTML: prefer embedded data URI so preview/send
+ * work even when /uploads is blocked from direct browser access.
+ */
+function timetablesResolveLogoForEmail(string $logoUrl): string
+{
+    $logo = trim($logoUrl);
+    if ($logo === '') {
+        return '';
+    }
+    if (str_starts_with($logo, 'data:image/')) {
+        return $logo;
+    }
+
+    $path = $logo;
+    if (preg_match('#^https?://#i', $logo)) {
+        $parts = parse_url($logo);
+        $path = is_array($parts) ? (string) ($parts['path'] ?? '') : '';
+    }
+    $uploadsIdx = strpos($path, '/uploads/');
+    if ($uploadsIdx === false) {
+        return preg_match('#^https?://#i', $logo) ? $logo : '';
+    }
+    $rawPath = substr($path, $uploadsIdx);
+    if (strpos($rawPath, '..') !== false || !str_starts_with($rawPath, '/uploads/org_logos/')) {
+        return '';
+    }
+
+    $relUploads = str_replace('/', DIRECTORY_SEPARATOR, $rawPath);
+    // This file lives in api/lib/ — site root is two levels up (public/ or php-backend/).
+    $siteRoot = dirname(__DIR__, 2);
+    $apiDir = dirname(__DIR__);
+    $candidates = [
+        $siteRoot . $relUploads,
+        $siteRoot . DIRECTORY_SEPARATOR . 'public' . $relUploads,
+        $apiDir . DIRECTORY_SEPARATOR . 'uploads' . str_replace('/', DIRECTORY_SEPARATOR, substr($rawPath, strlen('/uploads'))),
+        dirname($siteRoot) . DIRECTORY_SEPARATOR . 'public' . $relUploads,
+        dirname($siteRoot) . DIRECTORY_SEPARATOR . 'php-backend' . $relUploads,
+    ];
+    $abs = null;
+    foreach ($candidates as $candidate) {
+        $resolved = realpath($candidate);
+        if ($resolved !== false && is_file($resolved)) {
+            $norm = str_replace('\\', '/', $resolved);
+            if (strpos($norm, '/uploads/org_logos/') !== false) {
+                $abs = $resolved;
+                break;
+            }
+        }
+    }
+
+    $host = trim((string) ($_SERVER['HTTP_HOST'] ?? 'crm.syncpedia.in'));
+    $publicUrl = 'https://' . $host . $rawPath;
+    if ($abs === null) {
+        return $publicUrl;
+    }
+
+    $bin = @file_get_contents($abs);
+    if ($bin === false || $bin === '' || strlen($bin) > 400 * 1024) {
+        return $publicUrl;
+    }
+
+    $mime = 'image/png';
+    if (function_exists('mime_content_type')) {
+        $detected = @mime_content_type($abs);
+        if (is_string($detected) && str_starts_with($detected, 'image/')) {
+            $mime = $detected;
+        }
+    } else {
+        $ext = strtolower(pathinfo($abs, PATHINFO_EXTENSION));
+        $byExt = [
+            'jpg' => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'svg' => 'image/svg+xml',
+            'gif' => 'image/gif',
+        ];
+        if (isset($byExt[$ext])) {
+            $mime = $byExt[$ext];
+        }
+    }
+    return 'data:' . $mime . ';base64,' . base64_encode($bin);
+}
+
 /** @return array<string, mixed> */
 function timetablesFetchOrgBranding(PDO $db, string $orgId): array
 {
@@ -97,12 +182,7 @@ function timetablesFetchOrgBranding(PDO $db, string $orgId): array
     if ($address === '') {
         $address = '4th Floor, Plot No 853, Road No 45, Madhapur, 500081';
     }
-    $logo = trim((string) ($row['logo_url'] ?? ''));
-    if ($logo !== '' && str_starts_with($logo, '/')) {
-        $host = trim((string) ($_SERVER['HTTP_HOST'] ?? 'crm.syncpedia.in'));
-        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'https';
-        $logo = $scheme . '://' . $host . $logo;
-    }
+    $logo = timetablesResolveLogoForEmail(trim((string) ($row['logo_url'] ?? '')));
     return [
         'org_name' => trim((string) ($row['name'] ?? 'Syncpedia')) ?: 'Syncpedia',
         'logo_url' => $logo,

@@ -53,7 +53,8 @@ export default function EmailAnalytics() {
   const [activeTab, setActiveTab] = useState('overview');
 
   const isSuperAdmin = role === 'super_admin' || role === 'org';
-  const isMarketing = role === 'marketing';
+  // Portal roles see own campaigns only (not org-wide admin list).
+  const isPortalMarketer = role === 'marketing' || role === 'operational_manager';
 
   useEffect(() => { fetchData(); }, [dateFilter, memberFilter, customFrom, customTo]);
 
@@ -95,7 +96,7 @@ export default function EmailAnalytics() {
       }
 
       // Campaigns
-      let campData = phpList(await api.marketing.emailCampaigns(isMarketing ? { mine: true } : undefined));
+      let campData = phpList(await api.marketing.emailCampaigns(isPortalMarketer ? { mine: true } : undefined));
       campData = campData.filter((c) => inDateRange(c, from, to));
       if (memberFilter !== 'all' && isSuperAdmin) {
         const member = membersData.find((m) => m.id === memberFilter);
@@ -179,7 +180,7 @@ export default function EmailAnalytics() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => navigate(isMarketing ? '/marketing/portal' : '/marketing-admin')}>
+          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => navigate(isPortalMarketer ? '/marketing/portal' : '/marketing-admin')}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div>

@@ -502,7 +502,7 @@ function StudentsRoster() {
                 <p><span className="text-muted-foreground">Source:</span> {formatLeadSource(detailStudent.lead_source)}</p>
                 <p><span className="text-muted-foreground">Lead college:</span> {detailStudent.lead_college || '—'}</p>
                 <p><span className="text-muted-foreground">Company:</span> {detailStudent.lead_company || '—'}</p>
-                <p><span className="text-muted-foreground">Referral code:</span> {detailStudent.lead_referred_by || '—'}</p>
+                <p><span className="text-muted-foreground">Staff ID:</span> {detailStudent.lead_referred_by || '—'}</p>
                 <p><span className="text-muted-foreground">Lead status (at link):</span> {detailStudent.lead_status ? String(detailStudent.lead_status).replace(/_/g, ' ') : '—'}</p>
                 <p><span className="text-muted-foreground">Tags:</span> {parseLeadTags(detailStudent.lead_tags) || '—'}</p>
                 <p className="pt-1"><span className="text-muted-foreground">Notes:</span></p>

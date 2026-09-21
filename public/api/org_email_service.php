@@ -1,6 +1,11 @@
 <?php
 declare(strict_types=1);
 
+function syncpediaSetPreferredSmtpAccountId(?string $accountId): void
+{
+    $GLOBALS['syncpedia_mail_smtp_account_id'] = $accountId !== null ? trim($accountId) : '';
+}
+
 /** Tenant SMTP context for the current request. */
 function syncpediaSetMailContext(?string $orgId, string $category = 'default'): void
 {
@@ -246,6 +251,16 @@ function syncpediaListTenantSmtpCandidates(string $preferredGlobalAccount = 'sup
         );
         $allSt->execute([$orgId]);
         $allRows = $allSt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $preferredId = trim((string) ($GLOBALS['syncpedia_mail_smtp_account_id'] ?? ''));
+        if ($preferredId !== '') {
+            foreach ($allRows as $row) {
+                if (is_array($row) && (string) ($row['id'] ?? '') === $preferredId) {
+                    $primaryRow = $row;
+                    break;
+                }
+            }
+        }
 
         if (!is_array($primaryRow) && $allRows) {
             $primaryRow = $allRows[0];

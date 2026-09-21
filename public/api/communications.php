@@ -38,8 +38,18 @@ function commMessagingRoles(): array {
     return ['super_admin', 'admin', 'org', 'manager', 'marketing', 'sales_representative', 'operational_manager'];
 }
 
+/** Roles allowed to test WhatsApp connection and sync Meta templates (marketing portal setup). */
+function commMarketingSetupRoles(): array {
+    return ['super_admin', 'admin', 'org', 'manager', 'marketing', 'operational_manager'];
+}
+
+/** Org ops roles: templates, library apply, number assign, inbox assign (not Meta credential admin). */
+function commOrgOpsRoles(): array {
+    return ['super_admin', 'admin', 'org', 'manager', 'operational_manager'];
+}
+
 function commCanAssignWhatsappChats(array $tokenData): bool {
-    return in_array(commNormRole($tokenData), ['super_admin', 'admin', 'org', 'manager'], true);
+    return in_array(commNormRole($tokenData), ['super_admin', 'admin', 'org', 'manager', 'operational_manager'], true);
 }
 
 function commIsAssignableInboxMemberRole(string $role): bool {
@@ -348,7 +358,7 @@ if ($action === 'orgs_overview' && $method === 'GET') {
 
 // ─── Test WhatsApp connection (Meta Cloud API) ───
 if (($action === 'test_whatsapp_connection' || $action === 'test_meta_connection') && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'marketing']);
+    requireRole($tokenData, commMarketingSetupRoles());
     $orgId = commResolveOrgId($db, $tokenData, $input);
     if (!$orgId) {
         respond(['error' => 'Organization required'], 400);
@@ -444,7 +454,7 @@ if ($action === 'complete_embedded_signup' && $method === 'POST') {
 
 // ─── Meta: sync approved templates from org WABA ───
 if ($action === 'sync_meta_templates' && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager', 'marketing']);
+    requireRole($tokenData, commMarketingSetupRoles());
     $orgId = commResolveOrgId($db, $tokenData, $input);
     if (!$orgId) {
         respond(['error' => 'Organization required'], 400);
@@ -459,7 +469,7 @@ if ($action === 'sync_meta_templates' && $method === 'POST') {
 
 // ─── Meta: submit org template to Meta for official approval ───
 if ($action === 'submit_template_meta' && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    requireRole($tokenData, commOrgOpsRoles());
     $tplId = trim((string) ($input['template_id'] ?? ''));
     if ($tplId === '') {
         respond(['error' => 'template_id required'], 400);
@@ -574,7 +584,7 @@ if ($action === 'number_assignments') {
         respond(['data' => commFetchMyNumberAssignments($db, $userId, $tokenData)]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+        requireRole($tokenData, commOrgOpsRoles());
         $vnId = trim((string) ($input['virtual_number_id'] ?? ''));
         $assignUserId = trim((string) ($input['user_id'] ?? ''));
         if ($vnId === '' || $assignUserId === '') respond(['error' => 'virtual_number_id and user_id required'], 400);
@@ -600,7 +610,7 @@ if ($action === 'number_assignments') {
     if ($method === 'DELETE') {
         $id = $_GET['id'] ?? ($input['id'] ?? '');
         if (!$id) respond(['error' => 'ID required'], 400);
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+        requireRole($tokenData, commOrgOpsRoles());
         $db->prepare('DELETE FROM user_number_assignments WHERE id = ?')->execute([$id]);
         respond(['message' => 'Assignment removed']);
     }
@@ -631,7 +641,7 @@ if ($action === 'templates') {
         respond(['data' => $stmt->fetchAll(PDO::FETCH_ASSOC)]);
     }
     if ($method === 'POST') {
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+        requireRole($tokenData, commOrgOpsRoles());
         $orgId = commResolveOrgId($db, $tokenData, $input);
         if (!$orgId) respond(['error' => 'Organization required'], 400);
         $body = trim((string) ($input['body'] ?? ''));
@@ -674,7 +684,7 @@ if ($action === 'templates') {
     if ($method === 'PUT') {
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+        requireRole($tokenData, commOrgOpsRoles());
         $stmt = $db->prepare('SELECT * FROM whatsapp_message_templates WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -716,7 +726,7 @@ if ($action === 'templates') {
         if ($id === '') {
             respond(['error' => 'ID required'], 400);
         }
-        requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+        requireRole($tokenData, commOrgOpsRoles());
         $stmt = $db->prepare('SELECT * FROM whatsapp_message_templates WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -736,7 +746,7 @@ if ($action === 'templates') {
 
 // ─── Delete template (POST — reliable on Hostinger when HTTP DELETE is blocked) ───
 if (($action === 'delete_template' || $action === 'templates_delete') && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    requireRole($tokenData, commOrgOpsRoles());
     $id = trim((string) ($input['id'] ?? ($_GET['id'] ?? '')));
     if ($id === '') {
         respond(['error' => 'id required'], 400);
@@ -1234,7 +1244,7 @@ if ($action === 'conversations' && $method === 'GET') {
 
 // ─── Explicit inbox backfill (admin/superadmin/org) ───
 if ($action === 'backfill_whatsapp_inbox' && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    requireRole($tokenData, commOrgOpsRoles());
     require_once __DIR__ . '/lib/WhatsAppInbox.php';
     $orgId = commResolveOrgId($db, $tokenData, $input);
     if (!$orgId) {
@@ -1270,7 +1280,7 @@ if ($action === 'mark_read' && $method === 'POST') {
 
 // ─── Assignable teammates for chat assignment ───
 if ($action === 'assignable_members' && $method === 'GET') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    requireRole($tokenData, commOrgOpsRoles());
     require_once __DIR__ . '/lib/WhatsAppInbox.php';
     $orgId = commResolveOrgId($db, $tokenData, $_GET);
     if (!$orgId) {
@@ -1281,7 +1291,7 @@ if ($action === 'assignable_members' && $method === 'GET') {
 
 // ─── Assign / unassign WhatsApp conversation ───
 if ($action === 'assign_conversation' && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    requireRole($tokenData, commOrgOpsRoles());
     require_once __DIR__ . '/lib/WhatsAppInbox.php';
     WhatsAppInbox::ensureTables($db);
 
@@ -1529,7 +1539,7 @@ if ($action === 'template_library') {
 
 // ─── Org applies official library template ───
 if ($action === 'apply_library_template' && $method === 'POST') {
-    requireRole($tokenData, ['super_admin', 'admin', 'org', 'manager']);
+    requireRole($tokenData, commOrgOpsRoles());
     $libraryId = trim((string) ($input['platform_template_id'] ?? $input['library_template_id'] ?? ''));
     if ($libraryId === '') {
         respond(['error' => 'platform_template_id required'], 400);

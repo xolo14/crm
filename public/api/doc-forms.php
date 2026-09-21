@@ -3,7 +3,7 @@
  * Document Forms API — Certificates & Offer Letters forms (separate from lead_forms).
  *
  * Actions (GET): list, get, access, submissions, issued, link
- * Actions (POST): create, assign, submit, add_manual_row, link_template, save_column_maps, update_submission_values, issue
+ * Actions (POST): create, assign, submit, add_manual_row, link_template, unlink_template, save_column_maps, update_submission_values, issue
  * PUT: update form
  * DELETE: form | access row | submission
  */
@@ -119,6 +119,13 @@ function docFormsEnsureSchema(PDO $db): void {
     } catch (Throwable $e) {
         /* ignore */
     }
+    try {
+        if (!syncpediaColumnExists($db, 'doc_form_submissions', 'referred_by')) {
+            $db->exec('ALTER TABLE doc_form_submissions ADD COLUMN referred_by VARCHAR(48) DEFAULT NULL');
+        }
+    } catch (Throwable $e) {
+        /* ignore */
+    }
     $done = true;
 }
 
@@ -220,6 +227,26 @@ function docFormsSlugify(string $name): string {
     return $s !== '' ? substr($s, 0, 100) : ('form-' . substr(generateUUID(), 0, 8));
 }
 
+function docFormsUniqueSlug(PDO $db, ?string $orgId, string $base, string $exceptId = ''): string {
+    $root = $base !== '' ? $base : ('form-' . substr(generateUUID(), 0, 8));
+    $slug = $root;
+    for ($n = 2; $n < 200; $n++) {
+        if ($orgId === null || $orgId === '') {
+            $st = $db->prepare('SELECT id FROM doc_forms WHERE (org_id IS NULL OR org_id = "") AND slug = ? LIMIT 1');
+            $st->execute([$slug]);
+        } else {
+            $st = $db->prepare('SELECT id FROM doc_forms WHERE org_id = ? AND slug = ? LIMIT 1');
+            $st->execute([$orgId, $slug]);
+        }
+        $hit = $st->fetchColumn();
+        if (!$hit || ($exceptId !== '' && (string) $hit === $exceptId)) {
+            return $slug;
+        }
+        $slug = substr($root, 0, 90) . '-' . $n;
+    }
+    return $root . '-' . substr(generateUUID(), 0, 6);
+}
+
 function docFormsFetchForm(PDO $db, string $id): ?array {
     $st = $db->prepare('SELECT * FROM doc_forms WHERE id = ? LIMIT 1');
     $st->execute([$id]);
@@ -249,45 +276,55 @@ docFormsEnsureSchema($db);
 // ---------- GET ----------
 if ($method === 'GET') {
     if ($action === 'list' || $action === '') {
-        $type = trim((string) ($_GET['form_type'] ?? $_GET['type'] ?? ''));
         $scope = strtolower(trim((string) ($_GET['scope'] ?? '')));
         $orgId = docFormsOrgId($tokenData);
-        $params = [];
-        $where = ['1=1'];
+        $type = trim((string) ($_GET['form_type'] ?? $_GET['type'] ?? ''));
+        $userId = (string) ($tokenData['user_id'] ?? '');
+        $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+
+        $whereDf = ['1=1'];
+        $paramsDf = [];
         if ($orgId !== null) {
-            $where[] = 'org_id = ?';
-            $params[] = $orgId;
+            $whereDf[] = 'df.org_id = ?';
+            $paramsDf[] = $orgId;
         }
         if ($type === 'offer_letter' || $type === 'certificate') {
-            $where[] = 'form_type = ?';
-            $params[] = $type;
+            $whereDf[] = 'df.form_type = ?';
+            $paramsDf[] = $type;
         }
-
-        $assignedSql = "id IN (
+        $assignedSqlDf = "df.id IN (
             SELECT form_id FROM doc_form_access
             WHERE (access_type = 'user' AND user_id = ?)
                OR (access_type = 'role' AND LOWER(role_key) = ?)
         )";
-
-        if (docFormsIsOrgAdmin($tokenData)) {
+        if ($scope === 'assigned') {
+            $whereDf[] = $assignedSqlDf;
+            $paramsDf[] = $userId;
+            $paramsDf[] = $role;
+            $whereDf[] = 'df.is_active = 1';
+        } elseif (docFormsIsOrgAdmin($tokenData)) {
             // Full org roster for admins.
-        } elseif (docFormsIsManager($tokenData) && $scope !== 'assigned') {
-            // Form Management: forms the manager created or was assigned.
-            $where[] = "(created_by = ? OR {$assignedSql})";
-            $params[] = $userId;
-            $params[] = $userId;
-            $params[] = $role;
+        } elseif (docFormsIsManager($tokenData)) {
+            $whereDf[] = "(df.created_by = ? OR {$assignedSqlDf})";
+            $paramsDf[] = $userId;
+            $paramsDf[] = $userId;
+            $paramsDf[] = $role;
         } else {
-            // Dashboard assigned-forms list: assigned active forms only.
-            $where[] = $assignedSql;
-            $params[] = $userId;
-            $params[] = $role;
-            $where[] = 'is_active = 1';
+            $whereDf[] = $assignedSqlDf;
+            $paramsDf[] = $userId;
+            $paramsDf[] = $role;
+            $whereDf[] = 'df.is_active = 1';
         }
-
-        $sql = 'SELECT * FROM doc_forms WHERE ' . implode(' AND ', $where) . ' ORDER BY updated_at DESC LIMIT 500';
+        $sql = 'SELECT df.*,
+                       o.name AS org_name,
+                       COALESCE(NULLIF(TRIM(p.full_name), \'\'), NULLIF(TRIM(p.email), \'\'), NULL) AS created_by_name
+                FROM doc_forms df
+                LEFT JOIN organizations o ON o.id = df.org_id
+                LEFT JOIN profiles p ON p.id = df.created_by
+                WHERE ' . implode(' AND ', $whereDf) . '
+                ORDER BY df.updated_at DESC LIMIT 500';
         $st = $db->prepare($sql);
-        $st->execute($params);
+        $st->execute($paramsDf);
         $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
         $out = [];
         foreach ($rows as $r) {
@@ -412,6 +449,7 @@ if ($method === 'POST') {
         $orgId = docFormsOrgId($tokenData);
         $slug = trim((string) ($input['slug'] ?? ''));
         if ($slug === '') $slug = docFormsSlugify($name);
+        $slug = docFormsUniqueSlug($db, $orgId, docFormsSlugify($slug));
         $fields = $input['fields_json'] ?? [];
         if (!is_array($fields)) $fields = [];
         $meta = $input['meta_json'] ?? [];
@@ -453,7 +491,38 @@ if ($method === 'POST') {
                 $userId !== '' ? $userId : null,
             ]);
         }
-        respond(['id' => $id, 'message' => 'Form created'], 201);
+        respond(['id' => $id, 'message' => 'Form created', 'slug' => $slug], 201);
+    }
+
+    if ($action === 'duplicate') {
+        requireRole($tokenData, docFormsManagerRoles());
+        $srcId = trim((string) ($input['id'] ?? $input['form_id'] ?? ''));
+        if ($srcId === '') respond(['error' => 'id required'], 400);
+        $src = docFormsFetchForm($db, $srcId);
+        if (!$src) respond(['error' => 'Form not found'], 404);
+        if (!docFormsUserCanManageForm($db, $tokenData, $srcId)) {
+            respond(['error' => 'Forbidden'], 403);
+        }
+        $id = generateUUID();
+        $orgId = $src['org_id'] ?? docFormsOrgId($tokenData);
+        $name = trim((string) ($src['name'] ?? 'Form')) . ' (copy)';
+        $slug = docFormsUniqueSlug($db, $orgId !== null ? (string) $orgId : null, docFormsSlugify($name));
+        $st = $db->prepare(
+            'INSERT INTO doc_forms (id, org_id, name, slug, description, form_type, fields_json, meta_json, is_active, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)'
+        );
+        $st->execute([
+            $id,
+            $orgId,
+            $name,
+            $slug,
+            $src['description'] ?? null,
+            $src['form_type'] ?? 'offer_letter',
+            $src['fields_json'] ?? '[]',
+            $src['meta_json'] ?? '{}',
+            $userId !== '' ? $userId : null,
+        ]);
+        respond(['id' => $id, 'name' => $name, 'slug' => $slug, 'message' => 'Form duplicated'], 201);
     }
 
     if ($action === 'assign') {
@@ -625,6 +694,17 @@ if ($method === 'POST') {
             json_encode($maps, JSON_UNESCAPED_UNICODE),
         ]);
         respond(['id' => $id, 'message' => 'Template linked'], 201);
+    }
+
+    if ($action === 'unlink_template') {
+        requireRole($tokenData, docFormsWorkflowRoles());
+        $formId = trim((string) ($input['form_id'] ?? ''));
+        if ($formId === '') respond(['error' => 'form_id required'], 400);
+        if (!docFormsFetchForm($db, $formId)) respond(['error' => 'Form not found'], 404);
+        // Submissions stay; only the template mapping is removed so a different template can be linked.
+        $del = $db->prepare('DELETE FROM doc_form_template_links WHERE form_id = ?');
+        $del->execute([$formId]);
+        respond(['success' => true, 'removed' => $del->rowCount(), 'message' => 'Template unlinked']);
     }
 
     if ($action === 'save_column_maps') {

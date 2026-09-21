@@ -404,8 +404,8 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
 
       {!personalOnly && (
         <>
-      <SettingsSection title="Account" description="Profile information and referral code.">
-        <SettingsRow label="Referral code" description="Read-only. Contact your administrator if this is blank." border={false}>
+      <SettingsSection title="Account" description="Profile information and org staff ID.">
+        <SettingsRow label="Staff ID" description="Read-only. Set the org prefix in Company Profile so this is assigned." border={false}>
           <Input readOnly value={profile?.referral_code || "—"} className="max-w-md rounded-lg border border-border bg-muted font-mono text-sm" />
         </SettingsRow>
       </SettingsSection>

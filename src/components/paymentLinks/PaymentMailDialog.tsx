@@ -36,7 +36,7 @@ export default function PaymentMailDialog({ link, onClose, onReminder }: Props) 
   const [loadingForms, setLoadingForms] = useState(false);
   const [sending, setSending] = useState<"reminder" | "form" | null>(null);
 
-  const isPaid = link?.status === "paid";
+  const isPaid = link?.status === "paid" || link?.status === "partially_paid";
   const canRemind =
     link?.status === "created" || link?.status === "partially_paid";
 
@@ -51,7 +51,7 @@ export default function PaymentMailDialog({ link, onClose, onReminder }: Props) 
       .list()
       .then((response: { data?: AvailableForm[] }) => {
         if (cancelled) return;
-        const active = (response?.data ?? []).filter(isActiveForm);
+        const active = (response?.data ?? []);
         setForms(active);
         if (active.length === 1) setSelectedFormId(active[0].id);
       })

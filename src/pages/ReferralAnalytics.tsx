@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { callLogsApi } from '@/services/callLogs';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -49,6 +50,11 @@ export default function ReferralAnalytics() {
   const fetchData = async () => {
     setLoading(true);
     try {
+      try {
+        await callLogsApi.syncDailyReportsFromCallLogs(730);
+      } catch {
+        /* non-blocking */
+      }
       const [profilesData, leadsData, reportsData] = await Promise.all([
         api.profiles.list(), api.leads.list(), api.dailyReports.list()
       ]);
@@ -57,7 +63,13 @@ export default function ReferralAnalytics() {
         : profilesData.data || profilesData.profiles || [];
       setProfiles(parsedProfiles.filter((p: any) => p.user_id));
       setAllLeads(Array.isArray(leadsData) ? leadsData : leadsData.data || leadsData.leads || []);
-      setDailyReports(Array.isArray(reportsData) ? reportsData : reportsData.data || reportsData.reports || []);
+      setDailyReports(
+        Array.isArray(reportsData)
+          ? reportsData
+          : Array.isArray(reportsData?.data)
+            ? reportsData.data
+            : reportsData?.reports || [],
+      );
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };

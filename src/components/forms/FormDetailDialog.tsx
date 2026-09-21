@@ -8,14 +8,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Copy, Download, ExternalLink, Loader2, Pencil, ChevronDown, ChevronRight, Mail, MessageSquare } from "lucide-react";
+import { Copy, Download, ExternalLink, Loader2, Pencil, ChevronDown, ChevronRight } from "lucide-react";
 import { openProtectedUpload, resumeStoragePath } from "@/lib/resumeHref";
-import { Switch } from "@/components/ui/switch";
-import { FormCampaignSendDialog } from "@/components/forms/FormCampaignSendDialog";
-import { canManageFormCampaigns, parseFormCampaign, type FormCampaignConfig } from "@/components/forms/formCampaignTypes";
 import { useAuth } from "@/hooks/useAuth";
 import * as perms from "@/lib/permissions";
 
@@ -38,6 +34,7 @@ export type FormDetailLeadForm = {
   org_name?: string | null;
   created_at?: string;
   created_by?: string | null;
+  created_by_name?: string | null;
   submission_count?: number;
   meta_json?: Record<string, unknown>;
 };
@@ -54,6 +51,7 @@ type FormSubmission = {
   resume_path?: string | null;
   created_at?: string;
   assigned_to_name?: string | null;
+  tags?: Record<string, unknown> | string | null;
 };
 
 type Props = {
@@ -63,8 +61,9 @@ type Props = {
   assignments?: FormAssignment[];
   publicLink?: string;
   canEdit?: boolean;
-  canManageCampaigns?: boolean;
+  createdByLabel?: string;
   onEdit?: () => void;
+  onDuplicate?: () => void;
   onCopyLink?: (url: string, label: string) => void;
 };
 
@@ -80,6 +79,22 @@ function formatDate(value?: string | null): string {
 
 function displayName(row: FormSubmission): string {
   return String(row.name || row.full_name || "—").trim() || "—";
+}
+
+function parseSubmissionTags(row: FormSubmission): Record<string, unknown> {
+  const raw = row.tags;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const decoded = JSON.parse(raw);
+      if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
+        return decoded as Record<string, unknown>;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return {};
 }
 
 function exportSubmissionsCsv(
@@ -138,8 +153,9 @@ export function FormDetailDialog({
   assignments = [],
   publicLink = "",
   canEdit = false,
-  canManageCampaigns = false,
+  createdByLabel,
   onEdit,
+  onDuplicate,
   onCopyLink,
 }: Props) {
   const { toast } = useToast();
@@ -155,13 +171,13 @@ export function FormDetailDialog({
   const [status, setStatus] = useState("all");
   const [destination, setDestination] = useState<LeadDestination>("form_leads");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [campaignCfg, setCampaignCfg] = useState<FormCampaignConfig>(() => parseFormCampaign(form?.meta_json));
-  const [campaignChannel, setCampaignChannel] = useState<"email" | "whatsapp" | null>(null);
-  const [savingCampaign, setSavingCampaign] = useState(false);
+  const [retryingLeadId, setRetryingLeadId] = useState<string | null>(null);
   const limit = 25;
 
   const meta = useMemo(() => parseFormMetaJson(form?.meta_json), [form?.meta_json]);
   const leadDest: LeadDestination = meta.lead_destination === "hr_leads" ? "hr_leads" : "form_leads";
+  const autoCertificateOn = !!meta.auto_certificate;
+  const autoOfferOn = !!meta.auto_offer_letter;
   const statusOptions = leadDest === "hr_leads" ? HR_STATUSES : LEAD_STATUSES;
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
@@ -181,9 +197,58 @@ export function FormDetailDialog({
     }
   }, [form?.id, page, limit, search, status, toast]);
 
-  useEffect(() => {
-    setCampaignCfg(parseFormCampaign(form?.meta_json));
-  }, [form?.id, form?.meta_json]);
+  const handleRetryAutoDocs = useCallback(
+    async (leadId: string) => {
+      if (!form?.id || !leadId) return;
+      setRetryingLeadId(leadId);
+      try {
+        const res = await api.forms.retryAutoDocuments({ form_id: form.id, lead_id: leadId });
+        const data = res?.data;
+        const parts: string[] = [];
+        if (data?.certificate_sent) {
+          parts.push(
+            data.certificate_id
+              ? `Certificate ${data.certificate_id}`
+              : "Certificate issued",
+          );
+          if (data.certificate_warning) parts.push(String(data.certificate_warning));
+        } else if (data?.certificate_error) {
+          parts.push(`Certificate failed: ${data.certificate_error}`);
+        }
+        if (data?.offer_letter_sent) {
+          parts.push("Offer letter saved");
+        } else if (data?.offer_letter_error) {
+          parts.push(`Offer letter failed: ${data.offer_letter_error}`);
+        }
+        if (data?.warning) parts.push(String(data.warning));
+        if (data?.certificate_sent || data?.offer_letter_sent) {
+          toast({
+            title: "Documents processed",
+            description: parts.join(" — ") || res?.message || "Done",
+          });
+        } else if (data?.certificate_error || data?.offer_letter_error) {
+          toast({
+            variant: "destructive",
+            title: "Auto documents failed",
+            description: parts.join(" — ") || res?.message || "Failed",
+          });
+        } else {
+          toast({
+            variant: "destructive",
+            title: "Nothing generated",
+            description: res?.message || "Check Automations (template + Auto toggle) and Save the form.",
+          });
+        }
+        await loadSubmissions();
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "Retry failed";
+        toast({ variant: "destructive", title: "Retry failed", description: message });
+      } finally {
+        setRetryingLeadId(null);
+      }
+    },
+    [form?.id, loadSubmissions, toast],
+  );
 
   useEffect(() => {
     if (!open || !form?.id) return;
@@ -232,24 +297,6 @@ export function FormDetailDialog({
     }
   }
 
-  async function patchCampaign(patch: Partial<FormCampaignConfig>) {
-    if (!form?.id) return;
-    const previous = campaignCfg;
-    const next = { ...previous, ...patch };
-    setCampaignCfg(next);
-    setSavingCampaign(true);
-    try {
-      await api.forms.saveCampaignSettings({ form_id: form.id, campaign: next });
-      toast({ title: "Campaign settings saved" });
-    } catch (error: unknown) {
-      setCampaignCfg(previous);
-      const message = error instanceof Error ? error.message : "Try again.";
-      toast({ variant: "destructive", title: "Save failed", description: message });
-    } finally {
-      setSavingCampaign(false);
-    }
-  }
-
   if (!form) return null;
 
   const isActive = form.is_active === true || form.is_active === 1;
@@ -283,6 +330,12 @@ export function FormDetailDialog({
             <div>
               <p className="text-xs text-muted-foreground">Organization</p>
               <p>{form.org_name}</p>
+            </div>
+          ) : null}
+          {createdByLabel ? (
+            <div>
+              <p className="text-xs text-muted-foreground">Created by</p>
+              <p>{createdByLabel}</p>
             </div>
           ) : null}
           {form.created_at ? (
@@ -335,17 +388,11 @@ export function FormDetailDialog({
               Edit form
             </Button>
           ) : null}
-          {canManageCampaigns ? (
-            <>
-              <Button variant="outline" size="sm" onClick={() => setCampaignChannel("email")}>
-                <Mail className="h-3.5 w-3.5 mr-1" />
-                Email Campaign
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => setCampaignChannel("whatsapp")}>
-                <MessageSquare className="h-3.5 w-3.5 mr-1 text-emerald-600" />
-                WhatsApp Campaign
-              </Button>
-            </>
+          {onDuplicate ? (
+            <Button variant="outline" size="sm" onClick={onDuplicate}>
+              <Copy className="h-3.5 w-3.5 mr-1" />
+              Duplicate
+            </Button>
           ) : null}
           <Button variant="outline" size="sm" asChild>
             <Link to={leadDest === "hr_leads" ? "/leads/hr-leads" : "/leads/form-leads"}>
@@ -353,41 +400,6 @@ export function FormDetailDialog({
             </Link>
           </Button>
         </div>
-
-        {canManageCampaigns ? (
-          <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-            <p className="text-sm font-medium">Auto-send for new submissions</p>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center justify-between gap-3 flex-1">
-                <Label htmlFor="auto-email" className="text-sm font-normal">
-                  Auto send email campaign
-                </Label>
-                <Switch
-                  id="auto-email"
-                  checked={Boolean(campaignCfg.auto_send_email)}
-                  disabled={savingCampaign || !campaignCfg.email_template_id}
-                  onCheckedChange={(v) => void patchCampaign({ auto_send_email: v })}
-                />
-              </div>
-              <div className="flex items-center justify-between gap-3 flex-1">
-                <Label htmlFor="auto-wa" className="text-sm font-normal">
-                  Auto send WhatsApp campaign
-                </Label>
-                <Switch
-                  id="auto-wa"
-                  checked={Boolean(campaignCfg.auto_send_whatsapp)}
-                  disabled={savingCampaign || !campaignCfg.whatsapp_template_id}
-                  onCheckedChange={(v) => void patchCampaign({ auto_send_whatsapp: v })}
-                />
-              </div>
-            </div>
-            {!campaignCfg.email_template_id && !campaignCfg.whatsapp_template_id ? (
-              <p className="text-xs text-muted-foreground">
-                Assign templates on publish to enable auto-send toggles.
-              </p>
-            ) : null}
-          </div>
-        ) : null}
 
         <div className="border-t pt-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -512,6 +524,91 @@ export function FormDetailDialog({
                                   </Button>
                                 </div>
                               ) : null}
+                              {destination !== "hr_leads" && (autoCertificateOn || autoOfferOn) ? (
+                                <div className="mt-3 flex flex-wrap items-center gap-2 border-t pt-3">
+                                  {(() => {
+                                    const tags = parseSubmissionTags(row);
+                                    const certSent = !!tags.auto_certificate_sent;
+                                    const certErr = tags.auto_certificate_error
+                                      ? String(tags.auto_certificate_error)
+                                      : "";
+                                    const certWarn = tags.auto_certificate_warning
+                                      ? String(tags.auto_certificate_warning)
+                                      : "";
+                                    const certId = tags.auto_certificate_id
+                                      ? String(tags.auto_certificate_id)
+                                      : "";
+                                    const offerSent = !!tags.auto_offer_letter_sent;
+                                    const offerErr = tags.auto_offer_letter_error
+                                      ? String(tags.auto_offer_letter_error)
+                                      : "";
+                                    const offerWarn = tags.auto_offer_letter_warning
+                                      ? String(tags.auto_offer_letter_warning)
+                                      : "";
+                                    const retryLabel =
+                                      autoCertificateOn && autoOfferOn
+                                        ? certSent || offerSent
+                                          ? "Resend documents"
+                                          : "Issue documents now"
+                                        : autoOfferOn
+                                          ? offerSent
+                                            ? "Resend offer letter"
+                                            : "Send offer letter now"
+                                          : certSent
+                                            ? "Resend certificate"
+                                            : "Issue certificate now";
+                                    return (
+                                      <>
+                                        {autoCertificateOn ? (
+                                          <span className="text-xs text-muted-foreground">
+                                            Certificate:{" "}
+                                            {certSent ? (
+                                              <span className="text-emerald-700 font-medium">
+                                                Issued{certId ? ` (${certId})` : ""}
+                                                {certWarn ? ` — ${certWarn}` : ""}
+                                              </span>
+                                            ) : certErr ? (
+                                              <span className="text-destructive font-medium">{certErr}</span>
+                                            ) : (
+                                              <span>Not issued yet</span>
+                                            )}
+                                          </span>
+                                        ) : null}
+                                        {autoOfferOn ? (
+                                          <span className="text-xs text-muted-foreground">
+                                            Offer letter:{" "}
+                                            {offerSent ? (
+                                              <span className="text-emerald-700 font-medium">
+                                                Sent{offerWarn ? ` — ${offerWarn}` : ""}
+                                              </span>
+                                            ) : offerErr ? (
+                                              <span className="text-destructive font-medium">{offerErr}</span>
+                                            ) : (
+                                              <span>Not sent yet</span>
+                                            )}
+                                          </span>
+                                        ) : null}
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-8"
+                                          disabled={retryingLeadId === rowId}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void handleRetryAutoDocs(rowId);
+                                          }}
+                                        >
+                                          {retryingLeadId === rowId ? (
+                                            <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                                          ) : null}
+                                          {retryLabel}
+                                        </Button>
+                                      </>
+                                    );
+                                  })()}
+                                </div>
+                              ) : null}
                             </TableCell>
                           </TableRow>
                         ) : null}
@@ -540,18 +637,6 @@ export function FormDetailDialog({
           ) : null}
         </div>
       </DialogContent>
-
-      {form?.id && campaignChannel ? (
-        <FormCampaignSendDialog
-          open={Boolean(campaignChannel)}
-          onOpenChange={(o) => {
-            if (!o) setCampaignChannel(null);
-          }}
-          formId={form.id}
-          channel={campaignChannel}
-          submissionCount={total || form.submission_count || 0}
-        />
-      ) : null}
     </Dialog>
   );
 }

@@ -41,9 +41,9 @@ export const canBulkDelete = (role: string | null): boolean =>
 export const canImport = (role: string | null): boolean =>
   CAN_IMPORT_ROLES.includes(roleKey(role));
 
-/** True for manager / org / super_admin only (not L1). */
+/** Export is L3+ only — L1 and L2 never get export. */
 export const canExport = (role: string | null): boolean =>
-  getRoleLevel(role) >= 2;
+  getRoleLevel(role) >= 3;
 
 export const canEditRecord = (
   role: string | null,

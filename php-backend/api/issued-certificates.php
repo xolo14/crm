@@ -17,7 +17,7 @@ function tableHasColumn(PDO $db, string $table, string $column): bool {
 }
 
 if ($method === 'GET') {
-    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);
+    requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org', 'operational_manager']);
     $org = orgFilter($tokenData);
     $sql = 'SELECT id, template_id, template_name, recipient_name, course_name, cert_type, issue_date, status, verify_token, created_at';
     $sql .= " FROM issued_certificates WHERE {$org['where']} ORDER BY created_at DESC LIMIT 2000";

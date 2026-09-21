@@ -1,6 +1,27 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ClipboardCheck, Copy, Download, ExternalLink, FileDown, FileText, Plus, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Building2,
+  Calendar,
+  ClipboardCheck,
+  Clock,
+  Copy,
+  Download,
+  ExternalLink,
+  FileDown,
+  FileText,
+  GraduationCap,
+  Mail,
+  Phone,
+  Plus,
+  Search,
+  Sparkles,
+  Trash2,
+  Users,
+} from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { api } from "@/lib/api";
 import {
   assessmentsApi,
   type PeaklyyAssessment,
@@ -30,6 +51,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { downloadProtectedUpload } from "@/lib/resumeHref";
 import { Checkbox } from "@/components/ui/checkbox";
+import AssignedAssignmentsCard from "@/components/assignments/AssignedAssignmentsCard";
 
 function downloadTextFile(text: string, filename: string) {
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
@@ -189,7 +211,10 @@ function exportAttemptsCsv(
     "Name",
     "Email",
     "Phone",
-    "Domain",
+    "College / Institution",
+    "Degree / Branch",
+    "Graduation Year",
+    "Interests / Domain",
     "Domain Key",
     "MCQ Score",
     "Stars",
@@ -209,7 +234,14 @@ function exportAttemptsCsv(
     r.full_name,
     r.email,
     r.phone || "",
-    r.domain_key === "custom" ? "Custom" : opts.domains[r.domain_key] || r.domain_key,
+    r.college_name || "",
+    r.degree_branch || "",
+    r.graduation_year || "",
+    r.interest_topics?.length
+      ? r.interest_topics.join(", ")
+      : r.domain_key === "custom"
+        ? "Custom"
+        : opts.domains[r.domain_key] || r.domain_key,
     r.domain_key,
     r.score ?? "",
     r.stars ?? "",
@@ -243,6 +275,15 @@ function isSyncpediaAssessment(a: PeaklyyAssessment): boolean {
   return theme === "syncpedia" || slug.includes("syncpedia");
 }
 
+function isSystemAssignment(a: PeaklyyAssessment): boolean {
+  const slug = String(a.slug || "").toLowerCase();
+  return slug === "syncpedia-fresher-basics" || slug === "syncpedia-assignment";
+}
+
+function assignmentUserId(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
 function assessmentPublicPath(a: PeaklyyAssessment | null | undefined): string {
   if (!a) return "";
   if (a.open_url) return a.open_url;
@@ -251,12 +292,14 @@ function assessmentPublicPath(a: PeaklyyAssessment | null | undefined): string {
 }
 
 export default function AssessmentsAdminPage() {
+  const { role } = useAuth();
+  const isSuperAdmin = role === "super_admin";
   const { toast } = useToast();
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [linkDialogId, setLinkDialogId] = useState<string | null>(null);
   const [form, setForm] = useState({
-    title: "Peaklyy Domain Screening",
+    title: "Syncpedia Assignment",
     duration_minutes: 0,
     question_count: 30,
     result_webhook_url: "",
@@ -271,6 +314,25 @@ export default function AssessmentsAdminPage() {
   const [customTo, setCustomTo] = useState("");
   const [adminTab, setAdminTab] = useState<"assessments" | "peaklyy" | "syncpedia">("assessments");
   const [zipBusy, setZipBusy] = useState(false);
+  const [confirmDeleteAttempt, setConfirmDeleteAttempt] = useState<PeaklyyAttemptRow | null>(null);
+  const [confirmDeleteAssessment, setConfirmDeleteAssessment] = useState<PeaklyyAssessment | null>(null);
+
+  const deleteAttemptMut = useMutation({
+    mutationFn: (attemptId: string) => assessmentsApi.deleteAttempt(attemptId),
+    onSuccess: () => {
+      toast({ title: "Candidate attempt deleted" });
+      setConfirmDeleteAttempt(null);
+      if (detailAttemptId) setDetailAttemptId(null);
+      qc.invalidateQueries({ queryKey: ["peaklyy", "attempts"] });
+    },
+    onError: (err: any) => {
+      toast({
+        variant: "destructive",
+        title: "Delete failed",
+        description: err?.message || "Could not delete attempt",
+      });
+    },
+  });
 
   const { data, isLoading } = useQuery({
     queryKey: ["peaklyy", "assessments"],
@@ -296,16 +358,111 @@ export default function AssessmentsAdminPage() {
   // Keep selection valid for the active brand tab
   const brandList = adminTab === "syncpedia" ? syncpediaList : adminTab === "peaklyy" ? peaklyyList : list;
   const selectedForAttempts = useMemo(() => {
+    if (!isSuperAdmin) {
+      if (selected && list.some((a) => a.id === selected.id)) return selected;
+      return list[0] || null;
+    }
     if (adminTab === "assessments") return selected;
     if (selected && brandList.some((a) => a.id === selected.id)) return selected;
     return brandList[0] || null;
-  }, [adminTab, selected, brandList]);
+  }, [isSuperAdmin, adminTab, selected, brandList, list]);
 
   const { data: attemptsRes } = useQuery({
     queryKey: ["peaklyy", "attempts", selectedForAttempts?.id],
     queryFn: () => assessmentsApi.attempts(selectedForAttempts!.id),
-    enabled: !!selectedForAttempts?.id && (adminTab === "peaklyy" || adminTab === "syncpedia"),
+    enabled: !!selectedForAttempts?.id && (!isSuperAdmin || adminTab === "peaklyy" || adminTab === "syncpedia"),
   });
+
+  // Super Admin: Team members & assignments query
+  const { data: teamData } = useQuery({
+    queryKey: ["team", "list"],
+    queryFn: () => api.team.list(),
+    enabled: isSuperAdmin && !!linkDialogId,
+  });
+  const teamMembers = useMemo(() => teamData?.data ?? [], [teamData]);
+
+  const {
+    data: assignedUsersData,
+    refetch: refetchAssignedUsers,
+    isFetching: assignedUsersFetching,
+    isSuccess: assignedUsersSuccess,
+  } = useQuery({
+    queryKey: ["assessment", "assigned_users", linkDialogId],
+    queryFn: () => assessmentsApi.assignedUsers(linkDialogId!),
+    enabled: isSuperAdmin && !!linkDialogId,
+  });
+
+  const [assignedUserIds, setAssignedUserIds] = useState<string[]>([]);
+  const [assignSearch, setAssignSearch] = useState("");
+  const assignDirtyRef = useRef(false);
+
+  const assignMut = useMutation({
+    mutationFn: (userIds: string[]) =>
+      assessmentsApi.assignUsers(linkDialogAssessment!.id, userIds.map(assignmentUserId).filter(Boolean)),
+    onSuccess: (res, userIds) => {
+      assignDirtyRef.current = false;
+      const saved = (Array.isArray(res.user_ids) ? res.user_ids : userIds)
+        .map(assignmentUserId)
+        .filter(Boolean);
+      setAssignedUserIds(saved);
+      qc.setQueryData(["peaklyy", "assessments"], (old: { data?: PeaklyyAssessment[] } | undefined) => {
+        if (!old?.data || !linkDialogId) return old;
+        return {
+          ...old,
+          data: old.data.map((a) =>
+            a.id === linkDialogId ? { ...a, assigned_user_ids: saved } : a,
+          ),
+        };
+      });
+      toast({ title: "Assignments saved", description: `${res.count ?? saved.length} team member(s) assigned.` });
+      void refetchAssignedUsers();
+      qc.invalidateQueries({ queryKey: ["assessment", "assigned_users", linkDialogId] });
+      qc.invalidateQueries({ queryKey: ["peaklyy", "assessments"] });
+      qc.invalidateQueries({ queryKey: ["my_assignments"] });
+    },
+    onError: (err: any) => {
+      toast({ variant: "destructive", title: "Could not save assignments", description: err?.message });
+    },
+  });
+
+  useEffect(() => {
+    if (!linkDialogId) {
+      assignDirtyRef.current = false;
+      setAssignedUserIds([]);
+      setAssignSearch("");
+      return;
+    }
+    assignDirtyRef.current = false;
+    setAssignedUserIds((linkDialogAssessment?.assigned_user_ids || []).map(assignmentUserId).filter(Boolean));
+    setAssignSearch("");
+  }, [linkDialogId]);
+
+  useEffect(() => {
+    if (!linkDialogId || assignDirtyRef.current || assignMut.isPending || assignedUsersFetching) return;
+    if (!assignedUsersSuccess || !assignedUsersData) return;
+    const rows = Array.isArray(assignedUsersData.data) ? assignedUsersData.data : [];
+    const fromApi = rows.map((u) => assignmentUserId(u.user_id)).filter(Boolean);
+    const fromList = (linkDialogAssessment?.assigned_user_ids || []).map(assignmentUserId).filter(Boolean);
+    setAssignedUserIds(fromApi.length ? fromApi : fromList);
+  }, [
+    linkDialogId,
+    assignedUsersData,
+    assignedUsersFetching,
+    assignedUsersSuccess,
+    assignMut.isPending,
+    linkDialogAssessment?.assigned_user_ids,
+  ]);
+
+  const filteredTeamMembers = useMemo(() => {
+    if (!assignSearch.trim()) return teamMembers;
+    const q = assignSearch.toLowerCase();
+    return teamMembers.filter(
+      (m: any) =>
+        (m.full_name && m.full_name.toLowerCase().includes(q)) ||
+        (m.email && m.email.toLowerCase().includes(q)) ||
+        (m.role && m.role.toLowerCase().includes(q)),
+    );
+  }, [teamMembers, assignSearch]);
 
   const { data: attemptDetail, isFetching: detailLoading } = useQuery({
     queryKey: ["peaklyy", "attempt-detail", detailAttemptId],
@@ -401,6 +558,9 @@ export default function AssessmentsAdminPage() {
           once_per_candidate: form.once_per_candidate,
           anti_cheat: form.anti_cheat,
           source_mode: "custom",
+          ui_theme: "syncpedia",
+          brand_name: "Syncpedia",
+          brand_tagline: "Cybersecurity · Ethical Hacking · AI — basics",
           questions: cleaned,
         });
       }
@@ -412,17 +572,21 @@ export default function AssessmentsAdminPage() {
         once_per_candidate: form.once_per_candidate,
         anti_cheat: form.anti_cheat,
         source_mode: "domain_bank",
+        ui_theme: "syncpedia",
+        brand_name: "Syncpedia",
+        brand_tagline: "Cybersecurity · Ethical Hacking · AI — basics",
       });
     },
     onSuccess: (r) => {
       toast({
-        title: "Assessment created",
+        title: "Assignment created",
         description: `${r.source_mode === "custom" ? "Custom" : "Domain bank"} · permanent API key · ${
           r.source_mode === "domain_bank" || !r.duration_minutes ? "untimed" : `${r.duration_minutes} min`
         } · ${r.question_count} questions`,
       });
       qc.invalidateQueries({ queryKey: ["peaklyy"] });
       setSelectedId(r.id);
+      setAdminTab("syncpedia");
       if (form.source_mode === "custom") {
         setCustomQuestions([emptyQuestion()]);
       }
@@ -449,6 +613,19 @@ export default function AssessmentsAdminPage() {
     onError: (e: Error) => toast({ variant: "destructive", title: e.message }),
   });
 
+  const deleteAssessmentMut = useMutation({
+    mutationFn: (id: string) => assessmentsApi.delete(id),
+    onSuccess: (_, id) => {
+      toast({ title: "Assignment deleted" });
+      setConfirmDeleteAssessment(null);
+      if (linkDialogId === id) setLinkDialogId(null);
+      if (selectedId === id) setSelectedId(null);
+      qc.invalidateQueries({ queryKey: ["peaklyy"] });
+      qc.invalidateQueries({ queryKey: ["my_assignments"] });
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: e.message }),
+  });
+
   const updateQuestion = (index: number, patch: Partial<PeaklyyCustomQuestionInput>) => {
     setCustomQuestions((prev) => prev.map((q, i) => (i === index ? { ...q, ...patch } : q)));
   };
@@ -457,13 +634,15 @@ export default function AssessmentsAdminPage() {
     const current = selectedForAttempts && brandAssessments.some((a) => a.id === selectedForAttempts.id)
       ? selectedForAttempts
       : brandAssessments[0] || null;
-    const isSyncpedia = label.toLowerCase().includes("syncpedia");
+    const isSyncpedia = current ? isSyncpediaAssessment(current) : label.toLowerCase().includes("syncpedia");
 
     if (brandAssessments.length === 0) {
       return (
         <Card>
           <CardContent className="py-10 text-sm text-muted-foreground text-center">
-            No {label} assessments yet.
+            {isSuperAdmin
+              ? `No ${label} assignments yet.`
+              : "No assignments have been assigned to your account yet. Please contact a Super Admin."}
           </CardContent>
         </Card>
       );
@@ -493,7 +672,7 @@ export default function AssessmentsAdminPage() {
             <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3 space-y-0">
               <div className="space-y-1.5">
                 <CardTitle className="text-base">
-                  {label} — candidates
+                  {current.title} — Candidates
                 </CardTitle>
                 <CardDescription>
                   Everyone who took {current.title}. Showing {attemptRows.length}
@@ -559,20 +738,21 @@ export default function AssessmentsAdminPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Candidate</TableHead>
-                      <TableHead>{isSyncpedia ? "Degree / Year" : "Domain"}</TableHead>
+                      <TableHead>College / Institution</TableHead>
+                      <TableHead>{isSyncpedia ? "Degree / Domain" : "Domain / Track"}</TableHead>
                       <TableHead>Score</TableHead>
                       <TableHead>Stars</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Attempted</TableHead>
-                      <TableHead>Webhook</TableHead>
+                      {isSuperAdmin ? <TableHead className="text-right">Actions</TableHead> : null}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {attemptRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="text-muted-foreground text-sm">
+                        <TableCell colSpan={isSuperAdmin ? 8 : 7} className="text-muted-foreground text-sm">
                           {allAttemptRows.length === 0
-                            ? "No candidates have taken this assessment yet."
+                            ? "No candidates have taken this assignment yet."
                             : `No candidates in ${periodLabel}. Try All time or another timeline.`}
                         </TableCell>
                       </TableRow>
@@ -590,17 +770,28 @@ export default function AssessmentsAdminPage() {
                               <div className="text-[11px] text-muted-foreground">{r.phone}</div>
                             ) : null}
                           </TableCell>
-                          <TableCell className="text-sm">
-                            {isSyncpedia
-                              ? r.degree_branch || r.college_name || "—"
-                              : r.domain_key === "custom"
-                                ? "Custom"
-                                : domains[r.domain_key] || r.domain_key}
+                          <TableCell>
+                            <div className="text-sm font-medium max-w-[200px] truncate" title={r.college_name || "—"}>
+                              {r.college_name || <span className="text-muted-foreground font-normal">—</span>}
+                            </div>
                           </TableCell>
-                          <TableCell>{r.score ?? "—"}</TableCell>
+                          <TableCell className="text-sm">
+                            <div>{r.degree_branch || "—"}</div>
+                            {r.graduation_year ? (
+                              <div className="text-xs text-muted-foreground">Year: {r.graduation_year}</div>
+                            ) : null}
+                            {r.domain_key && r.domain_key !== "custom" ? (
+                              <Badge variant="outline" className="text-[10px] mt-0.5">
+                                {domains[r.domain_key] || r.domain_key}
+                              </Badge>
+                            ) : null}
+                          </TableCell>
+                          <TableCell>
+                            <span className="font-semibold">{r.score ?? "—"}</span>
+                          </TableCell>
                           <TableCell>{r.stars != null ? "★".repeat(r.stars) || "—" : "—"}</TableCell>
                           <TableCell>
-                            <Badge variant="outline">{r.status}</Badge>
+                            <Badge variant={r.status === "submitted" ? "secondary" : "outline"}>{r.status}</Badge>
                             {r.attempt_phase ? (
                               <span className="ml-1 text-[10px] text-muted-foreground">{r.attempt_phase}</span>
                             ) : null}
@@ -608,7 +799,24 @@ export default function AssessmentsAdminPage() {
                           <TableCell className="text-xs whitespace-nowrap">
                             {formatAttemptDate(r.created_at || r.started_at || r.submitted_at)}
                           </TableCell>
-                          <TableCell className="text-xs">{r.webhook_status || "—"}</TableCell>
+                          {isSuperAdmin ? (
+                            <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-muted-foreground hover:text-red-600 hover:bg-red-50"
+                                title="Delete candidate attempt"
+                                disabled={deleteAttemptMut.isPending}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmDeleteAttempt(r);
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          ) : null}
                         </TableRow>
                       ))
                     )}
@@ -627,43 +835,50 @@ export default function AssessmentsAdminPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
           <ClipboardCheck className="h-6 w-6 text-emerald-700" />
-          Assessments
+          Assignments
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Assessments tab: create and open link/API keys. Peaklyy and Syncpedia Fresher tabs: candidate lists for people
-          who took those assessments.
+          {isSuperAdmin
+            ? "Assignments tab: create and open link/API keys. Peaklyy and Syncpedia Basics tabs: candidate lists for people who took those assignments."
+            : "Assignments assigned to you: copy the candidate link and view details. Candidate rows appear below when people take the test."}
         </p>
       </div>
 
-      <Tabs
-        value={adminTab}
-        onValueChange={(v) => {
-          const next = v as "assessments" | "peaklyy" | "syncpedia";
-          setAdminTab(next);
-          if (next === "peaklyy" && peaklyyList[0]) {
-            setSelectedId(peaklyyList[0].id);
-            setAttemptPeriod("all");
-          }
-          if (next === "syncpedia" && syncpediaList[0]) {
-            setSelectedId(syncpediaList[0].id);
-            setAttemptPeriod("all");
-          }
-        }}
-        className="space-y-4"
-      >
+      {!isSuperAdmin ? (
+        <div className="space-y-4">
+          <AssignedAssignmentsCard variant="page" />
+          {list.length > 0 ? renderBrandAttemptsPanel("Candidates", list) : null}
+        </div>
+      ) : (
+        <Tabs
+          value={adminTab}
+          onValueChange={(v) => {
+            const next = v as "assessments" | "peaklyy" | "syncpedia";
+            setAdminTab(next);
+            if (next === "peaklyy" && peaklyyList[0]) {
+              setSelectedId(peaklyyList[0].id);
+              setAttemptPeriod("all");
+            }
+            if (next === "syncpedia" && syncpediaList[0]) {
+              setSelectedId(syncpediaList[0].id);
+              setAttemptPeriod("all");
+            }
+          }}
+          className="space-y-4"
+        >
         <TabsList>
-          <TabsTrigger value="assessments">Assessments</TabsTrigger>
+          <TabsTrigger value="assessments">Assignments</TabsTrigger>
           <TabsTrigger value="peaklyy">Peaklyy</TabsTrigger>
-          <TabsTrigger value="syncpedia">Syncpedia Fresher</TabsTrigger>
+          <TabsTrigger value="syncpedia">Syncpedia Basics</TabsTrigger>
         </TabsList>
 
         <TabsContent value="assessments" className="space-y-4 mt-0">
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Create assessment</CardTitle>
+            <CardTitle className="text-base">Create assignment</CardTitle>
             <CardDescription>
-              Domain bank uses Peaklyy MCQs + practical tasks. Custom lets you add MCQs and/or notepad / file-upload questions.
+              New assignments use the Syncpedia candidate theme. Domain bank uses MCQs + practical tasks. Custom lets you add MCQs and/or notepad / file-upload questions.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
@@ -674,7 +889,7 @@ export default function AssessmentsAdminPage() {
                   type="button"
                   variant={form.source_mode === "domain_bank" ? "default" : "outline"}
                   className={form.source_mode === "domain_bank" ? "bg-emerald-800 hover:bg-emerald-900" : ""}
-                  onClick={() => setForm((f) => ({ ...f, source_mode: "domain_bank", title: "Peaklyy Domain Screening" }))}
+                  onClick={() => setForm((f) => ({ ...f, source_mode: "domain_bank", title: "Syncpedia Assignment" }))}
                 >
                   Domain bank
                 </Button>
@@ -686,7 +901,7 @@ export default function AssessmentsAdminPage() {
                     setForm((f) => ({
                       ...f,
                       source_mode: "custom",
-                      title: f.title === "Peaklyy Domain Screening" ? "Custom Assessment" : f.title,
+                      title: f.title === "Syncpedia Assignment" ? "Custom Assignment" : f.title,
                     }))
                   }
                 >
@@ -736,7 +951,7 @@ export default function AssessmentsAdminPage() {
                 onChange={(e) => setForm((f) => ({ ...f, result_webhook_url: e.target.value }))}
               />
               <p className="text-[11px] text-muted-foreground">
-                Permanent API key + open link are auto-generated. Click an assessment on the right to view them.
+                Permanent API key + open link are auto-generated. Click an assignment on the right to view them.
               </p>
             </div>
             <div className="flex items-center justify-between gap-2">
@@ -892,49 +1107,70 @@ export default function AssessmentsAdminPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Active assessments</CardTitle>
-            <CardDescription>Click an assessment to view its permanent link and API key.</CardDescription>
+            <CardTitle className="text-base">Active assignments</CardTitle>
+            <CardDescription>Click an assignment to view its permanent link and API key.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {isLoading ? (
               <p className="text-sm text-muted-foreground">Loading…</p>
             ) : activeList.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No active assessments yet.</p>
+              <p className="text-sm text-muted-foreground">No active assignments yet.</p>
             ) : (
               <div className="space-y-2 max-h-[520px] overflow-y-auto">
                 {activeList.map((a) => (
-                  <button
+                  <div
                     key={a.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedId(a.id);
-                      setLinkDialogId(a.id);
-                    }}
                     className="w-full text-left rounded-lg border p-3 transition-colors hover:bg-muted/40 hover:border-emerald-600/50"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="font-medium text-sm truncate">{a.title}</p>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <Badge variant="outline">
-                          {isSyncpediaAssessment(a) ? "Syncpedia" : a.source_mode === "custom" ? "Custom" : "Domain"}
-                        </Badge>
-                        <Badge variant="default">Active</Badge>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedId(a.id);
+                        setLinkDialogId(a.id);
+                      }}
+                      className="w-full text-left"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium text-sm truncate">{a.title}</p>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <Badge variant="outline">
+                            {isSyncpediaAssessment(a) ? "Syncpedia" : a.source_mode === "custom" ? "Custom" : "Domain"}
+                          </Badge>
+                          <Badge variant="default">Active</Badge>
+                        </div>
                       </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {a.question_count} Q ·{" "}
-                      {a.source_mode === "domain_bank" || !a.duration_minutes
-                        ? "untimed"
-                        : `${a.duration_minutes} min`}{" "}
-                      · /{a.slug}
-                    </p>
-                  </button>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {a.question_count} Q ·{" "}
+                        {a.source_mode === "domain_bank" || !a.duration_minutes
+                          ? "untimed"
+                          : `${a.duration_minutes} min`}{" "}
+                        · /{a.slug}
+                      </p>
+                    </button>
+                    {isSuperAdmin && !isSystemAssignment(a) ? (
+                      <div className="flex justify-end mt-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs gap-1 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDeleteAssessment(a);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          Delete
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
                 ))}
               </div>
             )}
             {list.some((a) => !a.is_active) ? (
               <p className="text-[11px] text-muted-foreground">
-                {list.filter((a) => !a.is_active).length} inactive assessment(s) hidden — open Peaklyy / Syncpedia tabs
+                {list.filter((a) => !a.is_active).length} inactive assignment(s) hidden — open Peaklyy / Syncpedia tabs
                 to manage attempts.
               </p>
             ) : null}
@@ -948,29 +1184,35 @@ export default function AssessmentsAdminPage() {
         </TabsContent>
 
         <TabsContent value="syncpedia" className="mt-0 space-y-4">
-          {renderBrandAttemptsPanel("Syncpedia Fresher", syncpediaList)}
+          {renderBrandAttemptsPanel("Syncpedia Basics", syncpediaList)}
         </TabsContent>
       </Tabs>
+      )}
 
       <Dialog open={!!linkDialogId} onOpenChange={(open) => { if (!open) setLinkDialogId(null); }}>
-        <DialogContent className="max-w-lg max-h-[90dvh] overflow-y-auto">
+        <DialogContent className="max-w-lg w-[min(32rem,calc(100vw-1.25rem))] overflow-x-hidden overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="pr-6">{linkDialogAssessment?.title || "Assessment link"}</DialogTitle>
-            <DialogDescription>
+            <DialogTitle className="pr-6 break-words">{linkDialogAssessment?.title || "Assignment link"}</DialogTitle>
+            <DialogDescription className="break-words">
               Permanent candidate link and partner API key
               {linkDialogAssessment ? ` · /${linkDialogAssessment.slug}` : ""}
             </DialogDescription>
           </DialogHeader>
           {linkDialogAssessment ? (
-            <div className="space-y-4">
-              <div className="space-y-1.5">
+            <div className="space-y-4 min-w-0">
+              <div className="space-y-1.5 min-w-0">
                 <Label className="text-xs">Permanent assessment link</Label>
-                <div className="flex gap-2">
-                  <Input readOnly value={assessmentPublicPath(linkDialogAssessment)} className="text-xs" />
+                <div className="flex items-center gap-2 min-w-0">
+                  <Input
+                    readOnly
+                    value={assessmentPublicPath(linkDialogAssessment)}
+                    className="min-w-0 flex-1 text-xs"
+                  />
                   <Button
                     type="button"
                     variant="outline"
                     size="icon"
+                    className="shrink-0"
                     onClick={() => {
                       void navigator.clipboard.writeText(assessmentPublicPath(linkDialogAssessment));
                       toast({ title: "Link copied" });
@@ -978,25 +1220,26 @@ export default function AssessmentsAdminPage() {
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
-                  <Button type="button" variant="outline" size="icon" asChild>
+                  <Button type="button" variant="outline" size="icon" className="shrink-0" asChild>
                     <a href={assessmentPublicPath(linkDialogAssessment)} target="_blank" rel="noreferrer">
                       <ExternalLink className="h-4 w-4" />
                     </a>
                   </Button>
                 </div>
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 min-w-0">
                 <Label className="text-xs">Permanent API key</Label>
-                <div className="flex gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   <Input
                     readOnly
                     value={linkDialogAssessment.result_api_key || "(none — regenerate)"}
-                    className="text-xs font-mono"
+                    className="min-w-0 flex-1 text-xs font-mono"
                   />
                   <Button
                     type="button"
                     variant="outline"
                     size="icon"
+                    className="shrink-0"
                     disabled={!linkDialogAssessment.result_api_key}
                     onClick={() => {
                       void navigator.clipboard.writeText(String(linkDialogAssessment.result_api_key || ""));
@@ -1007,19 +1250,19 @@ export default function AssessmentsAdminPage() {
                   </Button>
                 </div>
                 {linkDialogAssessment.result_api_key ? (
-                  <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground space-y-1.5 leading-relaxed">
+                  <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground space-y-1.5 leading-relaxed overflow-hidden">
                     <p className="font-medium text-foreground">Partner website</p>
-                    <p>
+                    <p className="break-all">
                       Header:{" "}
                       <code className="text-[10px]">X-Assessment-Api-Key: {linkDialogAssessment.result_api_key}</code>
                     </p>
-                    <p>
+                    <p className="break-all">
                       List attempts:{" "}
-                      <code className="text-[10px] break-all">GET /api/assessments.php?action=partner_attempts</code>
+                      <code className="text-[10px]">GET /api/assessments.php?action=partner_attempts</code>
                     </p>
-                    <p>
+                    <p className="break-all">
                       Score JSON:{" "}
-                      <code className="text-[10px] break-all">
+                      <code className="text-[10px]">
                         GET /api/assessments.php?action=partner_result&amp;attempt_id=…
                       </code>
                     </p>
@@ -1028,6 +1271,91 @@ export default function AssessmentsAdminPage() {
                   <p className="text-xs text-muted-foreground">No API key yet — regenerate to create one.</p>
                 )}
               </div>
+
+              {isSuperAdmin && (
+                <div className="space-y-2 border-t pt-3 min-w-0">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <Label className="text-xs font-semibold flex items-center gap-1.5">
+                        <Users className="h-3.5 w-3.5 text-emerald-700 shrink-0" />
+                        Assign to Team Members
+                      </Label>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        Assigned members stay ticked until you uncheck and save. They see this assignment on their dashboard and Assignments page.
+                      </p>
+                    </div>
+                    <Badge variant="outline" className="text-[11px] font-mono shrink-0">
+                      {assignedUserIds.length} assigned
+                    </Badge>
+                  </div>
+
+                  <div className="relative min-w-0">
+                    <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                    <Input
+                      placeholder="Search team member by name, email, or role..."
+                      value={assignSearch}
+                      onChange={(e) => setAssignSearch(e.target.value)}
+                      className="h-8 pl-8 text-xs"
+                    />
+                  </div>
+
+                  <div className="max-h-56 overflow-y-auto overflow-x-hidden space-y-1 rounded-md border p-2 bg-muted/20">
+                    {filteredTeamMembers.length === 0 ? (
+                      <p className="text-xs text-muted-foreground text-center py-2">
+                        {teamMembers.length === 0 ? "Loading or no team members found" : "No matches found"}
+                      </p>
+                    ) : (
+                      filteredTeamMembers.map((m: any) => {
+                        const mId = assignmentUserId(m.id ?? m.user_id);
+                        const checked = assignedUserIds.some((id) => assignmentUserId(id) === mId);
+                        return (
+                          <div
+                            key={mId || m.email}
+                            className="flex items-start gap-2 p-1.5 rounded hover:bg-muted/60 text-xs min-w-0"
+                          >
+                            <Checkbox
+                              checked={checked}
+                              className="mt-0.5 shrink-0"
+                              onCheckedChange={(c) => {
+                                if (!mId) return;
+                                assignDirtyRef.current = true;
+                                setAssignedUserIds((prev) =>
+                                  !!c
+                                    ? Array.from(new Set([...prev.map(assignmentUserId).filter(Boolean), mId]))
+                                    : prev.map(assignmentUserId).filter((id) => id && id !== mId),
+                                );
+                              }}
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="font-medium text-foreground truncate">
+                                {m.full_name || m.email || "Team member"}
+                              </p>
+                              {m.email ? (
+                                <p className="text-[10px] text-muted-foreground truncate">{m.email}</p>
+                              ) : null}
+                            </div>
+                            <Badge variant="secondary" className="text-[10px] capitalize shrink-0 max-w-[38%] truncate">
+                              {m.role ? String(m.role).replace(/_/g, " ") : "staff"}
+                            </Badge>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                  <div className="flex justify-end pt-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={assignMut.isPending || !linkDialogAssessment}
+                      className="bg-emerald-800 hover:bg-emerald-900 text-xs"
+                      onClick={() => assignMut.mutate(assignedUserIds)}
+                    >
+                      {assignMut.isPending ? "Saving..." : "Save assignments"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button
                   type="button"
@@ -1046,11 +1374,36 @@ export default function AssessmentsAdminPage() {
                   type="button"
                   variant="outline"
                   size="sm"
+                  onClick={() =>
+                    updateMut.mutate({
+                      id: linkDialogAssessment.id,
+                      once_per_candidate: linkDialogAssessment.once_per_candidate ? 0 : 1,
+                    })
+                  }
+                >
+                  {linkDialogAssessment.once_per_candidate ? "Allow Re-attempts" : "Single Attempt Only"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
                   disabled={regenMut.isPending}
                   onClick={() => regenMut.mutate(linkDialogAssessment.id)}
                 >
                   Regenerate API key
                 </Button>
+                {!isSystemAssignment(linkDialogAssessment) ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    onClick={() => setConfirmDeleteAssessment(linkDialogAssessment)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   size="sm"
@@ -1082,17 +1435,34 @@ export default function AssessmentsAdminPage() {
                   {attemptDetail?.data?.phone ? ` · ${attemptDetail.data.phone}` : ""}
                 </DialogDescription>
               </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="default"
-                className="gap-1.5 shrink-0"
-                disabled={zipBusy || detailLoading || !detailAttemptId}
-                onClick={() => void handleDownloadTasksZip()}
-              >
-                <Download className="h-3.5 w-3.5" />
-                {zipBusy ? "Preparing ZIP…" : "Download all tasks (ZIP)"}
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                {isSuperAdmin ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5 shrink-0 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    disabled={deleteAttemptMut.isPending || !detailAttemptId}
+                    onClick={() => {
+                      if (attemptDetail?.data) setConfirmDeleteAttempt(attemptDetail.data);
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Delete attempt
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="gap-1.5 shrink-0"
+                  disabled={zipBusy || detailLoading || !detailAttemptId}
+                  onClick={() => void handleDownloadTasksZip()}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {zipBusy ? "Preparing ZIP…" : "Download all tasks (ZIP)"}
+                </Button>
+              </div>
             </div>
             {attemptDetail?.data ? (
               <div className="flex flex-wrap gap-2 text-xs">
@@ -1114,6 +1484,119 @@ export default function AssessmentsAdminPage() {
           </DialogHeader>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            {attemptDetail?.data && !detailLoading ? (
+              <div className="rounded-xl border bg-card p-4 shadow-sm space-y-3">
+                <div className="flex items-center justify-between border-b pb-2">
+                  <h4 className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                    <Users className="h-4 w-4 text-primary" />
+                    Candidate Form & Registration Details
+                  </h4>
+                  {attemptDetail.data.attempt_phase ? (
+                    <Badge variant="outline" className="text-xs capitalize">
+                      Phase: {attemptDetail.data.attempt_phase}
+                    </Badge>
+                  ) : null}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 text-sm">
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Building2 className="h-3.5 w-3.5 text-muted-foreground/70" />
+                      College / University
+                    </span>
+                    <p className="font-medium text-foreground">
+                      {attemptDetail.data.college_name || <span className="text-muted-foreground font-normal">Not specified</span>}
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <GraduationCap className="h-3.5 w-3.5 text-muted-foreground/70" />
+                      Degree & Branch
+                    </span>
+                    <p className="font-medium text-foreground">
+                      {attemptDetail.data.degree_branch || <span className="text-muted-foreground font-normal">Not specified</span>}
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Calendar className="h-3.5 w-3.5 text-muted-foreground/70" />
+                      Graduation Year
+                    </span>
+                    <p className="font-medium text-foreground">
+                      {attemptDetail.data.graduation_year || <span className="text-muted-foreground font-normal">—</span>}
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Phone className="h-3.5 w-3.5 text-muted-foreground/70" />
+                      Phone Number
+                    </span>
+                    <p className="font-medium text-foreground">
+                      {attemptDetail.data.phone ? (
+                        <a href={`tel:${attemptDetail.data.phone}`} className="text-primary hover:underline">
+                          {attemptDetail.data.phone}
+                        </a>
+                      ) : (
+                        <span className="text-muted-foreground font-normal">—</span>
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Mail className="h-3.5 w-3.5 text-muted-foreground/70" />
+                      Email Address
+                    </span>
+                    <p className="font-medium text-foreground truncate" title={attemptDetail.data.email}>
+                      <a href={`mailto:${attemptDetail.data.email}`} className="text-primary hover:underline">
+                        {attemptDetail.data.email}
+                      </a>
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Clock className="h-3.5 w-3.5 text-muted-foreground/70" />
+                      Time Taken
+                    </span>
+                    <p className="font-medium text-foreground">
+                      {attemptDetail.data.time_taken_seconds != null
+                        ? `${Math.floor(attemptDetail.data.time_taken_seconds / 60)}m ${attemptDetail.data.time_taken_seconds % 60}s`
+                        : "—"}
+                    </p>
+                  </div>
+                </div>
+
+                {attemptDetail.data.interest_topics && attemptDetail.data.interest_topics.length > 0 ? (
+                  <div className="pt-2 border-t space-y-1.5">
+                    <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                      <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+                      Selected Interest Topics
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {attemptDetail.data.interest_topics.map((topic, i) => (
+                        <Badge key={i} variant="secondary" className="text-xs font-normal">
+                          {topic}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {attemptDetail.data.violation_count ? (
+                  <div className="pt-2 border-t flex items-center gap-2 text-xs text-amber-700 bg-amber-50 p-2 rounded">
+                    <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+                    <span>
+                      <strong>{attemptDetail.data.violation_count} disturbance violation(s)</strong> detected during test (tab switches / focus lost).
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             {(attemptDetail?.timeline?.length || attemptDetail?.data) && !detailLoading ? (
               <div className="rounded-md border bg-muted/10 p-3 space-y-2">
                 <p className="text-sm font-semibold">Timeline</p>
@@ -1256,6 +1739,87 @@ export default function AssessmentsAdminPage() {
                 )}
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!confirmDeleteAttempt}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteAttempt(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete Candidate Attempt</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the attempt for{" "}
+              <span className="font-semibold text-foreground">
+                {confirmDeleteAttempt?.full_name || "this candidate"}
+              </span>{" "}
+              ({confirmDeleteAttempt?.email})? All test submissions, task uploads, and recorded answers will be permanently deleted.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmDeleteAttempt(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleteAttemptMut.isPending}
+              onClick={() => {
+                if (confirmDeleteAttempt) {
+                  deleteAttemptMut.mutate(confirmDeleteAttempt.id);
+                }
+              }}
+            >
+              {deleteAttemptMut.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!confirmDeleteAssessment}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDeleteAssessment(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete assignment</DialogTitle>
+            <DialogDescription>
+              Delete{" "}
+              <span className="font-semibold text-foreground">
+                {confirmDeleteAssessment?.title || "this assignment"}
+              </span>
+              ? Candidate attempts and team assignments for it will be removed. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => setConfirmDeleteAssessment(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleteAssessmentMut.isPending || !confirmDeleteAssessment}
+              onClick={() => {
+                if (confirmDeleteAssessment) {
+                  deleteAssessmentMut.mutate(confirmDeleteAssessment.id);
+                }
+              }}
+            >
+              {deleteAssessmentMut.isPending ? "Deleting..." : "Delete"}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

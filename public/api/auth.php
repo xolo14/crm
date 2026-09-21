@@ -710,7 +710,9 @@ if ($method === 'POST') {
 
         $id = generateUUID();
         $hash = password_hash($password, PASSWORD_DEFAULT);
-        $referralCode = generateUniqueSpReferralCode($db, $fullName);
+        $referralCode = $orgId
+            ? referralCodeForNewOrgUser($db, (string) $orgId, $role, $fullName)
+            : generateUniqueSpReferralCode($db, $fullName);
 
         $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, role, referral_code, org_id) VALUES (?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$id, $email, $hash, $fullName, $role, $referralCode, $orgId]);
@@ -856,16 +858,18 @@ if ($method === 'POST') {
         $user = $stmt->fetch();
         if (!$user) respond(['error' => 'User not found'], 404);
 
-        // Keep role consistent with login behavior for portal routing
-        $normalizedRole = normalizeRoleForPortal($user['role'] ?? '');
-        if ($normalizedRole !== 'marketing' && $normalizedRole !== 'super_admin') {
-            $mstmt = $db->prepare("SELECT id FROM marketing_members WHERE user_id = ? OR email = ? LIMIT 1");
-            $mstmt->execute([$user['id'], $user['email']]);
-            if ($mstmt->fetch()) {
-                $normalizedRole = 'marketing';
-            }
-        }
-        $user['role'] = $normalizedRole;
+ // Only upgrade legacy/unknown roles to marketing for portal routing.
+ // Never override a role that is already a recognized CRM role.
+ $knownCrmRoles = ['super_admin', 'org', 'manager', 'operational_manager', 'sales_representative', 'hr', 'marketing'];
+ $normalizedRole = normalizeRoleForPortal($user['role'] ?? '');
+ if (!in_array($normalizedRole, $knownCrmRoles, true)) {
+ $mstmt = $db->prepare("SELECT id FROM marketing_members WHERE user_id = ? OR email = ? LIMIT 1");
+ $mstmt->execute([$user['id'], $user['email']]);
+ if ($mstmt->fetch()) {
+ $normalizedRole = 'marketing';
+ }
+ }
+ $user['role'] = $normalizedRole;
         $user['referral_code'] = ensureUserSpReferralCode($db, $user['id']);
         ensureUsersPageAccessColumn($db);
         try {

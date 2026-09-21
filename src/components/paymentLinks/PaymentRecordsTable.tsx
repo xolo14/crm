@@ -1,20 +1,13 @@
 import { useMemo, useState } from "react";
 import { RefreshCw, User } from "lucide-react";
-import type { PaymentRecordRow, TeamMemberLookup } from "@/utils/normalizePaymentLink";
 import {
-  buildMemberPaymentSummaries,
   buildMemberSummariesFromCandidates,
-  mergeManualPaymentsIntoSummaries,
-  mergeMemberPaymentSummaries,
-  type ManualPaymentRow,
   type MemberPaymentSummary,
   type PaymentCandidateSummaryInput,
   type TeamMemberLookup,
 } from "@/utils/normalizePaymentLink";
 import {
   filterCandidatesByPeriod,
-  filterLinksByPeriod,
-  filterManualRowsByPeriod,
   PAYMENT_LINK_PERIODS,
   type PaymentLinkPeriod,
 } from "@/utils/paymentLinkPeriod";
@@ -34,17 +27,16 @@ export interface RecordsTableFilters {
 }
 
 interface Props {
-  records: PaymentRecordRow[];
   team: TeamMemberLookup[];
   candidates?: PaymentCandidateSummaryInput[];
+  /** All-time candidates for pitch totals (period filter applies to collected only). */
+  candidatesAllTime?: PaymentCandidateSummaryInput[];
   loading: boolean;
   period: PaymentLinkPeriod;
   onPeriodChange: (period: PaymentLinkPeriod) => void;
   filters: RecordsTableFilters;
   onFilterChange: (filters: RecordsTableFilters) => void;
   onRefresh: () => void;
-  /** Approved manual payments counted in member totals. */
-  manualPayments?: ManualPaymentRow[];
   /** When set, member rows are clickable (manager/admin drill-down). */
   onMemberClick?: (row: MemberPaymentSummary) => void;
 }
@@ -59,16 +51,15 @@ const inputCls =
   "rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#2ed573]/40 focus:border-[#2ed573]";
 
 export default function PaymentRecordsTable({
-  records,
   team,
   candidates = [],
+  candidatesAllTime,
   loading,
   period,
   onPeriodChange,
   filters,
   onFilterChange,
   onRefresh,
-  manualPayments = [],
   onMemberClick,
 }: Props) {
   const [page, setPage] = useState(1);
@@ -92,81 +83,47 @@ export default function PaymentRecordsTable({
     setPage(1);
   }
 
-  const periodRecords = useMemo(() => {
-    const periodLinkIds = new Set(
-      filterLinksByPeriod(
-        records.map((r) => r.link),
-        period,
-        customRange,
-      ).map((l) => l.id),
-    );
-    return records.filter((r) => periodLinkIds.has(r.link.id));
-  }, [records, period, customRange]);
-
-  const filteredRecords = useMemo(() => {
-    const fromTs = filters.from
-      ? Math.floor(new Date(filters.from + "T00:00:00").getTime() / 1000)
-      : null;
-    const toTs = filters.to
-      ? Math.floor(new Date(filters.to + "T23:59:59").getTime() / 1000)
-      : null;
-    const term = filters.search.trim().toLowerCase();
-    const useCustomInline = period === "custom";
-
-    return periodRecords.filter((r) => {
-      const l = r.link;
-      if (filters.memberId && r.creator.id !== filters.memberId) return false;
-      if (!useCustomInline) {
-        if (fromTs !== null && l.created_at < fromTs) return false;
-        if (toTs !== null && l.created_at > toTs) return false;
-      }
-      if (term) {
-        const hay = [
-          r.creator.full_name,
-          r.creator.email,
-          r.creator.referral_code,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!hay.includes(term)) return false;
-      }
-      return true;
-    });
-  }, [periodRecords, filters, period]);
-
   const memberRows = useMemo(() => {
+    const pitchSource = candidatesAllTime ?? candidates;
+    const fromCandidatesAll = buildMemberSummariesFromCandidates(pitchSource, team);
+    const pitchByOwner = new Map(
+      fromCandidatesAll.map((s) => [s.creator.id, s.totalPitchPaise ?? 0]),
+    );
+
+    // Collected = candidate.total_paid only (already manuals + Razorpay). Do not add links/manuals again.
     const candidatesInPeriod = filterCandidatesByPeriod(candidates, period, customRange);
     const fromCandidates = buildMemberSummariesFromCandidates(candidatesInPeriod, team);
-    const fromLinks = buildMemberPaymentSummaries(filteredRecords);
-    const combined = mergeMemberPaymentSummaries(fromCandidates, fromLinks);
 
-    const manualsInPeriod = filterManualRowsByPeriod(manualPayments, period, customRange);
-    const manualsInFilter = manualsInPeriod.filter((m) => {
-      if (filters.memberId && String(m.submitted_by) !== filters.memberId) {
-        return false;
-      }
-      if (period !== "custom") {
-        const day = (m.paid_at || m.reviewed_at || m.created_at || "").slice(0, 10);
-        if (filters.from && day && day < filters.from) return false;
-        if (filters.to && day && day > filters.to) return false;
-      }
-      if (filters.search.trim()) {
-        const term = filters.search.trim().toLowerCase();
-        const hay = [
-          m.submitted_by_name,
-          m.submitted_by_email,
-          m.submitted_by_referral,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!hay.includes(term)) return false;
-      }
-      return true;
+    let rows = fromCandidates.map((r) => {
+      const allPitch = pitchByOwner.get(r.creator.id) ?? 0;
+      return {
+        ...r,
+        totalPitchPaise: Math.max(r.totalPitchPaise ?? 0, allPitch),
+      };
     });
 
-    let rows = mergeManualPaymentsIntoSummaries(combined, manualsInFilter);
+    if (pitchSource.length > 0) {
+      const seen = new Set(rows.map((r) => r.creator.id));
+      for (const s of fromCandidatesAll) {
+        if (!s.creator.id || seen.has(s.creator.id)) continue;
+        if ((s.totalPitchPaise ?? 0) <= 0) continue;
+        if (filters.memberId && s.creator.id !== filters.memberId) continue;
+        if (filters.search.trim()) {
+          const term = filters.search.trim().toLowerCase();
+          const hay = [s.creator.full_name, s.creator.email, s.creator.referral_code]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          if (!hay.includes(term)) continue;
+        }
+        if (period !== "all") {
+          const inPeriod = fromCandidates.some((c) => c.creator.id === s.creator.id);
+          if (!inPeriod) continue;
+        }
+        rows.push({ ...s, creator: { ...s.creator }, totalCollectedPaise: 0 });
+        seen.add(s.creator.id);
+      }
+    }
 
     if (filters.memberId) {
       rows = rows.filter((r) => r.creator.id === filters.memberId);
@@ -183,7 +140,7 @@ export default function PaymentRecordsTable({
     }
 
     return rows;
-  }, [filteredRecords, manualPayments, filters, period, customRange, candidates, team]);
+  }, [filters, period, customRange, candidates, candidatesAllTime, team]);
 
   const totals = useMemo(() => {
     return memberRows.reduce(

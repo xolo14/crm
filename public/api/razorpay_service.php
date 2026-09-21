@@ -261,7 +261,9 @@ function razorpayCreateStandardPaymentLink(array $input): array
         ],
         'reminder_enable' => ($input['reminder_enable'] ?? false) === true,
         'notes' => $notes,
-        'callback_url' => $callbackBase . '/payments?status=paid',
+        'callback_url' => !empty($input['callback_url'])
+            ? (string) $input['callback_url']
+            : $callbackBase . '/payments?status=paid',
         'callback_method' => 'get',
     ];
 

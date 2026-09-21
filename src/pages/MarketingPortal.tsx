@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { phpList } from '@/lib/phpList';
@@ -16,16 +16,21 @@ import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Mail, Send, Plus, Eye, Loader2, FileText, Trash2,
-  CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users
+  CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, CalendarClock
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   CampaignRecipientPicker,
-  mergeCampaignRecipients,
+  mergeCampaignEmailRecipients,
   type CampaignPickPerson,
 } from '@/components/marketing/CampaignRecipientPicker';
 import { sanitizeFormDescriptionHtml } from '@/components/forms/formDescriptionHtml';
+import {
+  autofillPlaceholderValues,
+  extractAnglePlaceholders,
+  placeholderValuesComplete,
+} from '@/lib/emailDraftPlaceholders';
 
 export default function MarketingPortal() {
   const { user } = useAuth();
@@ -39,6 +44,7 @@ export default function MarketingPortal() {
   const [loading, setLoading] = useState(true);
   const [referralCode, setReferralCode] = useState('');
   const [formLeads, setFormLeads] = useState<any[]>([]);
+  const [campaignLeads, setCampaignLeads] = useState<any[]>([]);
   const [marketingMembers, setMarketingMembers] = useState<any[]>([]);
 
   // Drafts
@@ -63,15 +69,30 @@ export default function MarketingPortal() {
   const [selectedDraftId, setSelectedDraftId] = useState('');
   const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
+  const [mailboxes, setMailboxes] = useState<Array<{ id: string; email: string; label?: string; from_name?: string }>>([]);
+  const [smtpAccountId, setSmtpAccountId] = useState('');
+  const [campaignSchedule, setCampaignSchedule] = useState('');
+  const [fillRows, setFillRows] = useState<Array<{
+    key: string;
+    email: string;
+    name: string;
+    values: Record<string, string>;
+    scheduledAt: string;
+  }>>([]);
+  const leadSearchTimer = useRef<number | null>(null);
 
   const recipientPeople = useMemo<CampaignPickPerson[]>(() => {
-    const leads: CampaignPickPerson[] = formLeads
+    const leads: CampaignPickPerson[] = campaignLeads
       .filter((l) => String(l.email || '').includes('@'))
       .map((l) => ({
         id: `lead:${l.id}`,
         name: String(l.name || l.full_name || 'Lead'),
         email: String(l.email || '').trim(),
         phone: String(l.phone || '').trim() || undefined,
+        college: String(l.college || '').trim() || undefined,
+        course: String(l.course_interest || l.course || '').trim() || undefined,
+        company: String(l.company || '').trim() || undefined,
+        source: String(l.source || '').trim() || undefined,
         group: 'leads' as const,
       }));
     const members: CampaignPickPerson[] = marketingMembers
@@ -83,8 +104,15 @@ export default function MarketingPortal() {
         phone: String(m.phone || '').trim() || undefined,
         group: 'members' as const,
       }));
-    return [...leads, ...members];
-  }, [formLeads, marketingMembers]);
+    const seen = new Set<string>();
+    const out: CampaignPickPerson[] = [];
+    for (const p of [...leads, ...members]) {
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
+      out.push(p);
+    }
+    return out;
+  }, [campaignLeads, marketingMembers]);
 
   useEffect(() => {
     fetchAll();
@@ -104,22 +132,24 @@ export default function MarketingPortal() {
       setCampaigns(campaignsData);
       setMarketingMembers(phpList(membersRes));
 
-      const code = user?.referral_code || (user?.id ? 'SP-' + user.id.substring(0, 8).toUpperCase() : '');
+      const code = String(user?.referral_code || "").trim();
       setReferralCode(code);
 
       try {
         const leadsRes = code
-          ? await api.leads.list({ referred_by: code })
-          : await api.leads.list();
+          ? await api.leads.list({ referred_by: code, all: false, limit: 5000 })
+          : await api.leads.list({ all: false, limit: 5000 });
         setFormLeads(phpList(leadsRes));
       } catch {
         if (code) {
-          const leadsRes = await api.leads.list({ referred_by: code }).catch(() => ({ data: [] }));
+          const leadsRes = await api.leads.list({ referred_by: code, all: false, limit: 5000 }).catch(() => ({ data: [] }));
           setFormLeads(phpList(leadsRes));
         } else {
           setFormLeads([]);
         }
       }
+
+      setCampaignLeads([]);
 
       if (campaignsData.length > 0) {
         const sendsRes = await api.marketing.emailSends(campaignsData.map((c: any) => c.id));
@@ -214,29 +244,45 @@ export default function MarketingPortal() {
   };
 
   const handleBulkSend = async () => {
-    const emails = mergeCampaignRecipients('email', recipientPeople, selectedRecipientIds, bulkEmails);
-    if (emails.length === 0) { toast({ variant: 'destructive', title: 'No valid emails provided' }); return; }
     if (!selectedDraftId) { toast({ variant: 'destructive', title: 'Please select a draft' }); return; }
+    if (!smtpAccountId) { toast({ variant: 'destructive', title: 'Choose which mailbox to send from' }); return; }
+    if (fillRows.length === 0) { toast({ variant: 'destructive', title: 'No valid emails provided' }); return; }
+    const selectedDraft = drafts.find((d) => d.id === selectedDraftId);
+    const keys = extractAnglePlaceholders(String(selectedDraft?.subject || ''), String(selectedDraft?.html_body || ''));
+    const incomplete = fillRows.find((r) => !placeholderValuesComplete(keys, r.values));
+    if (incomplete) {
+      toast({ variant: 'destructive', title: 'Fill all placeholders', description: `Complete <<fields>> for ${incomplete.email} before sending.` });
+      return;
+    }
 
     setSending(true);
     try {
       const res = await api.marketing.dispatchEmailCampaign({
         draft_id: selectedDraftId,
-        recipients: emails,
+        smtp_account_id: smtpAccountId,
+        scheduled_at: campaignSchedule || null,
+        recipients: fillRows.map((r) => ({
+          email: r.email,
+          values: r.values,
+          scheduled_at: r.scheduledAt || null,
+        })),
       });
       const sent = Number(res?.sent ?? 0);
       const failed = Number(res?.failed ?? 0);
-      if (sent <= 0) {
+      const pending = Number(res?.pending ?? 0);
+      if (sent <= 0 && pending <= 0) {
         throw new Error(res?.error || res?.message || 'Send failed. Check Settings → Email Setup for your organization SMTP.');
       }
       toast({
-        title: `Sent ${sent} email(s)`,
-        description: failed ? `${failed} failed — check campaign history.` : 'Delivered via your organization email settings.',
+        title: res?.message || `Sent ${sent} email(s)`,
+        description: [failed ? `${failed} failed` : '', pending ? `${pending} scheduled` : ''].filter(Boolean).join(' · ') || 'Delivered via your organization mailbox.',
       });
       setShowBulkSend(false);
       setBulkEmails('');
       setSelectedDraftId('');
       setSelectedRecipientIds([]);
+      setFillRows([]);
+      setCampaignSchedule('');
       fetchAll();
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Send failed', description: err.message });
@@ -244,6 +290,75 @@ export default function MarketingPortal() {
       setSending(false);
     }
   };
+
+  const placeholderKeys = useMemo(() => {
+    const d = drafts.find((x) => x.id === selectedDraftId);
+    return extractAnglePlaceholders(String(d?.subject || ''), String(d?.html_body || ''));
+  }, [drafts, selectedDraftId]);
+  const editorTokens = useMemo(
+    () => extractAnglePlaceholders(draftSubject, draftBody),
+    [draftSubject, draftBody],
+  );
+
+  useEffect(() => {
+    if (!showBulkSend) return;
+    void api.marketing.orgMailboxes()
+      .then((res) => {
+        const list = phpList(res) as Array<{ id: string; email: string; label?: string; from_name?: string }>;
+        setMailboxes(list);
+        setSmtpAccountId((prev) => prev || (list[0]?.id ?? ''));
+      })
+      .catch(() => setMailboxes([]));
+  }, [showBulkSend]);
+
+  useEffect(() => {
+    if (!showBulkSend) return;
+    const details = mergeCampaignEmailRecipients(recipientPeople, selectedRecipientIds, bulkEmails);
+    setFillRows((prev) => {
+      const byEmail = new Map(prev.map((r) => [r.email.toLowerCase(), r]));
+      return details.map((d) => {
+        const existing = byEmail.get(d.email.toLowerCase());
+        const person =
+          recipientPeople.find((p) => p.id === d.personId) ||
+          recipientPeople.find((p) => String(p.email || '').toLowerCase() === d.email.toLowerCase());
+        const auto = autofillPlaceholderValues(person, placeholderKeys);
+        const values: Record<string, string> = {};
+        for (const k of placeholderKeys) {
+          const prevVal = existing?.values?.[k];
+          values[k] = prevVal != null && String(prevVal).trim() !== '' ? String(prevVal) : (auto[k] || '');
+        }
+        return {
+          key: existing?.key ?? d.email.toLowerCase(),
+          email: d.email,
+          name: d.name || existing?.name || person?.name || '',
+          values,
+          scheduledAt: existing?.scheduledAt ?? '',
+        };
+      });
+    });
+  }, [showBulkSend, selectedRecipientIds, bulkEmails, recipientPeople, placeholderKeys]);
+
+  const onLeadSearch = useCallback((q: string) => {
+    if (leadSearchTimer.current) window.clearTimeout(leadSearchTimer.current);
+    const query = q.trim();
+    if (query.length < 2) return;
+    leadSearchTimer.current = window.setTimeout(() => {
+      void api.leads.list({ search: query, all: false, limit: 300 })
+        .then((res) => {
+          const extra = phpList(res);
+          if (!extra.length) return;
+          setCampaignLeads((prev) => {
+            const byId = new Map(prev.map((l) => [String(l.id), l]));
+            for (const row of extra) {
+              const id = String(row?.id || '');
+              if (id) byId.set(id, row);
+            }
+            return Array.from(byId.values());
+          });
+        })
+        .catch(() => undefined);
+    }, 300);
+  }, []);
 
   // Stats
   const totalSent = campaigns.reduce((s, c) => s + (c.sent_count || 0), 0);
@@ -472,13 +587,14 @@ export default function MarketingPortal() {
                     <TableRow>
                       <TableHead className="text-xs">Recipient</TableHead>
                       <TableHead className="text-xs">Status</TableHead>
+                      <TableHead className="text-xs">Scheduled</TableHead>
                       <TableHead className="text-xs">Sent At</TableHead>
                       <TableHead className="text-xs">Error</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredSends.length === 0 ? (
-                      <TableRow><TableCell colSpan={4} className="text-center text-sm text-muted-foreground py-8">No emails found</TableCell></TableRow>
+                      <TableRow><TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-8">No emails found</TableCell></TableRow>
                     ) : filteredSends.slice(0, 100).map(s => (
                       <TableRow key={s.id}>
                         <TableCell className="text-sm">{s.recipient_email}</TableCell>
@@ -489,6 +605,7 @@ export default function MarketingPortal() {
                             'bg-amber-50 text-amber-700 border-amber-200'
                           }>{s.status}</Badge>
                         </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{s.scheduled_at ? format(new Date(s.scheduled_at), 'dd MMM HH:mm') : '—'}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
                         <TableCell className="text-xs text-red-500 max-w-[200px] truncate">{s.error_message || '—'}</TableCell>
                       </TableRow>
@@ -524,9 +641,21 @@ export default function MarketingPortal() {
               <Textarea
                 value={draftBody}
                 onChange={e => setDraftBody(e.target.value)}
-                placeholder="Write your email content here... HTML is fully supported."
+                placeholder={"Write your email here. Use <<name>> <<course>> as placeholders — they are filled per recipient when you send."}
                 className="min-h-[300px] font-mono text-sm"
               />
+              {editorTokens.length > 0 ? (
+                <p className="text-[11px] text-muted-foreground mt-1.5">
+                  Placeholders filled at send:{' '}
+                  {editorTokens.map((t) => (
+                    <Badge key={t} variant="outline" className="text-[10px] font-mono mr-1">{`<<${t}>>`}</Badge>
+                  ))}
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground mt-1.5">
+                  Wrap merge fields in {'<< >>'} (example {'<<name>>'}). Send Campaign will ask for those values per recipient.
+                </p>
+              )}
             </div>
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setShowEditor(false)}>Cancel</Button>
@@ -560,14 +689,35 @@ export default function MarketingPortal() {
         setShowBulkSend(open);
         if (!open) {
           setSelectedRecipientIds([]);
+          setFillRows([]);
+          setCampaignSchedule('');
+          setCampaignLeads([]);
         }
       }}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle className="flex items-center gap-2"><Send className="h-4 w-4" />Send Campaign</DialogTitle></DialogHeader>
-          <div className="space-y-4">
-            <p className="text-xs text-muted-foreground">
-              Sends through your organization email (Settings → Email Setup → Marketing email campaigns).
-            </p>
+        <DialogContent className="max-w-5xl w-[min(96rem,calc(100%-1rem))] max-h-[min(94dvh,calc(100dvh-1rem))] overflow-hidden flex flex-col gap-3 p-4 sm:p-6">
+          <DialogHeader className="shrink-0 space-y-0">
+            <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
+              <div>
+                <DialogTitle className="flex items-center gap-2"><Send className="h-4 w-4" />Send Campaign</DialogTitle>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Select a draft, fill {'<<placeholders>>'} per recipient, then choose when and which mailbox to send from.
+                </p>
+              </div>
+              <div className="space-y-1 min-w-[220px]">
+                <Label className="text-[11px] flex items-center gap-1">
+                  <CalendarClock className="h-3.5 w-3.5" />Schedule
+                </Label>
+                <Input
+                  type="datetime-local"
+                  className="h-8 text-xs"
+                  value={campaignSchedule}
+                  onChange={(e) => setCampaignSchedule(e.target.value)}
+                />
+                <p className="text-[10px] text-muted-foreground">Empty = send now. Row schedule overrides this.</p>
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto space-y-4 pr-1">
             <div>
               <Label className="text-xs font-medium">Select Draft *</Label>
               <Select value={selectedDraftId} onValueChange={setSelectedDraftId}>
@@ -578,8 +728,17 @@ export default function MarketingPortal() {
                   ))}
                 </SelectContent>
               </Select>
+              {selectedDraftId && placeholderKeys.length > 0 ? (
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  This draft needs:{' '}
+                  {placeholderKeys.map((t) => (
+                    <Badge key={t} variant="secondary" className="text-[10px] font-mono mr-1">{`<<${t}>>`}</Badge>
+                  ))}
+                </p>
+              ) : null}
             </div>
             <CampaignRecipientPicker
+              key={showBulkSend ? "send-open" : "send-closed"}
               mode="email"
               people={recipientPeople}
               selectedIds={selectedRecipientIds}
@@ -588,14 +747,83 @@ export default function MarketingPortal() {
               onManualTextChange={setBulkEmails}
               onUploadFile={handleFileUpload}
               fileInputRef={fileInputRef}
+              onSearchChange={onLeadSearch}
+              hideListUntilSearch
             />
-            <DialogFooter>
-              <Button onClick={handleBulkSend} disabled={sending} className="w-full gap-1.5">
-                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                Send to {mergeCampaignRecipients('email', recipientPeople, selectedRecipientIds, bulkEmails).length} Recipients
-              </Button>
-            </DialogFooter>
+            {fillRows.length > 0 ? (
+              <div className="rounded-md border overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs sticky left-0 bg-background min-w-[160px]">Recipient</TableHead>
+                      {placeholderKeys.map((k) => (
+                        <TableHead key={k} className="text-xs font-mono min-w-[140px]">{`<<${k}>>`}</TableHead>
+                      ))}
+                      <TableHead className="text-xs min-w-[190px]">Schedule</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {fillRows.map((row) => (
+                      <TableRow key={row.key}>
+                        <TableCell className="text-xs sticky left-0 bg-background">
+                          <div className="font-medium truncate max-w-[180px]">{row.name || '—'}</div>
+                          <div className="text-muted-foreground truncate max-w-[180px]">{row.email}</div>
+                        </TableCell>
+                        {placeholderKeys.map((k) => (
+                          <TableCell key={k}>
+                            <Input
+                              className="h-8 text-xs"
+                              value={row.values[k] ?? ''}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setFillRows((prev) => prev.map((r) => (
+                                  r.key === row.key ? { ...r, values: { ...r.values, [k]: v } } : r
+                                )));
+                              }}
+                            />
+                          </TableCell>
+                        ))}
+                        <TableCell>
+                          <Input
+                            type="datetime-local"
+                            className="h-8 text-xs"
+                            value={row.scheduledAt}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setFillRows((prev) => prev.map((r) => (r.key === row.key ? { ...r, scheduledAt: v } : r)));
+                            }}
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : selectedDraftId ? (
+              <p className="text-xs text-muted-foreground">Search and select leads, or enter emails manually, to build the send list.</p>
+            ) : null}
           </div>
+          <DialogFooter className="shrink-0 flex-col sm:flex-col gap-2 items-stretch">
+            <div>
+              <Label className="text-xs font-medium">Which mail to send from *</Label>
+              <Select value={smtpAccountId} onValueChange={setSmtpAccountId}>
+                <SelectTrigger className="mt-1 h-9 text-xs">
+                  <SelectValue placeholder={mailboxes.length ? 'Choose organization mailbox' : 'No org emails yet — add them in Email Setup'} />
+                </SelectTrigger>
+                <SelectContent>
+                  {mailboxes.map((m) => (
+                    <SelectItem key={m.id} value={m.id} className="text-xs">
+                      {(m.label || m.from_name || 'Mailbox') + ' — ' + m.email}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Button onClick={handleBulkSend} disabled={sending || fillRows.length === 0} className="w-full gap-1.5">
+              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              Send to {fillRows.length} Recipient{fillRows.length === 1 ? '' : 's'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

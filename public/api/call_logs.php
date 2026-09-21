@@ -125,7 +125,7 @@ ensureCallLogsTable($db);
 /** Roles allowed to use call logs API */
 function callLogsAllowedRole(string $role): bool
 {
-    return in_array($role, ['sales_representative', 'admin', 'super_admin', 'org', 'manager'], true);
+    return in_array($role, ['sales_representative', 'admin', 'super_admin', 'org', 'manager', 'operational_manager'], true);
 }
 
 function callLogsResolveOrgId(PDO $db, array $tokenData, string $userId): ?string
@@ -385,32 +385,82 @@ if (!callLogsAllowedRole($rawRole)) {
 
 $tokenOrgId = $tokenData['org_id'] ?? null;
 
-// ---------- GET sync_daily_reports — backfill/refresh daily_reports from this user's call_logs ----------
+// ---------- GET sync_daily_reports — backfill/refresh daily_reports from call_logs ----------
 if ($method === 'GET' && $action === 'sync_daily_reports') {
-    $days = max(1, min(120, (int) ($_GET['days'] ?? 60)));
+    // Allow up to ~2 years so Sales Tracker "All Time" can backfill history.
+    $days = max(1, min(730, (int) ($_GET['days'] ?? 60)));
     $from = (new DateTimeImmutable('today'))->modify('-' . ($days - 1) . ' days')->format('Y-m-d');
-    $repId = $userId;
-    if (in_array($rawRole, ['admin', 'super_admin', 'org', 'manager'], true) && !empty($_GET['sales_rep_id'])) {
-        $repId = trim((string) $_GET['sales_rep_id']);
+    $explicitRep = trim((string) ($_GET['sales_rep_id'] ?? ''));
+    $mineOnly = !empty($_GET['mine_only']);
+    $canTeamSync = in_array($rawRole, ['admin', 'super_admin', 'org', 'manager', 'operational_manager'], true);
+
+    $repIds = [];
+    if ($canTeamSync && $explicitRep === '' && !$mineOnly) {
+        $orgId = resolveCreatorOrgId($db, $tokenData);
+        if ($orgId !== null && trim((string) $orgId) !== '') {
+            if ($rawRole === 'manager') {
+                $visible = hierarchyGetVisibleUserIds($db, $tokenData);
+                $visible = array_values(array_filter($visible, static fn($id) => is_string($id) && $id !== ''));
+                if ($visible !== []) {
+                    $in = implode(',', array_fill(0, count($visible), '?'));
+                    $st = $db->prepare(
+                        "SELECT id FROM users
+                         WHERE org_id = ? AND is_active = 1 AND id IN ($in)
+                           AND LOWER(TRIM(role)) IN ('sales_representative', 'sales_rep', 'manager')
+                         LIMIT 150"
+                    );
+                    $st->execute(array_merge([(string) $orgId], $visible));
+                    $repIds = $st->fetchAll(PDO::FETCH_COLUMN) ?: [];
+                }
+            } else {
+                $st = $db->prepare(
+                    "SELECT id FROM users
+                     WHERE org_id = ? AND is_active = 1
+                       AND LOWER(TRIM(role)) IN ('sales_representative', 'sales_rep')
+                     LIMIT 150"
+                );
+                $st->execute([(string) $orgId]);
+                $repIds = $st->fetchAll(PDO::FETCH_COLUMN) ?: [];
+            }
+        }
+    } else {
+        $repId = $userId;
+        if ($canTeamSync && $explicitRep !== '') {
+            $repId = $explicitRep;
+        }
+        $repIds = [$repId];
     }
-    $st = $db->prepare(
-        'SELECT DISTINCT call_date FROM call_logs WHERE sales_rep_id = ? AND call_date >= ? ORDER BY call_date DESC LIMIT 120'
-    );
-    $st->execute([$repId, $from]);
-    $dates = $st->fetchAll(PDO::FETCH_COLUMN) ?: [];
+
     $synced = 0;
-    foreach ($dates as $d) {
-        $d = substr((string) $d, 0, 10);
-        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+    $repsTouched = 0;
+    foreach ($repIds as $repId) {
+        $repId = trim((string) $repId);
+        if ($repId === '') {
             continue;
         }
-        try {
-            syncpediaSyncDailyReportFromCallLogs($db, $repId, $d, null);
-            $synced++;
-        } catch (Throwable $ignored) {
+        $repsTouched++;
+        $st = $db->prepare(
+            'SELECT DISTINCT call_date FROM call_logs WHERE sales_rep_id = ? AND call_date >= ? ORDER BY call_date DESC LIMIT 730'
+        );
+        $st->execute([$repId, $from]);
+        $dates = $st->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        foreach ($dates as $d) {
+            $d = substr((string) $d, 0, 10);
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)) {
+                continue;
+            }
+            try {
+                syncpediaSyncDailyReportFromCallLogs($db, $repId, $d, null);
+                $synced++;
+            } catch (Throwable $ignored) {
+            }
         }
     }
-    respond(['success' => true, 'synced_dates' => $synced]);
+    respond([
+        'success' => true,
+        'synced_dates' => $synced,
+        'synced_reps' => $repsTouched,
+    ]);
 }
 
 // ---------- GET daily_report_metrics — counts from call_logs (+ lead pipeline) for one day ----------

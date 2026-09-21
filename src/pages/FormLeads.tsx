@@ -34,6 +34,7 @@ import {
 } from '@/lib/leadSources';
 import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
 import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
+import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
 
 const MARKETING_RESUME_TYPES = [
   'application/pdf',
@@ -674,7 +675,7 @@ export default function FormLeads() {
   const handleAddLeadSubmit = async () => {
     if (!newLead.name.trim()) { toast({ variant: 'destructive', title: 'Name is required' }); return; }
     const refCode = profile?.referral_code;
-    if (!refCode) { toast({ variant: 'destructive', title: 'Referral code not found' }); return; }
+    if (!refCode) { toast({ variant: 'destructive', title: 'Staff ID not found' }); return; }
     if (manualLeadResume) {
       if (manualLeadResume.size > 5 * 1024 * 1024) {
         toast({ variant: 'destructive', title: 'Resume too large', description: 'Max 5MB' });
@@ -800,6 +801,18 @@ export default function FormLeads() {
                 {formatLeadStatus(detailLead.status)}
               </Badge>
             )}
+            {(() => {
+              const pay = leadFormPaymentBadge(detailLead);
+              if (!pay) return null;
+              return (
+                <Badge
+                  variant="outline"
+                  className={`text-xs ${pay.paid ? 'border-emerald-500/40 text-emerald-700 bg-emerald-500/10' : 'border-amber-500/40 text-amber-700 bg-amber-500/10'}`}
+                >
+                  {pay.label}
+                </Badge>
+              );
+            })()}
           </div>
         </div>
         <div>
@@ -906,6 +919,7 @@ export default function FormLeads() {
           detailPanel={formCardDetailPanel}
           onCloseDetail={closeInlineDetail}
           backLabel="Back to Form Leads"
+          showPaymentColumn
           canExport={canExportLeads}
           onExport={(rows) => downloadLeadsCsv(rows, sourceDialogLabel || String(sourceDialogKey || 'form-leads'))}
         />
@@ -1103,6 +1117,18 @@ export default function FormLeads() {
                   )}
                   <Badge variant="secondary" className="text-xs capitalize">{SOURCE_LABELS[detailLead.source] || detailLead.source?.replace(/_/g, ' ')}</Badge>
                   <Badge variant="secondary" className="text-xs">Form Lead</Badge>
+                  {(() => {
+                    const pay = leadFormPaymentBadge(detailLead);
+                    if (!pay) return null;
+                    return (
+                      <Badge
+                        variant="outline"
+                        className={`text-xs ${pay.paid ? 'border-emerald-500/40 text-emerald-700 bg-emerald-500/10' : 'border-amber-500/40 text-amber-700 bg-amber-500/10'}`}
+                      >
+                        {pay.label}
+                      </Badge>
+                    );
+                  })()}
                 </div>
               </SheetHeader>
 
@@ -1380,7 +1406,7 @@ export default function FormLeads() {
           <DialogContent className="max-w-lg">
             <DialogHeader><DialogTitle>Import Leads from CSV</DialogTitle></DialogHeader>
             <div className="space-y-3">
-              <p className="text-sm text-muted-foreground">{importPreview.length} leads found. They'll be linked to your referral code.</p>
+              <p className="text-sm text-muted-foreground">{importPreview.length} leads found. They'll be linked to your staff ID.</p>
               <div className="max-h-60 overflow-y-auto border rounded-lg">
                 <table className="w-full text-xs">
                   <thead className="bg-muted/50 sticky top-0"><tr><th className="p-2 text-left">#</th><th className="p-2 text-left">Name</th><th className="p-2 text-left">Email</th><th className="p-2 text-left">Phone</th></tr></thead>

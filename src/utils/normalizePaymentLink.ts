@@ -91,7 +91,13 @@ export function normalizePaymentLinksList(
 
   const items = itemsRaw
     .map(normalizePaymentLink)
-    .filter((l) => l.id !== "");
+    .filter((l) => l.id !== "")
+    .filter((l) => {
+      const src = String(l.notes?.source ?? l.notes?.crm_source ?? "").toLowerCase();
+      if (src !== "lead_form") return true;
+      const paid = Number(l.amount_paid ?? 0);
+      return paid > 0 || l.status === "paid" || l.status === "partially_paid";
+    });
 
   return {
     entity: String(d.entity ?? "collection"),
@@ -341,6 +347,7 @@ export function mergeMemberPaymentSummaries(
       partialCount: Math.max(existing.partialCount, s.partialCount),
       paymentsReceivedCount: Math.max(existing.paymentsReceivedCount, s.paymentsReceivedCount),
       totalPitchPaise: Math.max(existing.totalPitchPaise ?? 0, s.totalPitchPaise ?? 0),
+      // Never add collected from two sources — candidate totals already include manuals + links.
       totalCollectedPaise: Math.max(existing.totalCollectedPaise, s.totalCollectedPaise),
     });
   }

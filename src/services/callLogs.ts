@@ -102,7 +102,7 @@ export const callLogsApi = {
       })}`,
     ),
 
-  /** Backfill/refresh daily_reports from call_logs for the current user (recent days). */
+  /** Backfill/refresh daily_reports from call_logs (days capped server-side at 730). */
   syncDailyReportsFromCallLogs: (days = 60) =>
     request<{ success: true; synced_dates: number }>(
       `/call_logs.php?action=sync_daily_reports${toQuery({ days })}`,

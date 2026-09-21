@@ -1,18 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   Copy,
+  Download,
   Eye,
-  FileText,
+  Link2,
   Loader2,
   MoreHorizontal,
   Pencil,
   Play,
   Plus,
   Power,
+  Redo2,
   Save,
   Trash2,
+  Undo2,
+  Unlink,
   Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -32,17 +38,28 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DOC_FORM_ASSIGNABLE_ROLES,
+  DOC_FORM_FIELD_TYPE_LABELS,
+  DOC_FORM_FIELD_TYPES,
   applyPlaceholders,
   defaultDocFormFields,
+  docFormFieldIsContent,
+  docFormFieldNeedsGrid,
+  docFormFieldNeedsOptions,
+  docFormKeyFromLabel,
+  ensureUniqueDocFormKeys,
   extractPlaceholderKeys,
+  isAutoDocFormKey,
+  uniqueDocFormKey,
   type DocForm,
   type DocFormAccessRow,
   type DocFormColumnMap,
   type DocFormField,
+  type DocFormFieldType,
   type DocFormSubmission,
   type DocFormType,
   type TemplateMailConfig,
 } from "@/modules/docForms/types";
+import DocFormFieldInput, { docFormFieldDomId } from "@/modules/docForms/DocFormFieldInput";
 import {
   DEFAULT_DOC_FORM_BRAND_STATE,
   brandStateFromMeta,
@@ -53,18 +70,93 @@ import { PublicFormShell, builderBrandFromState } from "@/components/forms/Publi
 import { FormDescriptionEditor } from "@/components/forms/FormDescriptionEditor";
 import { descriptionPlainPreview } from "@/components/forms/formDescriptionHtml";
 import { normalizeFormColor } from "@/components/forms/publicFormTypes";
-import { fieldKeyToPlaceholder } from "@/lib/offerLetterPlaceholders";
+import { buildPublicDocFormUrl } from "@/lib/applyFormUrl";
+import { ShareFormLinkDialog } from "@/components/forms/ShareFormLinkDialog";
+import { DocFormDetailDialog } from "@/components/forms/DocFormDetailDialog";
+import { ValidationRuleEditor } from "@/components/forms/ValidationRuleEditor";
+import { OFFER_AUTO_PLACEHOLDER_KEYS } from "@/lib/offerLetterPlaceholders";
+import { ensureHtmlDocument, splitOfferHtmlPages } from "@/utils/offerLetterPdf";
+import { cn } from "@/lib/utils";
 import { filterAndSortAssignRoster } from "@/lib/assignRoster";
+import { goToChoices, splitIntoSections, type GoToTarget } from "@/components/forms/sectionFlow";
+import { isL3AdminRole, normalizeAppRole } from "@/lib/roleUtils";
 
 type TeamMember = {
   id: string;
   full_name: string;
   email?: string;
   role?: string;
+  referral_code?: string | null;
   reports_to_id?: string | null;
   reports_to_name?: string | null;
   is_active?: number | boolean;
 };
+
+type DocFormRuntimeMeta = {
+  confirmationMessage: string;
+  closeAt: string;
+  responseLimit: string;
+  sendReceipt: boolean;
+  allowAnotherResponse: boolean;
+  showProgressBar: boolean;
+  shuffleQuestions: boolean;
+};
+
+const DEFAULT_RUNTIME: DocFormRuntimeMeta = {
+  confirmationMessage: "Your response has been recorded.",
+  closeAt: "",
+  responseLimit: "",
+  sendReceipt: false,
+  allowAnotherResponse: true,
+  showProgressBar: false,
+  shuffleQuestions: false,
+};
+
+function runtimeFromMeta(meta: unknown): DocFormRuntimeMeta {
+  const m = meta && typeof meta === "object" ? (meta as Record<string, unknown>) : {};
+  return {
+    confirmationMessage: String(m.confirmation_message || DEFAULT_RUNTIME.confirmationMessage),
+    closeAt: String(m.close_at || ""),
+    responseLimit: m.response_limit != null && m.response_limit !== "" ? String(m.response_limit) : "",
+    sendReceipt: !!m.send_receipt,
+    allowAnotherResponse: m.allow_another_response !== false && m.allow_multiple_responses !== false,
+    showProgressBar: !!m.show_progress_bar,
+    shuffleQuestions: !!m.shuffle_questions,
+  };
+}
+
+function metaFromRuntime(r: DocFormRuntimeMeta): Record<string, unknown> {
+  return {
+    confirmation_message: r.confirmationMessage,
+    close_at: r.closeAt || "",
+    response_limit: r.responseLimit ? Number(r.responseLimit) : "",
+    send_receipt: r.sendReceipt,
+    allow_another_response: r.allowAnotherResponse,
+    allow_multiple_responses: r.allowAnotherResponse,
+    show_progress_bar: r.showProgressBar,
+    shuffle_questions: r.shuffleQuestions,
+  };
+}
+
+function downloadCsv(filename: string, rows: string[][]) {
+  const body = rows
+    .map((r) =>
+      r
+        .map((c) => {
+          const s = String(c ?? "");
+          if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+          return s;
+        })
+        .join(","),
+    )
+    .join("\n");
+  const blob = new Blob(["\uFEFF" + body], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
 type OfferTpl = { id: string; template_name: string; role_title?: string; html_content?: string; mail_json?: TemplateMailConfig | string | null };
 type CertTpl = { id: string; name: string; fields?: Record<string, string>; style?: Record<string, unknown> & TemplateMailConfig };
 
@@ -86,6 +178,39 @@ function fieldKeyToPlaceholder(key: string): string {
   return key.replace(/^\{\{|\}\}$/g, "").trim();
 }
 
+const linesToList = (raw: string) => raw.split("\n").map((s) => s.trim()).filter(Boolean);
+
+/**
+ * "One per line" editor. Keeps the raw text while typing so a trailing newline or space is
+ * not stripped on every keystroke (which made it impossible to start a second option line).
+ * The parsed list is pushed up on each change; the text is tidied on blur.
+ */
+function LinesTextarea({ value, onChange, className }: { value: string[]; onChange: (lines: string[]) => void; className?: string }) {
+  const joined = value.join("\n");
+  const [text, setText] = useState(joined);
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setText(joined);
+  }, [joined]);
+  return (
+    <Textarea
+      className={className}
+      value={text}
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onBlur={() => {
+        focused.current = false;
+        setText(linesToList(text).join("\n"));
+      }}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(linesToList(e.target.value));
+      }}
+    />
+  );
+}
+
 export default function DocFormsHubPage({
   embedded = false,
   createSignal = 0,
@@ -94,7 +219,14 @@ export default function DocFormsHubPage({
   createSignal?: number;
 } = {}) {
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { user, profile, role } = useAuth();
+  const staffId = String(profile?.referral_code || "").trim();
+  const normalizedRole = normalizeAppRole(role);
+  const showCreatedByColumn = role === "super_admin" || role === "org" || isL3AdminRole(normalizedRole);
+  const [listSearch, setListSearch] = useState("");
+  const [shareForm, setShareForm] = useState<DocForm | null>(null);
+  const [detailForm, setDetailForm] = useState<DocForm | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [forms, setForms] = useState<DocForm[]>([]);
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -114,6 +246,40 @@ export default function DocFormsHubPage({
   const [assignUsers, setAssignUsers] = useState<string[]>([]);
   const [assignRoles, setAssignRoles] = useState<string[]>([]);
   const [assignSaving, setAssignSaving] = useState(false);
+  const [draftRuntime, setDraftRuntime] = useState<DocFormRuntimeMeta>(DEFAULT_RUNTIME);
+  const [fieldHistory, setFieldHistory] = useState<DocFormField[][]>([]);
+  const [fieldFuture, setFieldFuture] = useState<DocFormField[][]>([]);
+  const autosaveTimer = useRef<number | null>(null);
+  const skipAutosave = useRef(true);
+
+  const pushFieldHistory = (prev: DocFormField[]) => {
+    setFieldHistory((h) => [...h.slice(-49), prev]);
+    setFieldFuture([]);
+  };
+
+  const undoFields = () => {
+    setFieldHistory((h) => {
+      if (!h.length) return h;
+      const prev = h[h.length - 1];
+      setDraftFields((cur) => {
+        setFieldFuture((f) => [cur, ...f.slice(0, 49)]);
+        return prev;
+      });
+      return h.slice(0, -1);
+    });
+  };
+
+  const redoFields = () => {
+    setFieldFuture((f) => {
+      if (!f.length) return f;
+      const next = f[0];
+      setDraftFields((cur) => {
+        setFieldHistory((h) => [...h.slice(-49), cur]);
+        return next;
+      });
+      return f.slice(1);
+    });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -140,6 +306,10 @@ export default function DocFormsHubPage({
     setDraftDesc("");
     setDraftFields(defaultDocFormFields("offer_letter"));
     setDraftBrand(DEFAULT_DOC_FORM_BRAND_STATE);
+    setDraftRuntime(DEFAULT_RUNTIME);
+    setFieldHistory([]);
+    setFieldFuture([]);
+    skipAutosave.current = true;
     setBuilderTab("questions");
     setSelectedUsers([]);
     setSelectedRoles([]);
@@ -154,11 +324,30 @@ export default function DocFormsHubPage({
   }, [createSignal, embedded, openCreate]);
 
   const filtered = useMemo(() => {
-    if (tab === "all") return forms;
-    return forms.filter((f) => f.form_type === tab);
-  }, [forms, tab]);
+    const byType = tab === "all" ? forms : forms.filter((f) => f.form_type === tab);
+    const q = listSearch.trim().toLowerCase();
+    if (!q) return byType;
+    return byType.filter((f) => `${f.name} ${f.slug} ${f.description || ""}`.toLowerCase().includes(q));
+  }, [forms, tab, listSearch]);
+
+  const resolveCreatorLabel = (form: DocForm) => {
+    const fromApi = String(form.created_by_name || "").trim();
+    if (fromApi) return fromApi;
+    const uid = String(form.created_by || "").trim();
+    if (!uid) return "—";
+    const member = team.find((m) => String(m.id) === uid);
+    if (member) return member.full_name || member.email || "—";
+    return "—";
+  };
+
+  const openFormDetail = (form: DocForm) => {
+    setDetailForm(form);
+    setDetailOpen(true);
+  };
 
   const openEdit = async (form: DocForm) => {
+    setDetailOpen(false);
+    setDetailForm(null);
     setCreating(false);
     setEditing(form);
     setDraftName(form.name);
@@ -166,6 +355,10 @@ export default function DocFormsHubPage({
     setDraftDesc(form.description || "");
     setDraftFields(Array.isArray(form.fields_json) && form.fields_json.length ? form.fields_json : defaultDocFormFields(form.form_type));
     setDraftBrand(brandStateFromMeta(form.meta_json));
+    setDraftRuntime(runtimeFromMeta(form.meta_json));
+    setFieldHistory([]);
+    setFieldFuture([]);
+    skipAutosave.current = true;
     setBuilderTab("questions");
     try {
       const res = await api.docForms.get(form.id);
@@ -175,36 +368,67 @@ export default function DocFormsHubPage({
       setSelectedRoles(access.filter((a) => a.access_type === "role" && a.role_key).map((a) => String(a.role_key)));
       if (Array.isArray(full.fields_json) && full.fields_json.length) setDraftFields(full.fields_json);
       setDraftBrand(brandStateFromMeta(full.meta_json ?? form.meta_json));
+      setDraftRuntime(runtimeFromMeta(full.meta_json ?? form.meta_json));
       if (full.description != null) setDraftDesc(String(full.description));
     } catch {
       /* use list row */
     }
   };
 
-  const saveForm = async () => {
+  /** Keys used by more than one question in the draft (shown inline in the builder). */
+  const duplicateKeys = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const f of draftFields) {
+      const k = String(f.key || "").trim();
+      if (!k) continue;
+      seen.set(k, (seen.get(k) || 0) + 1);
+    }
+    return new Set(Array.from(seen.entries()).filter(([, n]) => n > 1).map(([k]) => k));
+  }, [draftFields]);
+
+  const saveForm = async (opts?: { silent?: boolean }) => {
     if (!draftName.trim()) {
-      toast({ variant: "destructive", title: "Name is required" });
+      if (!opts?.silent) toast({ variant: "destructive", title: "Name is required" });
       return;
+    }
+    // Blank keys are named from the label; a key shared by two questions gets a suffix so
+    // one answer can never overwrite another on the public form.
+    const { fields: fieldsToSave, renamed } = ensureUniqueDocFormKeys(
+      draftFields.map((f) => ({ ...f, key: String(f.key || "").trim(), label: String(f.label || "").trim() })),
+    );
+    if (renamed.length && !opts?.silent) {
+      setDraftFields(fieldsToSave);
+      toast({
+        title: "Placeholder keys adjusted",
+        description: renamed
+          .map((r) => `${r.label}: ${r.from ? `${r.from} → ` : ""}${r.to}`)
+          .join(" · "),
+      });
     }
     setSaving(true);
     try {
       let formId = editing?.id;
-      const meta_json = metaFromBrandState(draftBrand);
+      const prevMeta = editing?.meta_json && typeof editing.meta_json === "object" ? editing.meta_json : {};
+      const meta_json = {
+        ...prevMeta,
+        ...metaFromBrandState(draftBrand),
+        ...metaFromRuntime(draftRuntime),
+      };
       if (editing) {
         await api.docForms.update(editing.id, {
           name: draftName.trim(),
           description: draftDesc,
           form_type: draftType,
-          fields_json: draftFields,
+          fields_json: fieldsToSave,
           meta_json,
-          is_active: true,
+          is_active: editing.is_active,
         });
       } else {
         const created = (await api.docForms.create({
           name: draftName.trim(),
           description: draftDesc,
           form_type: draftType,
-          fields_json: draftFields,
+          fields_json: fieldsToSave,
           meta_json,
           is_active: true,
         })) as { id?: string };
@@ -217,16 +441,56 @@ export default function DocFormsHubPage({
           role_keys: selectedRoles,
         });
       }
-      toast({ title: editing ? "Form updated" : "Form created" });
-      setCreating(false);
-      setEditing(null);
+      if (!opts?.silent) toast({ title: editing ? "Form updated" : "Form created" });
+      if (!editing) {
+        setCreating(false);
+        setEditing(null);
+      } else if (formId) {
+        setEditing((prev) => (prev ? { ...prev, name: draftName.trim(), description: draftDesc, fields_json: fieldsToSave, meta_json } : prev));
+      }
       await load();
     } catch (e: any) {
-      toast({ variant: "destructive", title: "Save failed", description: e?.message });
+      if (!opts?.silent) toast({ variant: "destructive", title: "Save failed", description: e?.message });
     } finally {
       setSaving(false);
     }
   };
+
+  useEffect(() => {
+    if (!(creating || editing)) return;
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void saveForm();
+      }
+      if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoFields();
+      }
+      if (mod && (e.key.toLowerCase() === "y" || (e.shiftKey && e.key.toLowerCase() === "z"))) {
+        e.preventDefault();
+        redoFields();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  useEffect(() => {
+    if (!editing || skipAutosave.current) {
+      skipAutosave.current = false;
+      return;
+    }
+    if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = window.setTimeout(() => {
+      void saveForm({ silent: true });
+    }, 1800);
+    return () => {
+      if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftName, draftDesc, draftFields, draftBrand, draftRuntime, editing?.id]);
 
   const removeForm = async (id: string) => {
     if (!confirm("Delete this form and its submissions?")) return;
@@ -240,16 +504,18 @@ export default function DocFormsHubPage({
   };
 
   const shareLinkFor = (form: DocForm) =>
-    `${window.location.origin}/doc-form/${encodeURIComponent(String(form.slug || "").trim())}`;
+    buildPublicDocFormUrl(window.location.origin, String(form.slug || "").trim(), staffId);
 
   const copyShareLink = async (form: DocForm) => {
-    const link = shareLinkFor(form);
-    try {
-      await navigator.clipboard.writeText(link);
-      toast({ title: "Link copied", description: "Share this link so people can fill the form." });
-    } catch {
-      toast({ variant: "destructive", title: "Copy failed", description: link });
+    if (!staffId) {
+      toast({
+        variant: "destructive",
+        title: "Staff ID missing",
+        description: "Refresh the page; if it is still blank ask your admin to save the Company Profile.",
+      });
+      return;
     }
+    setShareForm(form);
   };
 
   const openAssign = (form: DocForm) => {
@@ -300,42 +566,86 @@ export default function DocFormsHubPage({
   };
 
   const addField = () => {
-    setDraftFields((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        key: `field_${prev.length + 1}`,
-        label: "New field",
-        type: "text",
-        required: false,
-      },
-    ]);
+    setDraftFields((prev) => {
+      pushFieldHistory(prev);
+      return [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          key: uniqueDocFormKey(`field_${prev.length + 1}`, prev.map((f) => f.key)),
+          label: "New field",
+          type: "text",
+          required: false,
+        },
+      ];
+    });
+  };
+
+  /** Label edit also names the placeholder key while the key is still the auto default. */
+  const patchFieldLabel = (idx: number, label: string) => {
+    setDraftFields((prev) => {
+      const f = prev[idx];
+      if (!f) return prev;
+      const next = [...prev];
+      let key = f.key;
+      if (isAutoDocFormKey(f.key)) {
+        const derived = docFormKeyFromLabel(label);
+        if (derived) {
+          key = uniqueDocFormKey(derived, prev.filter((_, i) => i !== idx).map((x) => x.key));
+        }
+      }
+      next[idx] = { ...f, label, key };
+      return next;
+    });
+  };
+
+  const applyFieldType = (field: DocFormField, type: DocFormFieldType): DocFormField => {
+    const next: DocFormField = { ...field, type };
+    if (docFormFieldNeedsOptions(type) && !(next.options && next.options.length)) {
+      next.options = ["Option 1", "Option 2"];
+    }
+    if (type === "linear_scale") {
+      next.scaleMin = next.scaleMin ?? 1;
+      next.scaleMax = next.scaleMax ?? 5;
+    }
+    if (type === "rating") {
+      next.ratingMax = next.ratingMax ?? 5;
+      next.required = false;
+    }
+    if (type === "image" || type === "video") {
+      next.required = false;
+      next.media = next.media || { url: "" };
+    }
+    if (docFormFieldNeedsGrid(type)) {
+      if (!next.rows?.length) next.rows = ["Row 1", "Row 2"];
+      if (!next.columns?.length) next.columns = ["Column 1", "Column 2"];
+    }
+    if (type === "section_break") next.required = false;
+    return next;
   };
 
   if (creating || editing) {
     const brandPreview = builderBrandFromState(draftBrand);
     const patchBrand = (patch: Partial<DocFormBrandState>) =>
       setDraftBrand((p) => ({ ...p, ...patch }));
+    const draftSections = splitIntoSections(draftFields, {
+      isBreak: (q) => q.type === "section_break",
+      id: (q) => q.id,
+      title: (q) => q.label,
+    });
+    const hasSections = draftFields.some((q) => q.type === "section_break");
 
     const renderFieldInputs = (interactive: boolean) => (
       <section className="sp-form-section">
         {draftFields.map((f) => (
           <div key={f.id} className="sp-form-group">
-            <label className="sp-form-label">
-              {f.label || "Untitled"}
-              {f.required ? <span className="sp-form-required"> *</span> : null}
-            </label>
-            {f.type === "textarea" ? (
-              <textarea className="sp-form-input" rows={3} placeholder={f.placeholder || ""} readOnly={!interactive} disabled={!interactive} />
-            ) : (
-              <input
-                className="sp-form-input"
-                type={f.type === "email" ? "email" : f.type === "date" ? "date" : "text"}
-                placeholder={f.placeholder || "Your answer"}
-                readOnly={!interactive}
-                disabled={!interactive}
-              />
-            )}
+            {f.type !== "section_break" ? (
+              <label className="sp-form-label" htmlFor={docFormFieldDomId(f)}>
+                {f.label || "Untitled"}
+                {f.required ? <span className="sp-form-required"> *</span> : null}
+              </label>
+            ) : null}
+            <DocFormFieldInput field={f} disabled={!interactive} readOnly={!interactive} />
           </div>
         ))}
         {draftFields.length === 0 ? <p className="sp-form-hint">Add fields in the Questions tab.</p> : null}
@@ -348,6 +658,12 @@ export default function DocFormsHubPage({
           <div className="flex items-center gap-2 min-w-0">
             <Button variant="ghost" size="sm" onClick={() => { setCreating(false); setEditing(null); }}>
               <ArrowLeft className="h-4 w-4 mr-1" /> Back
+            </Button>
+            <Button variant="ghost" size="sm" onClick={undoFields} disabled={fieldHistory.length === 0}>
+              <Undo2 className="h-3.5 w-3.5 mr-1" /> Undo
+            </Button>
+            <Button variant="ghost" size="sm" onClick={redoFields} disabled={fieldFuture.length === 0}>
+              <Redo2 className="h-3.5 w-3.5 mr-1" /> Redo
             </Button>
             <div className="min-w-0">
               <h1 className="text-lg font-bold truncate">{editing ? "Edit form" : "Create form"}</h1>
@@ -430,11 +746,7 @@ export default function DocFormsHubPage({
                         <Input
                           className="font-medium"
                           value={f.label}
-                          onChange={(e) => {
-                            const next = [...draftFields];
-                            next[idx] = { ...f, label: e.target.value };
-                            setDraftFields(next);
-                          }}
+                          onChange={(e) => patchFieldLabel(idx, e.target.value)}
                           placeholder="Question"
                         />
                         <div className="flex flex-wrap gap-2">
@@ -442,17 +754,15 @@ export default function DocFormsHubPage({
                             value={f.type}
                             onValueChange={(v) => {
                               const next = [...draftFields];
-                              next[idx] = { ...f, type: v as DocFormField["type"] };
+                              next[idx] = applyFieldType(f, v as DocFormFieldType);
                               setDraftFields(next);
                             }}
                           >
-                            <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectTrigger className="h-8 w-[200px] text-xs"><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="text">Short answer</SelectItem>
-                              <SelectItem value="email">Email</SelectItem>
-                              <SelectItem value="textarea">Paragraph</SelectItem>
-                              <SelectItem value="date">Date</SelectItem>
-                              <SelectItem value="select">Dropdown</SelectItem>
+                              {DOC_FORM_FIELD_TYPES.map((t) => (
+                                <SelectItem key={t} value={t}>{DOC_FORM_FIELD_TYPE_LABELS[t]}</SelectItem>
+                              ))}
                             </SelectContent>
                           </Select>
                           <label className="flex items-center gap-1.5 text-xs px-2 border rounded-md h-8">
@@ -471,7 +781,7 @@ export default function DocFormsHubPage({
                           <div>
                             <Label className="text-[10px]">Placeholder key</Label>
                             <Input
-                              className="h-8 text-xs font-mono"
+                              className={`h-8 text-xs font-mono ${duplicateKeys.has(f.key.trim()) ? "border-destructive focus-visible:ring-destructive" : ""}`}
                               value={f.key}
                               onChange={(e) => {
                                 const next = [...draftFields];
@@ -479,6 +789,11 @@ export default function DocFormsHubPage({
                                 setDraftFields(next);
                               }}
                             />
+                            {duplicateKeys.has(f.key.trim()) ? (
+                              <p className="text-[10px] text-destructive mt-0.5">
+                                Another question uses this key. Each question needs its own key or the answers overwrite each other.
+                              </p>
+                            ) : null}
                           </div>
                           <div>
                             <Label className="text-[10px]">Hint / placeholder</Label>
@@ -493,15 +808,277 @@ export default function DocFormsHubPage({
                             />
                           </div>
                         </div>
+                        {docFormFieldNeedsOptions(f.type) ? (
+                          <div>
+                            <Label className="text-[10px]">Options (one per line)</Label>
+                            <LinesTextarea
+                              className="mt-1 min-h-[72px] text-xs"
+                              value={f.options || []}
+                              onChange={(options) => {
+                                setDraftFields((prev) => prev.map((x) => (x.id === f.id ? { ...x, options } : x)));
+                              }}
+                            />
+                          </div>
+                        ) : null}
+                        {f.type === "linear_scale" ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <Label className="text-[10px]">Scale from</Label>
+                              <Input
+                                type="number"
+                                className="h-8 text-xs"
+                                value={f.scaleMin ?? 1}
+                                onChange={(e) => {
+                                  const next = [...draftFields];
+                                  next[idx] = { ...f, scaleMin: Number(e.target.value) };
+                                  setDraftFields(next);
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-[10px]">Scale to</Label>
+                              <Input
+                                type="number"
+                                className="h-8 text-xs"
+                                value={f.scaleMax ?? 5}
+                                onChange={(e) => {
+                                  const next = [...draftFields];
+                                  next[idx] = { ...f, scaleMax: Number(e.target.value) };
+                                  setDraftFields(next);
+                                }}
+                              />
+                            </div>
+                            <Input
+                              className="h-8 text-xs"
+                              placeholder="Low label"
+                              value={f.scaleMinLabel || ""}
+                              onChange={(e) => {
+                                const next = [...draftFields];
+                                next[idx] = { ...f, scaleMinLabel: e.target.value };
+                                setDraftFields(next);
+                              }}
+                            />
+                            <Input
+                              className="h-8 text-xs"
+                              placeholder="High label"
+                              value={f.scaleMaxLabel || ""}
+                              onChange={(e) => {
+                                const next = [...draftFields];
+                                next[idx] = { ...f, scaleMaxLabel: e.target.value };
+                                setDraftFields(next);
+                              }}
+                            />
+                          </div>
+                        ) : null}
+                        {f.type === "rating" ? (
+                          <div>
+                            <Label className="text-[10px]">Icons (max)</Label>
+                            <Input
+                              type="number"
+                              min={3}
+                              max={10}
+                              className="h-8 text-xs"
+                              value={f.ratingMax ?? 5}
+                              onChange={(e) => {
+                                const next = [...draftFields];
+                                next[idx] = { ...f, ratingMax: Number(e.target.value) || 5 };
+                                setDraftFields(next);
+                              }}
+                            />
+                          </div>
+                        ) : null}
+                        {docFormFieldNeedsGrid(f.type) ? (
+                          <div className="grid sm:grid-cols-2 gap-2">
+                            <div>
+                              <Label className="text-[10px]">Rows (one per line)</Label>
+                              <LinesTextarea
+                                className="mt-1 min-h-[64px] text-xs"
+                                value={f.rows || []}
+                                onChange={(rows) => {
+                                  setDraftFields((prev) => prev.map((x) => (x.id === f.id ? { ...x, rows } : x)));
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-[10px]">Columns (one per line)</Label>
+                              <LinesTextarea
+                                className="mt-1 min-h-[64px] text-xs"
+                                value={f.columns || []}
+                                onChange={(columns) => {
+                                  setDraftFields((prev) => prev.map((x) => (x.id === f.id ? { ...x, columns } : x)));
+                                }}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                        {(f.type === "image" || f.type === "video") ? (
+                          <div className="space-y-1">
+                            <Label className="text-[10px]">{f.type === "image" ? "Image URL" : "YouTube / Vimeo URL"}</Label>
+                            <Input
+                              className="h-8 text-xs"
+                              value={f.media?.url || ""}
+                              onChange={(e) => {
+                                const next = [...draftFields];
+                                next[idx] = { ...f, media: { ...(f.media || { url: "" }), url: e.target.value } };
+                                setDraftFields(next);
+                              }}
+                            />
+                            <Input
+                              className="h-8 text-xs"
+                              placeholder="Caption (optional)"
+                              value={f.media?.caption || ""}
+                              onChange={(e) => {
+                                const next = [...draftFields];
+                                next[idx] = { ...f, media: { ...(f.media || { url: "" }), caption: e.target.value } };
+                                setDraftFields(next);
+                              }}
+                            />
+                          </div>
+                        ) : null}
+                        <div>
+                          <Label className="text-[10px]">Question description (links allowed)</Label>
+                          <Textarea
+                            className="mt-1 min-h-[56px] text-xs"
+                            value={f.description || ""}
+                            onChange={(e) => {
+                              const next = [...draftFields];
+                              next[idx] = { ...f, description: e.target.value };
+                              setDraftFields(next);
+                            }}
+                          />
+                        </div>
+                        {f.type === "text" || f.type === "textarea" || f.type === "email" || f.type === "number" ? (
+                          <ValidationRuleEditor
+                            value={f.validation}
+                            onChange={(validation) => {
+                              const next = [...draftFields];
+                              next[idx] = { ...f, validation };
+                              setDraftFields(next);
+                            }}
+                          />
+                        ) : null}
+                        {docFormFieldNeedsOptions(f.type) ? (
+                          <label className="flex items-center gap-1.5 text-xs">
+                            <Checkbox
+                              checked={!!f.shuffleOptions}
+                              onCheckedChange={(c) => {
+                                const next = [...draftFields];
+                                next[idx] = { ...f, shuffleOptions: !!c };
+                                setDraftFields(next);
+                              }}
+                            />
+                            Shuffle options
+                          </label>
+                        ) : null}
+                        {(f.type === "multiple_choice" || f.type === "checkboxes") ? (
+                          <label className="flex items-center gap-1.5 text-xs">
+                            <Checkbox
+                              checked={!!f.includeOther}
+                              onCheckedChange={(c) => {
+                                const next = [...draftFields];
+                                next[idx] = { ...f, includeOther: !!c };
+                                setDraftFields(next);
+                              }}
+                            />
+                            Add “Other”
+                          </label>
+                        ) : null}
+                        {(f.type === "multiple_choice" || f.type === "select") && hasSections ? (
+                          <div className="space-y-1">
+                            <Label className="text-[10px]">Go to section based on answer</Label>
+                            {(f.options || []).map((opt) => (
+                              <div key={opt} className="flex items-center gap-1">
+                                <span className="text-[11px] w-24 truncate">{opt || "Option"}</span>
+                                <Select
+                                  value={f.goTo?.[opt] || "next"}
+                                  onValueChange={(v) => {
+                                    const next = [...draftFields];
+                                    next[idx] = { ...f, goTo: { ...(f.goTo || {}), [opt]: v as GoToTarget } };
+                                    setDraftFields(next);
+                                  }}
+                                >
+                                  <SelectTrigger className="h-7 text-[11px]"><SelectValue /></SelectTrigger>
+                                  <SelectContent>
+                                    {goToChoices(draftSections, "section-default").map((c) => (
+                                      <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
+                      <div className="flex flex-col gap-0.5 shrink-0">
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 text-destructive shrink-0"
-                        onClick={() => setDraftFields((p) => p.filter((x) => x.id !== f.id))}
+                        className="h-8 w-8"
+                        title="Move up"
+                        disabled={idx === 0}
+                        onClick={() =>
+                          setDraftFields((p) => {
+                            if (idx <= 0) return p;
+                            pushFieldHistory(p);
+                            const next = [...p];
+                            [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                            return next;
+                          })
+                        }
+                      >
+                        <ArrowUp className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        title="Move down"
+                        disabled={idx === draftFields.length - 1}
+                        onClick={() =>
+                          setDraftFields((p) => {
+                            if (idx >= p.length - 1) return p;
+                            pushFieldHistory(p);
+                            const next = [...p];
+                            [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
+                            return next;
+                          })
+                        }
+                      >
+                        <ArrowDown className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        title="Duplicate question"
+                        onClick={() =>
+                          setDraftFields((p) => {
+                            const i = p.findIndex((x) => x.id === f.id);
+                            if (i < 0) return p;
+                            pushFieldHistory(p);
+                            const copy = { ...f, id: crypto.randomUUID(), key: uniqueDocFormKey(`${f.key}_copy`, p.map((x) => x.key)) };
+                            const next = [...p];
+                            next.splice(i + 1, 0, copy);
+                            return next;
+                          })
+                        }
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-destructive"
+                        onClick={() =>
+                          setDraftFields((p) => {
+                            pushFieldHistory(p);
+                            return p.filter((x) => x.id !== f.id);
+                          })
+                        }
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
+                      </div>
                     </CardHeader>
                   </Card>
                 ))}
@@ -570,14 +1147,69 @@ export default function DocFormsHubPage({
                   <Label>Company name</Label>
                   <Input className="mt-1" value={draftBrand.companyName} onChange={(e) => patchBrand({ companyName: e.target.value })} />
                 </div>
-                <div>
-                  <Label>Logo URL</Label>
-                  <Input className="mt-1" value={draftBrand.companyLogoUrl} onChange={(e) => patchBrand({ companyLogoUrl: e.target.value })} placeholder="https://…" />
-                </div>
-                <div>
-                  <Label>Header image URL</Label>
-                  <Input className="mt-1" value={draftBrand.headerImageUrl} onChange={(e) => patchBrand({ headerImageUrl: e.target.value })} placeholder="https://…" />
-                </div>
+                  <div>
+                    <Label>Company name font size</Label>
+                    <Input
+                      type="number"
+                      min={12}
+                      max={48}
+                      className="mt-1"
+                      value={draftBrand.companyNameFontSize}
+                      onChange={(e) => patchBrand({ companyNameFontSize: Number(e.target.value) || 17 })}
+                    />
+                  </div>
+                  <div>
+                    <Label>Logo URL</Label>
+                    <div className="mt-1 flex gap-2">
+                      <Input value={draftBrand.companyLogoUrl} onChange={(e) => patchBrand({ companyLogoUrl: e.target.value })} placeholder="https://…" />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const input = document.createElement("input");
+                          input.type = "file";
+                          input.accept = "image/*";
+                          input.onchange = () => {
+                            const file = input.files?.[0];
+                            if (!file) return;
+                            const reader = new FileReader();
+                            reader.onload = () => patchBrand({ companyLogoUrl: String(reader.result || "") });
+                            reader.readAsDataURL(file);
+                          };
+                          input.click();
+                        }}
+                      >
+                        Upload
+                      </Button>
+                    </div>
+                  </div>
+                  <div>
+                    <Label>Header image URL</Label>
+                    <div className="mt-1 flex gap-2">
+                      <Input value={draftBrand.headerImageUrl} onChange={(e) => patchBrand({ headerImageUrl: e.target.value })} placeholder="https://…" />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const input = document.createElement("input");
+                          input.type = "file";
+                          input.accept = "image/*";
+                          input.onchange = () => {
+                            const file = input.files?.[0];
+                            if (!file) return;
+                            const reader = new FileReader();
+                            reader.onload = () => patchBrand({ headerImageUrl: String(reader.result || "") });
+                            reader.readAsDataURL(file);
+                          };
+                          input.click();
+                        }}
+                      >
+                        Upload
+                      </Button>
+                    </div>
+                  </div>
                 {(
                   [
                     ["formBg", "Form background"],
@@ -631,6 +1263,42 @@ export default function DocFormsHubPage({
                       <SelectItem value="4">4 px</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Responses</CardTitle>
+                <CardDescription className="text-xs">Same close / thank-you / receipt controls as lead forms.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span>Show progress bar</span>
+                  <Checkbox checked={draftRuntime.showProgressBar} onCheckedChange={(c) => setDraftRuntime((p) => ({ ...p, showProgressBar: !!c }))} />
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span>Shuffle question order</span>
+                  <Checkbox checked={draftRuntime.shuffleQuestions} onCheckedChange={(c) => setDraftRuntime((p) => ({ ...p, shuffleQuestions: !!c }))} />
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span>Email a copy of responses</span>
+                  <Checkbox checked={draftRuntime.sendReceipt} onCheckedChange={(c) => setDraftRuntime((p) => ({ ...p, sendReceipt: !!c }))} />
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span>Allow another response</span>
+                  <Checkbox checked={draftRuntime.allowAnotherResponse} onCheckedChange={(c) => setDraftRuntime((p) => ({ ...p, allowAnotherResponse: !!c }))} />
+                </div>
+                <div>
+                  <Label>Close form on</Label>
+                  <Input type="datetime-local" className="mt-1" value={draftRuntime.closeAt} onChange={(e) => setDraftRuntime((p) => ({ ...p, closeAt: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Response limit</Label>
+                  <Input type="number" min={0} className="mt-1" placeholder="Unlimited" value={draftRuntime.responseLimit} onChange={(e) => setDraftRuntime((p) => ({ ...p, responseLimit: e.target.value }))} />
+                </div>
+                <div>
+                  <Label>Confirmation message</Label>
+                  <Textarea className="mt-1" value={draftRuntime.confirmationMessage} onChange={(e) => setDraftRuntime((p) => ({ ...p, confirmationMessage: e.target.value }))} />
                 </div>
               </CardContent>
             </Card>
@@ -700,7 +1368,13 @@ export default function DocFormsHubPage({
         </TabsList>
 
         {!embedded ? (
-          <div className="mt-3 flex justify-end">
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            <Input
+              className="h-9 w-full sm:w-56"
+              placeholder="Search forms…"
+              value={listSearch}
+              onChange={(e) => setListSearch(e.target.value)}
+            />
             <Button onClick={openCreate} className="gap-1.5">
               <Plus className="h-4 w-4" />
               New Form
@@ -723,20 +1397,21 @@ export default function DocFormsHubPage({
                   <Table className="w-full min-w-0 table-fixed">
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-[28%]">Name</TableHead>
+                        <TableHead className={showCreatedByColumn ? "w-[24%]" : "w-[28%]"}>Name</TableHead>
                         <TableHead className="w-[12%]">Type</TableHead>
+                        {showCreatedByColumn ? <TableHead className="w-[12%]">Created by</TableHead> : null}
                         <TableHead className="w-[10%]">Status</TableHead>
                         <TableHead className="w-[8%] text-right">Subs</TableHead>
                         <TableHead className="w-[8%]">Link</TableHead>
                         <TableHead className="w-[10%]">Assign</TableHead>
-                        <TableHead className="w-[16%]">Assigned</TableHead>
+                        <TableHead className="w-[14%]">Assigned</TableHead>
                         <TableHead className="w-[8%] text-right"> </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filtered.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={8} className="text-center py-8 text-sm text-muted-foreground">
+                          <TableCell colSpan={showCreatedByColumn ? 9 : 8} className="text-center py-8 text-sm text-muted-foreground">
                             {tab === "offer_letter"
                               ? "No offer letter forms yet. Create your first form."
                               : tab === "certificate"
@@ -751,7 +1426,7 @@ export default function DocFormsHubPage({
                             <TableRow
                               key={f.id}
                               className="cursor-pointer hover:bg-muted/50"
-                              onClick={() => void openEdit(f)}
+                              onClick={() => openFormDetail(f)}
                             >
                               <TableCell className="align-top">
                                 <div className="min-w-0">
@@ -775,6 +1450,13 @@ export default function DocFormsHubPage({
                                   {f.form_type === "offer_letter" ? "Offer Letter" : "Certificate"}
                                 </span>
                               </TableCell>
+                              {showCreatedByColumn ? (
+                                <TableCell className="align-top">
+                                  <span className="text-sm truncate block" title={resolveCreatorLabel(f)}>
+                                    {resolveCreatorLabel(f)}
+                                  </span>
+                                </TableCell>
+                              ) : null}
                               <TableCell className="align-top">
                                 <Badge variant={isOn ? "default" : "secondary"}>{isOn ? "Active" : "Inactive"}</Badge>
                               </TableCell>
@@ -799,12 +1481,57 @@ export default function DocFormsHubPage({
                                 </Button>
                               </TableCell>
                               <TableCell className="align-top text-xs text-muted-foreground" onClick={(e) => e.stopPropagation()}>
-                                {assignedSummary(f)}
-                                {f.template_link ? (
-                                  <div className="text-[10px] text-emerald-700 mt-0.5">Template linked</div>
-                                ) : (
-                                  <div className="text-[10px] mt-0.5">No template</div>
-                                )}
+                                {(() => {
+                                  const assignedUsers = (f.access || []).filter((a) => a.access_type === "user" && a.user_id);
+                                  if (!assignedUsers.length && !(f.access || []).some((a) => a.access_type === "role")) {
+                                    return <span>None</span>;
+                                  }
+                                  return (
+                                    <div className="space-y-1 min-w-0">
+                                      {assignedUsers.slice(0, 2).map((a) => {
+                                        const fromTeam = team.find((m) => String(m.id) === String(a.user_id));
+                                        const memberRef = String(fromTeam?.referral_code || "").trim();
+                                        const memberLink = buildPublicDocFormUrl(window.location.origin, f.slug, memberRef || staffId);
+                                        return (
+                                          <div key={a.id} className="flex items-center gap-1 min-w-0">
+                                            <span className="text-xs truncate" title={fromTeam?.full_name || a.user_id || "Member"}>
+                                              {fromTeam?.full_name || "Member"}
+                                            </span>
+                                            <Button
+                                              variant="ghost"
+                                              size="icon"
+                                              className="h-6 w-6 shrink-0"
+                                              title="Copy assigned link"
+                                              onClick={() => {
+                                                if (!memberRef && !staffId) {
+                                                  toast({ variant: "destructive", title: "Staff ID missing" });
+                                                  return;
+                                                }
+                                                void navigator.clipboard.writeText(memberLink).then(
+                                                  () => toast({ title: "Assigned link copied" }),
+                                                  () => toast({ variant: "destructive", title: "Could not copy" }),
+                                                );
+                                              }}
+                                            >
+                                              <Link2 className="h-3.5 w-3.5" />
+                                            </Button>
+                                          </div>
+                                        );
+                                      })}
+                                      {assignedUsers.length > 2 ? (
+                                        <div className="text-[11px] text-muted-foreground">+{assignedUsers.length - 2} more</div>
+                                      ) : null}
+                                      {(f.access || []).filter((a) => a.access_type === "role").length ? (
+                                        <div className="text-[10px]">{assignedSummary(f)}</div>
+                                      ) : null}
+                                      {f.template_link ? (
+                                        <div className="text-[10px] text-emerald-700">Template linked</div>
+                                      ) : (
+                                        <div className="text-[10px]">No template</div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
                               </TableCell>
                               <TableCell className="align-top text-right" onClick={(e) => e.stopPropagation()}>
                                 <DropdownMenu>
@@ -820,7 +1547,21 @@ export default function DocFormsHubPage({
                                     </DropdownMenuItem>
                                     <DropdownMenuItem onClick={() => void copyShareLink(f)}>
                                       <Copy className="h-3.5 w-3.5 mr-2" />
-                                      Copy link
+                                      Share link
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      onClick={async () => {
+                                        try {
+                                          await api.docForms.duplicate(f.id);
+                                          toast({ title: "Form duplicated" });
+                                          await load();
+                                        } catch (e: any) {
+                                          toast({ variant: "destructive", title: "Duplicate failed", description: e?.message });
+                                        }
+                                      }}
+                                    >
+                                      <Copy className="h-3.5 w-3.5 mr-2" />
+                                      Duplicate
                                     </DropdownMenuItem>
                                     <DropdownMenuItem onClick={() => openAssign(f)}>
                                       <Users className="h-3.5 w-3.5 mr-2" />
@@ -919,6 +1660,115 @@ export default function DocFormsHubPage({
       {!embedded ? (
         <p className="text-[11px] text-muted-foreground">Signed in as {user?.full_name || user?.email || "admin"}</p>
       ) : null}
+
+      <ShareFormLinkDialog
+        open={!!shareForm}
+        onOpenChange={(o) => !o && setShareForm(null)}
+        url={shareForm ? shareLinkFor(shareForm) : ""}
+        title={shareForm?.name || "Form"}
+        hint="This link includes your staff ID so submissions are attributed to you."
+        prefillFields={(shareForm?.fields_json || [])
+          .filter((q) => q.type !== "section_break" && q.type !== "image" && q.type !== "video")
+          .map((q) => ({ key: q.key, label: q.label }))}
+      />
+
+      <DocFormDetailDialog
+        open={detailOpen}
+        onOpenChange={(o) => {
+          setDetailOpen(o);
+          if (!o) setDetailForm(null);
+        }}
+        form={detailForm}
+        publicLink={detailForm ? shareLinkFor(detailForm) : ""}
+        canEdit={!!detailForm}
+        createdByLabel={detailForm && showCreatedByColumn ? resolveCreatorLabel(detailForm) : undefined}
+        onEdit={detailForm ? () => void openEdit(detailForm) : undefined}
+        onOpenSubmissions={
+          detailForm
+            ? () => {
+                toast({
+                  title: "Open submissions workspace",
+                  description:
+                    detailForm.form_type === "certificate"
+                      ? "Use Certificates → Forms to map columns and issue certificates."
+                      : "Use Offer Letters → Forms to map columns and issue letters.",
+                });
+              }
+            : undefined
+        }
+        onCopyLink={(url, label) => {
+          void navigator.clipboard.writeText(url).then(
+            () => toast({ title: `${label} copied` }),
+            () => toast({ variant: "destructive", title: "Copy failed" }),
+          );
+        }}
+      />
+    </div>
+  );
+}
+
+const A4_W_PX = Math.round((210 * 96) / 25.4);
+const A4_H_PX = Math.round((297 * 96) / 25.4);
+
+/** Isolated, scale-to-fit A4 preview so template CSS cannot overlap the dialog chrome. */
+function OfferLetterA4Preview({ html }: { html: string }) {
+  const pages = useMemo(
+    () => splitOfferHtmlPages(html).map((page) => ensureHtmlDocument(page)),
+    [html],
+  );
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(1);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => {
+      const w = el.clientWidth;
+      if (w <= 0) return;
+      setScale(Math.min(1, w / A4_W_PX));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    const t = window.setTimeout(update, 80);
+    return () => {
+      ro.disconnect();
+      window.clearTimeout(t);
+    };
+  }, [html, pages.length]);
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto rounded-md bg-muted/40 p-3">
+      <div ref={wrapRef} className="mx-auto w-full">
+        <div className="flex flex-col items-center gap-6">
+        {pages.map((pageHtml, idx) => (
+          <div key={idx} className="relative shrink-0">
+            {pages.length > 1 ? (
+              <div className="absolute -top-3 left-1/2 z-10 -translate-x-1/2 rounded border bg-background px-2 py-0.5 text-[10px] text-muted-foreground">
+                Page {idx + 1} of {pages.length}
+              </div>
+            ) : null}
+            <div
+              className="overflow-hidden bg-white shadow-lg"
+              style={{ width: A4_W_PX * scale, height: A4_H_PX * scale }}
+            >
+              <iframe
+                srcDoc={pageHtml}
+                title={`Offer letter preview page ${idx + 1}`}
+                sandbox="allow-same-origin"
+                className="border-0 bg-white"
+                style={{
+                  width: A4_W_PX,
+                  height: A4_H_PX,
+                  transform: `scale(${scale})`,
+                  transformOrigin: "top left",
+                }}
+              />
+            </div>
+          </div>
+        ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1069,6 +1919,27 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
     }
   };
 
+  const unlinkTemplate = async (form: DocForm) => {
+    const tplName = templates.find((t) => t.id === form.template_link?.template_id)?.name || "the template";
+    if (!window.confirm(`Unlink ${tplName} from "${form.name}"?\n\nSubmissions are kept. You can link a different template afterwards.`)) return;
+    setLinking(form.id);
+    try {
+      await api.docForms.unlinkTemplate(form.id);
+      toast({ title: "Template unlinked", description: `${form.name} has no template now.` });
+      if (activeFormId === form.id) {
+        setActiveFormId(null);
+        setSubmissions([]);
+        setColumnMaps([]);
+        setPlaceholders([]);
+      }
+      await load();
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Unlink failed", description: e?.message });
+    } finally {
+      setLinking(null);
+    }
+  };
+
   const saveMaps = async () => {
     if (!activeFormId) return;
     try {
@@ -1133,8 +2004,22 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
       return;
     }
 
-    const requiredKeys = placeholders.filter(Boolean);
-    const missing = requiredKeys.filter((k) => !String(playValues[k] ?? "").trim());
+    const filled: Record<string, string> = { ...playValues };
+    if (formType === "offer_letter") {
+      if (!String(filled.date || "").trim()) {
+        filled.date = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+      }
+      if (!String(filled.ref_number || "").trim()) {
+        filled.ref_number = `OL-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
+      }
+      if (!String(filled.letterhead_url || "").trim()) {
+        const htmlSrc = String(tpl.html_content || "");
+        const m = htmlSrc.match(/class="letterhead-bg"[^>]*src="([^"]+)"/) || htmlSrc.match(/src="(https?:[^"]+)"/);
+        if (m?.[1] && !m[1].includes("letterhead_url")) filled.letterhead_url = m[1];
+      }
+    }
+    const requiredKeys = placeholders.filter((k) => !OFFER_AUTO_PLACEHOLDER_KEYS.has(k));
+    const missing = requiredKeys.filter((k) => !String(filled[k] ?? "").trim());
     if (missing.length) {
       toast({ variant: "destructive", title: "Missing required fields", description: missing.join(", ") });
       return;
@@ -1145,27 +2030,28 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
       // Persist latest values
       await api.docForms.updateSubmissionValues({
         submission_id: playRow.id,
-        values: playValues,
-        respondent_name: playValues.candidate_name || playValues.name || playRow.respondent_name || undefined,
-        respondent_email: playValues.recipient_email || playValues.email || playRow.respondent_email || undefined,
+        values: filled,
+        respondent_name: filled.candidate_name || filled.name || playRow.respondent_name || undefined,
+        respondent_email: filled.recipient_email || filled.email || playRow.respondent_email || undefined,
       });
 
+      let issuedPdfUrl = "";
       if (formType === "offer_letter") {
         const mail = parseMailJson(tpl.mail_json);
-        const html = applyPlaceholders(String(tpl.html_content || ""), playValues);
-        const subject = applyPlaceholders(mail.mail_subject || "Offer Letter", playValues);
-        const body = applyPlaceholders(mail.mail_body || "<p>Please find your offer letter attached.</p>", playValues);
+        const html = applyPlaceholders(String(tpl.html_content || ""), filled);
+        const subject = applyPlaceholders(mail.mail_subject || "Offer Letter", filled);
+        const body = applyPlaceholders(mail.mail_body || "<p>Please find your offer letter attached.</p>", filled);
         const emailKey = fieldKeyToPlaceholder(mail.recipient_email_placeholder || "recipient_email");
-        const email = String(playValues[emailKey] || playValues.recipient_email || playValues.email || "").trim();
-        const name = String(playValues.candidate_name || playValues.name || "Candidate");
-        const filename = applyPlaceholders(mail.pdf_filename_pattern || "{{candidate_name}}_OfferLetter.pdf", playValues);
+        const email = String(filled[emailKey] || filled.recipient_email || filled.email || "").trim();
+        const name = String(filled.candidate_name || filled.name || "Candidate");
+        const filename = applyPlaceholders(mail.pdf_filename_pattern || "{{candidate_name}}_OfferLetter.pdf", filled);
         if (!email) throw new Error("Recipient email is empty");
         const pdfBase64 = await (await import("@/utils/offerLetterPdf")).buildHtmlDocumentPdfBase64(html);
         await api.offerLetters.send({
           template_id: tplId,
           recipient_name: name,
           recipient_email: email,
-          role_title: playValues.role_title || tpl.role_title || "",
+          role_title: filled.role_title || tpl.role_title || "",
           html_content: html,
           email_subject: subject,
           email_html: body,
@@ -1173,22 +2059,55 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
           pdf_base64: pdfBase64,
         });
       } else {
-        // Certificates: record issued via doc_forms; canvas PDF email can follow from Certificates Issued wizard.
-        const email = String(playValues.email || playValues.recipient_email || "").trim();
-        const name = String(playValues.name || playValues.candidate_name || "Recipient");
+        const email = String(filled.email || filled.recipient_email || "").trim();
+        const name = String(filled.name || filled.candidate_name || "Recipient");
         if (!email) throw new Error("Recipient email is empty");
-        void name;
+        const { captureCertificatePdfBase64 } = await import("@/pages/CertificatesPage");
+        const pdfBase64 = await captureCertificatePdfBase64({
+          template: tpl,
+          recipientName: name,
+          domainName: filled.domain || filled.course || "",
+          companyName: filled.company,
+          date: filled.date || new Date().toISOString().slice(0, 10),
+          certID: filled.certID || filled.cert_id || filled.certificate_id,
+          placeholderValues: filled,
+        });
+        const issued = await api.certificates.issue({
+          recipientId: `docform-${playRow.id}`,
+          templateId: tplId,
+          syncId: filled.certID || filled.cert_id || `CF-${Date.now()}`,
+          recipientName: name,
+          recipientEmail: email,
+          courseName: filled.domain || "",
+          issueDate: filled.date || new Date().toISOString().slice(0, 10),
+          pdf_base64: pdfBase64,
+        });
+        issuedPdfUrl = String((issued as any)?.pdfUrl || "").trim();
+        const mail = parseMailJson(tpl.mail_json || tpl.style);
+        const subject = applyPlaceholders(mail.mail_subject || "Certificate", filled);
+        const body = applyPlaceholders(mail.mail_body || "<p>Please find your certificate attached.</p>", { ...filled, recipient_name: name });
+        if (issuedPdfUrl) {
+          await api.certificates.sendEmail({
+            certificateId: String((issued as any)?.certificateId || (issued as any)?.syncId || ""),
+            to: email,
+            subject,
+            body,
+            attachmentUrl: issuedPdfUrl,
+            attachmentName: `Certificate_${name.replace(/\s+/g, "_")}.pdf`,
+          });
+        }
       }
 
       await api.docForms.issue({
         submission_id: playRow.id,
-        values: playValues,
-        recipient_email: playValues.recipient_email || playValues.email,
-        recipient_name: playValues.candidate_name || playValues.name,
-        email_subject: formType === "offer_letter" ? applyPlaceholders(parseMailJson(tpl.mail_json).mail_subject || "Offer Letter", playValues) : "Certificate",
+        values: filled,
+        recipient_email: filled.recipient_email || filled.email,
+        recipient_name: filled.candidate_name || filled.name,
+        pdf_url: issuedPdfUrl || undefined,
+        email_subject: formType === "offer_letter" ? applyPlaceholders(parseMailJson(tpl.mail_json).mail_subject || "Offer Letter", filled) : "Certificate",
       });
 
-      toast({ title: "Issued", description: "Document issued and emailed where supported." });
+      toast({ title: "Issued", description: formType === "certificate" ? "Certificate generated and emailed." : "Offer letter generated and emailed." });
       setPlayRow(null);
       if (form) await openSubmissions(form);
     } catch (e: any) {
@@ -1237,6 +2156,25 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
           <div className="flex gap-2">
             <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => void addEmptyRow()} disabled={busy}>
               <Plus className="h-3 w-3 mr-1" />Add row
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs"
+              disabled={submissions.length === 0}
+              onClick={() => {
+                const headers = ["Person", "Email", "Staff ID", "Status", ...columnMaps.map((c) => c.label || c.placeholder_key)];
+                const rows = submissions.map((row) => [
+                  row.respondent_name || row.values_json?.candidate_name || row.values_json?.name || "",
+                  row.respondent_email || row.values_json?.email || "",
+                  row.referred_by || "",
+                  row.status || "",
+                  ...columnMaps.map((c) => row.values_json?.[c.placeholder_key] ?? ""),
+                ]);
+                downloadCsv(`${(form?.slug || form?.name || "submissions").replace(/[^\w.-]+/g, "_")}.csv`, [headers, ...rows]);
+              }}
+            >
+              <Download className="h-3 w-3 mr-1" />CSV
             </Button>
             <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => {
               setColumnMaps((prev) => [...prev, { id: crypto.randomUUID(), label: "New column", placeholder_key: placeholders[0] || "", editable: true }]);
@@ -1292,6 +2230,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
                     <TableCell className="text-xs">
                       <div className="font-medium">{row.respondent_name || row.values_json?.candidate_name || row.values_json?.name || "—"}</div>
                       <div className="text-muted-foreground">{row.respondent_email || row.values_json?.email || ""}</div>
+                      {row.referred_by ? <div className="text-[10px] font-mono text-muted-foreground mt-0.5">{row.referred_by}</div> : null}
                       <Badge variant="secondary" className="text-[9px] mt-1">{row.status}</Badge>
                     </TableCell>
                     {columnMaps.map((col) => (
@@ -1313,6 +2252,24 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
                         </Button>
                         <Button size="icon" variant="outline" className="h-7 w-7" title="Edit" onClick={() => { setEditRow(row); setPlayValues({ ...(row.values_json || {}) }); }}>
                           <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="h-7 w-7 text-destructive"
+                          title="Delete row"
+                          onClick={async () => {
+                            if (!confirm("Delete this submission?")) return;
+                            try {
+                              await api.docForms.deleteSubmission(row.id);
+                              setSubmissions((prev) => prev.filter((r) => r.id !== row.id));
+                              toast({ title: "Row deleted" });
+                            } catch (e: any) {
+                              toast({ variant: "destructive", title: "Delete failed", description: e?.message });
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                     </TableCell>
@@ -1378,12 +2335,24 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
         </Dialog>
 
         <Dialog open={previewHtml != null} onOpenChange={(o) => !o && setPreviewHtml(null)}>
-          <DialogContent className="max-w-3xl max-h-[90vh] overflow-auto">
-            <DialogHeader>
+          <DialogContent
+            className={cn(
+              "flex w-[min(56rem,calc(100%-1.5rem))] max-w-4xl flex-col gap-3 overflow-hidden p-4 sm:p-6",
+              "h-[min(92dvh,calc(100dvh-1.5rem))] max-h-[min(92dvh,calc(100dvh-1.5rem))]",
+            )}
+          >
+            <DialogHeader className="shrink-0 space-y-1 pr-10">
               <DialogTitle>Preview</DialogTitle>
               <DialogDescription>Not issued — review only.</DialogDescription>
             </DialogHeader>
-            <div className="border rounded-md bg-white p-2" dangerouslySetInnerHTML={{ __html: previewHtml || "" }} />
+            {formType === "offer_letter" ? (
+              <OfferLetterA4Preview html={previewHtml || ""} />
+            ) : (
+              <div
+                className="min-h-0 flex-1 overflow-auto rounded-md border bg-white p-4"
+                dangerouslySetInnerHTML={{ __html: previewHtml || "" }}
+              />
+            )}
           </DialogContent>
         </Dialog>
       </div>
@@ -1414,7 +2383,17 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
               <CardContent className="py-3 px-4 flex flex-wrap items-center gap-3 justify-between">
                 <div className="min-w-0">
                   <p className="text-sm font-medium truncate">{f.name}</p>
-                  <p className="text-[11px] text-muted-foreground">{f.submission_count ?? 0} submissions</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {f.submission_count ?? 0} submissions
+                    {f.template_link?.template_id ? (
+                      <>
+                        {" · "}
+                        Linked: {templates.find((t) => t.id === f.template_link?.template_id)?.name || "template no longer exists"}
+                      </>
+                    ) : (
+                      " · No template linked"
+                    )}
+                  </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Select
@@ -1431,6 +2410,19 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
                       ))}
                     </SelectContent>
                   </Select>
+                  {f.template_link?.template_id ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-xs"
+                      disabled={linking === f.id}
+                      title="Remove the template link (submissions are kept)"
+                      onClick={() => void unlinkTemplate(f)}
+                    >
+                      {linking === f.id ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Unlink className="h-3.5 w-3.5 mr-1" />}
+                      Unlink
+                    </Button>
+                  ) : null}
                   <Button size="sm" className="h-8 text-xs" disabled={!f.template_link?.template_id} onClick={() => void openSubmissions(f)}>
                     Open submissions
                   </Button>

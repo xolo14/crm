@@ -282,7 +282,7 @@ export default function PaymentLinksPage() {
             {referralCode ? (
               <>
                 {" "}
-                · Referral code:{" "}
+                · Staff ID:{" "}
                 <span className="font-semibold text-[#2ed573] font-mono">
                   {referralCode}
                 </span>
@@ -290,7 +290,7 @@ export default function PaymentLinksPage() {
             ) : (
               <span className="text-amber-600">
                 {" "}
-                · No referral code on your profile
+                · No staff ID on your profile
               </span>
             )}
           </p>

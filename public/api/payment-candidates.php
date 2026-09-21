@@ -66,11 +66,11 @@ if ($method === 'PUT') {
             'installments' => paymentCandidatesFetchInstallments($db, $id),
         ]),
     ]);
-}
+ }
 
 if ($method !== 'GET') {
     respond(['error' => 'Method not allowed'], 405);
-}
+ }
 
 if ($action === 'lookup') {
     $orgId = resolveCreatorOrgId($db, $tokenData);
@@ -96,7 +96,7 @@ if ($action === 'lookup') {
             'next_installment' => paymentCandidatesNextInstallmentNumber($db, (string) $row['id']),
         ]),
     ]);
-}
+ }
 
 if ($action === 'detail') {
     $id = trim((string) ($_GET['id'] ?? ''));
@@ -117,7 +117,7 @@ if ($action === 'detail') {
             'installments' => paymentCandidatesFetchInstallments($db, $id),
         ]),
     ]);
-}
+ }
 
 if ($action === 'list' || $action === '') {
     // Migrate legacy payment links / manuals into candidates so old records appear.
@@ -135,14 +135,32 @@ if ($action === 'list' || $action === '') {
     if ($filterOwner !== '' && !$scope['owner_only']) {
         $ownersForBackfill = [$filterOwner];
     }
+    // Throttle legacy backfill — running on every list under parallel page loads
+    // exhausts Hostinger MySQL connections (cascading 500s across APIs).
+    $backfillKey = 'pc_bf_' . md5(
+        ($orgForBackfill !== null && $orgForBackfill !== '' ? (string) $orgForBackfill : 'all')
+        . '|' . (is_array($ownersForBackfill) ? implode(',', $ownersForBackfill) : '*')
+    );
+    $backfillFile = sys_get_temp_dir() . DIRECTORY_SEPARATOR . $backfillKey;
+    $backfillDue = true;
     try {
-        paymentCandidatesBackfillLegacy(
-            $db,
-            $orgForBackfill !== null && $orgForBackfill !== '' ? (string) $orgForBackfill : null,
-            $ownersForBackfill,
-        );
+        if (is_file($backfillFile) && (time() - (int) filemtime($backfillFile)) < 300) {
+            $backfillDue = false;
+        }
     } catch (Throwable $e) {
-        error_log('[payment_candidates] backfill on list: ' . $e->getMessage());
+        $backfillDue = true;
+    }
+    if ($backfillDue) {
+        try {
+            paymentCandidatesBackfillLegacy(
+                $db,
+                $orgForBackfill !== null && $orgForBackfill !== '' ? (string) $orgForBackfill : null,
+                $ownersForBackfill,
+            );
+            @file_put_contents($backfillFile, (string) time());
+        } catch (Throwable $e) {
+            error_log('[payment_candidates] backfill on list: ' . $e->getMessage());
+        }
     }
 
     $where = $scope['sql'];
@@ -156,6 +174,16 @@ if ($action === 'list' || $action === '') {
     }
 
     $search = strtolower(trim((string) ($_GET['search'] ?? '')));
+    $fromUnix = isset($_GET['from']) && $_GET['from'] !== '' ? (int) $_GET['from'] : null;
+    $toUnix = isset($_GET['to']) && $_GET['to'] !== '' ? (int) $_GET['to'] : null;
+    if ($fromUnix !== null && $fromUnix <= 0) {
+        $fromUnix = null;
+    }
+    if ($toUnix !== null && $toUnix <= 0) {
+        $toUnix = null;
+    }
+    $periodScoped = $fromUnix !== null || $toUnix !== null;
+
     $sql = "SELECT pc.*, u.full_name AS owner_name
             FROM payment_candidates pc
             LEFT JOIN users u ON u.id = pc.owner_user_id
@@ -165,6 +193,7 @@ if ($action === 'list' || $action === '') {
     $st = $db->prepare($sql);
     $st->execute($params);
     $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $hideUnpaidForm = paymentCandidatesUnpaidLeadFormOnlyIds($db, $rows);
 
     $out = [];
     $kpi = [
@@ -173,9 +202,13 @@ if ($action === 'list' || $action === '') {
         'total_paid' => 0.0,
         'total_remaining' => 0.0,
         'cleared_count' => 0,
+        'enrolled_count' => 0,
     ];
 
     foreach ($rows as $row) {
+        if (!empty($hideUnpaidForm[(string) ($row['id'] ?? '')])) {
+            continue;
+        }
         if ($search !== '') {
             $hay = strtolower(
                 ($row['customer_name'] ?? '') . ' ' .
@@ -187,16 +220,34 @@ if ($action === 'list' || $action === '') {
                 continue;
             }
         }
-        $totals = paymentCandidatesTotalsForRow($db, $row);
+        $totals = paymentCandidatesTotalsForRow($db, $row, $fromUnix, $toUnix);
         $merged = array_merge($row, $totals);
+        $merged['pitch_price'] = (float) ($totals['pitch_price'] ?? 0);
+        $merged['total_paid'] = (float) ($totals['total_paid'] ?? 0);
+        $merged['remaining'] = (float) ($totals['remaining'] ?? 0);
+        if ($periodScoped && empty($totals['first_installment_date'])) {
+            continue;
+        }
         $out[] = $merged;
         $kpi['candidate_count']++;
         $kpi['total_pitch'] += (float) $totals['pitch_price'];
         $kpi['total_paid'] += (float) $totals['total_paid'];
-        $kpi['total_remaining'] += (float) $totals['remaining'];
-        if ($totals['status'] === 'cleared') {
-            $kpi['cleared_count']++;
-        }
+ if ($periodScoped) {
+ $periodPaid = (float) ($totals['total_paid'] ?? 0);
+ $periodPitch = (float) ($totals['pitch_price'] ?? 0);
+ $kpi['total_remaining'] += (float) max(0, round($periodPitch - $periodPaid, 2));
+ if ($periodPaid + 0.001 >= $periodPitch && $periodPitch > 0) {
+ $kpi['cleared_count']++;
+ }
+ } else {
+ $kpi['total_remaining'] += (float) $totals['remaining'];
+ if ($totals['status'] === 'cleared') {
+ $kpi['cleared_count']++;
+ }
+ }
+ if (!empty($totals['enrolled'])) {
+ $kpi['enrolled_count']++;
+ }
     }
 
     $kpi['total_pitch'] = round($kpi['total_pitch'], 2);
@@ -204,6 +255,6 @@ if ($action === 'list' || $action === '') {
     $kpi['total_remaining'] = round($kpi['total_remaining'], 2);
 
     respond(['data' => $out, 'kpi' => $kpi]);
-}
+ }
 
 respond(['error' => 'Invalid action'], 400);

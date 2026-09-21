@@ -191,9 +191,7 @@ $referredBy = $ref !== '' ? $ref : null;
 $orgId = $lockedOrgId;
 
 if ($ref !== '') {
-    $ust = $db->prepare('SELECT id, org_id, referral_code FROM users WHERE referral_code = ? AND is_active = 1 LIMIT 1');
-    $ust->execute([$ref]);
-    $urow = $ust->fetch(PDO::FETCH_ASSOC);
+    $urow = findUserByReferralCode($db, (string) $ref, true);
     if ($urow && is_array($urow)) {
         $refOrg = trim((string) ($urow['org_id'] ?? ''));
         if ($refOrg !== '' && $refOrg !== $lockedOrgId) {

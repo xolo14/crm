@@ -33,6 +33,10 @@ type ProfileFields = {
   website: string;
   supportEmail: string;
   supportPhone: string;
+  staffIdPrefix: string;
+  /** Prefix in effect when none is saved (derived from the company name). */
+  staffIdPrefixEffective: string;
+  staffIdPrefixAuto: boolean;
   street: string;
   city: string;
   stateName: string;
@@ -51,6 +55,9 @@ const emptyProfile = (): ProfileFields => ({
   website: "",
   supportEmail: "",
   supportPhone: "",
+  staffIdPrefix: "",
+  staffIdPrefixEffective: "",
+  staffIdPrefixAuto: false,
   street: "",
   city: "",
   stateName: "",
@@ -72,6 +79,9 @@ function applyOrgToProfile(org: any): ProfileFields {
     website: String(profile.website || ""),
     supportEmail: String(profile.support_email || ""),
     supportPhone: String(profile.support_phone || ""),
+    staffIdPrefix: String(profile.staff_id_prefix || "").toUpperCase(),
+    staffIdPrefixEffective: String(org?.staff_id_prefix_effective || profile.staff_id_prefix || "").toUpperCase(),
+    staffIdPrefixAuto: profile.staff_id_prefix_auto === true || profile.staff_id_prefix_auto === 1,
     street: String(profile.street || ""),
     city: String(profile.city || ""),
     stateName: String(profile.state || ""),
@@ -133,8 +143,16 @@ function CompanyDetailsReadonly({ fields }: { fields: ProfileFields }) {
         <SettingsRow label="Support Email">
           <DetailValue value={fields.supportEmail} />
         </SettingsRow>
-        <SettingsRow label="Support Phone" border={false}>
+        <SettingsRow label="Support Phone">
           <DetailValue value={fields.supportPhone} />
+        </SettingsRow>
+        <SettingsRow label="Org ID prefix" border={false}>
+          <span className="inline-flex items-center gap-2">
+            <DetailValue value={fields.staffIdPrefix || fields.staffIdPrefixEffective} mono />
+            {(fields.staffIdPrefixAuto || !fields.staffIdPrefix) && (fields.staffIdPrefix || fields.staffIdPrefixEffective) ? (
+              <span className="text-[10px] text-muted-foreground">auto from company name</span>
+            ) : null}
+          </span>
         </SettingsRow>
       </SettingsSection>
 
@@ -279,13 +297,14 @@ export function CompanyProfile() {
   const onSave = async () => {
     setSaving(true);
     try {
-      await api.organizations.updateProfile({
+      const res = await api.organizations.updateProfile({
         name: fields.companyName,
         logo_url: fields.logoUrl,
         tagline: fields.tagline,
         website: fields.website,
         support_email: fields.supportEmail,
         support_phone: fields.supportPhone,
+        staff_id_prefix: fields.staffIdPrefix,
         street: fields.street,
         city: fields.city,
         state: fields.stateName,
@@ -294,9 +313,31 @@ export function CompanyProfile() {
         linkedin: fields.linkedIn,
         twitter: fields.twitter,
         instagram: fields.instagram,
-      });
+      }, isSuperAdmin && selectedOrgId ? selectedOrgId : undefined);
       await refreshOrganization();
-      toast({ title: "Company profile saved" });
+      const assigned = Number((res as { staff_ids_assigned?: number })?.staff_ids_assigned || 0);
+      const myStaffId = String((res as { my_staff_id?: string })?.my_staff_id || "").trim();
+      if (myStaffId) {
+        try {
+          const raw = localStorage.getItem("auth_user");
+          if (raw) {
+            const stored = JSON.parse(raw);
+            if (stored && stored.referral_code !== myStaffId) {
+              stored.referral_code = myStaffId;
+              localStorage.setItem("auth_user", JSON.stringify(stored));
+            }
+          }
+        } catch {
+          /* keep the saved profile even if the session cache cannot be patched */
+        }
+      }
+      toast({
+        title: "Company profile saved",
+        description:
+          assigned > 0
+            ? `Assigned ${assigned} staff ID${assigned === 1 ? "" : "s"}. Other users see theirs after a page refresh.`
+            : "Staff IDs are up to date.",
+      });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Could not save company profile";
       toast({ title: "Save failed", description: msg, variant: "destructive" });
@@ -490,8 +531,29 @@ export function CompanyProfile() {
         <SettingsRow label="Support Email">
           <SettingsInput value={fields.supportEmail} onChange={(v) => patchField("supportEmail", v)} type="email" />
         </SettingsRow>
-        <SettingsRow label="Support Phone" border={false}>
+        <SettingsRow label="Support Phone">
           <SettingsInput value={fields.supportPhone} onChange={(v) => patchField("supportPhone", v)} type="tel" />
+        </SettingsRow>
+        <SettingsRow label="Org ID prefix" border={false}>
+          <div className="space-y-1">
+            <SettingsInput
+              value={fields.staffIdPrefix}
+              onChange={(v) => patchField("staffIdPrefix", v.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4))}
+              placeholder={fields.staffIdPrefixEffective || "SYN"}
+            />
+            {(() => {
+              const p = fields.staffIdPrefix || fields.staffIdPrefixEffective || "SYN";
+              const auto = !fields.staffIdPrefix || fields.staffIdPrefixAuto;
+              return (
+                <p className="text-[11px] text-muted-foreground">
+                  {auto && fields.staffIdPrefixEffective
+                    ? `Using ${fields.staffIdPrefixEffective} from the company name until you set one. `
+                    : ""}
+                  2–4 letters. Admin {p}0001, managers {p}0101, sales / HR / marketing {p}1001. Used as the form and payment referral.
+                </p>
+              );
+            })()}
+          </div>
         </SettingsRow>
       </SettingsSection>
 

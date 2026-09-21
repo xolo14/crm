@@ -1,8 +1,11 @@
-import { useEffect, useRef } from "react";
-import { Bold, Italic, Underline } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Bold, Italic, Link2, Link2Off, List, ListOrdered, Underline } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { descriptionToEditorHtml, sanitizeFormDescriptionHtml } from "@/components/forms/formDescriptionHtml";
+import { descriptionToEditorHtml, sanitizeFormDescriptionHtml, sanitizeLinkHref } from "@/components/forms/formDescriptionHtml";
 import { cn } from "@/lib/utils";
 
 const FONT_FACES = [
@@ -42,6 +45,19 @@ function runCommand(command: string, value?: string) {
   }
 }
 
+function closestAnchor(node: Node | null): HTMLAnchorElement | null {
+  let cur: Node | null = node;
+  while (cur) {
+    if (cur.nodeType === Node.ELEMENT_NODE && (cur as HTMLElement).tagName === "A") return cur as HTMLAnchorElement;
+    cur = cur.parentNode;
+  }
+  return null;
+}
+
+function looksLikeUrl(text: string): boolean {
+  return /^(https?:\/\/|www\.)\S+$/i.test(String(text || "").trim());
+}
+
 function wrapSelectionWithSpan(style: Record<string, string>) {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
@@ -76,6 +92,90 @@ export function FormDescriptionEditor({
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const lastEmitted = useRef(value);
+  const savedRange = useRef<Range | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkText, setLinkText] = useState("");
+  const [linkHasSelection, setLinkHasSelection] = useState(false);
+
+  function rememberSelection() {
+    const sel = window.getSelection();
+    const el = ref.current;
+    if (!sel || sel.rangeCount === 0 || !el) return;
+    const range = sel.getRangeAt(0);
+    if (!el.contains(range.commonAncestorContainer)) return;
+    savedRange.current = range.cloneRange();
+  }
+
+  function restoreSelection() {
+    const sel = window.getSelection();
+    const range = savedRange.current;
+    if (!sel || !range) return;
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  function openLinkPopover() {
+    rememberSelection();
+    const range = savedRange.current;
+    const anchor = range ? closestAnchor(range.commonAncestorContainer) : null;
+    const selectedText = range ? range.toString() : "";
+    setLinkUrl(anchor?.getAttribute("href") || (looksLikeUrl(selectedText) ? selectedText.trim() : ""));
+    setLinkText(anchor?.textContent || selectedText);
+    setLinkHasSelection(Boolean(anchor) || Boolean(selectedText.trim()));
+    setLinkOpen(true);
+  }
+
+  function applyLink() {
+    const href = sanitizeLinkHref(linkUrl);
+    if (!href) return;
+    const el = ref.current;
+    el?.focus();
+    restoreSelection();
+    const sel = window.getSelection();
+    const range = savedRange.current;
+    const anchor = range ? closestAnchor(range.commonAncestorContainer) : null;
+    if (anchor) {
+      anchor.setAttribute("href", href);
+      if (linkText.trim()) anchor.textContent = linkText.trim();
+    } else if (sel && range && !range.collapsed && !linkText.trim()) {
+      runCommand("createLink", href);
+    } else {
+      const text = linkText.trim() || (range && !range.collapsed ? range.toString() : "") || href.replace(/^https?:\/\//, "");
+      const a = document.createElement("a");
+      a.setAttribute("href", href);
+      a.textContent = text;
+      if (range) {
+        range.deleteContents();
+        range.insertNode(a);
+        const after = document.createRange();
+        after.setStartAfter(a);
+        after.collapse(true);
+        sel?.removeAllRanges();
+        sel?.addRange(after);
+      } else if (el) {
+        el.appendChild(a);
+      }
+    }
+    setLinkOpen(false);
+    emitFromEditor();
+  }
+
+  function removeLink() {
+    ref.current?.focus();
+    restoreSelection();
+    const range = savedRange.current;
+    const anchor = range ? closestAnchor(range.commonAncestorContainer) : null;
+    if (anchor) {
+      const parent = anchor.parentNode;
+      while (anchor.firstChild) parent?.insertBefore(anchor.firstChild, anchor);
+      parent?.removeChild(anchor);
+    } else {
+      runCommand("unlink");
+    }
+    setLinkOpen(false);
+    emitFromEditor();
+  }
 
   useEffect(() => {
     const el = ref.current;
@@ -195,6 +295,88 @@ export function FormDescriptionEditor({
         >
           <Underline className="h-3.5 w-3.5" />
         </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          title="Bulleted list"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            ref.current?.focus();
+            runCommand("insertUnorderedList");
+            emitFromEditor();
+          }}
+        >
+          <List className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          title="Numbered list"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            ref.current?.focus();
+            runCommand("insertOrderedList");
+            emitFromEditor();
+          }}
+        >
+          <ListOrdered className="h-3.5 w-3.5" />
+        </Button>
+        <Popover open={linkOpen} onOpenChange={(o) => (o ? openLinkPopover() : setLinkOpen(false))}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              title="Insert link"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                rememberSelection();
+              }}
+            >
+              <Link2 className="h-3.5 w-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-72 space-y-2 p-3">
+            <div>
+              <Label className="text-[11px]">Link URL</Label>
+              <Input
+                autoFocus
+                className="mt-1 h-8 text-xs"
+                placeholder="https://example.com or mailto:hr@company.com"
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    applyLink();
+                  }
+                }}
+              />
+            </div>
+            <div>
+              <Label className="text-[11px]">Text to display</Label>
+              <Input
+                className="mt-1 h-8 text-xs"
+                placeholder={linkHasSelection ? "Keep selected text" : "Defaults to the URL"}
+                value={linkText}
+                onChange={(e) => setLinkText(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={removeLink}>
+                <Link2Off className="h-3.5 w-3.5 mr-1" /> Remove
+              </Button>
+              <Button type="button" size="sm" className="h-7 text-xs" disabled={!sanitizeLinkHref(linkUrl)} onClick={applyLink}>
+                Apply
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
       </div>
       <div className="relative">
       {!value?.trim() ? (
@@ -213,11 +395,31 @@ export function FormDescriptionEditor({
           )}
           style={isDefaultMuted ? { whiteSpace: "pre-wrap" } : { color, whiteSpace: "pre-wrap" }}
           onInput={emitFromEditor}
-          onBlur={emitFromEditor}
+          onBlur={() => {
+            rememberSelection();
+            emitFromEditor();
+          }}
+          onKeyUp={rememberSelection}
+          onMouseUp={rememberSelection}
+          onClick={(e) => {
+            // Ctrl/Cmd+click opens the link even while editing.
+            const anchor = closestAnchor(e.target as Node);
+            if (anchor && (e.ctrlKey || e.metaKey)) {
+              window.open(anchor.getAttribute("href") || "", "_blank", "noopener");
+            }
+          }}
           onPaste={(e) => {
             e.preventDefault();
             const text = e.clipboardData.getData("text/plain");
-            runCommand("insertText", text);
+            const href = looksLikeUrl(text) ? sanitizeLinkHref(text) : "";
+            if (href) {
+              const a = document.createElement("a");
+              a.setAttribute("href", href);
+              a.textContent = text.trim();
+              runCommand("insertHTML", a.outerHTML);
+            } else {
+              runCommand("insertText", text);
+            }
             emitFromEditor();
           }}
         />

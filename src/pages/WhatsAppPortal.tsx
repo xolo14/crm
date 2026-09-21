@@ -42,7 +42,6 @@ export default function WhatsAppPortal() {
   const [loading, setLoading] = useState(true);
   const [referralCode, setReferralCode] = useState('');
   const [formLeads, setFormLeads] = useState<any[]>([]);
-  const [marketingMembers, setMarketingMembers] = useState<any[]>([]);
   const [metaTemplates, setMetaTemplates] = useState<any[]>([]);
   const [pendingTemplates, setPendingTemplates] = useState(0);
   const [waConnected, setWaConnected] = useState(false);
@@ -77,7 +76,8 @@ export default function WhatsAppPortal() {
   const canManageCredentials = ['super_admin', 'admin', 'org', 'manager'].includes(role);
 
   const recipientPeople = useMemo<CampaignPickPerson[]>(() => {
-    const leads: CampaignPickPerson[] = formLeads
+    // WhatsApp campaigns target leads/students only — not marketing members.
+    return formLeads
       .filter((l) => String(l.phone || '').replace(/\D+/g, '').length >= 10)
       .map((l) => ({
         id: `lead:${l.id}`,
@@ -86,17 +86,7 @@ export default function WhatsAppPortal() {
         phone: String(l.phone || '').trim(),
         group: 'leads' as const,
       }));
-    const members: CampaignPickPerson[] = marketingMembers
-      .filter((m) => String(m.phone || '').replace(/\D+/g, '').length >= 10)
-      .map((m) => ({
-        id: `member:${m.id}`,
-        name: String(m.name || 'Member'),
-        email: String(m.email || '').trim() || undefined,
-        phone: String(m.phone || '').trim(),
-        group: 'members' as const,
-      }));
-    return [...leads, ...members];
-  }, [formLeads, marketingMembers]);
+  }, [formLeads]);
 
   const recipientCount = mergeCampaignPhoneRecipients(recipientPeople, selectedRecipientIds, bulkPhones).length;
 
@@ -124,10 +114,9 @@ export default function WhatsAppPortal() {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [draftsRes, campaignsRes, membersRes, templatesRes, hubRes, allTplRes] = await Promise.all([
+      const [draftsRes, campaignsRes, templatesRes, hubRes, allTplRes] = await Promise.all([
         api.marketing.whatsappDrafts({ mine: true }),
         api.marketing.whatsappCampaigns({ mine: true }),
-        api.marketing.members().catch(() => ({ data: [] })),
         communicationsApi.templates({ status: 'approved' }).catch(() => ({ data: [] })),
         communicationsApi.hubSummary().catch(() => null),
         communicationsApi.templates().catch(() => ({ data: [] })),
@@ -136,7 +125,6 @@ export default function WhatsAppPortal() {
       const campaignsData = phpList(campaignsRes);
       setDrafts(draftsData);
       setCampaigns(campaignsData);
-      setMarketingMembers(phpList(membersRes));
       const approved = Array.isArray(templatesRes?.data) ? templatesRes.data : phpList(templatesRes);
       setMetaTemplates(approved);
       const allTpl = Array.isArray(allTplRes?.data) ? allTplRes.data : phpList(allTplRes);
@@ -148,7 +136,7 @@ export default function WhatsAppPortal() {
       setWaBusinessPhone(orgWa?.business_phone ? String(orgWa.business_phone) : null);
       setWaConnectionStatus(orgWa?.connection_status ? String(orgWa.connection_status) : connected ? 'connected' : 'not_connected');
 
-      const code = user?.referral_code || (user?.id ? 'SP-' + user.id.substring(0, 8).toUpperCase() : '');
+      const code = String(user?.referral_code || "").trim();
       setReferralCode(code);
       try {
         const leadsRes = code
@@ -792,6 +780,8 @@ export default function WhatsAppPortal() {
               onManualTextChange={setBulkPhones}
               onUploadFile={handleFileUpload}
               fileInputRef={fileInputRef}
+              listLabel="Select leads / students"
+              emptyHint="No phone numbers found on leads/students."
             />
             <DialogFooter>
               <Button onClick={handleBulkSend} disabled={sending || !waConnected} className="w-full gap-1.5 bg-emerald-600 hover:bg-emerald-700">

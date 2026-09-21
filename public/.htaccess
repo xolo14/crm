@@ -77,6 +77,15 @@
   # SPA login portals (explicit for shared hosting)
   RewriteRule ^(sales_rep_portal|super_admin|admin|manager|marketing|hr-login|auth|privacy|terms)/?$ index.html [L]
 
+  # Social crawlers need server-rendered OG tags (WhatsApp does not run the SPA JS).
+  # Serve org logo via share-preview.php + api/public-og-image.php.
+  RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|Facebot|WhatsApp|Twitterbot|LinkedInBot|Slackbot|Discordbot|TelegramBot|Pinterest|Googlebot|bingbot|Applebot|Embedly|Quora\ Link\ Preview|redditbot|SkypeUriPreview|vkShare) [NC]
+  RewriteCond %{REQUEST_URI} ^/apply/?$ [NC]
+  RewriteRule ^ share-preview.php [L,QSA]
+
+  RewriteCond %{HTTP_USER_AGENT} (facebookexternalhit|Facebot|WhatsApp|Twitterbot|LinkedInBot|Slackbot|Discordbot|TelegramBot|Pinterest|Googlebot|bingbot|Applebot|Embedly|Quora\ Link\ Preview|redditbot|SkypeUriPreview|vkShare) [NC]
+  RewriteRule ^doc-form/([^/]+)/?$ share-preview.php?doc=$1 [L,QSA]
+
   # React SPA — all other client routes
   RewriteRule ^ index.html [L]
 </IfModule>

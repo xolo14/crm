@@ -50,8 +50,12 @@ export function canonicalCertPlaceholderKey(raw: string): string {
     name: "recipient_name",
     recipient_name: "recipient_name",
     candidate_name: "recipient_name",
-    date: "issue_date",
-    issue_date: "issue_date",
+    start: "start",
+    start_date: "start",
+    from: "start",
+    end: "end",
+    end_date: "end",
+    to: "end",
     domain: "domain_name",
     course: "domain_name",
     course_name: "domain_name",
@@ -64,6 +68,12 @@ export function canonicalCertPlaceholderKey(raw: string): string {
     sync_id: "cert_id",
     email: "recipient_email",
     recipient_email: "recipient_email",
+    start: "start",
+    start_date: "start",
+    from: "start",
+    end: "end",
+    end_date: "end",
+    to: "end",
   };
   return aliases[lower] || lower || compact;
 }

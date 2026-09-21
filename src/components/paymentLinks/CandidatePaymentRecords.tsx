@@ -15,6 +15,18 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { canEditPaymentCandidatePitch, canSubmitManualPayment } from "@/lib/orgAccess";
 import ManualPaymentDialog from "@/components/paymentLinks/ManualPaymentDialog";
+import {
+  PAYMENT_LINK_PERIODS,
+  paymentLinkPeriodUnixRange,
+  type PaymentLinkPeriod,
+} from "@/utils/paymentLinkPeriod";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export type PaymentCandidateRow = {
   id: string;
@@ -28,6 +40,7 @@ export type PaymentCandidateRow = {
   remaining: number;
   installment_count: number;
   status: "cleared" | "in_progress" | "no_pitch" | string;
+  enrolled?: boolean;
   updated_at?: string | null;
   created_at?: string | null;
 };
@@ -50,6 +63,8 @@ export type PaymentCandidateKpi = {
   total_paid: number;
   total_remaining: number;
   cleared_count: number;
+  /** Candidates matched to an enrolled student / lead (separate from payment cleared). */
+  enrolled_count?: number;
 };
 
 interface Props {
@@ -68,6 +83,20 @@ function fmtInr(amount: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+function fmtPitchCell(pitch: number) {
+  const n = Number(pitch || 0);
+  if (n <= 0) {
+    return (
+      <span className="text-gray-400 text-xs font-medium">No pitch</span>
+    );
+  }
+  return (
+    <span className="font-semibold text-[#0f5230] tabular-nums whitespace-nowrap">
+      {fmtInr(n)}
+    </span>
+  );
 }
 
 function statusBadge(status: string) {
@@ -107,6 +136,9 @@ export default function CandidatePaymentRecords({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [period, setPeriod] = useState<PaymentLinkPeriod>("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [rows, setRows] = useState<PaymentCandidateRow[]>([]);
   const [kpi, setKpi] = useState<PaymentCandidateKpi | null>(null);
   const [page, setPage] = useState(1);
@@ -130,11 +162,39 @@ export default function CandidatePaymentRecords({
     setLoading(true);
     setError(null);
     try {
-      const res = (await api.paymentCandidates.list({
+      const customRange =
+        period === "custom"
+          ? { from: customFrom || undefined, to: customTo || undefined }
+          : undefined;
+      const unixRange = paymentLinkPeriodUnixRange(period, customRange);
+      const query: {
+        owner_user_id?: string;
+        search?: string;
+        from?: number;
+        to?: number;
+      } = {
         owner_user_id: ownerUserId,
         search: search.trim() || undefined,
-      })) as { data?: PaymentCandidateRow[]; kpi?: PaymentCandidateKpi };
-      setRows(Array.isArray(res?.data) ? res.data : []);
+      };
+      if (period !== "all") {
+        if (unixRange.from !== undefined) query.from = unixRange.from;
+        if (unixRange.to !== undefined) query.to = unixRange.to;
+      }
+
+      const res = (await api.paymentCandidates.list(query)) as {
+        data?: PaymentCandidateRow[];
+        kpi?: PaymentCandidateKpi;
+      };
+      const raw = Array.isArray(res?.data) ? res.data : [];
+      setRows(
+        raw.map((row) => ({
+          ...row,
+          pitch_price: Number(row.pitch_price ?? 0),
+          total_paid: Number(row.total_paid ?? 0),
+          remaining: Number(row.remaining ?? 0),
+          installment_count: Number(row.installment_count ?? 0),
+        })),
+      );
       setKpi(res?.kpi ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load candidates");
@@ -143,7 +203,7 @@ export default function CandidatePaymentRecords({
     } finally {
       setLoading(false);
     }
-  }, [ownerUserId, search]);
+  }, [ownerUserId, search, period, customFrom, customTo]);
 
   useEffect(() => {
     void loadList();
@@ -153,7 +213,13 @@ export default function CandidatePaymentRecords({
     setPage(1);
     setSelectedId(null);
     setDetail(null);
-  }, [ownerUserId]);
+  }, [ownerUserId, period, customFrom, customTo]);
+
+  const periodLabel = useMemo(
+    () => PAYMENT_LINK_PERIODS.find((p) => p.value === period)?.label ?? "All Time",
+    [period],
+  );
+  const collectedLabel = period === "all" ? "Collected" : `Collected (${periodLabel})`;
 
   const loadDetail = useCallback(async (id: string) => {
     setDetailLoading(true);
@@ -477,23 +543,72 @@ export default function CandidatePaymentRecords({
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
           <KpiCard label="Candidates" value={String(kpi.candidate_count)} />
           <KpiCard label="Total pitch" value={fmtInr(kpi.total_pitch)} />
-          <KpiCard label="Collected" value={fmtInr(kpi.total_paid)} accent="green" />
+          <KpiCard label={collectedLabel} value={fmtInr(kpi.total_paid)} accent="green" />
           <KpiCard label="Remaining" value={fmtInr(kpi.total_remaining)} accent="amber" />
           <KpiCard label="Cleared" value={String(kpi.cleared_count)} />
         </div>
       ) : null}
 
-      <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-4">
-        <input
-          type="search"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(1);
-          }}
-          placeholder="Search candidate name, email, or phone…"
-          className={inputCls + " w-full"}
-        />
+      <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-4 space-y-3">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
+            placeholder="Search candidate name, email, or phone…"
+            className={inputCls + " flex-1"}
+          />
+          <Select
+            value={period}
+            onValueChange={(v) => {
+              setPeriod(v as PaymentLinkPeriod);
+              setPage(1);
+            }}
+          >
+            <SelectTrigger className="w-full sm:w-[11rem] shrink-0">
+              <SelectValue placeholder="Timeline" />
+            </SelectTrigger>
+            <SelectContent>
+              {PAYMENT_LINK_PERIODS.map((p) => (
+                <SelectItem key={p.value} value={p.value}>
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {period === "custom" ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => {
+                setCustomFrom(e.target.value);
+                setPage(1);
+              }}
+              className={inputCls}
+              title="From date"
+            />
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => {
+                setCustomTo(e.target.value);
+                setPage(1);
+              }}
+              className={inputCls}
+              title="To date"
+            />
+          </div>
+        ) : null}
+        {period !== "all" ? (
+          <p className="text-xs text-gray-500">
+            Payments counted by paid-on date, then upload date. Pitch and status use all-time totals.
+          </p>
+        ) : null}
       </div>
 
       {error ? (
@@ -574,8 +689,8 @@ export default function CandidatePaymentRecords({
                     {showOwnerColumn ? (
                       <td className="px-4 py-3 text-gray-700">{row.owner_name || "—"}</td>
                     ) : null}
-                    <td className="px-4 py-3 text-right tabular-nums">
-                      {fmtInr(Number(row.pitch_price || 0))}
+                    <td className="px-4 py-3 text-right">
+                      {fmtPitchCell(Number(row.pitch_price || 0))}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-[#22c55e] font-medium">
                       {fmtInr(Number(row.total_paid || 0))}

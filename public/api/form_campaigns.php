@@ -651,6 +651,50 @@ function formCampaignAutoSendForNewLead(PDO $db, array $formRow, array $lead): v
     }
 }
 
+/**
+ * Queue / process auto offer-letter / certificate for a lead based on form meta toggles.
+ * Payment toggle: only process when $isPaid is true.
+ *
+ * @param array<string, mixed>|null $formRow
+ */
+function leadFormQueueAutoDocuments(PDO $db, $formRow, string $leadId, bool $isPaid, bool $forceRetry = false): void
+{
+    require_once __DIR__ . '/lib/LeadFormAutoDocs.php';
+    if ($forceRetry && $leadId !== '') {
+        try {
+            $st = $db->prepare('SELECT tags FROM leads WHERE id = ? LIMIT 1');
+            $st->execute([$leadId]);
+            $row = $st->fetch(PDO::FETCH_ASSOC);
+            $tags = [];
+            if (is_array($row)) {
+                $raw = $row['tags'] ?? null;
+                if (is_string($raw)) {
+                    $decoded = json_decode($raw, true);
+                    $tags = is_array($decoded) ? $decoded : [];
+                } elseif (is_array($raw)) {
+                    $tags = $raw;
+                }
+            }
+            foreach ([
+                'auto_certificate_sent', 'auto_certificate_id', 'auto_certificate_at',
+                'auto_certificate_error', 'auto_certificate_warning', 'auto_certificate_queued',
+                'auto_certificate_due_at',
+                'auto_offer_letter_sent', 'auto_offer_letter_id', 'auto_offer_letter_at',
+                'auto_offer_letter_error', 'auto_offer_letter_warning', 'auto_offer_letter_queued',
+            ] as $k) {
+                unset($tags[$k]);
+            }
+            $db->prepare('UPDATE leads SET tags = ? WHERE id = ?')->execute([
+                json_encode($tags, JSON_UNESCAPED_UNICODE),
+                $leadId,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[leadFormQueueAutoDocuments force] ' . $e->getMessage());
+        }
+    }
+    leadFormProcessAutoDocuments($db, $formRow, $leadId, $isPaid, null, $forceRetry);
+}
+
 /** @return array{ok:bool,results?:array<string,mixed>,error?:string} */
 function formCampaignSendAssignedOnPublish(PDO $db, array $tokenData, array $formRow, array $cfg): array
 {
