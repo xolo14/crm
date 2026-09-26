@@ -788,6 +788,9 @@ export default function AssessmentsAdminPage() {
                           </TableCell>
                           <TableCell>
                             <span className="font-semibold">{r.score ?? "—"}</span>
+                            {r.integrity_flag === "review" || r.integrity?.flag === "review" ? (
+                              <div className="text-[10px] text-amber-700 font-medium">Review</div>
+                            ) : null}
                           </TableCell>
                           <TableCell>{r.stars != null ? "★".repeat(r.stars) || "—" : "—"}</TableCell>
                           <TableCell>
@@ -1467,6 +1470,9 @@ export default function AssessmentsAdminPage() {
             {attemptDetail?.data ? (
               <div className="flex flex-wrap gap-2 text-xs">
                 <Badge variant="outline">Score {attemptDetail.data.score ?? "—"}</Badge>
+                {attemptDetail.data.integrity_flag === "review" || attemptDetail.data.integrity?.flag === "review" ? (
+                  <Badge variant="destructive">Review recommended</Badge>
+                ) : null}
                 <Badge variant="outline">
                   {attemptDetail.data.stars != null ? "★".repeat(attemptDetail.data.stars) || "0★" : "—"}
                 </Badge>
@@ -1583,6 +1589,32 @@ export default function AssessmentsAdminPage() {
                         </Badge>
                       ))}
                     </div>
+                  </div>
+                ) : null}
+
+                {attemptDetail.data.integrity ? (
+                  <div className="pt-2 border-t space-y-1.5 text-xs">
+                    <p className="font-semibold text-foreground">
+                      Integrity{" "}
+                      {attemptDetail.data.integrity.flag === "review" ? (
+                        <span className="text-amber-700">— review (two or more signals)</span>
+                      ) : (
+                        <span className="text-muted-foreground font-normal">— no combined flag</span>
+                      )}
+                    </p>
+                    <ul className="grid grid-cols-2 gap-x-3 gap-y-1 text-muted-foreground">
+                      <li>Tab hides: {attemptDetail.data.integrity.tab_hides ?? 0}</li>
+                      <li>
+                        Hidden: {Math.round((attemptDetail.data.integrity.hidden_ms ?? 0) / 1000)}s
+                      </li>
+                      <li>Window blurs: {attemptDetail.data.integrity.blurs ?? 0}</li>
+                      <li>Fast answers: {attemptDetail.data.integrity.fast_answers ?? 0}</li>
+                      <li>Extension DOM: {attemptDetail.data.integrity.extension_dom ?? 0}</li>
+                      <li>Chrome gap: {attemptDetail.data.integrity.resize_devtools ?? 0}</li>
+                    </ul>
+                    <p className="text-[11px] text-muted-foreground">
+                      Flag is for manual review. It does not auto-fail the score.
+                    </p>
                   </div>
                 ) : null}
 

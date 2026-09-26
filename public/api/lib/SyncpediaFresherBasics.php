@@ -1,8 +1,142 @@
 <?php
 /**
- * Syncpedia Basics — 5 domains × 15 MCQs (5 easy, 5 medium, 5 difficult/scenario), 9 minutes.
+ * Syncpedia Basics — 30 MCQs in 20 minutes: 10 quantitative aptitude + 20 from the chosen domain.
+ * Each domain bank is 40 medium / 30 hard / 15 expert / 15 scenario; aptitude is 40/30/30.
+ * Attempts draw 5 medium + 5 hard aptitude, and 5 medium + 5 hard + 5 expert + 5 scenario domain.
  * Also seeds the older Syncpedia assignment paper.
  */
+
+$syncpediaBasicsBanksFile = __DIR__ . '/SyncpediaBasicsBanks.php';
+if (is_readable($syncpediaBasicsBanksFile)) {
+    require_once $syncpediaBasicsBanksFile;
+}
+
+function syncpediaBasicsDurationMinutes(): int
+{
+    return 20;
+}
+
+function syncpediaBasicsPaperQuestionCount(): int
+{
+    return 30;
+}
+
+/** @return array<string,int> */
+function syncpediaBasicsAptitudeQuotas(): array
+{
+    return ['medium' => 5, 'hard' => 5];
+}
+
+/** @return array<string,int> */
+function syncpediaBasicsDomainQuotas(): array
+{
+    return ['medium' => 5, 'hard' => 5, 'expert' => 5, 'scenario' => 5];
+}
+
+function syncpediaBasicsAptitudePickCount(): int
+{
+    return array_sum(syncpediaBasicsAptitudeQuotas());
+}
+
+function syncpediaBasicsDomainPickCount(): int
+{
+    return array_sum(syncpediaBasicsDomainQuotas());
+}
+
+function syncpediaBasicsAptitudeDomainKey(): string
+{
+    return 'aptitude';
+}
+
+/** Last 10 digits so +91 / 0-prefix variants still match. */
+function syncpediaBasicsPhoneKey(string $phone): string
+{
+    $digits = preg_replace('/\D+/', '', $phone) ?? '';
+    if (strlen($digits) >= 10) {
+        return substr($digits, -10);
+    }
+    return $digits;
+}
+
+/**
+ * Prior Basics attempt for the same email or mobile (any domain).
+ * Prefers a started/finished row so a second identity cannot slip through.
+ *
+ * @return array<string,mixed>|null
+ */
+function syncpediaBasicsFindPriorAttempt(PDO $db, string $assessmentId, string $email, string $phone): ?array
+{
+    $email = strtolower(trim($email));
+    $phoneKey = syncpediaBasicsPhoneKey($phone);
+    $rows = [];
+    if ($email !== '') {
+        $st = $db->prepare(
+            "SELECT id, public_token, status, created_at FROM peaklyy_attempts
+             WHERE assessment_id = ? AND LOWER(TRIM(email)) = ?
+               AND status IN ('registered','submitted','in_progress','expired')
+             ORDER BY created_at DESC LIMIT 5"
+        );
+        $st->execute([$assessmentId, $email]);
+        $rows = array_merge($rows, $st->fetchAll(PDO::FETCH_ASSOC) ?: []);
+    }
+    if (strlen($phoneKey) >= 10) {
+        $like = '%' . $phoneKey;
+        try {
+            $st = $db->prepare(
+                "SELECT id, public_token, status, phone, created_at FROM peaklyy_attempts
+                 WHERE assessment_id = ? AND IFNULL(phone,'') <> ''
+                   AND status IN ('registered','submitted','in_progress','expired')
+                   AND REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(phone,''), ' ', ''), '-', ''), '+', ''), '.', '') LIKE ?
+                 ORDER BY created_at DESC LIMIT 20"
+            );
+            $st->execute([$assessmentId, $like]);
+        } catch (Throwable $e) {
+            $st = $db->prepare(
+                "SELECT id, public_token, status, phone, created_at FROM peaklyy_attempts
+                 WHERE assessment_id = ? AND IFNULL(phone,'') <> ''
+                   AND status IN ('registered','submitted','in_progress','expired')
+                   AND phone LIKE ?
+                 ORDER BY created_at DESC LIMIT 20"
+            );
+            $st->execute([$assessmentId, $like]);
+        }
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+            if (syncpediaBasicsPhoneKey((string) ($row['phone'] ?? '')) === $phoneKey) {
+                $rows[] = $row;
+            }
+        }
+    }
+    if (!$rows) {
+        return null;
+    }
+    $byId = [];
+    foreach ($rows as $row) {
+        $byId[(string) ($row['id'] ?? '')] = $row;
+    }
+    $unique = array_values($byId);
+    foreach ($unique as $row) {
+        if (in_array((string) ($row['status'] ?? ''), ['submitted', 'in_progress', 'expired'], true)) {
+            return $row;
+        }
+    }
+    return $unique[0];
+}
+
+/** Candidate-facing instruction lines after the two fullscreen/keyboard rules. */
+function syncpediaBasicsPublicInstructions(int $durationMinutes): array
+{
+    $out = [];
+    if ($durationMinutes > 0) {
+        $out[] = 'Duration: ' . $durationMinutes . ' minutes';
+    } else {
+        $out[] = 'No time limit — submit when you finish';
+    }
+    $out[] = '10 aptitude questions and 20 domain questions';
+    $out[] = 'Stay on this page until you finish the test. You can navigate between questions before submitting. Tab switches are logged for review; leaving fullscreen auto-submits.';
+    $out[] = 'Do not refresh the page during the test. The timer ends the test automatically when time is up.';
+    $out[] = 'Single attempt only';
+    return $out;
+}
 
 function syncpediaFresherBasicsSlug(): string
 {
@@ -39,12 +173,46 @@ function syncpediaBasicsDomainCatalog(): array
         'ai' => 'Artificial Intelligence (AI)',
         'java_fullstack' => 'Java Fullstack',
         'python_fullstack' => 'Python Fullstack',
+        'vlsi' => 'VLSI Design',
+        'solidworks' => 'SolidWorks',
+        'autocad' => 'AutoCAD',
+        'embedded' => 'Embedded Systems',
+        'finance' => 'Finance',
+        'marketing' => 'Marketing',
+        'hr' => 'HR',
     ];
+}
+
+function syncpediaResolveDomainLabel(?string $key): string
+{
+    $key = trim((string) $key);
+    if ($key === '') {
+        return '';
+    }
+    $catalog = syncpediaBasicsDomainCatalog();
+    if (isset($catalog[$key])) {
+        return $catalog[$key];
+    }
+    if (function_exists('peaklyyDomainCatalog')) {
+        $peak = peaklyyDomainCatalog();
+        if (isset($peak[$key])) {
+            return $peak[$key];
+        }
+    }
+    return $key;
 }
 
 function syncpediaBasicsMcq(string $domain, string $difficulty, string $prompt, string $a, string $b, string $c, string $d, string $correct): array
 {
-    $tag = $difficulty === 'difficult' ? 'Difficult · scenario' : ucfirst($difficulty);
+    $tagMap = [
+        'medium' => 'Medium',
+        'hard' => 'Hard',
+        'expert' => 'Expert',
+        'scenario' => 'Scenario',
+        'easy' => 'Medium',
+        'difficult' => 'Expert',
+    ];
+    $tag = $tagMap[$difficulty] ?? ucfirst($difficulty);
     return [
         'domain_key' => $domain,
         'difficulty' => $difficulty,
@@ -64,99 +232,457 @@ function syncpediaFresherBasicsQuestionDefs(): array
     return syncpediaBasicsQuestionDefs();
 }
 
+function syncpediaBasicsQuestionDifficulty(array $row): string
+{
+    $schema = $row['task_schema_json'] ?? null;
+    if (is_string($schema)) {
+        $schema = json_decode($schema, true);
+    }
+    $diff = is_array($schema) ? strtolower(trim((string) ($schema['difficulty'] ?? ''))) : '';
+    if ($diff === 'easy') {
+        return 'medium';
+    }
+    if ($diff === 'difficult') {
+        return 'expert';
+    }
+    if (in_array($diff, ['medium', 'hard', 'expert', 'scenario'], true)) {
+        return $diff;
+    }
+    return 'medium';
+}
+
 /**
- * Syncpedia Basics paper: 5 domains × 15 questions in easy → medium → difficult order.
+ * Draw an exact quota from each difficulty bucket. Returns [] if any bucket is short.
+ *
+ * @param list<array<string,mixed>> $pool
+ * @param array<string,int> $quotas
+ * @return list<array<string,mixed>>
+ */
+function syncpediaBasicsPickByQuotas(array $pool, array $quotas): array
+{
+    $by = ['medium' => [], 'hard' => [], 'expert' => [], 'scenario' => []];
+    foreach ($pool as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $k = syncpediaBasicsQuestionDifficulty($row);
+        if (!isset($by[$k])) {
+            $k = 'medium';
+        }
+        $by[$k][] = $row;
+    }
+    $out = [];
+    foreach ($quotas as $k => $n) {
+        $n = (int) $n;
+        if ($n <= 0) {
+            continue;
+        }
+        $slice = $by[$k] ?? [];
+        shuffle($slice);
+        if (count($slice) < $n) {
+            return [];
+        }
+        foreach (array_slice($slice, 0, $n) as $row) {
+            $out[] = $row;
+        }
+    }
+    return $out;
+}
+
+/**
+ * Random 10 aptitude (5 medium + 5 hard) + 20 domain
+ * (5 medium + 5 hard + 5 expert + 5 scenario).
+ *
+ * @return list<array<string,mixed>>
+ */
+function syncpediaBasicsPickAttemptQuestions(PDO $db, string $assessmentId, string $domainKey): array
+{
+    $domainKey = trim($domainKey);
+    $all = function_exists('peaklyyPickCustomQuestions')
+        ? peaklyyPickCustomQuestions($db, $assessmentId, 0, null)
+        : [];
+    $aptKey = syncpediaBasicsAptitudeDomainKey();
+    $apt = [];
+    $dom = [];
+    foreach ($all as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $dk = function_exists('peaklyyQuestionStoredDomainKey')
+            ? peaklyyQuestionStoredDomainKey($row)
+            : trim((string) ($row['domain_key'] ?? ''));
+        if ($dk === $aptKey) {
+            $apt[] = $row;
+        } elseif ($domainKey !== '' && $dk === $domainKey) {
+            $dom[] = $row;
+        }
+    }
+    $pickedApt = syncpediaBasicsPickByQuotas($apt, syncpediaBasicsAptitudeQuotas());
+    $pickedDom = syncpediaBasicsPickByQuotas($dom, syncpediaBasicsDomainQuotas());
+    if (count($pickedApt) < syncpediaBasicsAptitudePickCount() || count($pickedDom) < syncpediaBasicsDomainPickCount()) {
+        return [];
+    }
+    return array_merge($pickedApt, $pickedDom);
+}
+
+function syncpediaBasicsSeedInt(string $seed, string $salt, int $min, int $max): int
+{
+    if ($max < $min) {
+        return $min;
+    }
+    $n = hexdec(substr(hash('sha256', $seed . '|' . $salt), 0, 8));
+    return $min + (int) ($n % ($max - $min + 1));
+}
+
+/**
+ * @param list<string|int|float> $choices
+ * @return array{options: array<string,string>, correct: string}
+ */
+function syncpediaBasicsPackMcqChoices($answer, array $distractors): array
+{
+    $ans = (string) $answer;
+    $uniq = [$ans];
+    foreach ($distractors as $d) {
+        $s = (string) $d;
+        if ($s === '' || in_array($s, $uniq, true)) {
+            continue;
+        }
+        $uniq[] = $s;
+        if (count($uniq) >= 4) {
+            break;
+        }
+    }
+    $i = 1;
+    while (count($uniq) < 4) {
+        $extra = is_numeric($ans) ? (string) ((float) $ans + $i) : $ans . '-' . $i;
+        if (!in_array($extra, $uniq, true)) {
+            $uniq[] = $extra;
+        }
+        $i++;
+        if ($i > 20) {
+            break;
+        }
+    }
+    $rest = array_slice($uniq, 1);
+    shuffle($rest);
+    $texts = array_merge([$ans], $rest);
+    shuffle($texts);
+    $options = [];
+    $correct = 'a';
+    $letters = ['a', 'b', 'c', 'd'];
+    foreach ($letters as $idx => $letter) {
+        $options[$letter] = (string) ($texts[$idx] ?? '');
+        if ($options[$letter] === $ans) {
+            $correct = $letter;
+        }
+    }
+    return ['options' => $options, 'correct' => $correct];
+}
+
+function syncpediaBasicsWriteMcqRow(array $row, string $prompt, array $packed): array
+{
+    $row['prompt'] = $prompt;
+    $row['options_json'] = json_encode($packed['options'], JSON_UNESCAPED_UNICODE);
+    $row['correct_option'] = $packed['correct'];
+    $row['option_a'] = $packed['options']['a'] ?? '';
+    $row['option_b'] = $packed['options']['b'] ?? '';
+    $row['option_c'] = $packed['options']['c'] ?? '';
+    $row['option_d'] = $packed['options']['d'] ?? '';
+    return $row;
+}
+
+function syncpediaBasicsRowDomainKey(array $row): string
+{
+    if (function_exists('peaklyyQuestionStoredDomainKey')) {
+        return peaklyyQuestionStoredDomainKey($row);
+    }
+    return trim((string) ($row['domain_key'] ?? ''));
+}
+
+function syncpediaBasicsRowPrompt(array $row): string
+{
+    return trim((string) ($row['prompt'] ?? ''));
+}
+
+/**
+ * Re-number computational aptitude items so leaked keys do not match this paper.
+ * Conceptual "nearest meaning" stems are left unchanged. No canvas / class obfuscation.
+ *
+ * @param list<array<string,mixed>> $picked
+ * @return list<array<string,mixed>>
+ */
+function syncpediaBasicsParameterizePickedQuestions(array $picked, string $seed): array
+{
+    $aptKey = syncpediaBasicsAptitudeDomainKey();
+    $out = [];
+    foreach ($picked as $i => $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        if (syncpediaBasicsRowDomainKey($row) !== $aptKey) {
+            $out[] = $row;
+            continue;
+        }
+        $variant = syncpediaBasicsParameterizeAptitudeRow($row, $seed . ':' . $i);
+        $out[] = $variant ?: $row;
+    }
+    return $out;
+}
+
+function syncpediaBasicsParameterizeAptitudeRow(array $row, string $seed): ?array
+{
+    $prompt = syncpediaBasicsRowPrompt($row);
+    $plain = preg_replace('/^\s*\[[^\]]+\]\s*/u', '', $prompt) ?? $prompt;
+    $prefix = '';
+    if (preg_match('/^(\s*\[[^\]]+\]\s*)/u', $prompt, $m)) {
+        $prefix = $m[1];
+    }
+
+    if (preg_match('/^What is (\d+(?:\.\d+)?)% of (\d+)\?$/u', $plain, $m)) {
+        $p = syncpediaBasicsSeedInt($seed, 'p', 8, 40);
+        $n = syncpediaBasicsSeedInt($seed, 'n', 80, 480);
+        if ($n % 4 !== 0) {
+            $n += 4 - ($n % 4);
+        }
+        $ans = $p * $n / 100;
+        $ansStr = abs($ans - round($ans)) < 0.001 ? (string) (int) round($ans) : rtrim(rtrim(sprintf('%.2f', $ans), '0'), '.');
+        $packed = syncpediaBasicsPackMcqChoices($ansStr, [
+            (string) (int) round($ans + $p),
+            (string) (int) round($n * ($p + 5) / 100),
+            (string) (int) round($n * max(1, $p - 5) / 100),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "What is {$p}% of {$n}?", $packed);
+    }
+
+    if (preg_match('/^A number increased by (\d+)% becomes (\d+)\./u', $plain, $m)) {
+        $p = syncpediaBasicsSeedInt($seed, 'p', 10, 40);
+        $orig = syncpediaBasicsSeedInt($seed, 'o', 80, 240);
+        $becomes = (int) round($orig * (100 + $p) / 100);
+        $packed = syncpediaBasicsPackMcqChoices((string) $orig, [
+            (string) (int) round($becomes * 100 / max(1, 100 - $p)),
+            (string) (int) round($becomes - $p),
+            (string) (int) round($orig + $p),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "A number increased by {$p}% becomes {$becomes}. The original number is:", $packed);
+    }
+
+    if (preg_match('/^A number decreased by (\d+)% becomes (\d+)\./u', $plain, $m)) {
+        $p = syncpediaBasicsSeedInt($seed, 'p', 10, 40);
+        $orig = syncpediaBasicsSeedInt($seed, 'o', 80, 240);
+        $becomes = (int) round($orig * (100 - $p) / 100);
+        $packed = syncpediaBasicsPackMcqChoices((string) $orig, [
+            (string) (int) round($becomes * 100 / max(1, 100 + $p)),
+            (string) (int) round($becomes + $p),
+            (string) (int) round($orig - $p),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "A number decreased by {$p}% becomes {$becomes}. The original number is:", $packed);
+    }
+
+    if (preg_match('/^Divide ₹(\d+) in the ratio (\d+):(\d+)\./u', $plain, $m)) {
+        $a = syncpediaBasicsSeedInt($seed, 'a', 2, 7);
+        $b = syncpediaBasicsSeedInt($seed, 'b', 2, 7);
+        if ($a === $b) {
+            $b++;
+        }
+        $unit = syncpediaBasicsSeedInt($seed, 'u', 80, 200);
+        $total = ($a + $b) * $unit;
+        $larger = max($a, $b) * $unit;
+        $packed = syncpediaBasicsPackMcqChoices((string) $larger, [
+            (string) (min($a, $b) * $unit),
+            (string) (int) round($total / 2),
+            (string) ($a * $unit),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "Divide ₹{$total} in the ratio {$a}:{$b}. The larger share is:", $packed);
+    }
+
+    if (preg_match('/^The average of (\d+), (\d+), (\d+) and (\d+) is:/u', $plain, $m)) {
+        $base = syncpediaBasicsSeedInt($seed, 'b', 8, 24);
+        $nums = [$base, $base + 6, $base + 12, $base + 18];
+        $avg = (int) (array_sum($nums) / 4);
+        $packed = syncpediaBasicsPackMcqChoices((string) $avg, [
+            (string) ($avg + 2),
+            (string) ($avg - 1),
+            (string) ($nums[3]),
+        ]);
+        $list = implode(', ', $nums);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "The average of {$list} is:", $packed);
+    }
+
+    if (preg_match('/^CP = ₹(\d+), SP = ₹(\d+)\. Profit percent is:/u', $plain, $m)) {
+        $cp = syncpediaBasicsSeedInt($seed, 'cp', 200, 600);
+        $cp -= $cp % 20;
+        $pct = syncpediaBasicsSeedInt($seed, 'pct', 8, 25);
+        $sp = (int) round($cp * (100 + $pct) / 100);
+        $packed = syncpediaBasicsPackMcqChoices($pct . '%', [
+            ($pct + 5) . '%',
+            ($pct - 3) . '%',
+            (int) round(($sp - $cp) * 100 / max(1, $sp)) . '%',
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "CP = ₹{$cp}, SP = ₹{$sp}. Profit percent is:", $packed);
+    }
+
+    if (preg_match('/^SI on ₹(\d+) at (\d+)% p\.a\. for (\d+) years is:/u', $plain, $m)) {
+        $p = syncpediaBasicsSeedInt($seed, 'p', 1000, 5000);
+        $p -= $p % 100;
+        $r = syncpediaBasicsSeedInt($seed, 'r', 6, 12);
+        $t = syncpediaBasicsSeedInt($seed, 't', 2, 5);
+        $si = (int) round($p * $r * $t / 100);
+        $packed = syncpediaBasicsPackMcqChoices((string) $si, [
+            (string) ($si + 50),
+            (string) ($p * $r / 100),
+            (string) ($si - 100),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "SI on ₹{$p} at {$r}% p.a. for {$t} years is:", $packed);
+    }
+
+    if (preg_match('/^A car covers (\d+) km in (\d+) hours\. Average speed is:/u', $plain, $m)) {
+        $h = syncpediaBasicsSeedInt($seed, 'h', 2, 6);
+        $spd = syncpediaBasicsSeedInt($seed, 's', 40, 90);
+        $d = $spd * $h;
+        $packed = syncpediaBasicsPackMcqChoices($spd . ' km/h', [
+            ($spd + 10) . ' km/h',
+            ($spd - 6) . ' km/h',
+            (int) round($d / max(1, $h + 1)) . ' km/h',
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "A car covers {$d} km in {$h} hours. Average speed is:", $packed);
+    }
+
+    if (preg_match('/^A man walks (\d+) km\/h for ([\d.]+) hours\. Distance is:/u', $plain, $m)) {
+        $spd = syncpediaBasicsSeedInt($seed, 's', 3, 8);
+        $hoursTenths = syncpediaBasicsSeedInt($seed, 'h', 15, 40);
+        $hours = $hoursTenths / 10;
+        $dist = $spd * $hours;
+        $distStr = abs($dist - round($dist)) < 0.001 ? ((int) round($dist)) . ' km' : rtrim(rtrim(sprintf('%.1f', $dist), '0'), '.') . ' km';
+        $packed = syncpediaBasicsPackMcqChoices($distStr, [
+            ($spd * 2) . ' km',
+            ((int) round($dist + 2)) . ' km',
+            ((int) round($hours * 10)) . ' km',
+        ]);
+        $hLabel = rtrim(rtrim(sprintf('%.1f', $hours), '0'), '.');
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "A man walks {$spd} km/h for {$hLabel} hours. Distance is:", $packed);
+    }
+
+    if (preg_match('/^(\d+)% of (\d+)% of (\d+) is:/u', $plain, $m)) {
+        $p1 = syncpediaBasicsSeedInt($seed, 'p1', 10, 30);
+        $p2 = syncpediaBasicsSeedInt($seed, 'p2', 10, 30);
+        $n = syncpediaBasicsSeedInt($seed, 'n', 200, 800);
+        $n -= $n % 50;
+        $ans = $p1 / 100 * $p2 / 100 * $n;
+        $ansStr = abs($ans - round($ans)) < 0.001 ? (string) (int) round($ans) : rtrim(rtrim(sprintf('%.2f', $ans), '0'), '.');
+        $packed = syncpediaBasicsPackMcqChoices($ansStr, [
+            (string) (int) round($n * $p1 / 100),
+            (string) (int) round($ans + 10),
+            (string) (int) round($n * $p2 / 100),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "{$p1}% of {$p2}% of {$n} is:", $packed);
+    }
+
+    if (preg_match('/^A successive \+(\d+)% then −\1% on (\d+) yields:/u', $plain, $m)
+        || preg_match('/^A successive \+(\d+)% then −(\d+)% on (\d+) yields:/u', $plain, $m)) {
+        $x = syncpediaBasicsSeedInt($seed, 'x', 10, 30);
+        $base = 100;
+        $ans = (int) round($base * (1 + $x / 100) * (1 - $x / 100));
+        $packed = syncpediaBasicsPackMcqChoices((string) $ans, [
+            '100',
+            (string) ($base + $x),
+            (string) ($base - $x),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "A successive +{$x}% then −{$x}% on {$base} yields:", $packed);
+    }
+
+    if (preg_match('/^Marked price ₹(\d+), discount (\d+)%\. SP is:/u', $plain, $m)) {
+        $mp = syncpediaBasicsSeedInt($seed, 'mp', 400, 1200);
+        $mp -= $mp % 50;
+        $d = syncpediaBasicsSeedInt($seed, 'd', 8, 25);
+        $sp = (int) round($mp * (100 - $d) / 100);
+        $packed = syncpediaBasicsPackMcqChoices((string) $sp, [
+            (string) ($mp - $d * 10),
+            (string) (int) round($mp * (100 - $d + 5) / 100),
+            (string) ($mp),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "Marked price ₹{$mp}, discount {$d}%. SP is:", $packed);
+    }
+
+    if (preg_match('/^A can do a job in (\d+) days, B in (\d+)\. Together they finish in:/u', $plain, $m)) {
+        $a = syncpediaBasicsSeedInt($seed, 'a', 8, 18);
+        $b = syncpediaBasicsSeedInt($seed, 'b', 10, 24);
+        if ($a === $b) {
+            $b += 6;
+        }
+        $together = $a * $b / ($a + $b);
+        $togetherStr = abs($together - round($together)) < 0.001
+            ? ((int) round($together)) . ' days'
+            : rtrim(rtrim(sprintf('%.1f', $together), '0'), '.') . ' days';
+        $packed = syncpediaBasicsPackMcqChoices($togetherStr, [
+            ((int) round(($a + $b) / 2)) . ' days',
+            ((int) min($a, $b)) . ' days',
+            ((int) round($together + 3)) . ' days',
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "A can do a job in {$a} days, B in {$b}. Together they finish in:", $packed);
+    }
+
+    if (preg_match('/^A 150 m train at (\d+) km\/h crosses a pole in:/u', $plain)
+        || preg_match('/^A (\d+) m train at (\d+) km\/h crosses a pole in:/u', $plain, $m)) {
+        $len = syncpediaBasicsSeedInt($seed, 'l', 100, 240);
+        $len -= $len % 10;
+        $kmh = [36, 54, 72, 90][syncpediaBasicsSeedInt($seed, 'k', 0, 3)];
+        $sec = (int) round($len / ($kmh * 1000 / 3600));
+        $packed = syncpediaBasicsPackMcqChoices($sec . ' s', [
+            ($sec + 5) . ' s',
+            ($sec - 2 > 0 ? $sec - 2 : $sec + 3) . ' s',
+            ((int) round($len / $kmh)) . ' s',
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "A {$len} m train at {$kmh} km/h crosses a pole in:", $packed);
+    }
+
+    if (preg_match('/^HCF of (\d+) and (\d+) is:/u', $plain, $m)) {
+        $g = [6, 8, 12, 15][syncpediaBasicsSeedInt($seed, 'g', 0, 3)];
+        $x = $g * syncpediaBasicsSeedInt($seed, 'x', 2, 6);
+        $y = $g * syncpediaBasicsSeedInt($seed, 'y', 3, 8);
+        if ($x === $y) {
+            $y += $g;
+        }
+        $aa = $x;
+        $bb = $y;
+        while ($bb) {
+            $t = $aa % $bb;
+            $aa = $bb;
+            $bb = $t;
+        }
+        $h = $aa;
+        $packed = syncpediaBasicsPackMcqChoices((string) $h, [
+            (string) ($h * 2),
+            (string) min($x, $y),
+            (string) ($g === $h ? $g + 2 : $g),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "HCF of {$x} and {$y} is:", $packed);
+    }
+
+    if (preg_match('/^If (\d+)x = (\d+), x equals:/u', $plain, $m)) {
+        $c = syncpediaBasicsSeedInt($seed, 'c', 4, 12);
+        $x = syncpediaBasicsSeedInt($seed, 'x', 5, 15);
+        $rhs = $c * $x;
+        $packed = syncpediaBasicsPackMcqChoices((string) $x, [
+            (string) ($x + 1),
+            (string) ($rhs - $c),
+            (string) ($c),
+        ]);
+        return syncpediaBasicsWriteMcqRow($row, $prefix . "If {$c}x = {$rhs}, x equals:", $packed);
+    }
+
+    return null;
+}
+
+/**
+ * Full Syncpedia Basics bank (aptitude + 12 domains), not the 30-question attempt paper.
  * @return list<array<string,mixed>>
  */
 function syncpediaBasicsQuestionDefs(): array
 {
-    $qs = [];
-    $d = 'cyber_sec';
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'What does the CIA triad stand for in information security?', 'Confidentiality, Integrity, Availability', 'Control, Identity, Access', 'Code, Injection, Authentication', 'Cipher, Index, Audit', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Which example best describes a phishing attack?', 'A deceptive email that tricks someone into revealing a password or clicking a malware link', 'A firewall dropping packets from an unknown IP', 'Encrypting a disk with BitLocker', 'Updating antivirus definitions', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'What is the main job of a firewall?', 'Filter network traffic based on rules to allow or block connections', 'Increase CPU clock speed', 'Compress files on disk', 'Translate source code to machine code', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Which password practice is strongest for a student account?', 'A long unique passphrase plus multi-factor authentication', 'The same short password on every site', 'Password written on the laptop lid', 'Only the college registration number', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'An ethical hacker (white hat) typically:', 'Tests systems with written permission to find and report weaknesses', 'Sells stolen data on a forum', 'Disables logs to hide activity', 'Deploys ransomware for profit', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Hashing a password is mainly used to:', 'Store a one-way fingerprint so the original password is not kept in plaintext', 'Speed up login by skipping authentication', 'Encrypt files so they can be decrypted with the same hash', 'Hide the username in URLs', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'HTTPS protects a login page primarily by:', 'Encrypting the browser–server channel with TLS so passwords are harder to sniff', 'Blocking all cookies', 'Removing the need for passwords', 'Making JavaScript run faster', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'SQL injection usually happens when:', 'User input is concatenated into a SQL string without parameterization', 'The database uses SSD storage', 'The site uses HTTPS', 'The developer uses Git', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Principle of least privilege means:', 'Users and programs get only the access they need for their role', 'Everyone is given admin so support is easier', 'Firewalls must be turned off on campus Wi‑Fi', 'Passwords should be shared in the team chat', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'A VPN for a remote intern is mainly meant to:', 'Create an encrypted tunnel into the organization network', 'Increase download speed beyond the ISP limit', 'Replace antivirus completely', 'Hide all malware from endpoints', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Campus lab scenario: a student laptop is encrypted by ransomware and a payment note appears. What should they do first?', 'Disconnect from the network, report to IT/security, and do not pay or power-cycle randomly', 'Pay immediately from a personal UPI account', 'Run a random “decryptor” from a forum', 'Email the ransom note to all classmates with the attachment', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'You are asked to “quickly check” a live college ERP without a written test scope. As an ethical tester you should:', 'Refuse until scope, assets, and written authorization are clear', 'Scan the whole internet range of the college overnight', 'Use a classmate’s admin password “just this once”', 'Drop tables to prove impact', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'A fake placement portal asks for Aadhaar and bank OTP. Best response?', 'Stop, report it as phishing, and never share OTP or Aadhaar photos', 'Fill it so you do not miss the drive', 'Share OTP with the “HR WhatsApp” number', 'Forward the link to the whole class', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Your web assignment stores session IDs in the URL. An attacker who sees browser history could hijack sessions. Best fix?', 'Use HttpOnly Secure cookies (or equivalent) and avoid putting session IDs in URLs', 'Print session IDs in page titles for debugging', 'Lengthen the URL with more random letters only', 'Disable HTTPS to simplify cookies', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Wi‑Fi in a café is open. You must access the college Git server. Safest option?', 'Use the official VPN or SSH over a trusted network; avoid sensitive logins on open Wi‑Fi without protection', 'Disable the laptop firewall to connect faster', 'Trust a popup certificate warning to proceed', 'Share your Git password in Discord so a friend can push for you', 'a');
-
-    $d = 'data_analytics';
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'What does DA usually mean in analytics careers?', 'Data Analytics — turning data into decisions using stats, SQL, and visualization', 'Device Administration', 'Digital Animation only', 'Disk Allocation', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Mean vs median: which is more robust to one extreme outlier salary?', 'Median', 'Mean', 'Mode of city names', 'Row count', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'A bar chart is usually best for:', 'Comparing quantities across categories', 'Showing a continuous time series only', 'Storing a database backup', 'Encrypting PII', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'A KPI is:', 'A measurable indicator of performance against a goal', 'A type of SQL join', 'A Python keyword', 'A hardware port', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'CSV files typically store:', 'Tables as plain text with values separated by commas', 'Compiled Java bytecode', 'Encrypted VPN keys only', 'Audio samples', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'INNER JOIN returns rows that:', 'Match in both tables on the join key', 'Keep every row from the left table only', 'Create a Cartesian product always', 'Delete unmatched keys', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Correlation between ice cream sales and drowning is high in summer. Best interpretation?', 'Correlation is not causation — a lurking variable (season) may drive both', 'Ice cream causes drowning', 'Ban ice cream to stop drowning', 'The dataset must be fake', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'ETL in a data pipeline means:', 'Extract, Transform, Load', 'Encrypt, Transfer, Lock', 'Export, Train, Learn', 'Edit, Test, Launch', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'A dashboard for placement officers should first show:', 'Clear filters, trend of offers, and drill-down — not 40 unlabelled charts', 'Raw SQL dumps', 'Every student’s password hash', 'GPU temperature', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Sampling bias happens when:', 'The sample does not represent the population you want to conclude about', 'You use a large enough random sample from the full population', 'You compute median instead of mean', 'You export to CSV', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Survey scenario: you only poll students in the Wi‑Fi lab at 11pm about “average study hours”. Why is this weak?', 'The sample over-represents night-lab users and misses others', 'Night time makes SQL slower', 'CSV cannot store hours', 'Median cannot be used after 10pm', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'You train a placement-prediction model on last year’s data including the final offer column. The accuracy is 99% on that file. What went wrong?', 'Target leakage — the model saw the outcome during training', 'Too few CPU cores', 'CSV commas', 'Dark mode in Excel', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'The dean wants “one number” for campus placements. You have branch-wise medians that differ a lot. Best communication?', 'Show overall figure AND branch breakdown so averages do not hide inequality', 'Only the highest branch to look good', 'Hide the slide', 'Average the branch names as text', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'A/B test on the college site: homepage A vs B. 20 visitors, conversion 1 vs 2. You should:', 'Not declare a winner — sample is too small; keep testing with a proper plan', 'Ship B forever', 'Delete A’s data', 'Change the metric after seeing results until B wins', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Attendance CSV has mixed date formats, blank roll numbers, and duplicate rows. First analytics step?', 'Profile and clean (standardize dates, drop/fix blanks and duplicates) before KPI charts', 'Build a 3D pie chart immediately', 'Email the raw file to newspapers', 'Train a deep neural net on dirty keys', 'a');
-
-    $d = 'ai';
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Artificial Intelligence is best described as:', 'Building systems that perform tasks that typically need human intelligence', 'Making the CPU fan quieter', 'A type of USB cable', 'Formatting Excel cells', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'NLP is mainly about:', 'Computers processing and generating human language', 'Cooling GPUs with liquid nitrogen only', 'Drawing circuit boards', 'Compiling C to assembly', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Supervised learning needs:', 'Labeled examples (inputs with known answers) to train a model', 'No data at all', 'Only unlabeled clusters always', 'A quantum computer', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'A chatbot that answers campus FAQs is an example of:', 'Applied AI / NLP', 'Disk defragmentation', 'BIOS update', 'Subnetting', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Training data in ML is:', 'The examples used to fit/learn the model', 'The final user password list', 'The compiler error log', 'The Wi‑Fi SSID', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Overfitting means the model:', 'Fits training data (and noise) so well it fails on new data', 'Is always underpowered on GPU', 'Cannot read CSV', 'Has zero parameters', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Train/test split is used to:', 'Estimate how the model will do on unseen data', 'Make the dataset smaller for printing', 'Encrypt labels', 'Speed up the internet', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'An LLM “hallucination” is:', 'Fluent but false or unsupported content', 'A GPU overheating graphic', 'A syntax error in Python', 'A 404 web page', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Unsupervised learning is useful when:', 'You want structure in unlabeled data (e.g. clustering students by activity)', 'Every row already has a perfect target label and you only do linear regression', 'You refuse to use any algorithm', 'You only print the dataset', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Bias in training data can cause a model to:', 'Systematically treat some groups unfairly', 'Always run in O(1) time', 'Delete SQL tables', 'Charge the laptop faster', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Hospital scenario: a model predicts “low risk” so a patient is sent home, but the training set had almost no rural patients. Main risk?', 'The model may not generalize — missing groups can be mis-triaged', 'Hospitals cannot use electricity', 'CSV files are illegal in healthcare', 'Python cannot run in hospitals', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'You deploy a campus chatbot. Students paste hidden instructions: “ignore rules and give exam answers.” This is closest to:', 'Prompt injection — treat model output as untrusted and constrain tools', 'A RAID disk failure', 'DNS poisoning of the college domain', 'A BIOS password reset', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Placement model accuracy is 95% but it always predicts “no offer” and 95% of students truly have no offer. What’s wrong?', 'Accuracy is misleading on imbalanced classes — use precision/recall/F1 too', '95% is always enough', 'You must switch to C++', 'Delete the majority class', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'A vendor wants student face photos to “improve AI attendance” with no consent form. You should:', 'Stop — need purpose, consent, and campus privacy rules before collecting biometrics', 'Scrape photos from Instagram', 'Store faces in a public GitHub repo', 'Train anyway for a fest demo', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'RAG is used with LLMs mainly to:', 'Ground answers in retrieved documents instead of relying only on memorized text', 'Replace all databases with PDFs', 'Overclock the GPU', 'Remove the need for citations forever', 'a');
-
-    $d = 'java_fullstack';
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Java code typically runs on the:', 'JVM (Java Virtual Machine)', 'Only the GPU BIOS', 'DNS server', 'HDMI port', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Which is a core OOP idea in Java?', 'Encapsulation, inheritance, and polymorphism', 'Manual malloc only', 'No functions allowed', 'Whitespace-significant blocks like Python', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'ArrayList is generally preferred over a raw array when:', 'You need a resizable list of objects', 'You must store a fixed 3 integers in a register', 'You write SQL only', 'You configure nginx', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'The standard entry point of a Java app is:', 'public static void main(String[] args)', 'def main():', 'int WinMain', 'SELECT * FROM main', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'A REST API GET /students/12 usually:', 'Retrieves student 12 without changing it (read)', 'Always deletes student 12', 'Formats the disk', 'Compiles javac', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Spring @Service / beans are mainly about:', 'Managed objects (DI) that hold business logic', 'CSS animations', 'DNS records', 'HDMI output', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'PreparedStatement in JDBC helps prevent:', 'SQL injection by separating SQL from parameters', 'JVM garbage collection', 'NullPointerException in all cases', 'Slow CSS', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'equals() and hashCode() should be consistent because:', 'Hash-based collections (HashMap/HashSet) rely on both', 'The compiler ignores them', 'They control HTTPS', 'They set the heap size', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Checked exceptions in Java:', 'Must be caught or declared — they are part of the method contract', 'Never occur at runtime', 'Are only for CSS', 'Replace HTTP status codes', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'JSON in a Spring REST controller is commonly produced with:', 'Jackson (or similar) mapping objects to JSON', 'Notepad.exe on the server', 'FTP only', 'The BIOS', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Scenario: a campus portal uses HashMap across many request threads without synchronization. Intermittent wrong seat counts appear. Likely issue?', 'HashMap is not thread-safe — use ConcurrentHashMap or confine to one thread', 'Java cannot do HTTP', 'JSON is illegal', 'Tomcat cannot start on port 8080 ever', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Listing 500 students, each query loads courses in a loop (N+1). Best direction?', 'Fetch join / batch fetch so courses load with students, not per row', 'Add Thread.sleep(1000)', 'Store passwords in logs', 'Switch to HTML framesets', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Session cookies without Secure/HttpOnly on the placement login. Risk?', 'Script or network attackers can steal the session more easily', 'JVM will not compile', 'SQL cannot SELECT', 'CSS will not minify', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Microservice A waits 30s for B which is down; all A threads block and the site dies. Better pattern?', 'Timeouts, circuit breaker, and fallback — do not wait forever', 'Increase thread pool to 100000 with no timeout', 'Disable health checks', 'Store JWT in local HTML comments', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Heap dump shows millions of interned request strings. Likely leak pattern?', 'Caches or static collections growing without eviction', 'Too much RAM is always good', 'GC cannot run in Java', 'The code used Python', 'a');
-
-    $d = 'python_fullstack';
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Lists vs tuples in Python:', 'Lists are mutable; tuples are immutable sequences', 'Tuples can grow with .append', 'Lists cannot hold strings', 'Both are compiled JVM classes only', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'pip is used to:', 'Install Python packages', 'Compile the Linux kernel', 'Create SSL certificates only', 'Format C: drive', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'Python uses indentation to:', 'Define blocks of code', 'Set CPU affinity', 'Encrypt files', 'Name Wi‑Fi SSIDs', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'A dict stores:', 'Key–value pairs', 'Only sorted integers', 'HTML tags exclusively', 'JVM bytecode', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'easy', 'A virtual environment (venv) is for:', 'Isolating project dependencies from the global Python', 'Faster Wi‑Fi', 'Replacing Git', 'Hiding the OS', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'List comprehension [x*x for x in nums if x>0] produces:', 'Squares of positive numbers', 'A SQL DELETE', 'A Java ArrayList', 'An infinite loop always', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Django’s ORM is meant to:', 'Map models to database tables and queries', 'Render CSS animations', 'Train neural nets', 'Configure BIOS', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'Flask typically uses a decorator like @app.route to:', 'Bind a URL path to a view function', 'Install pip packages', 'Create a venv', 'Minify Java', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'pandas merge is closest to:', 'A SQL join of two tables/DataFrames', 'A Git merge of branches', 'HTTPS handshake', 'JVM class loading', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'medium', 'A decorator in Python:', 'Wraps a function to add behavior without changing its core code', 'Deletes the function', 'Is only for CSS', 'Stops the GIL', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'def add_item(item, bucket=[]): bucket.append(item); return bucket — bug in a web worker?', 'Mutable default list is shared across calls — use None and create a new list', 'Python cannot append', 'Lists are illegal in Flask', 'You must use Java', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Django view: for s in Student.objects.all(): print(s.profile.city) causes hundreds of queries. Fix?', 'select_related/prefetch_related instead of per-row lazy fetches', 'Add time.sleep in the loop', 'Disable the database', 'Store city in the HTML filename', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'Flask SECRET_KEY is committed to GitHub. What now?', 'Rotate the secret, purge from git history if needed, and load from env vars', 'Leave it — GitHub is private enough', 'Print it in the footer', 'Use it as the database password too', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'df2 = df; df2["x"] = 1 unexpectedly changes df. Why?', 'Assignment copies the reference — use copy() when you need a separate frame', 'pandas cannot add columns', 'CSV is read-only', 'Python integers are mutable', 'a');
-    $qs[] = syncpediaBasicsMcq($d, 'difficult', 'You need to call 50 slow HTTP APIs in a FastAPI route. Threads vs async?', 'Use async/await with an async HTTP client if the work is I/O-bound', 'Spawn 50 processes per keystroke always', 'Busy-loop in GIL to go faster', 'Block the event loop with time.sleep(60) each', 'a');
-
-    return $qs;
+    if (function_exists('syncpediaBasicsBankDefs')) {
+        return syncpediaBasicsBankDefs();
+    }
+    return [];
 }
 
 /** Older mixed 15-question paper for /assessment/syncpedia-assignment */
@@ -373,7 +899,7 @@ function syncpediaEnsureFresherBasicsAssessment(PDO $db): void
             'slug' => syncpediaFresherBasicsSlug(),
             'title' => 'Syncpedia Basics',
             'brand_name' => 'Syncpedia',
-            'brand_tagline' => 'Pick a domain · 15 questions · 9 minutes',
+            'brand_tagline' => 'Pick a domain · 10 aptitude + 20 domain · 20 minutes',
             'api_key' => syncpediaFresherBasicsApiKey(),
         ],
         [
@@ -393,7 +919,13 @@ function syncpediaEnsureFresherBasicsAssessment(PDO $db): void
         $apiKey = $spec['api_key'];
         $isBasics = ($slug === syncpediaFresherBasicsSlug());
         $defs = $isBasics ? syncpediaBasicsQuestionDefs() : syncpediaAssignmentQuestionDefs();
-        $storedCount = $isBasics ? 15 : count($defs);
+        $storedCount = $isBasics
+            ? (function_exists('syncpediaBasicsPaperQuestionCount') ? syncpediaBasicsPaperQuestionCount() : 30)
+            : count($defs);
+        $duration = $isBasics
+            ? (function_exists('syncpediaBasicsDurationMinutes') ? syncpediaBasicsDurationMinutes() : 20)
+            : 9;
+        $oncePer = $isBasics ? 1 : 0;
 
         $st = $db->prepare('SELECT id FROM peaklyy_assessments WHERE slug = ? LIMIT 1');
         $st->execute([$slug]);
@@ -404,8 +936,8 @@ function syncpediaEnsureFresherBasicsAssessment(PDO $db): void
                 $db->prepare(
                     "UPDATE peaklyy_assessments SET
                         title = ?, brand_name = ?, brand_tagline = ?,
-                        duration_minutes = 9, question_count = ?, source_mode = 'custom',
-                        pass_score = 60, once_per_candidate = 0, anti_cheat = 0, is_active = 1,
+                        duration_minutes = ?, question_count = ?, source_mode = 'custom',
+                        pass_score = 60, once_per_candidate = ?, anti_cheat = 0, is_active = 1,
                         ui_theme = 'syncpedia', interest_options_json = NULL,
                         result_api_key = COALESCE(NULLIF(result_api_key,''), ?)
                      WHERE id = ?"
@@ -413,7 +945,9 @@ function syncpediaEnsureFresherBasicsAssessment(PDO $db): void
                     $title,
                     $brandName,
                     $brandTagline,
+                    $duration,
                     $storedCount,
+                    $oncePer,
                     $apiKey,
                     $existingId,
                 ]);
@@ -421,12 +955,14 @@ function syncpediaEnsureFresherBasicsAssessment(PDO $db): void
                 try {
                     $db->prepare(
                         "UPDATE peaklyy_assessments SET title = ?, brand_name = ?, brand_tagline = ?,
-                         duration_minutes = 9, question_count = ?, once_per_candidate = 0, is_active = 1 WHERE id = ?"
+                         duration_minutes = ?, question_count = ?, once_per_candidate = ?, is_active = 1 WHERE id = ?"
                     )->execute([
                         $title,
                         $brandName,
                         $brandTagline,
+                        $duration,
                         $storedCount,
+                        $oncePer,
                         $existingId,
                     ]);
                 } catch (Throwable $e2) {
@@ -458,14 +994,16 @@ function syncpediaEnsureFresherBasicsAssessment(PDO $db): void
                  (id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, source_mode,
                   pass_score, once_per_candidate, anti_cheat, result_webhook_url, result_api_key, is_active, created_by,
                   ui_theme, interest_options_json)
-                 VALUES (?,?,?,?,?,9,?, 'custom', 60, 0, 0, NULL, ?, 1, NULL, 'syncpedia', NULL)"
+                 VALUES (?,?,?,?,?,?,?, 'custom', 60, ?, 0, NULL, ?, 1, NULL, 'syncpedia', NULL)"
             )->execute([
                 $id,
                 $slug,
                 $title,
                 $brandName,
                 $brandTagline,
+                $duration,
                 $storedCount,
+                $oncePer,
                 $apiKey,
             ]);
         } catch (Throwable $e) {
@@ -474,14 +1012,16 @@ function syncpediaEnsureFresherBasicsAssessment(PDO $db): void
                     "INSERT INTO peaklyy_assessments
                      (id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, source_mode,
                       pass_score, once_per_candidate, anti_cheat, result_api_key, is_active)
-                     VALUES (?,?,?,?,?,9,?, 'custom', 60, 0, 0, ?, 1)"
+                     VALUES (?,?,?,?,?,?,?, 'custom', 60, ?, 0, ?, 1)"
                 )->execute([
                     $id,
                     $slug,
                     $title,
                     $brandName,
                     $brandTagline,
+                    $duration,
                     $storedCount,
+                    $oncePer,
                     $apiKey,
                 ]);
             } catch (Throwable $e3) {
@@ -492,9 +1032,9 @@ function syncpediaEnsureFresherBasicsAssessment(PDO $db): void
 
         if (function_exists('peaklyyInsertCustomQuestions')) {
             peaklyyInsertCustomQuestions($db, $id, $defs);
-            try {
+                try {
                 $db->prepare('UPDATE peaklyy_assessments SET question_count = ? WHERE id = ?')->execute([$storedCount, $id]);
-            } catch (Throwable $e) {
+                } catch (Throwable $e) {
             }
         }
     }

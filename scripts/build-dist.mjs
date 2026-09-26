@@ -121,6 +121,8 @@ for (const sub of [
   "storage/tmp",
   "storage/payslips",
   "storage/offer_letters",
+  "storage/video_intros",
+  "storage/video_intro_tmp",
 ]) {
   ensureDir(path.join(dist, sub));
   ensureDir(path.join(root, "public", sub));

@@ -15,48 +15,62 @@ function certEnsureTables(PDO $db): void {
     static $done = false;
     if ($done) return;
 
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS certificate_issue_artifacts (
-          id CHAR(36) NOT NULL,
-          recipient_id CHAR(36) DEFAULT NULL,
-          template_id CHAR(36) DEFAULT NULL,
-          sync_id VARCHAR(80) NOT NULL,
-          student_name VARCHAR(255) DEFAULT NULL,
-          student_email VARCHAR(255) DEFAULT NULL,
-          course_name VARCHAR(255) DEFAULT NULL,
-          issue_date DATE DEFAULT NULL,
-          verify_token TEXT DEFAULT NULL,
-          pdf_path TEXT DEFAULT NULL,
-          gcs_object TEXT DEFAULT NULL,
-          org_id CHAR(36) DEFAULT NULL,
-          issued_by CHAR(36) DEFAULT NULL,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          PRIMARY KEY (id),
-          UNIQUE (sync_id)
-        )
-    ");
+    try {
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS certificate_issue_artifacts (
+              id CHAR(36) NOT NULL,
+              recipient_id CHAR(36) DEFAULT NULL,
+              template_id CHAR(36) DEFAULT NULL,
+              sync_id VARCHAR(80) NOT NULL,
+              student_name VARCHAR(255) DEFAULT NULL,
+              student_email VARCHAR(255) DEFAULT NULL,
+              course_name VARCHAR(255) DEFAULT NULL,
+              issue_date DATE DEFAULT NULL,
+              verify_token TEXT DEFAULT NULL,
+              pdf_path TEXT DEFAULT NULL,
+              gcs_object TEXT DEFAULT NULL,
+              org_id CHAR(36) DEFAULT NULL,
+              issued_by CHAR(36) DEFAULT NULL,
+              created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (id),
+              UNIQUE (sync_id)
+            )
+        ");
+    } catch (Throwable $e) {
+        error_log('[certificates] artifacts table: ' . $e->getMessage());
+    }
 
-    $db->exec("
-        CREATE TABLE IF NOT EXISTS certificate_email_logs (
-          id CHAR(36) NOT NULL,
-          certificate_id VARCHAR(80) NOT NULL,
-          to_email VARCHAR(255) NOT NULL,
-          cc_email TEXT DEFAULT NULL,
-          bcc_email TEXT DEFAULT NULL,
-          subject TEXT NOT NULL,
-          body TEXT NOT NULL,
-          attachment_url TEXT DEFAULT NULL,
-          message_id VARCHAR(120) DEFAULT NULL,
-          sent_at TIMESTAMP DEFAULT NULL,
-          org_id CHAR(36) DEFAULT NULL,
-          sent_by CHAR(36) DEFAULT NULL,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          PRIMARY KEY (id)
-        )
-    ");
-    $db->exec('CREATE INDEX IF NOT EXISTS idx_cert_email_logs_certificate ON certificate_email_logs (certificate_id)');
-    $db->exec('CREATE INDEX IF NOT EXISTS idx_cert_email_logs_org ON certificate_email_logs (org_id)');
-    syncpediaDocumentEnsureColumn($db, 'certificate_issue_artifacts', 'gcs_object', 'TEXT DEFAULT NULL');
+    try {
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS certificate_email_logs (
+              id CHAR(36) NOT NULL,
+              certificate_id VARCHAR(80) NOT NULL,
+              to_email VARCHAR(255) NOT NULL,
+              cc_email TEXT DEFAULT NULL,
+              bcc_email TEXT DEFAULT NULL,
+              subject TEXT NOT NULL,
+              body TEXT NOT NULL,
+              attachment_url TEXT DEFAULT NULL,
+              message_id VARCHAR(120) DEFAULT NULL,
+              sent_at TIMESTAMP DEFAULT NULL,
+              org_id CHAR(36) DEFAULT NULL,
+              sent_by CHAR(36) DEFAULT NULL,
+              created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY (id)
+            )
+        ");
+    } catch (Throwable $e) {
+        error_log('[certificates] email_logs table: ' . $e->getMessage());
+    }
+    if (function_exists('syncpediaEnsureIndex')) {
+        syncpediaEnsureIndex($db, 'idx_cert_email_logs_certificate', 'certificate_email_logs', 'certificate_id');
+        syncpediaEnsureIndex($db, 'idx_cert_email_logs_org', 'certificate_email_logs', 'org_id');
+    }
+    try {
+        syncpediaDocumentEnsureColumn($db, 'certificate_issue_artifacts', 'gcs_object', 'TEXT DEFAULT NULL');
+    } catch (Throwable $e) {
+        error_log('[certificates] gcs_object column: ' . $e->getMessage());
+    }
 
     $done = true;
 }
@@ -70,9 +84,13 @@ function certDecodePdfBase64(string $raw): ?string {
     return (!empty($decoded['ok']) && isset($decoded['bytes'])) ? (string) $decoded['bytes'] : null;
 }
 
-certEnsureTables($db);
-certEnsureTypeColumns($db);
-certEnsureOrgPrefixColumn($db);
+try {
+    certEnsureTables($db);
+    certEnsureTypeColumns($db);
+    certEnsureOrgPrefixColumn($db);
+} catch (Throwable $e) {
+    error_log('[certificates] schema bootstrap: ' . $e->getMessage());
+}
 
 if ($method === 'GET' && $action === 'email_logs') {
     requireRole($tokenData, ['admin', 'super_admin', 'manager', 'org']);

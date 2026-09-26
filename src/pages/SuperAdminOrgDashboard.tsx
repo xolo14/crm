@@ -1,10 +1,12 @@
+import { lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
-import AdminDashboard from './AdminDashboard';
-import AbroadConsultantDashboard from './AbroadConsultantDashboard';
-import ITServicesDashboard from './ITServicesDashboard';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+
+const AdminDashboard = lazy(() => import('./AdminDashboard'));
+const AbroadConsultantDashboard = lazy(() => import('./AbroadConsultantDashboard'));
+const ITServicesDashboard = lazy(() => import('./ITServicesDashboard'));
 
 export default function SuperAdminOrgDashboard() {
   const { organization, switchOrg } = useAuth();
@@ -30,17 +32,19 @@ export default function SuperAdminOrgDashboard() {
   };
 
   const industry = organization?.industry;
-  const dashboard =
-    industry === 'abroad_consultant' ? <AbroadConsultantDashboard /> :
-    industry === 'it_services' ? <ITServicesDashboard /> :
-    <AdminDashboard />;
+  const Dashboard =
+    industry === 'abroad_consultant' ? AbroadConsultantDashboard :
+    industry === 'it_services' ? ITServicesDashboard :
+    AdminDashboard;
 
   return (
     <div className="space-y-3">
       <div className="flex justify-end">
         <Button variant="outline" size="sm" onClick={handleExitOrgView}>Exit Organization View</Button>
       </div>
-      {dashboard}
+      <Suspense fallback={<div className="py-8 text-center text-sm text-muted-foreground">Loading dashboard…</div>}>
+        <Dashboard />
+      </Suspense>
     </div>
   );
 }

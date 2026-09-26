@@ -126,6 +126,13 @@ function docFormsEnsureSchema(PDO $db): void {
     } catch (Throwable $e) {
         /* ignore */
     }
+    try {
+        if (!syncpediaColumnExists($db, 'doc_issued_documents', 'gcs_object')) {
+            $db->exec('ALTER TABLE doc_issued_documents ADD COLUMN gcs_object TEXT DEFAULT NULL');
+        }
+    } catch (Throwable $e) {
+        /* ignore */
+    }
     $done = true;
 }
 
@@ -326,26 +333,79 @@ if ($method === 'GET') {
         $st = $db->prepare($sql);
         $st->execute($paramsDf);
         $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $ids = [];
+        foreach ($rows as $r) {
+            $fid = trim((string) ($r['id'] ?? ''));
+            if ($fid !== '') {
+                $ids[] = $fid;
+            }
+        }
+        $counts = [];
+        $linksByForm = [];
+        $accessByForm = [];
+        if ($ids !== []) {
+            $ph = implode(',', array_fill(0, count($ids), '?'));
+            $cnt = $db->prepare("SELECT form_id, COUNT(*) AS c FROM doc_form_submissions WHERE form_id IN ($ph) GROUP BY form_id");
+            $cnt->execute($ids);
+            while ($cr = $cnt->fetch(PDO::FETCH_ASSOC)) {
+                if (is_array($cr)) {
+                    $counts[(string) ($cr['form_id'] ?? '')] = (int) ($cr['c'] ?? 0);
+                }
+            }
+            $link = $db->prepare("SELECT * FROM doc_form_template_links WHERE form_id IN ($ph)");
+            $link->execute($ids);
+            while ($lr = $link->fetch(PDO::FETCH_ASSOC)) {
+                if (!is_array($lr)) {
+                    continue;
+                }
+                $lfid = (string) ($lr['form_id'] ?? '');
+                if ($lfid === '' || isset($linksByForm[$lfid])) {
+                    continue;
+                }
+                $lr['column_maps_json'] = docFormsDecodeJson($lr['column_maps_json'] ?? null);
+                $linksByForm[$lfid] = $lr;
+            }
+            $userIdDf = trim((string) ($tokenData['user_id'] ?? ''));
+            $isAdminDf = docFormsIsOrgAdmin($tokenData);
+            $manageIds = [];
+            foreach ($rows as $r) {
+                $fid = trim((string) ($r['id'] ?? ''));
+                if ($fid === '') {
+                    continue;
+                }
+                if ($isAdminDf || ($userIdDf !== '' && trim((string) ($r['created_by'] ?? '')) === $userIdDf)) {
+                    $manageIds[] = $fid;
+                }
+            }
+            if ($manageIds !== []) {
+                $phAcc = implode(',', array_fill(0, count($manageIds), '?'));
+                $acc = $db->prepare("SELECT * FROM doc_form_access WHERE form_id IN ($phAcc) ORDER BY created_at ASC");
+                $acc->execute($manageIds);
+                while ($ar = $acc->fetch(PDO::FETCH_ASSOC)) {
+                    if (!is_array($ar)) {
+                        continue;
+                    }
+                    $afid = (string) ($ar['form_id'] ?? '');
+                    if ($afid === '') {
+                        continue;
+                    }
+                    if (!isset($accessByForm[$afid])) {
+                        $accessByForm[$afid] = [];
+                    }
+                    $accessByForm[$afid][] = $ar;
+                }
+            }
+        }
         $out = [];
+        $userIdDf = trim((string) ($tokenData['user_id'] ?? ''));
+        $isAdminDf = docFormsIsOrgAdmin($tokenData);
         foreach ($rows as $r) {
             $form = docFormsNormalizeFormRow($r);
-            $cnt = $db->prepare('SELECT COUNT(*) FROM doc_form_submissions WHERE form_id = ?');
-            $cnt->execute([(string) $r['id']]);
-            $form['submission_count'] = (int) $cnt->fetchColumn();
-            $link = $db->prepare('SELECT * FROM doc_form_template_links WHERE form_id = ? LIMIT 1');
-            $link->execute([(string) $r['id']]);
-            $linkRow = $link->fetch(PDO::FETCH_ASSOC);
-            if ($linkRow) {
-                $linkRow['column_maps_json'] = docFormsDecodeJson($linkRow['column_maps_json'] ?? null);
-                $form['template_link'] = $linkRow;
-            } else {
-                $form['template_link'] = null;
-            }
-            $formId = (string) $r['id'];
-            if (docFormsUserCanManageForm($db, $tokenData, $formId)) {
-                $acc = $db->prepare('SELECT * FROM doc_form_access WHERE form_id = ? ORDER BY created_at ASC');
-                $acc->execute([$formId]);
-                $form['access'] = $acc->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $formId = (string) ($r['id'] ?? '');
+            $form['submission_count'] = $counts[$formId] ?? 0;
+            $form['template_link'] = $linksByForm[$formId] ?? null;
+            if ($isAdminDf || ($userIdDf !== '' && trim((string) ($r['created_by'] ?? '')) === $userIdDf)) {
+                $form['access'] = $accessByForm[$formId] ?? [];
             }
             $out[] = $form;
         }
@@ -872,6 +932,89 @@ if ($method === 'PUT') {
 
 // ---------- DELETE ----------
 if ($method === 'DELETE') {
+    if ($action === 'issued') {
+        requireRole($tokenData, ['super_admin', 'admin', 'org']);
+        $id = trim((string) ($_GET['id'] ?? ''));
+        if ($id === '') {
+            respond(['error' => 'id required'], 400);
+        }
+        if (is_file(__DIR__ . '/document_storage.php')) {
+            require_once __DIR__ . '/document_storage.php';
+        }
+        if (function_exists('syncpediaDocumentEnsureColumn')) {
+            syncpediaDocumentEnsureColumn($db, 'offer_letters_sent', 'pdf_path', 'TEXT DEFAULT NULL');
+            syncpediaDocumentEnsureColumn($db, 'offer_letters_sent', 'gcs_object', 'TEXT DEFAULT NULL');
+            syncpediaDocumentEnsureColumn($db, 'doc_issued_documents', 'gcs_object', 'TEXT DEFAULT NULL');
+        }
+        $orgId = docFormsOrgId($tokenData);
+        $params = [$id];
+        $sql = 'SELECT * FROM doc_issued_documents WHERE id = ?';
+        if ($orgId !== null) {
+            $sql .= ' AND org_id = ?';
+            $params[] = $orgId;
+        }
+        $sql .= ' LIMIT 1';
+        $st = $db->prepare($sql);
+        $st->execute($params);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            respond(['error' => 'Issued document not found'], 404);
+        }
+
+        $meta = docFormsDecodeJson($row['meta_json'] ?? null);
+        $gcs = trim((string) ($row['gcs_object'] ?? ''));
+        if ($gcs === '' && isset($meta['gcs_object'])) {
+            $gcs = trim((string) $meta['gcs_object']);
+        }
+        $pdfPath = trim((string) ($row['pdf_path'] ?? ''));
+        if (function_exists('syncpediaDocumentStorageDeleteLocalAndGcs')) {
+            syncpediaDocumentStorageDeleteLocalAndGcs($pdfPath !== '' ? $pdfPath : null, $gcs !== '' ? $gcs : null);
+        }
+
+        $sentId = function_exists('syncpediaOfferLetterSentIdFromPdfUrl')
+            ? syncpediaOfferLetterSentIdFromPdfUrl((string) ($row['pdf_url'] ?? ''))
+            : '';
+        if ($sentId === '' && isset($meta['sent_id'])) {
+            $sentId = trim((string) $meta['sent_id']);
+        }
+
+        $certId = function_exists('syncpediaCertificateIdFromPdfUrl')
+            ? syncpediaCertificateIdFromPdfUrl((string) ($row['pdf_url'] ?? ''))
+            : '';
+        if ($certId === '') {
+            $certId = trim((string) ($meta['cert_id'] ?? $meta['certificate_id'] ?? $meta['sync_id'] ?? ''));
+        }
+
+        $db->prepare('DELETE FROM doc_issued_documents WHERE id = ?')->execute([$id]);
+
+        if ($sentId !== '') {
+            $org = orgFilter($tokenData, 'ols');
+            $sparams = array_merge([$sentId], $org['params']);
+            $sst = $db->prepare("SELECT ols.id, ols.pdf_path, ols.gcs_object FROM offer_letters_sent ols WHERE ols.id = ? AND {$org['where']} LIMIT 1");
+            $sst->execute($sparams);
+            $sent = $sst->fetch(PDO::FETCH_ASSOC);
+            if ($sent) {
+                if (function_exists('syncpediaDocumentStorageDeleteLocalAndGcs')) {
+                    syncpediaDocumentStorageDeleteLocalAndGcs(
+                        isset($sent['pdf_path']) ? (string) $sent['pdf_path'] : null,
+                        isset($sent['gcs_object']) ? (string) $sent['gcs_object'] : null,
+                    );
+                }
+                $safe = preg_replace('/[^a-f0-9\-]/i', '', $sentId);
+                if ($safe !== '' && function_exists('syncpediaDocumentStorageDeleteLocal')) {
+                    syncpediaDocumentStorageDeleteLocal('storage/offer_letters/' . $safe . '.pdf');
+                }
+                $db->prepare("DELETE FROM offer_letters_sent ols WHERE ols.id = ? AND {$org['where']}")->execute($sparams);
+            }
+        }
+
+        if ($certId !== '' && function_exists('syncpediaPurgeIssuedCertificate')) {
+            syncpediaPurgeIssuedCertificate($db, $tokenData, $certId);
+        }
+
+        respond(['success' => true, 'message' => 'Deleted successfully']);
+    }
+
     requireRole($tokenData, docFormsWorkflowRoles());
     $id = trim((string) ($_GET['id'] ?? ''));
     if ($action === 'submission') {

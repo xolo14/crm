@@ -4,9 +4,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Outlet } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/hooks/useAuth";
-import AppLayout from "@/components/AppLayout";
 import RouteSeo from "@/components/seo/RouteSeo";
-import { ReactNode, Suspense } from "react";
+import { ReactNode, Suspense, lazy } from "react";
 import DelayedPageLoader from "@/components/DelayedPageLoader";
 import { ThemeProvider } from "next-themes";
 import LoginPortal from "@/pages/LoginPortal";
@@ -14,7 +13,7 @@ import Auth from "@/pages/Auth";
 import { getPortalLoginRedirect, AUTH_PORTAL } from "@/lib/portalAuth";
 import { normalizeAppRole } from "@/lib/roleUtils";
 import HRLayout from "@/layouts/HRLayout";
-import { canAccessFresherSalary, canAccessOfferLetters, canAccessFormManagement, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage, canAccessMarketing } from "@/lib/orgAccess";
+import { canAccessFresherSalary, canAccessOfferLetters, canAccessFormManagement, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage, canAccessMarketing, canAccessVideoIntros } from "@/lib/orgAccess";
 import { isPathAllowedByOrgFeatures } from "@/lib/orgFeatures";
 import { managerFeatureKeyForPath, managerHasPageAccess, operationalManagerHasPageAccess, firstAllowedOperationalManagerPath } from "@/lib/managerPageAccess";
 import { firstAllowedHrPath, hrFeatureKeyForPath, hrHasPageAccess } from "@/lib/hrPageAccess";
@@ -42,6 +41,7 @@ import {
   PublicDocFormPage,
   FresherSalaryTrackerPage,
   Holidays,
+  CouponsPage,
   HRAssignedLeads,
   HRCommunicationsPage,
   HRDashboard,
@@ -77,6 +77,9 @@ import {
   Timetables,
   TemplateLibraryPage,
   Trash,
+  VideoIntrosPage,
+  VideoIntroDetailPage,
+  PublicVideoIntroPage,
   WhatsAppAnalytics,
   WhatsAppPortal,
   PrivacyPolicyPage,
@@ -86,7 +89,16 @@ import {
   PublicAssessmentPage,
 } from "@/routes/lazyPages";
 
-const queryClient = new QueryClient();
+const AppLayout = lazy(() => import("@/components/AppLayout"));
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 
 function normalizePlatformRole(user: { role?: string } | null): string | null {
   if (!user) return null;
@@ -113,13 +125,15 @@ function MainLayoutRoute() {
     return <Navigate to={firstAllowedHrPath(user.page_access)} replace />;
   }
   return (
-    <AppLayout>
-      <OrgFeatureRoute>
-        <Suspense fallback={<DelayedPageLoader label="Loading…" />}>
-          <Outlet />
-        </Suspense>
-      </OrgFeatureRoute>
-    </AppLayout>
+    <Suspense fallback={<AuthLoading />}>
+      <AppLayout>
+        <OrgFeatureRoute>
+          <Suspense fallback={<DelayedPageLoader label="Loading…" />}>
+            <Outlet />
+          </Suspense>
+        </OrgFeatureRoute>
+      </AppLayout>
+    </Suspense>
   );
 }
 
@@ -136,13 +150,15 @@ function RootHome() {
     return <Navigate to={firstAllowedHrPath(user.page_access)} replace />;
   }
   return (
-    <AppLayout>
-      <OrgFeatureRoute>
-        <Suspense fallback={<DelayedPageLoader label="Loading…" />}>
-          <Dashboard />
-        </Suspense>
-      </OrgFeatureRoute>
-    </AppLayout>
+    <Suspense fallback={<AuthLoading />}>
+      <AppLayout>
+        <OrgFeatureRoute>
+          <Suspense fallback={<DelayedPageLoader label="Loading…" />}>
+            <Dashboard />
+          </Suspense>
+        </OrgFeatureRoute>
+      </AppLayout>
+    </Suspense>
   );
 }
 
@@ -150,6 +166,13 @@ function OfferLettersGate({ children }: { children: ReactNode }) {
   const { user, organization } = useAuth();
   const role = normalizePlatformRole(user);
   if (!canAccessOfferLetters(role, organization, user?.page_access)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+function VideoIntrosGate({ children }: { children: ReactNode }) {
+  const { user, organization } = useAuth();
+  const role = normalizePlatformRole(user);
+  if (!canAccessVideoIntros(role, organization, user?.page_access)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
@@ -418,6 +441,7 @@ const App = () => (
           <Routes>
             <Route path="/apply" element={<Apply />} />
             <Route path="/doc-form/:slug" element={<PublicDocFormPage />} />
+            <Route path="/intro/:token" element={<PublicVideoIntroPage />} />
             <Route path="/assessment/syncpedia-fresher-basics" element={<SyncpediaFresherAssessmentPage />} />
             <Route path="/assessment/:slug" element={<PublicAssessmentPage />} />
             <Route path="/privacy" element={<PrivacyPolicyPage />} />
@@ -497,6 +521,14 @@ const App = () => (
               <Route path="/marketing/meta-ads" element={<MarketingGate><MarketingMetaAdsPage /></MarketingGate>} />
               <Route path="/holidays" element={<Holidays />} />
               <Route
+                path="/coupons"
+                element={
+                  <RoleGate allow={["super_admin", "org", "manager", "sales_representative", "marketing", "operational_manager"]}>
+                    <CouponsPage />
+                  </RoleGate>
+                }
+              />
+              <Route
                 path="/assessments"
                 element={
                   <RoleGate allow={["super_admin", "org", "manager", "sales_representative", "marketing", "operational_manager"]}>
@@ -507,6 +539,8 @@ const App = () => (
               <Route path="/assignments" element={<Navigate to="/assessments" replace />} />
               <Route path="/trash" element={<TrashGate><Trash /></TrashGate>} />
               <Route path="/offer-letters" element={<OfferLettersGate><OfferLetters /></OfferLettersGate>} />
+              <Route path="/video-intros" element={<VideoIntrosGate><VideoIntrosPage /></VideoIntrosGate>} />
+              <Route path="/video-intros/:id" element={<VideoIntrosGate><VideoIntroDetailPage /></VideoIntrosGate>} />
               <Route path="/certificates" element={<CertificatesGate><CertificatesPage /></CertificatesGate>} />
               <Route path="/payslip" element={<PayslipGate><PayslipPage /></PayslipGate>} />
               <Route path="/form-management" element={<FormManagementGate><FormsManagerPage /></FormManagementGate>} />
@@ -526,6 +560,7 @@ const App = () => (
               <Route path="notifications" element={<HRPageGate><HRNotifications /></HRPageGate>} />
               <Route path="communications" element={<HRPageGate><HRCommunicationsPage /></HRPageGate>} />
               <Route path="holidays" element={<HRPageGate><HRHolidays /></HRPageGate>} />
+              <Route path="coupons" element={<HRPageGate><CouponsPage /></HRPageGate>} />
               <Route path="offer-letters" element={<HRPageGate><OfferLetters /></HRPageGate>} />
               <Route path="form-management" element={<HRPageGate><FormsManagerPage /></HRPageGate>} />
               <Route path="settings" element={<HRPageGate><SettingsPage /></HRPageGate>} />

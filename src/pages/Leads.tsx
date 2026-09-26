@@ -28,7 +28,7 @@ import { LeadEnrollDialog } from '@/components/leads/LeadEnrollDialog';
 import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails';
 import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
 import * as perms from '@/lib/permissions';
-import { isMarketingFamilyRole, isSalesRepRole } from '@/lib/roleUtils';
+import { isL2Role, isMarketingFamilyRole, isSalesRepRole } from '@/lib/roleUtils';
 import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import {
   downloadLeadImportTemplate,
@@ -171,7 +171,15 @@ export default function Leads() {
   const showSourceCards = useSourceCards && !statusChangedPeriod;
   /** Lead source-card folders (org-scoped). '' = All sources. */
   const [leadFolders, setLeadFolders] = useState<
-    Array<{ id: string; name: string; source_keys: string[]; card_count: number; org_id?: string; org_name?: string | null }>
+    Array<{
+      id: string;
+      name: string;
+      source_keys: string[];
+      card_count: number;
+      org_id?: string;
+      org_name?: string | null;
+      created_by?: string | null;
+    }>
   >([]);
   const [activeFolderId, setActiveFolderId] = useState<string>('');
   const [newFolderOpen, setNewFolderOpen] = useState(false);
@@ -211,6 +219,10 @@ export default function Leads() {
   const [formAssignmentsByFormId, setFormAssignmentsByFormId] = useState<
     Record<string, Array<{ member_id: string; full_name?: string | null }>>
   >({});
+  const formAssignmentsByFormIdRef = useRef(formAssignmentsByFormId);
+  formAssignmentsByFormIdRef.current = formAssignmentsByFormId;
+  const formAssignLoadingRef = useRef<Set<string>>(new Set());
+  const fetchLeadsGen = useRef(0);
   const [importOpen, setImportOpen] = useState(false);
   const [importOrgId, setImportOrgId] = useState('');
   const [importOrgs, setImportOrgs] = useState<{ id: string; name: string }[]>([]);
@@ -225,17 +237,20 @@ export default function Leads() {
   const hasDelete = perms.canDelete(role);
   const hasBulkDelete = perms.canBulkDelete(role);
   const hasImport = perms.canImport(role);
+  const leadUserId = String(user?.id || '').trim();
   const isManager =
     role === 'org' || role === 'super_admin' || role === 'manager';
-  /** Source-card folders: admin/org only — not visible to managers. */
-  const canManageLeadFolders =
-    role === 'org' || role === 'super_admin';
   const normalizedLeadRole = String(role || '')
     .trim()
     .toLowerCase()
     .replace(/^superadmin$/, 'super_admin')
     .replace(/^organisation$/, 'org');
   const isSuperAdmin = normalizedLeadRole === 'super_admin';
+  const isL2LeadRole = isL2Role(normalizedLeadRole);
+  /** Admin: grant form/assessment source card to L2. L2 does not get this popup. */
+  const canGrantCardAccess = normalizedLeadRole === 'org' || normalizedLeadRole === 'super_admin';
+  /** Source-card folders: admin/org + L2 (create / view granted folders). */
+  const canUseLeadFolders = canGrantCardAccess || isL2LeadRole;
   /** Leads export: super_admin / admin only (not manager / org / L1). */
   const canExportLeads = normalizedLeadRole === 'super_admin' || normalizedLeadRole === 'org';
   const [exportCardsOpen, setExportCardsOpen] = useState(false);
@@ -290,12 +305,19 @@ export default function Leads() {
   }, [isSuperAdmin, organization?.id]);
 
   const fetchLeads = useCallback(async () => {
+    const gen = ++fetchLeadsGen.current;
     setLoading(true);
     try {
       const data = await api.leads.list({
+        lite: !isFormLeadsPage,
         ...(statusChangedPeriod ? { status_changed: statusChangedPeriod } : {}),
         ...(isSuperAdmin && viewOrgId ? { org_id: viewOrgId } : {}),
+        ...(isFormLeadsPage ? { form_leads: true } : {}),
+        ...(isSalesRepMyLeadsPage && profile?.referral_code
+          ? { referred_by: String(profile.referral_code).trim() }
+          : {}),
       });
+      if (gen !== fetchLeadsGen.current) return;
       const allLeads = data.data || [];
 
       if (isFormLeadsPage) {
@@ -313,9 +335,10 @@ export default function Leads() {
         setLeads(allLeads);
       }
     } catch (err) {
+      if (gen !== fetchLeadsGen.current) return;
       console.error('Failed to load leads:', err);
     } finally {
-      setLoading(false);
+      if (gen === fetchLeadsGen.current) setLoading(false);
     }
   }, [
     statusChangedPeriod,
@@ -349,16 +372,20 @@ export default function Leads() {
       if (!needsAssignmentRoster || !sourceKey || !String(sourceKey).startsWith('form_')) return;
       const slug = String(sourceKey).slice('form_'.length);
       const form = leadForms.find((f) => String(f.slug || '').toLowerCase() === slug.toLowerCase());
-      if (!form?.id || formAssignmentsByFormId[form.id]) return;
+      if (!form?.id) return;
+      if (formAssignmentsByFormIdRef.current[form.id] || formAssignLoadingRef.current.has(form.id)) return;
+      formAssignLoadingRef.current.add(form.id);
       try {
         const a = await api.forms.assignments(form.id);
         const rows = (a?.data || []) as Array<{ member_id: string; full_name?: string | null }>;
         setFormAssignmentsByFormId((prev) => ({ ...prev, [form.id]: rows }));
       } catch {
         setFormAssignmentsByFormId((prev) => ({ ...prev, [form.id]: [] }));
+      } finally {
+        formAssignLoadingRef.current.delete(form.id);
       }
     },
-    [needsAssignmentRoster, leadForms, formAssignmentsByFormId],
+    [needsAssignmentRoster, leadForms],
   );
 
   const fetchAssignments = async () => {
@@ -382,7 +409,7 @@ export default function Leads() {
   };
 
   const fetchLeadFolders = useCallback(async () => {
-    if (!canManageLeadFolders) {
+    if (!canUseLeadFolders) {
       setLeadFolders([]);
       return;
     }
@@ -399,6 +426,7 @@ export default function Leads() {
             card_count?: number;
             org_id?: string;
             org_name?: string | null;
+            created_by?: string | null;
           }>;
         };
         folders?: Array<{
@@ -408,6 +436,7 @@ export default function Leads() {
           card_count?: number;
           org_id?: string;
           org_name?: string | null;
+          created_by?: string | null;
         }>;
       };
       const raw = res?.data?.folders ?? res?.folders ?? [];
@@ -418,6 +447,7 @@ export default function Leads() {
         card_count: Number(f.card_count ?? (f.source_keys?.length ?? 0)),
         org_id: f.org_id ? String(f.org_id) : undefined,
         org_name: f.org_name != null ? String(f.org_name) : null,
+        created_by: f.created_by ? String(f.created_by) : null,
       }));
       setLeadFolders(list);
       setActiveFolderId((prev) => (prev && !list.some((f) => f.id === prev) ? '' : prev));
@@ -430,10 +460,10 @@ export default function Leads() {
         description: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [canManageLeadFolders, isSuperAdmin, viewOrgId, toast]);
+  }, [canUseLeadFolders, isSuperAdmin, viewOrgId, toast]);
 
-  /** Folders shown in sidebar: admin = all returned (already org-locked). Superadmin = selected org, or all if none selected. */
-  const visibleLeadFolders = useMemo(() => {
+  /** Folders for the selected org (admin = all; Super Admin = selected org). */
+  const orgLeadFolders = useMemo(() => {
     if (!isSuperAdmin) return leadFolders;
     if (!viewOrgId) return leadFolders;
     const want = viewOrgId.trim().toLowerCase();
@@ -446,7 +476,7 @@ export default function Leads() {
   );
 
   const fetchCardManagerGrants = useCallback(async () => {
-    if (!canManageLeadFolders) {
+    if (!canGrantCardAccess) {
       setCardManagerGrants({});
       return;
     }
@@ -465,7 +495,7 @@ export default function Leads() {
       console.error('Failed to load card manager grants:', err);
       setCardManagerGrants({});
     }
-  }, [canManageLeadFolders, isSuperAdmin, viewOrgId, orgIdForCardAdmin]);
+  }, [canGrantCardAccess, isSuperAdmin, viewOrgId, orgIdForCardAdmin]);
 
   const openAccessToManager = async (sourceKey: string, label: string) => {
     if (isSuperAdmin && !viewOrgId) {
@@ -640,10 +670,10 @@ export default function Leads() {
     let cancelled = false;
 
     void (async () => {
-      if (canManageLeadFolders) {
+      if (canUseLeadFolders) {
         await fetchLeadFolders();
         if (cancelled) return;
-        if (!(isSuperAdmin && !viewOrgId)) {
+        if (canGrantCardAccess && !(isSuperAdmin && !viewOrgId)) {
           await fetchCardManagerGrants();
         }
       } else {
@@ -670,9 +700,11 @@ export default function Leads() {
 
     return () => {
       cancelled = true;
+      fetchLeadsGen.current += 1;
     };
   }, [
-    canManageLeadFolders,
+    canUseLeadFolders,
+    canGrantCardAccess,
     isSuperAdmin,
     viewOrgId,
     needsAssignmentRoster,
@@ -1356,6 +1388,18 @@ export default function Leads() {
     [sourceSummaries],
   );
 
+  /** Folders shown in sidebar. L2: own folders + folders that hold cards they can see. */
+  const visibleLeadFolders = useMemo(() => {
+    if (!isL2LeadRole) return orgLeadFolders;
+    const visibleKeys = new Set(sourceSummaries.map((s) => s.key));
+    const hasMetaCards = sourceSummaries.some((s) => !!(s.isMetaAd || isMetaAdSourceBucket(s.key)));
+    return orgLeadFolders.filter((f) => {
+      if (leadUserId && String(f.created_by || '').trim() === leadUserId) return true;
+      if (isMetaAdsFolderName(f.name)) return hasMetaCards;
+      return (f.source_keys || []).some((k) => visibleKeys.has(k));
+    });
+  }, [orgLeadFolders, isL2LeadRole, leadUserId, sourceSummaries]);
+
   const metaAdsFolderId = useMemo(
     () => visibleLeadFolders.find((f) => isMetaAdsFolderName(f.name))?.id ?? '',
     [visibleLeadFolders],
@@ -1363,7 +1407,7 @@ export default function Leads() {
 
   const sourceKeyToFolderId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const f of visibleLeadFolders) {
+    for (const f of orgLeadFolders) {
       for (const k of f.source_keys) map.set(k, f.id);
     }
     // Virtual: every Meta Ads card belongs in the Meta Ads folder.
@@ -1375,7 +1419,28 @@ export default function Leads() {
       }
     }
     return map;
-  }, [visibleLeadFolders, metaAdsFolderId, sourceSummaries]);
+  }, [orgLeadFolders, metaAdsFolderId, sourceSummaries]);
+
+  const canMoveSourceCard = useCallback(
+    (sourceKey: string, isMetaCard: boolean) => {
+      if (!canUseLeadFolders || isMetaCard) return false;
+      if (!isL2LeadRole) return true;
+      const fid = sourceKeyToFolderId.get(sourceKey);
+      if (!fid) return true;
+      const folder = orgLeadFolders.find((f) => f.id === fid);
+      if (!folder) return true;
+      if (isMetaAdsFolderName(folder.name)) return false;
+      return leadUserId !== '' && String(folder.created_by || '').trim() === leadUserId;
+    },
+    [canUseLeadFolders, isL2LeadRole, sourceKeyToFolderId, orgLeadFolders, leadUserId],
+  );
+
+  const moveTargetFolders = useMemo(() => {
+    if (!isL2LeadRole) return visibleLeadFolders;
+    return visibleLeadFolders.filter(
+      (f) => !isMetaAdsFolderName(f.name) && leadUserId !== '' && String(f.created_by || '').trim() === leadUserId,
+    );
+  }, [isL2LeadRole, visibleLeadFolders, leadUserId]);
 
   const visibleSourceSummaries = useMemo(() => {
     const isMetaCard = (s: (typeof sourceSummaries)[number]) =>
@@ -1383,7 +1448,7 @@ export default function Leads() {
 
     // All sources: Meta Ads cards live only in the Meta Ads folder (admins with folders).
     if (!activeFolderId) {
-      if (canManageLeadFolders && metaAdsFolderId) {
+      if (canUseLeadFolders && metaAdsFolderId) {
         return sourceSummaries.filter((s) => !isMetaCard(s));
       }
       return sourceSummaries;
@@ -1398,22 +1463,34 @@ export default function Leads() {
 
     const allow = new Set(folder.source_keys);
     return sourceSummaries.filter((s) => allow.has(s.key) && !isMetaCard(s));
-  }, [sourceSummaries, visibleLeadFolders, activeFolderId, canManageLeadFolders, metaAdsFolderId]);
+  }, [sourceSummaries, visibleLeadFolders, activeFolderId, canUseLeadFolders, metaAdsFolderId]);
 
   const folderDisplayCount = useCallback(
-    (folder: { id: string; name: string; card_count: number }) => {
+    (folder: { id: string; name: string; card_count: number; source_keys: string[] }) => {
       if (isMetaAdsFolderName(folder.name)) return metaAdSourceCount;
+      if (isL2LeadRole) {
+        const allow = new Set(folder.source_keys || []);
+        return sourceSummaries.filter(
+          (s) => allow.has(s.key) && !(s.isMetaAd || isMetaAdSourceBucket(s.key)),
+        ).length;
+      }
       return folder.card_count;
     },
-    [metaAdSourceCount],
+    [metaAdSourceCount, isL2LeadRole, sourceSummaries],
   );
 
   const allSourcesDisplayCount = useMemo(() => {
-    if (canManageLeadFolders && metaAdsFolderId) {
+    if (canUseLeadFolders && metaAdsFolderId) {
       return Math.max(0, sourceSummaries.length - metaAdSourceCount);
     }
     return sourceSummaries.length;
-  }, [canManageLeadFolders, metaAdsFolderId, sourceSummaries.length, metaAdSourceCount]);
+  }, [canUseLeadFolders, metaAdsFolderId, sourceSummaries.length, metaAdSourceCount]);
+
+  useEffect(() => {
+    if (activeFolderId && !visibleLeadFolders.some((f) => f.id === activeFolderId)) {
+      setActiveFolderId('');
+    }
+  }, [activeFolderId, visibleLeadFolders]);
 
   const sourceDialogLeads = useMemo(() => {
     if (!sourceDialogKey) return [];
@@ -1632,7 +1709,7 @@ export default function Leads() {
               <Download className="h-3.5 w-3.5" /><span className="hidden sm:inline">Export</span>
             </Button>
           )}
-          {showSourceCards && canManageLeadFolders && (
+          {showSourceCards && canUseLeadFolders && (
             <Button
               variant="outline"
               size="sm"
@@ -1771,8 +1848,10 @@ export default function Leads() {
               <p className="text-xs text-muted-foreground">
                 {isFormLeadsPage || isSalesRepMyLeadsPage
                   ? 'Each form has its own card. Open a card to view leads, filter, and assign.'
-                  : canManageLeadFolders
-                    ? 'Open a source or form card to view leads, filter by status, and bulk assign. Use folders on the left to organize cards.'
+                  : canUseLeadFolders
+                    ? isL2LeadRole
+                      ? 'Open a source or form card to view leads. Folders you were given access to appear on the left; use New folder to organize cards you can move.'
+                      : 'Open a source or form card to view leads, filter by status, and bulk assign. Use folders on the left to organize cards.'
                     : 'Open a source or form card to view leads, filter by status, and bulk assign.'}
               </p>
             </div>
@@ -1800,7 +1879,7 @@ export default function Leads() {
             ) : null}
           </div>
           <div className="flex flex-col md:flex-row gap-3 md:gap-4 items-stretch">
-            {canManageLeadFolders ? (
+            {canUseLeadFolders ? (
             <aside className="w-full md:w-48 shrink-0 md:border-r md:border-border/60 md:pr-3">
               <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mb-2">Folders</p>
               <div className="flex md:flex-col gap-1 overflow-x-auto md:overflow-visible pb-1 md:pb-0">
@@ -1861,13 +1940,16 @@ export default function Leads() {
             <div className="flex flex-col items-center justify-center py-16 rounded-lg border border-dashed border-border/60">
               <Users className="h-12 w-12 text-muted-foreground/20 mb-4" />
               <p className="text-sm font-medium text-muted-foreground">
-                {canManageLeadFolders && activeFolderId ? 'No cards in this folder' : 'No leads yet'}
+                {canUseLeadFolders && activeFolderId ? 'No cards in this folder' : 'No leads yet'}
               </p>
               <p className="text-xs text-muted-foreground mt-1">
-                {canManageLeadFolders && activeFolderId
+                {canUseLeadFolders && activeFolderId
                   ? isMetaAdsFolderName(visibleLeadFolders.find((f) => f.id === activeFolderId)?.name)
                     ? 'Meta Ads cards appear here automatically when Lead Ads sync in'
-                    : 'Move a source card into this folder using ⋮ → Move to folder'
+                    : isL2LeadRole &&
+                        String(visibleLeadFolders.find((f) => f.id === activeFolderId)?.created_by || '') !== leadUserId
+                      ? 'These are cards from this folder that you can access'
+                      : 'Move a source card into this folder using ⋮ → Move to folder'
                   : 'Import a CSV or Excel file, or add a lead to get started'}
               </p>
             </div>
@@ -1888,6 +1970,16 @@ export default function Leads() {
                 const statusChips = SOURCE_STATUS_CHIP_ORDER.filter((s) => (summary.byStatus[s] || 0) > 0);
                 const visibleChips = statusChips.slice(0, 4);
                 const hiddenChipCount = statusChips.length - visibleChips.length;
+                const isMetaCard = !!(summary.isMetaAd || isMetaAdSourceBucket(summary.key));
+                const showMove = canMoveSourceCard(summary.key, isMetaCard);
+                const showGrant =
+                  canGrantCardAccess &&
+                  (summary.isForm ||
+                    summary.isPeaklyy ||
+                    summary.isMetaAd ||
+                    isFormSourceBucket(summary.key) ||
+                    isPeaklyySourceBucket(summary.key) ||
+                    isMetaAdSourceBucket(summary.key));
                 return (
                   <Card
                     key={summary.key}
@@ -1911,7 +2003,7 @@ export default function Leads() {
                               {summary.unassigned} unassigned
                             </Badge>
                           )}
-                          {canManageLeadFolders ? (
+                          {showMove || showGrant ? (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -1926,7 +2018,7 @@ export default function Leads() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-52" onClick={(e) => e.stopPropagation()}>
-                              {!(summary.isMetaAd || isMetaAdSourceBucket(summary.key)) ? (
+                              {showMove ? (
                               <DropdownMenuItem
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -1937,12 +2029,7 @@ export default function Leads() {
                                 Move to folder
                               </DropdownMenuItem>
                               ) : null}
-                              {(summary.isForm ||
-                                summary.isPeaklyy ||
-                                summary.isMetaAd ||
-                                isFormSourceBucket(summary.key) ||
-                                isPeaklyySourceBucket(summary.key) ||
-                                isMetaAdSourceBucket(summary.key)) && (
+                              {showGrant ? (
                                 <DropdownMenuItem
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -1957,7 +2044,7 @@ export default function Leads() {
                                     </Badge>
                                   ) : null}
                                 </DropdownMenuItem>
-                              )}
+                              ) : null}
                             </DropdownMenuContent>
                           </DropdownMenu>
                           ) : null}
@@ -2735,7 +2822,7 @@ export default function Leads() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={canManageLeadFolders && newFolderOpen} onOpenChange={setNewFolderOpen}>
+      <Dialog open={canUseLeadFolders && newFolderOpen} onOpenChange={setNewFolderOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>New folder</DialogTitle>
@@ -2768,7 +2855,7 @@ export default function Leads() {
       </Dialog>
 
       <Dialog
-        open={canManageLeadFolders && Boolean(accessCardKey)}
+        open={canGrantCardAccess && Boolean(accessCardKey)}
         onOpenChange={(open) => {
           if (!open) {
             setAccessCardKey(null);
@@ -2782,7 +2869,7 @@ export default function Leads() {
           </DialogHeader>
           <p className="text-xs text-muted-foreground">
             Share <span className="font-medium text-foreground">{accessCardLabel || 'this card'}</span> with
-            selected managers. Others only see self-created or assigned leads from this card.
+            selected managers and operational managers. Others only see self-created or assigned leads from this card.
           </p>
           <div className="space-y-1.5 max-h-[50vh] overflow-y-auto py-1">
             {accessBusy && accessManagers.length === 0 ? (
@@ -2837,7 +2924,7 @@ export default function Leads() {
       </Dialog>
 
       <Dialog
-        open={canManageLeadFolders && Boolean(moveCardKey)}
+        open={canUseLeadFolders && Boolean(moveCardKey)}
         onOpenChange={(open) => {
           if (!open) setMoveCardKey(null);
         }}
@@ -2850,12 +2937,14 @@ export default function Leads() {
             Choose a folder for this source card. A card can only be in one folder.
           </p>
           <div className="space-y-1.5 max-h-[50vh] overflow-y-auto py-1">
-            {visibleLeadFolders.length === 0 ? (
+            {moveTargetFolders.length === 0 ? (
               <p className="text-sm text-muted-foreground py-6 text-center">
-                No folders yet. Create one with New folder.
+                {isL2LeadRole
+                  ? 'Create a folder with New folder, then move cards you can organize.'
+                  : 'No folders yet. Create one with New folder.'}
               </p>
             ) : (
-              visibleLeadFolders.map((folder) => {
+              moveTargetFolders.map((folder) => {
                 const current = moveCardKey ? sourceKeyToFolderId.get(moveCardKey) === folder.id : false;
                 return (
                   <button

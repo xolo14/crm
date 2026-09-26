@@ -2,6 +2,7 @@
 require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/lib/PeaklyyQuestions.php';
 require_once __DIR__ . '/lib/SyncpediaFresherBasics.php';
+require_once __DIR__ . '/lib/AssessmentIntegrity.php';
 cors();
 
 $db = (new Database())->getConnection();
@@ -88,6 +89,14 @@ function peaklyyEnsureTables(PDO $db): void
     }
     try {
         $db->exec('ALTER TABLE peaklyy_attempts ADD COLUMN interest_selected_json JSON NULL');
+    } catch (Throwable $e) {
+    }
+    try {
+        $db->exec('ALTER TABLE peaklyy_attempts ADD COLUMN integrity_json JSON NULL');
+    } catch (Throwable $e) {
+    }
+    try {
+        $db->exec("ALTER TABLE peaklyy_attempts ADD COLUMN integrity_flag VARCHAR(16) NULL");
     } catch (Throwable $e) {
     }
     try {
@@ -708,7 +717,12 @@ function peaklyyUpsertLeadFromRegister(PDO $db, array $assessment, array $candid
     $domain = (string) ($candidate['domain_key'] ?? '');
     $degree = trim((string) ($candidate['degree_branch'] ?? ''));
     $college = trim((string) ($candidate['college_name'] ?? ''));
-    $domainLabel = peaklyyDomainCatalog()[$domain] ?? ($domain === 'custom' ? 'Custom' : $domain);
+    $domainLabel = function_exists('syncpediaResolveDomainLabel')
+        ? syncpediaResolveDomainLabel($domain)
+        : (peaklyyDomainCatalog()[$domain] ?? ($domain === 'custom' ? 'Custom' : $domain));
+    if ($domainLabel === '' || $domainLabel === $domain) {
+        $domainLabel = $domain === 'custom' ? 'Custom' : ($domainLabel !== '' ? $domainLabel : $domain);
+    }
     $existing = peaklyyFindAssessmentLead($db, $orgId, $source, $email);
     if ($existing) {
         $tags = peaklyyLeadTagsList($existing['tags'] ?? []);
@@ -918,7 +932,7 @@ function peaklyyShuffleMcqOptions(array $publicQ, string $bankCorrect): array
     return $publicQ;
 }
 
-/** Build public questions for a new attempt: shuffle MCQ options per candidate. */
+/** Build public questions for a new attempt: remap a/b/c/d texts per candidate (stored correct_option follows). */
 function peaklyyPublicQuestionsForAttempt(array $bankRows): array
 {
     $out = [];
@@ -1155,7 +1169,9 @@ function peaklyyCollectAttemptPartnerPayload(PDO $db, array $assessment, array $
             'email' => $attempt['email'] ?? '',
             'phone' => $attempt['phone'] ?? '',
             'domain_key' => $attempt['domain_key'] ?? '',
-            'domain_label' => peaklyyDomainCatalog()[$attempt['domain_key'] ?? ''] ?? ($attempt['domain_key'] ?? ''),
+            'domain_label' => function_exists('syncpediaResolveDomainLabel')
+                ? syncpediaResolveDomainLabel((string) ($attempt['domain_key'] ?? ''))
+                : (peaklyyDomainCatalog()[$attempt['domain_key'] ?? ''] ?? ($attempt['domain_key'] ?? '')),
             'degree_branch' => $attempt['degree_branch'] ?? null,
             'college_name' => $attempt['college_name'] ?? null,
         ],
@@ -1205,7 +1221,9 @@ function peaklyySendWebhook(array $assessment, array $attempt, string $event = '
             'email' => $attempt['email'],
             'phone' => $attempt['phone'],
             'domain_key' => $attempt['domain_key'],
-            'domain_label' => peaklyyDomainCatalog()[$attempt['domain_key']] ?? $attempt['domain_key'],
+            'domain_label' => function_exists('syncpediaResolveDomainLabel')
+                ? syncpediaResolveDomainLabel((string) ($attempt['domain_key'] ?? ''))
+                : (peaklyyDomainCatalog()[$attempt['domain_key']] ?? $attempt['domain_key']),
             'degree_branch' => $attempt['degree_branch'],
             'college_name' => $attempt['college_name'],
         ],
@@ -1675,6 +1693,9 @@ if ($action === 'my_assignments' && $method === 'GET') {
 }
 
 if ($action === 'attempts' && $method === 'GET') {
+    if (function_exists('peaklyyIntegrityEnsureColumns')) {
+        peaklyyIntegrityEnsureColumns($db);
+    }
     $token = verifyToken();
     requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
     $aid = trim((string) ($_GET['assessment_id'] ?? ''));
@@ -1692,7 +1713,7 @@ if ($action === 'attempts' && $method === 'GET') {
     }
     $stmt = $db->prepare(
         'SELECT id, full_name, email, phone, domain_key, degree_branch, college_name, graduation_year, interest_selected_json, status, attempt_phase,
-                score, stars, passed, time_taken_seconds, violation_count, started_at, submitted_at, mcq_submitted_at,
+                score, stars, passed, time_taken_seconds, violation_count, integrity_json, integrity_flag, started_at, submitted_at, mcq_submitted_at,
                 webhook_status, webhook_sent_at, timeline_json, created_at
          FROM peaklyy_attempts WHERE assessment_id = ? ORDER BY created_at DESC LIMIT 500'
     );
@@ -1749,12 +1770,18 @@ if ($action === 'attempts' && $method === 'GET') {
             }
         }
         $r['interest_topics'] = $topics;
+        if (function_exists('peaklyyIntegrityAttachToRow')) {
+            $r = peaklyyIntegrityAttachToRow($r);
+        }
         $out[] = $r;
     }
     respond(['data' => $out]);
 }
 
 if ($action === 'attempt_detail' && $method === 'GET') {
+    if (function_exists('peaklyyIntegrityEnsureColumns')) {
+        peaklyyIntegrityEnsureColumns($db);
+    }
     $token = verifyToken();
     requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
     $attemptId = trim((string) ($_GET['attempt_id'] ?? ''));
@@ -1763,7 +1790,7 @@ if ($action === 'attempt_detail' && $method === 'GET') {
     }
     $stmt = $db->prepare(
         'SELECT id, assessment_id, full_name, email, phone, domain_key, degree_branch, college_name, graduation_year, interest_selected_json, status,
-                score, stars, passed, time_taken_seconds, violation_count, started_at, submitted_at, mcq_submitted_at,
+                score, stars, passed, time_taken_seconds, violation_count, integrity_json, integrity_flag, started_at, submitted_at, mcq_submitted_at,
                 webhook_status, webhook_sent_at, questions_json, attempt_phase, mcq_questions_json, task_questions_json,
                 timeline_json, created_at
          FROM peaklyy_attempts WHERE id = ? LIMIT 1'
@@ -1876,6 +1903,9 @@ if ($action === 'attempt_detail' && $method === 'GET') {
         }
     }
     $attempt['interest_topics'] = $topics;
+    if (function_exists('peaklyyIntegrityAttachToRow')) {
+        $attempt = peaklyyIntegrityAttachToRow($attempt);
+    }
 
     respond([
         'data' => $attempt,
@@ -2113,10 +2143,11 @@ if ($action === 'public_get' && $method === 'GET') {
         }
     }
     if ($slug === syncpediaFresherBasicsSlug()) {
-        $duration = 9;
-        $qCount = 15;
-        $row['duration_minutes'] = 9;
-        $row['question_count'] = 15;
+        $duration = function_exists('syncpediaBasicsDurationMinutes') ? syncpediaBasicsDurationMinutes() : 20;
+        $qCount = function_exists('syncpediaBasicsPaperQuestionCount') ? syncpediaBasicsPaperQuestionCount() : 30;
+        $row['duration_minutes'] = $duration;
+        $row['question_count'] = $qCount;
+        $row['once_per_candidate'] = 1;
     }
     $row['duration_minutes'] = $duration;
     $row['question_count'] = $qCount;
@@ -2146,43 +2177,45 @@ if ($action === 'public_get' && $method === 'GET') {
     $row['interest_options'] = $interestOpts;
     $row['require_post_interests'] = count($interestOpts) > 0;
     unset($row['interest_options_json']);
-    $instructions = [];
-    if ($duration > 0) {
-        $instructions[] = 'Duration: ' . $duration . ' minutes';
+    if ($slug === syncpediaFresherBasicsSlug() && function_exists('syncpediaBasicsPublicInstructions')) {
+        $instructions = syncpediaBasicsPublicInstructions($duration);
     } else {
-        $instructions[] = 'No time limit — submit when you finish';
-    }
-    if ($sourceMode === 'domain_bank') {
-        $instructions[] = 'Part 1 — MCQ test: 15 beginner questions (auto-scored; results sent to the partner website)';
-        $instructions[] = 'Part 2 — Task test: 1 very basic practical task with notepad and/or file upload (manual grading)';
-    } else {
-        $instructions[] = $qCount . ' question' . ($qCount === 1 ? '' : 's')
-            . ($slug === syncpediaFresherBasicsSlug()
-                ? ' — 5 easy, 5 medium, 5 difficult (college level; harder items are scenario-based)'
-                : ' (basics for freshers)');
-        if ($interestOpts) {
-            $instructions[] = 'After the test, select one or more topics you are interested in';
+        $instructions = [];
+        if ($duration > 0) {
+            $instructions[] = 'Duration: ' . $duration . ' minutes';
+        } else {
+            $instructions[] = 'No time limit — submit when you finish';
         }
+        if ($sourceMode === 'domain_bank') {
+            $instructions[] = 'Part 1 — MCQ test: 15 beginner questions (auto-scored; results sent to the partner website)';
+            $instructions[] = 'Part 2 — Task test: 1 very basic practical task with notepad and/or file upload (manual grading)';
+        } else {
+            $instructions[] = $qCount . ' question' . ($qCount === 1 ? '' : 's')
+                . ' (basics for freshers)';
+            if ($interestOpts) {
+                $instructions[] = 'After the test, select one or more topics you are interested in';
+            }
+        }
+        $instructions = array_merge($instructions, [
+            !empty($row['anti_cheat'])
+                ? 'Full screen required once the test starts'
+                : 'Stay on this page until you finish the test',
+            !empty($row['anti_cheat'])
+                ? 'No tab switching or leaving the page'
+                : 'Answer carefully — you can navigate between questions before submitting',
+            !empty($row['anti_cheat'])
+                ? 'Copy and paste is disabled (except in notepad answer fields)'
+                : 'Do not refresh the page during the test',
+            !empty($row['anti_cheat'])
+                ? 'Leaving or switching tabs auto-submits the current part'
+                : 'The timer ends the test automatically when time is up',
+            !empty($row['once_per_candidate']) ? 'Test allowed only once per candidate' : 'Multiple attempts may be allowed',
+            'MCQ score ' . $passScore . '+ to pass (1★ at 70, 2★ at 80, 3★ at 90, 4★ at 100). Below ' . $passScore . ' = Not pass',
+            $sourceMode === 'domain_bank'
+                ? 'Task uploads and notepad answers are saved for reviewer grading (separate from MCQ score)'
+                : 'Answers are scored according to question type',
+        ]);
     }
-    $instructions = array_merge($instructions, [
-        !empty($row['anti_cheat'])
-            ? 'Full screen required once the test starts'
-            : 'Stay on this page until you finish the test',
-        !empty($row['anti_cheat'])
-            ? 'No tab switching or leaving the page'
-            : 'Answer carefully — you can navigate between questions before submitting',
-        !empty($row['anti_cheat'])
-            ? 'Copy and paste is disabled (except in notepad answer fields)'
-            : 'Do not refresh the page during the test',
-        !empty($row['anti_cheat'])
-            ? 'Leaving or switching tabs auto-submits the current part'
-            : 'The timer ends the test automatically when time is up',
-        !empty($row['once_per_candidate']) ? 'Test allowed only once per candidate' : 'Multiple attempts may be allowed',
-        'MCQ score ' . $passScore . '+ to pass (1★ at 70, 2★ at 80, 3★ at 90, 4★ at 100). Below ' . $passScore . ' = Not pass',
-        $sourceMode === 'domain_bank'
-            ? 'Task uploads and notepad answers are saved for reviewer grading (separate from MCQ score)'
-            : 'Answers are scored according to question type',
-    ]);
     respond([
         'data' => $row,
         'domains' => ($slug === syncpediaFresherBasicsSlug() && function_exists('syncpediaBasicsDomainCatalog'))
@@ -2229,7 +2262,69 @@ if ($action === 'register' && $method === 'POST') {
         respond(['error' => 'Please select a valid domain'], 400);
     }
     $isSyncpediaFresher = (($assessment['slug'] ?? '') === syncpediaFresherBasicsSlug()) || (($assessment['ui_theme'] ?? '') === 'syncpedia');
-    if ((int) $assessment['once_per_candidate'] && !$isSyncpediaFresher) {
+    if ($isBasics) {
+        $phoneKey = function_exists('syncpediaBasicsPhoneKey') ? syncpediaBasicsPhoneKey($phone) : preg_replace('/\D+/', '', $phone);
+        $lockNames = [
+            'spk_e_' . md5((string) $assessment['id'] . '|' . $email),
+            'spk_p_' . md5((string) $assessment['id'] . '|' . (string) $phoneKey),
+        ];
+        $heldLocks = [];
+        try {
+            foreach ($lockNames as $lockName) {
+                try {
+                    $lk = $db->prepare('SELECT GET_LOCK(?, 10)');
+                    $lk->execute([$lockName]);
+                    if ((int) $lk->fetchColumn() === 1) {
+                        $heldLocks[] = $lockName;
+                    }
+                } catch (Throwable $e) {
+                }
+            }
+            $prev = function_exists('syncpediaBasicsFindPriorAttempt')
+                ? syncpediaBasicsFindPriorAttempt($db, (string) $assessment['id'], $email, $phone)
+                : null;
+            if ($prev) {
+                if (($prev['status'] ?? '') === 'registered') {
+                    $id = $prev['id'];
+                    $token = $prev['public_token'];
+                    try {
+                        $db->prepare(
+                            'UPDATE peaklyy_attempts SET full_name = ?, email = ?, phone = ?, domain_key = ?, degree_branch = ?, college_name = ?, graduation_year = ? WHERE id = ?'
+                        )->execute([$fullName, $email, $phone, $domain, $degree ?: null, $college ?: null, $gradYear ?: null, $id]);
+                    } catch (Throwable $e) {
+                        $db->prepare(
+                            'UPDATE peaklyy_attempts SET full_name = ?, phone = ?, domain_key = ?, degree_branch = ?, college_name = ? WHERE id = ?'
+                        )->execute([$fullName, $phone, $domain, $degree ?: null, $college ?: null, $id]);
+                    }
+                } else {
+                    respond(['error' => 'You have already taken this assessment. Only one attempt is allowed per email or mobile number.'], 409);
+                }
+            } else {
+                $id = generateUUID();
+                $token = generateUUID();
+                try {
+                    $db->prepare(
+                        'INSERT INTO peaklyy_attempts
+                         (id, assessment_id, public_token, full_name, email, phone, domain_key, degree_branch, college_name, graduation_year, status)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,\'registered\')'
+                    )->execute([$id, $assessment['id'], $token, $fullName, $email, $phone, $domain, $degree ?: null, $college ?: null, $gradYear ?: null]);
+                } catch (Throwable $e) {
+                    $db->prepare(
+                        'INSERT INTO peaklyy_attempts
+                         (id, assessment_id, public_token, full_name, email, phone, domain_key, degree_branch, college_name, status)
+                         VALUES (?,?,?,?,?,?,?,?,?,\'registered\')'
+                    )->execute([$id, $assessment['id'], $token, $fullName, $email, $phone, $domain, $degree ?: null, $college ?: null]);
+                }
+            }
+        } finally {
+            foreach ($heldLocks as $lockName) {
+                try {
+                    $db->prepare('SELECT RELEASE_LOCK(?)')->execute([$lockName]);
+                } catch (Throwable $e) {
+                }
+            }
+        }
+    } elseif ((int) $assessment['once_per_candidate'] && !$isSyncpediaFresher) {
         $lockName = 'pkly_once_' . md5((string) $assessment['id'] . '|' . strtolower($email) . '|' . $domain);
         $gotLock = false;
         try {
@@ -2329,6 +2424,9 @@ if ($action === 'register' && $method === 'POST') {
 
 // ── Start test ──
 if ($action === 'start' && $method === 'POST') {
+    if (function_exists('peaklyyIntegrityEnsureColumns')) {
+        peaklyyIntegrityEnsureColumns($db);
+    }
     $token = trim((string) ($input['attempt_token'] ?? ''));
     $requestedPhase = strtolower(trim((string) ($input['phase'] ?? '')));
     if ($token === '') {
@@ -2425,15 +2523,26 @@ if ($action === 'start' && $method === 'POST') {
         if (!$questions) {
             if ($mode === 'custom') {
                 $assessSlug = (string) ($attempt['slug'] ?? '');
-                $pickDomain = $assessSlug === syncpediaFresherBasicsSlug()
-                    ? trim((string) ($attempt['domain_key'] ?? ''))
-                    : '';
-                $picked = peaklyyPickCustomQuestions(
-                    $db,
-                    (string) $attempt['assessment_id'],
-                    $pickDomain !== '' && $pickDomain !== 'custom' ? 15 : 0,
-                    $pickDomain !== '' && $pickDomain !== 'custom' ? $pickDomain : null
-                );
+                if ($assessSlug === syncpediaFresherBasicsSlug() && function_exists('syncpediaBasicsPickAttemptQuestions')) {
+                    $picked = syncpediaBasicsPickAttemptQuestions(
+                        $db,
+                        (string) $attempt['assessment_id'],
+                        trim((string) ($attempt['domain_key'] ?? ''))
+                    );
+                    if (function_exists('syncpediaBasicsParameterizePickedQuestions')) {
+                        $picked = syncpediaBasicsParameterizePickedQuestions($picked, $token);
+                    }
+                } else {
+                    $pickDomain = $assessSlug === syncpediaFresherBasicsSlug()
+                        ? trim((string) ($attempt['domain_key'] ?? ''))
+                        : '';
+                    $picked = peaklyyPickCustomQuestions(
+                        $db,
+                        (string) $attempt['assessment_id'],
+                        $pickDomain !== '' && $pickDomain !== 'custom' ? 15 : 0,
+                        $pickDomain !== '' && $pickDomain !== 'custom' ? $pickDomain : null
+                    );
+                }
                 $live = count($picked);
                 if ($live > 0 && $live !== (int) $attempt['question_count'] && $assessSlug !== syncpediaFresherBasicsSlug()) {
                     $db->prepare('UPDATE peaklyy_assessments SET question_count = ? WHERE id = ?')
@@ -2481,10 +2590,15 @@ if ($action === 'start' && $method === 'POST') {
 
     $started = $attempt['started_at'] ?: date('Y-m-d H:i:s');
     $durationMinutes = (int) ($attempt['duration_minutes'] ?? 0);
+    if ((string) ($attempt['slug'] ?? '') === syncpediaFresherBasicsSlug() && function_exists('syncpediaBasicsDurationMinutes')) {
+        $durationMinutes = syncpediaBasicsDurationMinutes();
+    }
     $endsAt = $durationMinutes > 0
         ? date('c', strtotime($started) + ($durationMinutes * 60))
         : null;
-    $domainLabel = peaklyyDomainCatalog()[$attempt['domain_key']] ?? $attempt['domain_key'];
+    $domainLabel = function_exists('syncpediaResolveDomainLabel')
+        ? syncpediaResolveDomainLabel((string) ($attempt['domain_key'] ?? ''))
+        : (peaklyyDomainCatalog()[$attempt['domain_key']] ?? $attempt['domain_key']);
     if (($attempt['domain_key'] ?? '') === 'custom') {
         $domainLabel = $attempt['title'] ?: 'Custom Assignment';
     }
@@ -2511,13 +2625,33 @@ if ($action === 'start' && $method === 'POST') {
     ]);
 }
 
-// ── Violation ping ──
-if ($action === 'violation' && $method === 'POST') {
+// ── Integrity ping (typed events; never auto-fails) ──
+if (($action === 'integrity_ping' || $action === 'violation') && $method === 'POST') {
+    if (function_exists('peaklyyIntegrityEnsureColumns')) {
+        peaklyyIntegrityEnsureColumns($db);
+    }
     $token = trim((string) ($input['attempt_token'] ?? ''));
-    $stmt = $db->prepare('SELECT id, status, violation_count FROM peaklyy_attempts WHERE public_token = ? LIMIT 1');
-    $stmt->execute([$token]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($row && $row['status'] === 'in_progress') {
+    if ($token === '') {
+        respond(['ok' => true]);
+    }
+    $stmt = $db->prepare('SELECT id, status, violation_count, integrity_json FROM peaklyy_attempts WHERE public_token = ? LIMIT 1');
+    try {
+        $stmt->execute([$token]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        $stmt = $db->prepare('SELECT id, status, violation_count FROM peaklyy_attempts WHERE public_token = ? LIMIT 1');
+        $stmt->execute([$token]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+    if ($row && in_array((string) ($row['status'] ?? ''), ['in_progress'], true) && function_exists('peaklyyIntegrityApplyIncoming')) {
+        $merged = peaklyyIntegrityApplyIncoming($db, $row, is_array($input) ? $input : []);
+        respond([
+            'ok' => true,
+            'integrity_flag' => $merged['flag'] ?? 'clear',
+            'violation_count' => (int) ($merged['tab_hides'] ?? 0),
+        ]);
+    }
+    if ($row && $row['status'] === 'in_progress' && $action === 'violation') {
         $db->prepare('UPDATE peaklyy_attempts SET violation_count = violation_count + 1 WHERE id = ?')->execute([$row['id']]);
         respond(['violation_count' => (int) $row['violation_count'] + 1]);
     }
@@ -3047,6 +3181,9 @@ if ($action === 'submit' && $method === 'POST') {
             }
         }
         $peaklyyCommitSubmit();
+        if (function_exists('peaklyyIntegrityFinishAttempt')) {
+            peaklyyIntegrityFinishAttempt($db, $attempt, $input['integrity'] ?? []);
+        }
         $score = (int) ($attempt['score'] ?? 0);
         $stars = (int) ($attempt['stars'] ?? 0);
         $passed = (int) ($attempt['passed'] ?? 0);
@@ -3178,6 +3315,9 @@ if ($action === 'submit' && $method === 'POST') {
             }
         }
         $peaklyyCommitSubmit();
+        if (function_exists('peaklyyIntegrityFinishAttempt')) {
+            peaklyyIntegrityFinishAttempt($db, $attempt, $input['integrity'] ?? []);
+        }
         peaklyyAppendTimeline($db, (string) $attempt['id'], 'mcq_submitted', 'Part 1 MCQ submitted', [
             'score' => $score,
             'stars' => $stars,
@@ -3263,6 +3403,9 @@ if ($action === 'submit' && $method === 'POST') {
         }
     }
     $peaklyyCommitSubmit();
+    if (function_exists('peaklyyIntegrityFinishAttempt')) {
+        peaklyyIntegrityFinishAttempt($db, $attempt, $input['integrity'] ?? []);
+    }
 
     $freshSingle = $db->prepare('SELECT * FROM peaklyy_attempts WHERE id = ? LIMIT 1');
     $freshSingle->execute([$attempt['id']]);
@@ -3457,7 +3600,9 @@ if ($action === 'result' && $method === 'GET') {
         'passed' => (bool) (int) $row['passed'],
         'time_taken_seconds' => (int) $row['time_taken_seconds'],
         'domain_key' => $row['domain_key'],
-        'domain_label' => peaklyyDomainCatalog()[$row['domain_key']] ?? $row['domain_key'],
+        'domain_label' => function_exists('syncpediaResolveDomainLabel')
+            ? syncpediaResolveDomainLabel((string) ($row['domain_key'] ?? ''))
+            : (peaklyyDomainCatalog()[$row['domain_key']] ?? $row['domain_key']),
         'title' => $row['title'],
         'brand_name' => $row['brand_name'],
         'brand_tagline' => $row['brand_tagline'],

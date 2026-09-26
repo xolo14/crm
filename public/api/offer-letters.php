@@ -69,6 +69,56 @@ function offerLetterPublicPdfUrl(string $id): string {
     return '/api/offer-letters.php?action=pdf&id=' . rawurlencode($id);
 }
 
+/** Delete local + GCS PDF files for a sent-letter row. */
+function offerLettersDeleteStoredPdfs(array $row): void
+{
+    $id = trim((string) ($row['id'] ?? ''));
+    $gcs = trim((string) ($row['gcs_object'] ?? ''));
+    $path = trim((string) ($row['pdf_path'] ?? ''));
+    if (function_exists('syncpediaDocumentStorageDeleteLocalAndGcs')) {
+        syncpediaDocumentStorageDeleteLocalAndGcs($path !== '' ? $path : null, $gcs !== '' ? $gcs : null);
+    } elseif ($path !== '' && function_exists('syncpediaDocumentStorageDeleteLocal')) {
+        syncpediaDocumentStorageDeleteLocal($path);
+    }
+    if ($id !== '') {
+        $legacy = offerLetterPdfFilePath($id);
+        if (is_file($legacy)) {
+            @unlink($legacy);
+        }
+    }
+}
+
+/** Remove a sent letter row, its PDFs, and issued docs that point at the same PDF URL. */
+function offerLettersPurgeSentRecord(PDO $db, array $tokenData, string $id): bool
+{
+    $id = trim($id);
+    if ($id === '') {
+        return false;
+    }
+    offerLettersEnsurePdfPathColumn($db);
+    $org = orgFilter($tokenData, 'ols');
+    $params = array_merge([$id], $org['params']);
+    $stmt = $db->prepare("SELECT ols.id, ols.pdf_path, ols.gcs_object, ols.pdf_url FROM offer_letters_sent ols WHERE ols.id = ? AND {$org['where']} LIMIT 1");
+    $stmt->execute($params);
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        return false;
+    }
+    offerLettersDeleteStoredPdfs($row);
+    $del = $db->prepare("DELETE FROM offer_letters_sent ols WHERE ols.id = ? AND {$org['where']}");
+    $del->execute($params);
+    try {
+        $issuedOrg = orgFilter($tokenData, '');
+        $sql = 'DELETE FROM doc_issued_documents WHERE (pdf_url LIKE ? OR pdf_url LIKE ?) AND ' . $issuedOrg['where'];
+        $likeA = '%offer-letters.php%id=' . $id . '%';
+        $likeB = '%offer-letters.php%id=' . rawurlencode($id) . '%';
+        $db->prepare($sql)->execute(array_merge([$likeA, $likeB], $issuedOrg['params']));
+    } catch (Throwable $e) {
+        error_log('[offer-letters] issued cascade delete: ' . $e->getMessage());
+    }
+    return true;
+}
+
 /** Org-scoped access for offer letter templates (sent letters already use orgFilter). */
 function offerLetterTemplateOrgFilter($tokenData, string $tableAlias = 't'): array {
     return orgFilter($tokenData, $tableAlias);
@@ -621,11 +671,10 @@ if ($method === 'DELETE') {
     $action = $_GET['action'] ?? 'template';
 
     if ($action === 'sent') {
-        @unlink(offerLetterPdfFilePath($id));
-        $org = orgFilter($tokenData, 'ols');
-        $params = array_merge([$id], $org['params']);
-        $stmt = $db->prepare("DELETE FROM offer_letters_sent ols WHERE ols.id = ? AND {$org['where']}");
-        $stmt->execute($params);
+        if (!offerLettersPurgeSentRecord($db, $tokenData, $id)) {
+            respond(['error' => 'Sent letter not found'], 404);
+        }
+        respond(['message' => 'Deleted successfully']);
     } else {
         if (!offerLettersFetchTemplateInScope($db, $tokenData, $id)) {
             respond(['error' => 'Template not found'], 404);

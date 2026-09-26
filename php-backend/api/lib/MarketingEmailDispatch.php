@@ -3,6 +3,47 @@
  * Marketing email campaign dispatch: <<placeholders>>, per-recipient schedule, org mailbox.
  */
 
+/** Turn encoded / split placeholder delimiters into literal << >>. */
+function marketingUnescapePlaceholderDelimiters(string $text): string
+{
+    $prev = '';
+    for ($i = 0; $i < 3 && $text !== $prev; $i++) {
+        $prev = $text;
+        $text = str_ireplace(
+            ['&amp;lt;&amp;lt;', '&amp;gt;&amp;gt;'],
+            ['&lt;&lt;', '&gt;&gt;'],
+            $text
+        );
+        $text = str_ireplace(
+            ['&lt;&lt;', '&#60;&#60;', '&#060;&#060;', '&#x3c;&#x3c;', '%3C%3C'],
+            '<<',
+            $text
+        );
+        $text = str_ireplace(
+            ['&gt;&gt;', '&#62;&#62;', '&#062;&#062;', '&#x3e;&#x3e;', '%3E%3E'],
+            '>>',
+            $text
+        );
+        $text = str_ireplace(['&lt;<', '&#60;<'], '<<', $text);
+        $text = str_ireplace(['>&gt;', '>&#62;'], '>>', $text);
+    }
+    $text = str_replace(["\u{200B}", "\u{200C}", "\u{200D}", "\u{FEFF}"], '', $text);
+    $text = str_replace(['＜', '＞'], ['<', '>'], $text);
+    return $text;
+}
+
+function marketingPlaceholderKeyFromInner(string $inner): ?string
+{
+    $inner = html_entity_decode($inner, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $inner = strip_tags($inner);
+    $inner = str_replace(["\u{200B}", "\u{200C}", "\u{200D}", "\u{FEFF}", "\u{00A0}"], ['', '', '', '', ' '], $inner);
+    $inner = trim(preg_replace('/\s+/', '', $inner) ?? $inner);
+    if ($inner === '' || !preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $inner)) {
+        return null;
+    }
+    return $inner;
+}
+
 function marketingExtractAnglePlaceholders(string ...$texts): array
 {
     $seen = [];
@@ -11,15 +52,21 @@ function marketingExtractAnglePlaceholders(string ...$texts): array
         if (!is_string($text) || $text === '') {
             continue;
         }
-        if (preg_match_all('/<<\s*([a-zA-Z0-9_]+)\s*>>/', $text, $m)) {
-            foreach ($m[1] as $key) {
-                $lk = strtolower((string) $key);
-                if ($lk === '' || isset($seen[$lk])) {
-                    continue;
-                }
-                $seen[$lk] = true;
-                $out[] = (string) $key;
+        $scan = marketingUnescapePlaceholderDelimiters($text);
+        if (!preg_match_all('/<<((?:(?!>>).)*)>>/s', $scan, $m)) {
+            continue;
+        }
+        foreach ($m[1] as $inner) {
+            $key = marketingPlaceholderKeyFromInner((string) $inner);
+            if ($key === null) {
+                continue;
             }
+            $lk = strtolower($key);
+            if ($lk === '' || isset($seen[$lk])) {
+                continue;
+            }
+            $seen[$lk] = true;
+            $out[] = $key;
         }
     }
     return $out;
@@ -32,13 +79,25 @@ function marketingFillAnglePlaceholders(string $text, array $values): string
 {
     $map = [];
     foreach ($values as $k => $v) {
-        $map[strtolower((string) $k)] = (string) $v;
+        $lk = strtolower(trim((string) $k));
+        if ($lk === '') {
+            continue;
+        }
+        $map[$lk] = (string) $v;
     }
+    $text = marketingUnescapePlaceholderDelimiters($text);
     $filled = preg_replace_callback(
-        '/<<\s*([a-zA-Z0-9_]+)\s*>>/',
+        '/<<((?:(?!>>).)*)>>/s',
         static function (array $m) use ($map) {
-            $lk = strtolower((string) ($m[1] ?? ''));
-            return array_key_exists($lk, $map) ? $map[$lk] : (string) ($m[0] ?? '');
+            $key = marketingPlaceholderKeyFromInner((string) ($m[1] ?? ''));
+            if ($key === null) {
+                return (string) ($m[0] ?? '');
+            }
+            $lk = strtolower($key);
+            if (!array_key_exists($lk, $map)) {
+                return (string) ($m[0] ?? '');
+            }
+            return htmlspecialchars($map[$lk], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         },
         $text
     );
@@ -247,12 +306,24 @@ function marketingDispatchEmailCampaign(
             $values[$tok] = (string) $hit;
         }
         $when = $rowSchedule ?: $campaignScheduledAt;
+        $filledSubject = marketingFillAnglePlaceholders($subjectTpl, $values);
+        $filledHtml = marketingFillAnglePlaceholders($htmlTpl, $values);
+        $leftover = marketingExtractAnglePlaceholders($filledSubject, $filledHtml);
+        if ($leftover !== []) {
+            return [
+                'ok' => false,
+                'sent' => 0,
+                'failed' => 0,
+                'pending' => 0,
+                'error' => 'Could not replace <<' . $leftover[0] . '>> for ' . $email . '. Enter that value in Send Campaign and try again.',
+            ];
+        }
         $rows[] = [
             'email' => $email,
             'values' => $values,
             'scheduled_at' => $when,
-            'subject' => marketingFillAnglePlaceholders($subjectTpl, $values),
-            'html' => marketingFillAnglePlaceholders($htmlTpl, $values),
+            'subject' => $filledSubject,
+            'html' => $filledHtml,
         ];
     }
     if ($rows === []) {

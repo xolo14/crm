@@ -175,7 +175,13 @@ export const assessmentsApi = {
       body: JSON.stringify({ attempt_token }),
       headers: { "Content-Type": "application/json" },
     }),
-  submit: (attempt_token: string, answers: Record<string, unknown>) =>
+  integrityPing: (attempt_token: string, body: Record<string, unknown>) =>
+    req<{ ok?: boolean; integrity_flag?: string }>("?action=integrity_ping", {
+      method: "POST",
+      body: JSON.stringify({ attempt_token, ...body }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  submit: (attempt_token: string, answers: Record<string, unknown>, integrity?: Record<string, unknown>) =>
     req<{
       score: number;
       stars: number;
@@ -193,7 +199,7 @@ export const assessmentsApi = {
       interest_options?: string[];
     }>("?action=submit", {
       method: "POST",
-      body: JSON.stringify({ attempt_token, answers }),
+      body: JSON.stringify({ attempt_token, answers, ...(integrity ? { integrity } : {}) }),
       headers: { "Content-Type": "application/json" },
     }),
   saveInterests: (attempt_token: string, interests: string[]) =>
@@ -296,6 +302,17 @@ export interface PeaklyyAttemptRow {
   interest_topics?: string[] | null;
   interest_selected_json?: unknown;
   violation_count?: number | null;
+  integrity_flag?: string | null;
+  integrity?: {
+    flag?: string;
+    signals?: string[];
+    tab_hides?: number;
+    hidden_ms?: number;
+    blurs?: number;
+    fast_answers?: number;
+    extension_dom?: number;
+    resize_devtools?: number;
+  } | null;
   status: string;
   attempt_phase?: string;
   score: number | null;
@@ -337,6 +354,7 @@ export interface PeaklyyQuestion {
   q_type: "mcq" | "task";
   prompt: string;
   options?: Record<string, string> | null;
+  option_order?: string[] | null;
   task_schema?: Record<string, unknown> | null;
   allow_notepad?: boolean;
   allow_upload?: boolean;

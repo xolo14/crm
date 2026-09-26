@@ -171,4 +171,19 @@ if ($method === 'PUT') {
     respond(['message' => 'Status updated']);
 }
 
+if ($method === 'DELETE') {
+    requireRole($tokenData, ['admin', 'super_admin', 'org']);
+    $id = trim((string) ($_GET['id'] ?? ''));
+    if ($id === '') {
+        respond(['error' => 'ID required'], 400);
+    }
+    if (is_file(__DIR__ . '/document_storage.php')) {
+        require_once __DIR__ . '/document_storage.php';
+    }
+    if (!function_exists('syncpediaPurgeIssuedCertificate') || !syncpediaPurgeIssuedCertificate($db, $tokenData, $id)) {
+        respond(['error' => 'Issued certificate not found'], 404);
+    }
+    respond(['message' => 'Deleted successfully']);
+}
+
 respond(['error' => 'Method not allowed'], 405);

@@ -47,6 +47,9 @@ $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 if (function_exists('ensureLeadsStatusColumn')) {
     ensureLeadsStatusColumn($db);
 }
+if (function_exists('syncpediaEnsureIndex')) {
+    syncpediaEnsureIndex($db, 'idx_leads_org_created', 'leads', '`org_id`, `created_at`');
+}
 
 /**
  * Validate batch for lead enrollment; returns course_id, counts, or error.
@@ -200,6 +203,11 @@ if ($method === 'GET') {
         }
     }
 
+    if (!empty($_GET['id'])) {
+        $where .= " AND id = ?";
+        $params[] = trim((string) $_GET['id']);
+    }
+
     if (!empty($_GET['search'])) {
         $where .= " AND (name LIKE ? OR email LIKE ? OR phone LIKE ? OR company LIKE ? OR college LIKE ?)";
         $s = '%' . $_GET['search'] . '%';
@@ -211,8 +219,17 @@ if ($method === 'GET') {
         $params[] = trim((string) $_GET['referred_by']);
     }
 
-    if (!empty($_GET['form_leads']) && $_GET['form_leads'] !== '0' && $_GET['form_leads'] !== 'false') {
-        $where .= " AND referred_by IS NOT NULL AND referred_by != ''";
+    if (isset($_GET['form_leads'])) {
+        $formLeadsFlag = strtolower(trim((string) $_GET['form_leads']));
+        if ($formLeadsFlag === '0' || $formLeadsFlag === 'false') {
+            $where .= " AND (referred_by IS NULL OR referred_by = '')";
+        } elseif ($formLeadsFlag !== '') {
+            $where .= " AND (
+                (referred_by IS NOT NULL AND referred_by != '')
+                OR source IN ('google_forms', 'normal_form')
+                OR source LIKE 'form_%'
+            )";
+        }
     }
 
     if ($debug) {
@@ -245,7 +262,9 @@ if ($method === 'GET') {
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
 
-    if (is_array($rows) && $rows !== []) {
+    $lite = isset($_GET['lite']) && $_GET['lite'] !== '0' && strtolower((string) $_GET['lite']) !== 'false';
+
+    if (!$lite && is_array($rows) && $rows !== []) {
         if (!function_exists('leadsAttachFormPaymentFields')) {
             require_once __DIR__ . '/payment_link_store.php';
         }
@@ -262,7 +281,7 @@ if ($method === 'GET') {
     }
 
     // Resolve creator display names for "Created by" (Added leads card, managers).
-    if ($fetched > 0 && syncpediaColumnExists($db, 'leads', 'created_by')) {
+    if (!$lite && $fetched > 0 && syncpediaColumnExists($db, 'leads', 'created_by')) {
         $creatorIds = [];
         foreach ($rows as $row) {
             if (!is_array($row)) {

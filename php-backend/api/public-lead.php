@@ -654,6 +654,16 @@ if (is_array($dup)) {
     if (is_array($formRow)) {
         require_once __DIR__ . '/form_campaigns.php';
         try {
+            formCampaignAutoSendForNewLead($db, $formRow, [
+                'id' => $dup['id'],
+                'name' => $dup['name'] ?? $name,
+                'email' => $dup['email'] ?? $email,
+                'phone' => $dup['phone'] ?? $phone,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[form campaign auto dup] ' . $e->getMessage());
+        }
+        try {
             leadFormQueueAutoDocuments($db, $formRow, (string) $dup['id'], $isPaid);
         } catch (Throwable $e) {
             error_log('[leadFormQueueAutoDocuments dup] ' . $e->getMessage());

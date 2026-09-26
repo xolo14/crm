@@ -82,6 +82,11 @@ export function isOperationalManagerRole(role?: string | null): boolean {
   return normalizeAppRole(role) === "operational_manager";
 }
 
+/** L2 — Manager or Operational Manager. */
+export function isL2Role(role?: string | null): boolean {
+  return getRoleLevel(role) === 2;
+}
+
 /** Marketing-family roles (L1) — shared lead/form visibility patterns. */
 export function isMarketingFamilyRole(role?: string | null): boolean {
   return normalizeAppRole(role) === "marketing";

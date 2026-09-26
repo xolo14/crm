@@ -244,6 +244,50 @@ function formsGetAccessibleFormDetail(PDO $db, string $formId, array $tokenData)
     return is_array($row) ? $row : null;
 }
 
+function formsUserAssignedToForm(PDO $db, string $formId, string $userId): bool
+{
+    $formId = trim($formId);
+    $userId = trim($userId);
+    if ($formId === '' || $userId === '') {
+        return false;
+    }
+    try {
+        $st = $db->prepare('SELECT 1 FROM lead_form_assignments WHERE form_id = ? AND member_id = ? LIMIT 1');
+        $st->execute([$formId, $userId]);
+        return (bool) $st->fetchColumn();
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+/** Super Admin / Org Admin: tenant forms. L2: created or assigned. Others: created only. */
+function formsCallerCanEditForm(PDO $db, array $formRow, array $tokenData): bool
+{
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    $formId = trim((string) ($formRow['id'] ?? ''));
+    $createdBy = trim((string) ($formRow['created_by'] ?? ''));
+    $formOrg = trim((string) ($formRow['org_id'] ?? ''));
+
+    if ($role === 'super_admin') {
+        return true;
+    }
+    if (in_array($role, ['admin', 'org'], true)) {
+        $userOrg = trim((string) (formsEffectiveTenantOrgId($db, $tokenData) ?? ''));
+        if ($userOrg === '') {
+            return false;
+        }
+        return $formOrg === '' || $formOrg === $userOrg;
+    }
+    if ($userId !== '' && $createdBy !== '' && $userId === $createdBy) {
+        return true;
+    }
+    if (in_array($role, ['manager', 'operational_manager'], true)) {
+        return formsUserAssignedToForm($db, $formId, $userId);
+    }
+    return false;
+}
+
 /**
  * Same visibility as Form Management list, without submission-count / JSON SQL.
  * Used by lightweight endpoints (assignments) so a missing hr_leads column cannot 500.
@@ -540,12 +584,15 @@ if ($method === 'GET') {
         if ($formId === '') {
             respond(['error' => 'form_id required'], 400);
         }
-        $formRow = formsGetScopedForm($db, $formId, $tokenData);
+        $formRow = formsGetAccessibleFormDetail($db, $formId, $tokenData);
+        if (!$formRow) {
+            $formRow = formsGetScopedForm($db, $formId, $tokenData);
+        }
         if (!$formRow) {
             respond(['error' => 'Form not found'], 404);
         }
         if (!formCampaignCanManage($db, $tokenData, $formRow)) {
-            respond(['error' => 'Forbidden — super admin, org admin, or marketing users with access to this form can manage campaigns'], 403);
+            respond(['error' => 'Forbidden — you can manage campaigns on forms you can edit'], 403);
         }
         respond(['data' => formCampaignListTemplates($db, $tokenData, $formRow)]);
     }
@@ -793,12 +840,15 @@ if ($method === 'POST') {
         if ($formId === '' || !is_array($campaignInput)) {
             respond(['error' => 'form_id and campaign object are required'], 400);
         }
-        $formRow = formsGetScopedForm($db, $formId, $tokenData);
+        $formRow = formsGetAccessibleFormDetail($db, $formId, $tokenData);
+        if (!$formRow) {
+            $formRow = formsGetScopedForm($db, $formId, $tokenData);
+        }
         if (!$formRow) {
             respond(['error' => 'Form not found'], 404);
         }
         if (!formCampaignCanManage($db, $tokenData, $formRow)) {
-            respond(['error' => 'Forbidden — super admin, org admin, or marketing users with access to this form can manage campaigns'], 403);
+            respond(['error' => 'Forbidden — you can manage campaigns on forms you can edit'], 403);
         }
         $meta = formsParseMetaJson($formRow['meta_json'] ?? null);
         $meta = formCampaignMergeIntoMeta($meta, $campaignInput);
@@ -1216,8 +1266,11 @@ if ($method === 'PUT') {
     }
     if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
 
-    $chkRow = formsGetScopedForm($db, $id, $tokenData);
+    $chkRow = formsGetAccessibleFormDetail($db, $id, $tokenData);
     if (!$chkRow) {
+        $chkRow = formsGetScopedForm($db, $id, $tokenData);
+    }
+    if (!$chkRow || !formsCallerCanEditForm($db, $chkRow, $tokenData)) {
         respond(['error' => 'Form not found'], 404);
     }
 

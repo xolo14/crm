@@ -257,6 +257,7 @@ CREATE TABLE IF NOT EXISTS `leads` (
   INDEX `idx_leads_referred` (`referred_by`),
   INDEX `idx_leads_org` (`org_id`),
   INDEX `idx_leads_org_status` (`org_id`, `status`),
+  INDEX `idx_leads_org_created` (`org_id`, `created_at`),
   INDEX `idx_leads_created_by` (`created_by`),
   FOREIGN KEY (`assigned_to`) REFERENCES `users`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`org_id`) REFERENCES `organizations`(`id`) ON DELETE CASCADE,
@@ -1362,4 +1363,92 @@ CREATE TABLE IF NOT EXISTS `manual_payments` (
 -- Optional mail config on offer templates (also ensured in PHP)
 ALTER TABLE `offer_letter_templates`
   ADD COLUMN IF NOT EXISTS `mail_json` JSON DEFAULT NULL;
+
+-- Person-specific discount coupons (runtime also ensures this table)
+CREATE TABLE IF NOT EXISTS `coupons` (
+  `id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) DEFAULT NULL,
+  `lead_id` CHAR(36) DEFAULT NULL,
+  `name` VARCHAR(255) NOT NULL,
+  `email` VARCHAR(255) NOT NULL,
+  `discount` DECIMAL(12,2) NOT NULL,
+  `min_amount` DECIMAL(12,2) NOT NULL,
+  `code` VARCHAR(64) NOT NULL,
+  `created_by` CHAR(36) DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_coupons_org` (`org_id`),
+  INDEX `idx_coupons_created_by` (`created_by`),
+  INDEX `idx_coupons_lead` (`lead_id`),
+  UNIQUE KEY `uq_coupons_org_code` (`org_id`, `code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Candidate video introductions
+CREATE TABLE IF NOT EXISTS `video_intro_invitations` (
+  `id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) NOT NULL,
+  `created_by` CHAR(36) DEFAULT NULL,
+  `candidate_name` VARCHAR(200) NOT NULL,
+  `email` VARCHAR(255) DEFAULT NULL,
+  `phone` VARCHAR(40) DEFAULT NULL,
+  `position` VARCHAR(200) DEFAULT NULL,
+  `token_hash` CHAR(64) NOT NULL,
+  `status` VARCHAR(20) NOT NULL DEFAULT 'created',
+  `max_duration_sec` INT NOT NULL DEFAULT 90,
+  `max_retries` INT NOT NULL DEFAULT 3,
+  `retry_count` INT NOT NULL DEFAULT 0,
+  `expires_at` DATETIME NOT NULL,
+  `opened_at` DATETIME DEFAULT NULL,
+  `recording_started_at` DATETIME DEFAULT NULL,
+  `submitted_at` DATETIME DEFAULT NULL,
+  `revoked_at` DATETIME DEFAULT NULL,
+  `consent_at` DATETIME DEFAULT NULL,
+  `consent_ip` VARCHAR(64) DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_video_intro_token` (`token_hash`),
+  INDEX `idx_video_intro_org` (`org_id`),
+  INDEX `idx_video_intro_status` (`status`),
+  INDEX `idx_video_intro_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `video_intro_recordings` (
+  `id` CHAR(36) NOT NULL,
+  `invitation_id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) NOT NULL,
+  `gcs_object` TEXT DEFAULT NULL,
+  `local_path` VARCHAR(500) DEFAULT NULL,
+  `mime_type` VARCHAR(80) NOT NULL DEFAULT 'video/webm',
+  `byte_size` INT UNSIGNED NOT NULL DEFAULT 0,
+  `duration_ms` INT UNSIGNED NOT NULL DEFAULT 0,
+  `uploaded_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_video_intro_recording_invite` (`invitation_id`),
+  INDEX `idx_video_intro_rec_org` (`org_id`),
+  INDEX `idx_video_intro_rec_uploaded` (`uploaded_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `video_intro_events` (
+  `id` CHAR(36) NOT NULL,
+  `invitation_id` CHAR(36) NOT NULL,
+  `event_type` VARCHAR(40) NOT NULL,
+  `detail` VARCHAR(255) DEFAULT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_video_intro_ev_invite` (`invitation_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `video_intro_upload_sessions` (
+  `id` CHAR(36) NOT NULL,
+  `invitation_id` CHAR(36) NOT NULL,
+  `mime_type` VARCHAR(80) NOT NULL DEFAULT 'video/webm',
+  `bytes_received` INT UNSIGNED NOT NULL DEFAULT 0,
+  `temp_name` VARCHAR(80) NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `expires_at` DATETIME NOT NULL,
+  PRIMARY KEY (`id`),
+  INDEX `idx_video_intro_up_invite` (`invitation_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 

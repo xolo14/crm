@@ -120,7 +120,7 @@ export default function ManualPaymentDialog({
     const load = async () => {
       setLoadingLeads(true);
       try {
-        const leadRes = await api.leads.list({ limit: 5000 });
+        const leadRes = await api.leads.list({ all: false, limit: 250, lite: true });
         if (cancelled) return;
         const leadList = (
           Array.isArray(leadRes)

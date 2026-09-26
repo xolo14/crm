@@ -5,6 +5,15 @@ import { Clock, ShieldAlert } from "lucide-react";
 import { assessmentsApi, type PeaklyyQuestion } from "@/services/assessments";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { getApiBase } from "@/lib/apiBase";
+import {
+  emptyIntegrity,
+  isDevtoolsChromeGap,
+  isExtensionInjection,
+  isFastAnswer,
+  pingIntegrityBeacon,
+  type IntegritySnapshot,
+} from "@/lib/assessmentIntegrity";
 import "./SyncpediaFresherAssessment.css";
 
 type Step = "register" | "instructions" | "test" | "result";
@@ -186,6 +195,7 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
   const [busy, setBusy] = useState(false);
   const [questions, setQuestions] = useState<PeaklyyQuestion[]>([]);
   const [answers, setAnswers] = useState<Record<string, unknown>>({});
+  const [visited, setVisited] = useState<Record<string, true>>({});
   const [idx, setIdx] = useState(0);
   const [endsAt, setEndsAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -196,6 +206,14 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
     time_taken_seconds: number;
   } | null>(null);
   const submittingRef = useRef(false);
+  const [leaveWarn, setLeaveWarn] = useState(false);
+  const integrityRef = useRef<IntegritySnapshot>(emptyIntegrity());
+  const shownAtRef = useRef<Record<string, number>>({});
+  const firstAnswerAtRef = useRef<Record<string, true>>({});
+  const attemptTokenRef = useRef(attemptToken);
+  useEffect(() => {
+    attemptTokenRef.current = attemptToken;
+  }, [attemptToken]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["syncpedia-fresher-assessment", slug, accessKey],
@@ -221,6 +239,15 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
   const current = questions[idx];
   const progress = questions.length ? Math.round(((idx + 1) / questions.length) * 100) : 0;
 
+  useEffect(() => {
+    if (step !== "test" || !current?.id) return;
+    const id = current.id;
+    setVisited((v) => (v[id] ? v : { ...v, [id]: true }));
+    if (!shownAtRef.current[id]) {
+      shownAtRef.current[id] = Date.now();
+    }
+  }, [step, current?.id]);
+
   const stepRef = useRef<Step>(step);
   useEffect(() => {
     stepRef.current = step;
@@ -237,7 +264,7 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
     setBusy(true);
     exitFullscreenSafe();
     try {
-      const res = await assessmentsApi.submit(attemptToken, answersRef.current);
+      const res = await assessmentsApi.submit(attemptToken, answersRef.current, { ...integrityRef.current });
       setResult({
         score: res.score,
         stars: res.stars,
@@ -260,7 +287,7 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
     if (submittingRef.current || stepRef.current !== "test") return;
     toast({
       variant: "destructive",
-      title: "Disturbance detected",
+      title: "Fullscreen required",
       description: `${reason}. Test auto-submitted.`,
     });
     void submitAll();
@@ -269,6 +296,7 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
   useEffect(() => {
     if (step !== "test") {
       exitFullscreenSafe();
+      setLeaveWarn(false);
       return;
     }
 
@@ -277,16 +305,48 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
       (document.body.style as unknown as Record<string, string>).webkitUserSelect = "none";
     } catch {}
 
+    const apiBase = getApiBase();
+    const snap = () => ({ ...integrityRef.current });
+    const ping = (eventType: string, extra?: Record<string, unknown>) => {
+      pingIntegrityBeacon(apiBase, attemptTokenRef.current, {
+        ...snap(),
+        event: { type: eventType, at: new Date().toISOString(), ...extra },
+      });
+    };
+
+    let hiddenStarted = 0;
+    let firstHide = true;
+    let lastBlurAt = 0;
+    let lastWide = isDevtoolsChromeGap(window.outerWidth, window.innerWidth, window.outerHeight, window.innerHeight);
+
     const onVis = () => {
-      if (document.hidden && stepRef.current === "test") {
-        forceSubmit("Tab or window switch detected");
+      if (stepRef.current !== "test") return;
+      if (document.hidden) {
+        hiddenStarted = Date.now();
+        integrityRef.current.tab_hides += 1;
+        if (firstHide) {
+          firstHide = false;
+          setLeaveWarn(true);
+        }
+        ping("tab_hide");
+      } else if (hiddenStarted) {
+        integrityRef.current.hidden_ms += Date.now() - hiddenStarted;
+        hiddenStarted = 0;
+        ping("tab_visible");
       }
     };
 
+    const flushIntegrity = () => {
+      pingIntegrityBeacon(apiBase, attemptTokenRef.current, snap());
+    };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      flushIntegrity();
       e.preventDefault();
       e.returnValue = "";
       return "";
+    };
+    const onPageHide = () => {
+      flushIntegrity();
     };
 
     const onFsChange = () => {
@@ -311,7 +371,6 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
       return false;
     };
 
-    // Completely disable all keyboard input during the test (only mouse selection allowed)
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -319,20 +378,22 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
     };
 
     const onBlur = () => {
-      if (stepRef.current === "test") {
-        forceSubmit("Focus lost: window switch, external application, or extension interaction detected");
-      }
+      if (stepRef.current !== "test") return;
+      const now = Date.now();
+      if (now - lastBlurAt < 2000) return;
+      lastBlurAt = now;
+      integrityRef.current.blurs += 1;
+      ping("blur");
     };
 
     const onResize = () => {
       if (stepRef.current !== "test") return;
-      const threshold = 160;
-      if (
-        window.outerWidth - window.innerWidth > threshold ||
-        window.outerHeight - window.innerHeight > threshold
-      ) {
-        forceSubmit("Developer tools or screen split detected");
+      const wide = isDevtoolsChromeGap(window.outerWidth, window.innerWidth, window.outerHeight, window.innerHeight);
+      if (wide && !lastWide) {
+        integrityRef.current.resize_devtools += 1;
+        ping("resize_devtools");
       }
+      lastWide = wide;
     };
 
     const onClickCapture = (e: MouseEvent) => {
@@ -343,44 +404,18 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
       }
     };
 
-    // Remove or suppress extension injection popups/sidebars/iframes
     const extObserver = new MutationObserver((mutations) => {
       for (const m of mutations) {
         for (const node of Array.from(m.addedNodes)) {
-          if (node instanceof HTMLElement) {
-            const tag = node.tagName.toLowerCase();
-            const id = (node.id || "").toLowerCase();
-            const cls = (node.className && typeof node.className === "string" ? node.className : "").toLowerCase();
-            const src = (node.getAttribute("src") || "").toLowerCase();
-            if (
-              tag === "iframe" ||
-              src.includes("chrome-extension://") ||
-              src.includes("moz-extension://") ||
-              src.includes("edge-extension://") ||
-              tag.includes("-") ||
-              tag.includes("extension") ||
-              tag.includes("monica") ||
-              tag.includes("grammarly") ||
-              tag.includes("translate") ||
-              tag.includes("chatgpt") ||
-              id.includes("extension") ||
-              id.includes("monica") ||
-              id.includes("grammarly") ||
-              id.includes("translate") ||
-              id.includes("chatgpt") ||
-              cls.includes("extension") ||
-              cls.includes("monica") ||
-              cls.includes("grammarly") ||
-              cls.includes("translate") ||
-              cls.includes("chatgpt")
-            ) {
-              try {
-                node.remove();
-              } catch {
-                node.style.display = "none";
-                node.style.pointerEvents = "none";
-              }
-            }
+          if (!(node instanceof HTMLElement)) continue;
+          if (!isExtensionInjection(node)) continue;
+          integrityRef.current.extension_dom += 1;
+          ping("extension_dom");
+          try {
+            node.remove();
+          } catch {
+            node.style.display = "none";
+            node.style.pointerEvents = "none";
           }
         }
       }
@@ -390,7 +425,12 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
       extObserver.observe(document.body, { childList: true, subtree: true });
     } catch {}
 
+    const heartbeat = window.setInterval(() => {
+      if (stepRef.current === "test") ping("heartbeat");
+    }, 30000);
+
     window.addEventListener("beforeunload", onBeforeUnload);
+    window.addEventListener("pagehide", onPageHide);
     window.addEventListener("blur", onBlur);
     window.addEventListener("resize", onResize);
     document.addEventListener("click", onClickCapture, true);
@@ -409,6 +449,7 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
     window.addEventListener("keypress", onKey, true);
 
     return () => {
+      window.clearInterval(heartbeat);
       try {
         document.body.style.userSelect = "";
         (document.body.style as unknown as Record<string, string>).webkitUserSelect = "";
@@ -417,6 +458,7 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
         extObserver.disconnect();
       } catch {}
       window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("resize", onResize);
       document.removeEventListener("click", onClickCapture, true);
@@ -434,6 +476,8 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
       window.removeEventListener("keyup", onKey, true);
       window.removeEventListener("keypress", onKey, true);
     };
+    // forceSubmit / submitAll stay stable enough for fullscreen-exit only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
 
   useEffect(() => {
@@ -443,11 +487,73 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
   }, [remainingSec, step]);
 
   const defaultEyebrow = slug === "syncpedia-assignment" ? "Syncpedia assignment" : "Fresher assignment";
+  const questionHasAnswer = (id: string) => {
+    const value = answers[id];
+    return value != null && String(value).trim() !== "";
+  };
+  const questionNav =
+    step === "test" && questions.length ? (
+      <div className="sf-qnav">
+        <div className="sf-qnav-grid" role="navigation" aria-label="Question numbers">
+          {questions.map((q, i) => {
+            const answered = questionHasAnswer(q.id);
+            const seen = Boolean(visited[q.id]);
+            return (
+              <button
+                key={q.id}
+                type="button"
+                className={cn(
+                  "sf-qnav-num",
+                  answered && "is-answered",
+                  !answered && seen && "is-seen",
+                  i === idx && "is-current",
+                )}
+                onClick={() => setIdx(i)}
+              >
+                {i + 1}
+              </button>
+            );
+          })}
+        </div>
+        <ul className="sf-qnav-legend" aria-label="Question colors">
+          <li>
+            <span className="sf-qnav-legend-swatch" aria-hidden="true" />
+            White — not opened
+          </li>
+          <li>
+            <span className="sf-qnav-legend-swatch is-seen" aria-hidden="true" />
+            Gray — opened, not answered
+          </li>
+          <li>
+            <span className="sf-qnav-legend-swatch is-answered" aria-hidden="true" />
+            Black — answered
+          </li>
+        </ul>
+        <button
+          type="button"
+          className="sf-btn sf-qnav-submit"
+          disabled={busy}
+          onClick={() => void submitAll()}
+        >
+          Submit
+        </button>
+      </div>
+    ) : null;
   const shell = (title: string, desc: string | undefined, body: ReactNode, eyebrow = defaultEyebrow) => (
     <div className={cn("sf-page", step === "test" && "sf-page--test notranslate")} translate="no">
       <div className="sf-topbar">
         <span className="sf-topbar-brand">Syncpedia</span>
       </div>
+      {leaveWarn && step === "test" ? (
+        <div className="sf-leave-warn" role="alertdialog" aria-modal="true">
+          <div className="sf-leave-warn-card">
+            <p>Stay on this page. Further switches are logged for review.</p>
+            <button type="button" className="sf-btn" onClick={() => setLeaveWarn(false)}>
+              Continue
+            </button>
+          </div>
+        </div>
+      ) : null}
       <div className="sf-stage">
         <aside className="sf-side sf-side--left" aria-hidden="true">
           <FresherSideArt variant="left" />
@@ -460,8 +566,11 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
             {body}
           </main>
         </div>
-        <aside className="sf-side sf-side--right" aria-hidden="true">
-          <FresherSideArt variant="right" />
+        <aside
+          className={cn("sf-side sf-side--right", questionNav && "sf-side--nav")}
+          aria-hidden={questionNav ? undefined : true}
+        >
+          {questionNav ?? <FresherSideArt variant="right" />}
         </aside>
       </div>
     </div>
@@ -484,7 +593,9 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
   if (step === "register") {
     return shell(
       "Candidate registration",
-      "Enter your details to begin. Required fields are marked.",
+      isBasics
+        ? "Enter your details and choose a domain. You will answer 10 aptitude + 20 domain questions in 20 minutes."
+        : "Enter your details to begin. Required fields are marked.",
       <div className="sf-fields">
         <div className="sf-field sf-field--half">
           <label className="sf-label">Full name *</label>
@@ -572,6 +683,9 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
                 </option>
               ))}
             </select>
+            <p className="sf-card-desc" style={{ marginTop: 8 }}>
+              The paper is 10 quantitative aptitude + 20 from this domain, in 20 minutes. Questions are chosen at random from 100-question banks.
+            </p>
           </div>
         ) : null}
         <button
@@ -634,7 +748,7 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
         <ul className="sf-list">
           <li key="fs-rule">
             <ShieldAlert className="h-4 w-4" />
-            <span>Full screen mode is mandatory throughout the test duration. Exiting full screen, minimizing, or switching tabs will be detected and will automatically submit your test.</span>
+            <span>Full screen is required. Exiting full screen auto-submits the test. Switching tabs does not end the test, but it is logged for review.</span>
           </li>
           <li key="mouse-only-rule">
             <ShieldAlert className="h-4 w-4" />
@@ -668,6 +782,7 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
               setQuestions(res.questions);
               setEndsAt(res.ends_at ? new Date(res.ends_at).getTime() : null);
               setAnswers({});
+              setVisited({});
               setIdx(0);
               setStep("test");
             } catch (e) {
@@ -709,17 +824,35 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
         <h3 className="sf-q">{displayQuestionPrompt(String(current.prompt || ""))}</h3>
         {current.q_type === "mcq" && current.options ? (
           <div className="sf-options">
-            {Object.entries(current.options).map(([k, text]) => {
+            {(current.option_order?.length
+              ? current.option_order.filter((k) => current.options?.[k] != null)
+              : Object.keys(current.options)
+            ).map((k) => {
+              const text = current.options?.[k];
               const selected = answers[current.id] === k;
               return (
                 <button
                   key={k}
                   type="button"
                   className={cn("sf-option", selected && "active")}
-                  onClick={() => setAnswers((a) => ({ ...a, [current.id]: k }))}
+                  onClick={() => {
+                    const now = Date.now();
+                    const qid = current.id;
+                    if (!firstAnswerAtRef.current[qid]) {
+                      firstAnswerAtRef.current[qid] = true;
+                      if (isFastAnswer(shownAtRef.current[qid] || now, now)) {
+                        integrityRef.current.fast_answers += 1;
+                        pingIntegrityBeacon(getApiBase(), attemptTokenRef.current, {
+                          ...integrityRef.current,
+                          event: { type: "fast_answer", at: new Date().toISOString(), question_id: qid },
+                        });
+                      }
+                    }
+                    setAnswers((a) => ({ ...a, [qid]: k }));
+                  }}
                 >
                   <strong>{k.toUpperCase()}.</strong>
-                  {text}
+                  <span>{text}</span>
                 </button>
               );
             })}
@@ -734,19 +867,14 @@ export default function SyncpediaFresherAssessmentPage({ defaultSlug = SLUG }: S
           >
             Previous
           </button>
-          {idx < questions.length - 1 ? (
-            <button
-              type="button"
-              className="sf-btn"
-              onClick={() => setIdx((i) => Math.min(questions.length - 1, i + 1))}
-            >
-              Next
-            </button>
-          ) : (
-            <button type="button" className="sf-btn" disabled={busy} onClick={() => void submitAll()}>
-              Submit test
-            </button>
-          )}
+          <button
+            type="button"
+            className="sf-btn"
+            disabled={idx >= questions.length - 1}
+            onClick={() => setIdx((i) => Math.min(questions.length - 1, i + 1))}
+          >
+            Next
+          </button>
         </div>
       </>,
     );

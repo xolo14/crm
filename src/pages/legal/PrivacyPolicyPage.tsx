@@ -56,8 +56,10 @@ export default function PrivacyPolicyPage() {
           security and troubleshooting.
         </li>
         <li>
-          <strong>Payment-related data</strong> — where payment links are used, transaction references processed
-          through third-party payment providers (we do not store full card numbers).
+          <strong>Candidate video introductions</strong> — name and contact details entered by organisation staff,
+          plus a camera-and-microphone recording the candidate submits through a private invitation link. Recordings
+          are stored on the organisation’s private server (not Google Cloud, not as public URLs) for 90 days, then
+          the video file is deleted. Invitation details may remain in the CRM.
         </li>
       </ul>
 

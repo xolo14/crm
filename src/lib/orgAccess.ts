@@ -9,6 +9,7 @@ import {
   FEATURE_OFFER_LETTERS,
   FEATURE_CERTIFICATES,
   FEATURE_PAYSLIP,
+  FEATURE_VIDEO_INTROS,
   isOrgFeatureEnabled,
 } from "./orgFeatures";
 import { normalizeAppRole } from "./roleUtils";
@@ -35,6 +36,7 @@ export {
   FEATURE_PAYSLIP,
   FEATURE_FORM_MANAGEMENT,
   FEATURE_MARKETING,
+  FEATURE_VIDEO_INTROS,
 } from "./orgFeatures";
 
 export { isSyncpediaOrganization, isOrgFeatureEnabled, isPathAllowedByOrgFeatures, featureKeyForPath } from "./orgFeatures";
@@ -88,6 +90,25 @@ export function canAccessOfferLetters(
     const allowed = fromPages === null ? normalized.offer_letters : fromPages;
     if (!allowed) return false;
     return isOrgFeatureEnabled(role, org, FEATURE_OFFER_LETTERS);
+  }
+  return false;
+}
+
+/** Video introductions: Super Admin + Org Admin; managers / OM when page grant is on. */
+export function canAccessVideoIntros(
+  role: string | null,
+  org: OrgAccessLite | null,
+  pageAccess?: PageAccess | null,
+): boolean {
+  const r = normalizeAppRole(role);
+  if (r === "super_admin") return true;
+  if (!isOrgFeatureEnabled(role, org, FEATURE_VIDEO_INTROS)) return false;
+  if (r === "org") return true;
+  if (r === "manager") {
+    return managerPagesAllow(pageAccess, FEATURE_VIDEO_INTROS);
+  }
+  if (r === "operational_manager") {
+    return operationalManagerHasPageAccess(pageAccess, FEATURE_VIDEO_INTROS);
   }
   return false;
 }

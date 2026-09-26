@@ -39,6 +39,7 @@ $allowedPrefixes = [
     '/uploads/org_logos/',
     '/uploads/org_payment_qr/',
     '/uploads/recordings/',
+    '/uploads/video_intros/',
 ];
 $okPrefix = false;
 foreach ($allowedPrefixes as $prefix) {

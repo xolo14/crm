@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { phpList, inDateRange } from '@/lib/phpList';
@@ -6,18 +6,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
-import { useIsMobile } from '@/hooks/use-mobile';
 import {
-  Mail, Send, AlertTriangle, Clock, Users, Eye, Loader2,
-  BarChart3, Filter, Calendar, TrendingUp, CheckCircle2, XCircle, Search,
-  MessageSquare, UserPlus, Shuffle
+  Mail, Send, Loader2,
+  BarChart3, Filter, Clock, CheckCircle2, XCircle, Search,
+  MessageSquare
 } from 'lucide-react';
 import { format, subDays, startOfDay, endOfDay, startOfWeek, endOfWeek } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
@@ -33,35 +29,18 @@ interface MarketingMember {
   created_at: string;
 }
 
-interface CampaignStats {
-  total_campaigns: number;
-  total_sent: number;
-  total_failed: number;
-  total_pending: number;
-}
-
-interface MemberStats {
-  member_id: string;
-  member_name: string;
-  member_email: string;
-  total_campaigns: number;
-  total_sent: number;
-  total_failed: number;
-  total_pending: number;
-}
-
 export default function MarketingDashboard() {
-  const { role, user } = useAuth();
+  const { role } = useAuth();
   const { toast } = useToast();
-  const isMobile = useIsMobile();
   const navigate = useNavigate();
 
   const [members, setMembers] = useState<MarketingMember[]>([]);
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [sends, setSends] = useState<any[]>([]);
   const [waCampaigns, setWaCampaigns] = useState<any[]>([]);
+  const [waSends, setWaSends] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState('campaigns');
 
   // Filters
   const [memberFilter, setMemberFilter] = useState('all');
@@ -69,14 +48,8 @@ export default function MarketingDashboard() {
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Lead assignment
-  const [formLeads, setFormLeads] = useState<any[]>([]);
-  const [formLeadAssignments, setFormLeadAssignments] = useState<Record<string, string[]>>({});
-  const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
-  const [assignMemberId, setAssignMemberId] = useState('');
-  const [showAssignDialog, setShowAssignDialog] = useState(false);
-  const [assigning, setAssigning] = useState(false);
+  const [waSearchQuery, setWaSearchQuery] = useState('');
+  const [scheduledSearch, setScheduledSearch] = useState('');
 
   const normalizedRole = normalizeAppRole(role);
   const canFilterByMember = normalizedRole === 'super_admin' || isL3AdminRole(normalizedRole);
@@ -193,18 +166,12 @@ export default function MarketingDashboard() {
         setSends([]);
       }
 
-      const leadsRes = await api.leads.list({ form_leads: true });
-      setFormLeads(phpList(leadsRes));
-
-      // Fetch lead assignment map for cases where assigned_to isn't directly set
-      const assignmentRes = await api.leadAssignments.list();
-      const assignmentRows = assignmentRes?.data || [];
-      const assignmentMap: Record<string, string[]> = {};
-      (assignmentRows || []).forEach((a: any) => {
-        if (!assignmentMap[a.lead_id]) assignmentMap[a.lead_id] = [];
-        assignmentMap[a.lead_id].push(a.user_id);
-      });
-      setFormLeadAssignments(assignmentMap);
+      if (waData.length > 0) {
+        const waSendsRes = await api.marketing.whatsappSends(waData.map((c) => c.id));
+        setWaSends(phpList(waSendsRes));
+      } else {
+        setWaSends([]);
+      }
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
     } finally {
@@ -217,7 +184,6 @@ export default function MarketingDashboard() {
   const totalSent = campaigns.reduce((sum, c) => sum + (c.sent_count || 0), 0);
   const totalFailed = campaigns.reduce((sum, c) => sum + (c.failed_count || 0), 0);
   const totalPending = campaigns.reduce((sum, c) => sum + (c.pending_count || 0), 0);
-  const totalEmails = totalSent + totalFailed + totalPending;
 
   // WhatsApp stats
   const waTotalCampaigns = waCampaigns.length;
@@ -225,60 +191,121 @@ export default function MarketingDashboard() {
   const waTotalFailed = waCampaigns.reduce((sum, c) => sum + (c.failed_count || 0), 0);
   const waTotalPending = waCampaigns.reduce((sum, c) => sum + (c.pending_count || 0), 0);
 
-  // Member-wise stats
-  const memberStats: MemberStats[] = members.map(m => {
-    const memberCampaigns = campaigns.filter(c => c.created_by === m.id || c.created_by === m.user_id);
-    const memberWaCampaigns = waCampaigns.filter(c => c.created_by === m.id || c.created_by === m.user_id);
-    return {
-      member_id: m.id,
-      member_name: m.name,
-      member_email: m.email,
-      total_campaigns: memberCampaigns.length + memberWaCampaigns.length,
-      total_sent: memberCampaigns.reduce((s, c) => s + (c.sent_count || 0), 0) + memberWaCampaigns.reduce((s, c) => s + (c.sent_count || 0), 0),
-      total_failed: memberCampaigns.reduce((s, c) => s + (c.failed_count || 0), 0) + memberWaCampaigns.reduce((s, c) => s + (c.failed_count || 0), 0),
-      total_pending: memberCampaigns.reduce((s, c) => s + (c.pending_count || 0), 0) + memberWaCampaigns.reduce((s, c) => s + (c.pending_count || 0), 0),
-    };
-  });
-
   const filteredSends = searchQuery
     ? sends.filter(s => s.recipient_email?.toLowerCase().includes(searchQuery.toLowerCase()))
     : sends;
 
-  // Lead assignment
-  const unassignedLeads = formLeads.filter(l => !l.assigned_to && !(formLeadAssignments[l.id]?.length > 0));
-  const handleAssignLeads = async () => {
-    if (selectedLeadIds.size === 0 || !assignMemberId) return;
-    setAssigning(true);
-    try {
-      const member = members.find(m => m.id === assignMemberId);
-      if (!member) throw new Error('Member not found');
-      for (const leadId of selectedLeadIds) {
-        // Keep legacy compatibility field
-        await api.leads.update(leadId, { assigned_to: member.user_id || member.id });
-        // Keep assignment relation in sync for reporting screens
-        const existing = await api.leadAssignments.list(leadId);
-        for (const a of existing?.data || []) {
-          if (a?.id) await api.leadAssignments.delete(a.id);
-        }
-        await api.leadAssignments.assign({ lead_id: leadId, user_id: member.id });
-      }
-      toast({ title: `${selectedLeadIds.size} leads assigned to ${member.name}` });
-      setSelectedLeadIds(new Set());
-      setShowAssignDialog(false);
-      setAssignMemberId('');
-      fetchData();
-    } catch (err: any) {
-      toast({ variant: 'destructive', title: 'Error', description: err.message });
-    } finally { setAssigning(false); }
+  const filteredWaSends = waSearchQuery
+    ? waSends.filter((s) => String(s.recipient_phone || '').toLowerCase().includes(waSearchQuery.toLowerCase()))
+    : waSends;
+
+  const campaignTitle = (list: any[], id: string, fallback: string) => {
+    const c = list.find((row) => row.id === id);
+    return String(c?.subject || c?.name || fallback);
   };
 
-  const toggleLeadSelect = (id: string) => {
-    setSelectedLeadIds(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const scheduledRows = (() => {
+    const emailByCampaign = new Map(campaigns.map((c) => [c.id, c]));
+    const waByCampaign = new Map(waCampaigns.map((c) => [c.id, c]));
+    const rows: Array<{
+      id: string;
+      channel: 'email' | 'whatsapp';
+      title: string;
+      recipient: string;
+      scheduledAt: string | null;
+      status: string;
+    }> = [];
+
+    const isQueued = (status: unknown) => {
+      const s = String(status || '').toLowerCase();
+      return s === 'pending' || s === 'scheduled' || s === 'queued';
+    };
+
+    for (const s of sends) {
+      if (!isQueued(s.status)) continue;
+      rows.push({
+        id: `email-send-${s.id}`,
+        channel: 'email',
+        title: campaignTitle(campaigns, s.campaign_id, 'Email campaign'),
+        recipient: String(s.recipient_email || '—'),
+        scheduledAt: s.scheduled_at || emailByCampaign.get(s.campaign_id)?.scheduled_at || null,
+        status: String(s.status || 'pending'),
+      });
+    }
+
+    for (const s of waSends) {
+      if (!isQueued(s.status)) continue;
+      rows.push({
+        id: `wa-send-${s.id}`,
+        channel: 'whatsapp',
+        title: campaignTitle(waCampaigns, s.campaign_id, 'WhatsApp campaign'),
+        recipient: String(s.recipient_phone || '—'),
+        scheduledAt: s.scheduled_at || waByCampaign.get(s.campaign_id)?.scheduled_at || null,
+        status: String(s.status || 'pending'),
+      });
+    }
+
+    for (const c of campaigns) {
+      if (!isQueued(c.status) && !c.scheduled_at) continue;
+      if (sends.some((s) => s.campaign_id === c.id && isQueued(s.status))) continue;
+      if (!isQueued(c.status) && !(Number(c.pending_count || 0) > 0)) continue;
+      rows.push({
+        id: `email-campaign-${c.id}`,
+        channel: 'email',
+        title: String(c.subject || 'Email campaign'),
+        recipient: `${c.pending_count || c.recipient_count || 0} recipient(s)`,
+        scheduledAt: c.scheduled_at || null,
+        status: String(c.status || 'pending'),
+      });
+    }
+
+    for (const c of waCampaigns) {
+      if (!isQueued(c.status) && !c.scheduled_at) continue;
+      if (waSends.some((s) => s.campaign_id === c.id && isQueued(s.status))) continue;
+      if (!isQueued(c.status) && !(Number(c.pending_count || 0) > 0)) continue;
+      rows.push({
+        id: `wa-campaign-${c.id}`,
+        channel: 'whatsapp',
+        title: String(c.subject || 'WhatsApp campaign'),
+        recipient: `${c.pending_count || c.recipient_count || 0} recipient(s)`,
+        scheduledAt: c.scheduled_at || null,
+        status: String(c.status || 'pending'),
+      });
+    }
+
+    rows.sort((a, b) => {
+      const at = a.scheduledAt ? new Date(a.scheduledAt).getTime() : Number.MAX_SAFE_INTEGER;
+      const bt = b.scheduledAt ? new Date(b.scheduledAt).getTime() : Number.MAX_SAFE_INTEGER;
+      return at - bt;
+    });
+    return rows;
+  })();
+
+  const filteredScheduled = scheduledSearch
+    ? scheduledRows.filter((row) => {
+        const q = scheduledSearch.toLowerCase();
+        return (
+          row.title.toLowerCase().includes(q) ||
+          row.recipient.toLowerCase().includes(q) ||
+          row.channel.includes(q)
+        );
+      })
+    : scheduledRows;
+
+  const formatWhen = (value?: string | null) => {
+    if (!value) return '—';
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? '—' : format(d, 'dd MMM yyyy HH:mm');
   };
-  const toggleAllLeads = () => {
-    if (selectedLeadIds.size === unassignedLeads.length) setSelectedLeadIds(new Set());
-    else setSelectedLeadIds(new Set(unassignedLeads.map(l => l.id)));
-  };
+
+  const statusBadge = (status: string) => (
+    <Badge variant="outline" className={
+      status === 'sent' || status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+      status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
+      status === 'sending' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+      'bg-amber-50 text-amber-700 border-amber-200'
+    }>{status}</Badge>
+  );
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
@@ -292,7 +319,7 @@ export default function MarketingDashboard() {
             Marketing Dashboard
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-0.5">
-            Email & WhatsApp campaigns, templates, member activity & analytics
+            Email & WhatsApp campaigns and send analytics
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -385,10 +412,10 @@ export default function MarketingDashboard() {
             <p className="text-xl md:text-2xl font-bold text-red-600">{totalFailed + waTotalFailed}</p>
           </CardContent>
         </Card>
-        <Card className="border-l-4 border-l-blue-500">
+        <Card className="border-l-4 border-l-amber-500">
           <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 mb-1"><Users className="h-4 w-4 text-blue-500" /><span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Unassigned Leads</span></div>
-            <p className="text-xl md:text-2xl font-bold text-blue-600">{unassignedLeads.length}</p>
+            <div className="flex items-center gap-2 mb-1"><Clock className="h-4 w-4 text-amber-500" /><span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Pending</span></div>
+            <p className="text-xl md:text-2xl font-bold text-amber-600">{totalPending + waTotalPending}</p>
           </CardContent>
         </Card>
       </div>
@@ -396,56 +423,12 @@ export default function MarketingDashboard() {
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="w-full md:w-auto overflow-x-auto">
-          <TabsTrigger value="overview" className="text-xs">Members</TabsTrigger>
-          <TabsTrigger value="assign_leads" className="text-xs">Assign Leads</TabsTrigger>
           <TabsTrigger value="campaigns" className="text-xs">Email Campaigns</TabsTrigger>
           <TabsTrigger value="wa_campaigns" className="text-xs">WA Campaigns</TabsTrigger>
           <TabsTrigger value="email_log" className="text-xs">Email Log</TabsTrigger>
+          <TabsTrigger value="wa_log" className="text-xs">WhatsApp Log</TabsTrigger>
+          <TabsTrigger value="scheduled" className="text-xs">Scheduled</TabsTrigger>
         </TabsList>
-
-        {/* Members Overview */}
-        <TabsContent value="overview">
-          <Card>
-            <CardHeader className="py-3 px-4">
-              <CardTitle className="text-sm flex items-center gap-2"><Users className="h-4 w-4" />Marketing Members Activity</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-xs">Member</TableHead>
-                      <TableHead className="text-xs">Email</TableHead>
-                      <TableHead className="text-xs text-center">Campaigns</TableHead>
-                      <TableHead className="text-xs text-center">Sent</TableHead>
-                      <TableHead className="text-xs text-center">Failed</TableHead>
-                      <TableHead className="text-xs text-center">Pending</TableHead>
-                      <TableHead className="text-xs">Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {memberStats.length === 0 ? (
-                      <TableRow><TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-8">No marketing members yet</TableCell></TableRow>
-                    ) : memberStats.map(ms => {
-                      const member = members.find(m => m.id === ms.member_id);
-                      return (
-                        <TableRow key={ms.member_id}>
-                          <TableCell className="text-sm font-medium">{ms.member_name}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{ms.member_email}</TableCell>
-                          <TableCell className="text-center text-sm">{ms.total_campaigns}</TableCell>
-                          <TableCell className="text-center"><Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">{ms.total_sent}</Badge></TableCell>
-                          <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{ms.total_failed}</Badge></TableCell>
-                          <TableCell className="text-center"><Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-xs">{ms.total_pending}</Badge></TableCell>
-                          <TableCell><Badge className={member?.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'} variant="outline">{member?.status || 'active'}</Badge></TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
 
         {/* Campaigns */}
         <TabsContent value="campaigns">
@@ -522,14 +505,8 @@ export default function MarketingDashboard() {
                     ) : filteredSends.slice(0, 100).map(s => (
                       <TableRow key={s.id}>
                         <TableCell className="text-sm">{s.recipient_email}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className={
-                            s.status === 'sent' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            s.status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-amber-50 text-amber-700 border-amber-200'
-                          }>{s.status}</Badge>
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
+                        <TableCell>{statusBadge(String(s.status || 'pending'))}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{s.sent_at ? formatWhen(s.sent_at) : '—'}</TableCell>
                         <TableCell className="text-xs text-red-500 max-w-[200px] truncate">{s.error_message || '—'}</TableCell>
                       </TableRow>
                     ))}
@@ -539,17 +516,17 @@ export default function MarketingDashboard() {
             </CardContent>
           </Card>
         </TabsContent>
-        {/* Assign Leads */}
-        <TabsContent value="assign_leads">
+
+        {/* WhatsApp Log */}
+        <TabsContent value="wa_log">
           <Card>
             <CardHeader className="py-3 px-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <CardTitle className="text-sm flex items-center gap-2"><UserPlus className="h-4 w-4" />Assign Leads to Marketing Members</CardTitle>
-                {selectedLeadIds.size > 0 && (
-                  <Button size="sm" className="gap-1.5" onClick={() => setShowAssignDialog(true)}>
-                    <Shuffle className="h-3.5 w-3.5" />Assign {selectedLeadIds.size} Leads
-                  </Button>
-                )}
+                <CardTitle className="text-sm flex items-center gap-2"><MessageSquare className="h-4 w-4 text-emerald-500" />WhatsApp Log</CardTitle>
+                <div className="relative w-full sm:w-64">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input placeholder="Search by phone..." value={waSearchQuery} onChange={e => setWaSearchQuery(e.target.value)} className="pl-8 h-8 text-xs" />
+                </div>
               </div>
             </CardHeader>
             <CardContent className="p-0">
@@ -557,38 +534,70 @@ export default function MarketingDashboard() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-8"><Checkbox checked={unassignedLeads.length > 0 && selectedLeadIds.size === unassignedLeads.length} onCheckedChange={toggleAllLeads} /></TableHead>
-                      <TableHead className="text-xs">Name</TableHead>
-                      <TableHead className="text-xs">Email</TableHead>
-                      <TableHead className="text-xs">Phone</TableHead>
-                      <TableHead className="text-xs">Source</TableHead>
+                      <TableHead className="text-xs">Phone Number</TableHead>
                       <TableHead className="text-xs">Status</TableHead>
-                      <TableHead className="text-xs">Assigned To</TableHead>
+                      <TableHead className="text-xs">Sent At</TableHead>
+                      <TableHead className="text-xs">Error</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {formLeads.length === 0 ? (
-                      <TableRow><TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-8">No form leads found</TableCell></TableRow>
-                    ) : formLeads.slice(0, 100).map(l => {
-                      const fallbackAssignedUserId = (formLeadAssignments[l.id] || [])[0];
-                      const assignedMember = members.find(m =>
-                        m.id === l.assigned_to ||
-                        m.user_id === l.assigned_to ||
-                        m.id === fallbackAssignedUserId ||
-                        m.user_id === fallbackAssignedUserId
-                      );
-                      return (
-                        <TableRow key={l.id}>
-                          <TableCell><Checkbox checked={selectedLeadIds.has(l.id)} onCheckedChange={() => toggleLeadSelect(l.id)} disabled={!!l.assigned_to || !!(formLeadAssignments[l.id]?.length)} /></TableCell>
-                          <TableCell className="text-sm font-medium">{l.name}</TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{l.email || '—'}</TableCell>
-                          <TableCell className="text-xs">{l.phone || '—'}</TableCell>
-                          <TableCell><Badge variant="outline" className="text-[10px]">{l.source || 'other'}</Badge></TableCell>
-                          <TableCell><Badge variant="outline" className="text-[10px]">{l.status || 'new'}</Badge></TableCell>
-                          <TableCell className="text-xs">{assignedMember ? <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-[10px]">{assignedMember.name}</Badge> : <span className="text-muted-foreground">Unassigned</span>}</TableCell>
-                        </TableRow>
-                      );
-                    })}
+                    {filteredWaSends.length === 0 ? (
+                      <TableRow><TableCell colSpan={4} className="text-center text-sm text-muted-foreground py-8">No WhatsApp records found</TableCell></TableRow>
+                    ) : filteredWaSends.slice(0, 100).map((s) => (
+                      <TableRow key={s.id}>
+                        <TableCell className="text-sm font-mono">{s.recipient_phone || '—'}</TableCell>
+                        <TableCell>{statusBadge(String(s.status || 'pending'))}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{s.sent_at ? formatWhen(s.sent_at) : '—'}</TableCell>
+                        <TableCell className="text-xs text-red-500 max-w-[200px] truncate">{s.error_message || '—'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Scheduled */}
+        <TabsContent value="scheduled">
+          <Card>
+            <CardHeader className="py-3 px-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <CardTitle className="text-sm flex items-center gap-2"><Clock className="h-4 w-4 text-amber-500" />Scheduled sends</CardTitle>
+                <div className="relative w-full sm:w-64">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input placeholder="Search scheduled..." value={scheduledSearch} onChange={e => setScheduledSearch(e.target.value)} className="pl-8 h-8 text-xs" />
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs">Channel</TableHead>
+                      <TableHead className="text-xs">Campaign</TableHead>
+                      <TableHead className="text-xs">Recipient</TableHead>
+                      <TableHead className="text-xs">Send at</TableHead>
+                      <TableHead className="text-xs">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredScheduled.length === 0 ? (
+                      <TableRow><TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-8">No scheduled campaigns in this date range</TableCell></TableRow>
+                    ) : filteredScheduled.slice(0, 100).map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell>
+                          <Badge variant="outline" className={row.channel === 'whatsapp' ? 'border-emerald-200 text-emerald-700 text-[10px]' : 'text-[10px]'}>
+                            {row.channel === 'whatsapp' ? 'WhatsApp' : 'Email'}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-sm font-medium max-w-[220px] truncate">{row.title}</TableCell>
+                        <TableCell className="text-xs">{row.recipient}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{formatWhen(row.scheduledAt)}</TableCell>
+                        <TableCell>{statusBadge(row.status)}</TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               </div>
@@ -642,32 +651,6 @@ export default function MarketingDashboard() {
           </Card>
         </TabsContent>
       </Tabs>
-
-      {/* Assign Dialog */}
-      <Dialog open={showAssignDialog} onOpenChange={setShowAssignDialog}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Assign {selectedLeadIds.size} Leads to Marketing Member</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <Label className="text-xs">Select Marketing Member</Label>
-              <Select value={assignMemberId} onValueChange={setAssignMemberId}>
-                <SelectTrigger className="mt-1"><SelectValue placeholder="Choose member" /></SelectTrigger>
-                <SelectContent>
-                  {members.filter(m => m.status === 'active').map(m => (
-                    <SelectItem key={m.id} value={m.id}>{m.name} ({m.email})</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <DialogFooter>
-              <Button onClick={handleAssignLeads} disabled={assigning || !assignMemberId} className="w-full gap-1.5">
-                {assigning && <Loader2 className="h-4 w-4 animate-spin" />}
-                Assign Leads
-              </Button>
-            </DialogFooter>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

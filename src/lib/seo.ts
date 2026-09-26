@@ -3,7 +3,7 @@
 export const SEO_SITE_NAME = "Syncpedia";
 export const SEO_MARKETING_ORIGIN = "https://syncpedia.in";
 export const SEO_CRM_ORIGIN = "https://crm.syncpedia.in";
-export const SEO_DEFAULT_OG_IMAGE = `${SEO_CRM_ORIGIN}/logo.png`;
+export const SEO_DEFAULT_OG_IMAGE = `${SEO_CRM_ORIGIN}/og-default.png?v=20260924`;
 
 export type PageMetaInput = {
   title: string;
@@ -94,7 +94,7 @@ export function isPublicIndexablePath(pathname: string): boolean {
 
 export function defaultCrmNoIndexMeta() {
   setPageMeta({
-    title: "Syncpedia CRM — Login",
+    title: "Syncpedia CRM",
     description: "Internal CRM for Syncpedia partner organizations. Not a public marketing site.",
     robots: "noindex, nofollow",
   });
@@ -133,6 +133,15 @@ export function applyRouteMeta(pathname: string, search: string) {
     return;
   }
 
+  if (pathname.startsWith("/intro/")) {
+    setPageMeta({
+      title: "Video introduction | Syncpedia",
+      description: "Record a short video introduction for a hiring team.",
+      robots: "noindex, nofollow",
+    });
+    return;
+  }
+
   if (pathname === "/apply" || pathname.startsWith("/apply/")) {
     const params = new URLSearchParams(search);
     const formSlug = params.get("form")?.trim();
@@ -151,7 +160,7 @@ export function applyRouteMeta(pathname: string, search: string) {
       robots: "index, follow",
       ogImage: formSlug
         ? `${base}/api/public-og-image.php?form=${encodeURIComponent(formSlug)}`
-        : `${base}/logo.png`,
+        : `${base}/og-default.png?v=20260924`,
       jsonLd: formSlug
         ? {
             "@context": "https://schema.org",

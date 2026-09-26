@@ -6,13 +6,14 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X, Download } from 'lucide-react';
+import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import { BulkAssignDialog } from '@/components/BulkAssignDialog';
 import { SOURCE_BUCKET_LABELS, getPeaklyyAttemptCount, isAddedSourceBucket, isPeaklyySourceBucket, type LeadSourceBucket } from '@/lib/leadSources';
 import { cn } from '@/lib/utils';
 import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
 
 const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
+const SOURCE_CARD_PAGE_SIZES = [50, 100, 200] as const;
 
 const formatLeadStatus = (s?: string | null) => {
   if (!s) return 'New';
@@ -116,8 +117,11 @@ export function SourceLeadsDialog({
   const [autoAssignOpen, setAutoAssignOpen] = useState(false);
   const [undoSnapshot, setUndoSnapshot] = useState<BulkAssignUndoSnapshot[] | null>(null);
   const [undoing, setUndoing] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<(typeof SOURCE_CARD_PAGE_SIZES)[number]>(50);
   const wasOpenRef = useRef(false);
   const lastSourceKeyRef = useRef(sourceKey);
+  const listScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) {
@@ -138,6 +142,8 @@ export function SourceLeadsDialog({
       setAssigneeFilter('all');
       setSelectedIds(new Set());
       setAutoAssignOpen(false);
+      setCurrentPage(1);
+      setPageSize(50);
     } else {
       setStatusFilter(initialStatus || 'all');
     }
@@ -213,6 +219,47 @@ export function SourceLeadsDialog({
       return matchSearch && matchStatus && matchUnassigned && matchAssignee;
     });
   }, [leads, search, statusFilter, unassignedOnly, assigneeFilter, currentUserId, getLeadAssignedIds]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, statusFilter, unassignedOnly, assigneeFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(Math.max(1, currentPage), totalPages);
+  const paginatedLeads = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, safePage, pageSize]);
+
+  const setPageSizeFromSelect = (value: string) => {
+    const next = Number(value);
+    if (next === 50 || next === 100 || next === 200) {
+      setPageSize(next);
+      setCurrentPage(1);
+      listScrollRef.current?.scrollTo({ top: 0 });
+    }
+  };
+
+  const goToPage = (page: number) => {
+    const next = Math.min(Math.max(1, page), totalPages);
+    setCurrentPage(next);
+    listScrollRef.current?.scrollTo({ top: 0 });
+  };
+
+  const pageButtons = (() => {
+    const maxButtons = 5;
+    const pages: number[] = [];
+    if (totalPages <= maxButtons) {
+      for (let i = 1; i <= totalPages; i += 1) pages.push(i);
+    } else if (safePage <= 3) {
+      for (let i = 1; i <= maxButtons; i += 1) pages.push(i);
+    } else if (safePage >= totalPages - 2) {
+      for (let i = totalPages - maxButtons + 1; i <= totalPages; i += 1) pages.push(i);
+    } else {
+      for (let i = safePage - 2; i <= safePage + 2; i += 1) pages.push(i);
+    }
+    return pages;
+  })();
 
   const canSelect = canBulkAssign || canBulkDelete;
   const allSelected = filtered.length > 0 && selectedIds.size === filtered.length;
@@ -482,6 +529,7 @@ export function SourceLeadsDialog({
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs text-muted-foreground">
                   {filtered.length} of {leads.length} in this source
+                  {filtered.length > pageSize ? ` · page ${safePage} of ${totalPages}` : ''}
                 </p>
                 {canSelect && filtered.length > 0 && (
                   <button
@@ -495,7 +543,7 @@ export function SourceLeadsDialog({
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 py-3">
+            <div ref={listScrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 py-3">
               <div className="md:hidden space-y-2.5 pb-2">
                 {filtered.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-14">
@@ -503,7 +551,7 @@ export function SourceLeadsDialog({
                     <p className="text-sm text-muted-foreground">No leads in this view</p>
                   </div>
                 ) : (
-                  filtered.map((lead) => {
+                  paginatedLeads.map((lead) => {
                     const names = getLeadAssignedNames(lead);
                     const assignedLabel =
                       names.length > 0 ? names.join(', ') : lead.assigned_to ? 'Assigned' : 'Unassigned';
@@ -660,7 +708,7 @@ export function SourceLeadsDialog({
                         </TableCell>
                       </TableRow>
                     ) : (
-                      filtered.map((lead) => {
+                      paginatedLeads.map((lead) => {
                         const isActive = selectedLeadId && String(selectedLeadId) === String(lead.id);
                         return (
                           <TableRow
@@ -788,6 +836,65 @@ export function SourceLeadsDialog({
                 </Table>
               </div>
             </div>
+            {(filtered.length > 50 || pageSize !== 50) && (
+              <div className="shrink-0 flex flex-col sm:flex-row items-center justify-between gap-2 px-4 sm:px-5 py-2.5 border-t border-border bg-card">
+                <p className="text-xs text-muted-foreground">
+                  Showing {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filtered.length)} of {filtered.length}
+                </p>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-muted-foreground mr-1 tabular-nums whitespace-nowrap">
+                    Page {safePage} of {totalPages}
+                  </span>
+                  <Select value={String(pageSize)} onValueChange={setPageSizeFromSelect}>
+                    <SelectTrigger
+                      className="h-8 w-9 shrink-0 p-0 justify-center gap-0 text-xs font-medium [&>svg]:hidden"
+                      aria-label="Leads per page"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent container={portalEl} className="z-[110] min-w-[4.5rem]">
+                      {SOURCE_CARD_PAGE_SIZES.map((n) => (
+                        <SelectItem key={n} value={String(n)} className="text-xs justify-center">
+                          {n}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-10 w-10 max-md:h-11 max-md:w-11"
+                    disabled={safePage === 1}
+                    onClick={() => goToPage(safePage - 1)}
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  {pageButtons.map((page) => (
+                    <button
+                      key={page}
+                      type="button"
+                      onClick={() => goToPage(page)}
+                      className={`h-8 w-8 rounded-md text-xs font-medium transition-colors ${
+                        safePage === page ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'
+                      }`}
+                    >
+                      {page}
+                    </button>
+                  ))}
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="h-10 w-10 max-md:h-11 max-md:w-11"
+                    disabled={safePage === totalPages}
+                    onClick={() => goToPage(safePage + 1)}
+                    aria-label="Next page"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
           </section>
 
           {showDetail ? (

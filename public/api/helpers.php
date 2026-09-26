@@ -63,7 +63,7 @@ function cors() {
         header('Vary: Origin');
     }
     header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Lead-Api-Key, X-Form-Api-Key, X-Assessment-Api-Key, X-Peaklyy-Api-Key, X-Cron-Key");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Lead-Api-Key, X-Form-Api-Key, X-Assessment-Api-Key, X-Peaklyy-Api-Key, X-Cron-Key, X-Coupon-Api-Key, X-Intro-Token, X-Upload-Session, X-Chunk-Offset");
     header("Content-Type: application/json; charset=UTF-8");
 
     if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -604,6 +604,7 @@ function syncpediaImplementedOrgFeatures(): array
         'offer_letters',
         'fresher_salary',
         'timetables',
+        'video_intros',
     ];
 }
 
@@ -767,6 +768,38 @@ function tenantTaskListScopeSql(PDO $db, array $tokenData): array
 }
 
 /**
+ * Coupons list: org/admin/OM see tenant; managers see self + downline created_by; L1 see own.
+ *
+ * @return array{sql: string, params: array}
+ */
+function tenantCouponListScopeSql(PDO $db, array $tokenData): array
+{
+    $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $userId = (string) ($tokenData['user_id'] ?? '');
+
+    if (tenantIsMasterView($tokenData)) {
+        return ['sql' => '', 'params' => []];
+    }
+
+    $org = tenantOrgScopeSql($db, $tokenData, 'c');
+    if (in_array($effRole, ['admin', 'org', 'operational_manager'], true)) {
+        return $org;
+    }
+    if (hierarchyRoleUsesDownlineScope($tokenData)) {
+        $ids = hierarchyGetVisibleUserIds($db, $tokenData);
+        $in = hierarchyBuildInClause('c.created_by', $ids);
+        return ['sql' => $org['sql'] . $in['sql'], 'params' => array_merge($org['params'], $in['params'])];
+    }
+    if ($userId === '') {
+        return ['sql' => ' AND 1=0', 'params' => []];
+    }
+    return [
+        'sql' => $org['sql'] . ' AND c.created_by = ?',
+        'params' => array_merge($org['params'], [$userId]),
+    ];
+}
+
+/**
  * Daily reports list scope: tenant org + hierarchy.
  * Align with leads: managers / org / OM see the full tenant; sales see own rows only.
  *
@@ -801,7 +834,8 @@ function tenantDailyReportsScopeSql(PDO $db, array $tokenData): array
 
     // Match report.org_id OR any report filed by a user in this tenant
     // (covers NULL / mismatched org_id on older rows).
-    $sql = ' AND (dr.org_id = ? OR dr.user_id IN (SELECT id FROM users WHERE org_id = ?))';
+    $sql = ' AND (dr.org_id = ? OR dr.user_id IN (SELECT id FROM users WHERE org_id = ?))'
+        . ' AND EXISTS (SELECT 1 FROM users ux WHERE ux.id = dr.user_id)';
     $params = [$orgId, $orgId];
 
     if (in_array($effRole, ['sales_representative'], true)) {
@@ -3458,6 +3492,39 @@ function userCanAccessOfferLettersPage(array $tokenData, ?array $userRow = null,
     return !empty($access['offer_letters']);
 }
 
+/**
+ * Video introductions: Super Admin + Org Admin always.
+ * Manager: legacy empty pages map = allowed; otherwise pages.video_intros.
+ * Operational Manager: explicit page grant only (not auto-granted).
+ */
+function userCanAccessVideoIntrosPage(array $tokenData, ?array $userRow = null): bool
+{
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ($userRow['role'] ?? '')));
+    if (in_array($role, ['super_admin', 'org', 'admin'], true)) {
+        return true;
+    }
+    $access = null;
+    if (is_array($userRow)) {
+        $access = isset($userRow['page_access']) && is_array($userRow['page_access'])
+            ? $userRow['page_access']
+            : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
+    }
+    $pages = is_array($access) && isset($access['pages']) && is_array($access['pages'])
+        ? $access['pages']
+        : [];
+
+    if ($role === 'manager') {
+        if ($pages === []) {
+            return true;
+        }
+        return !empty($pages['video_intros']);
+    }
+    if ($role === 'operational_manager') {
+        return !empty($pages['video_intros']);
+    }
+    return false;
+}
+
 function userOperationalManagerAutoGrantedPages(): array
 {
     return [
@@ -4108,9 +4175,12 @@ function lfResolveAutoAssignLeadFormIds(PDO $db, ?string $memberOrg): array {
 
 /** Upsert lead_form_assignments for default/normal rules. Returns number of rows touched. */
 function assignLeadFormsToSalesMember(PDO $db, string $assignedByUserId, string $memberId, ?string $memberOrgId): int {
-    ensureLeadFormAssignmentsTable($db);
     $org = lfNormalizeMemberOrg($memberOrgId);
     $formIds = lfResolveAutoAssignLeadFormIds($db, $org);
+    if ($formIds === []) {
+        return 0;
+    }
+    ensureLeadFormAssignmentsTable($db);
     $n = 0;
     foreach ($formIds as $fid) {
         try {
@@ -4141,6 +4211,14 @@ function assignLeadFormsToSalesMember(PDO $db, string $assignedByUserId, string 
  * @return array{users_updated:int,assignment_rows_upserted:int,users_skipped_no_matching_form:int}
  */
 function backfillLeadFormAssignmentsForSalesMembers(PDO $db, string $assignedByUserId, ?string $scopeOrgId = null): array {
+    $probe = lfResolveAutoAssignLeadFormIds($db, $scopeOrgId);
+    if ($probe === []) {
+        return [
+            'users_updated' => 0,
+            'assignment_rows_upserted' => 0,
+            'users_skipped_no_matching_form' => 0,
+        ];
+    }
     ensureLeadFormAssignmentsTable($db);
     $sql = "SELECT id, org_id FROM users WHERE is_active = 1 AND LOWER(TRIM(role)) = 'sales_representative'";
     $params = [];

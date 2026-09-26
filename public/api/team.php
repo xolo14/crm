@@ -25,6 +25,21 @@ function normalizeRoleValue(string $value): string {
     return $clean;
 }
 
+/** Remove activity rows that would otherwise linger after the user is deleted (no FK on some hosts). */
+function teamPurgeDeletedMemberActivity(PDO $db, string $memberId): void
+{
+    $queries = [
+        'DELETE FROM daily_reports WHERE user_id = ?',
+        'DELETE FROM call_logs WHERE sales_rep_id = ?',
+    ];
+    foreach ($queries as $sql) {
+        try {
+            $db->prepare($sql)->execute([$memberId]);
+        } catch (Throwable $e) {
+        }
+    }
+}
+
 function teamEnsureReportsToColumn(PDO $db): void {
     static $done = false;
     if ($done) {
@@ -691,6 +706,8 @@ if ($method === 'DELETE') {
         $db->prepare("DELETE FROM marketing_members WHERE user_id = ?")->execute([$id]);
     } catch (Throwable $e) {
     }
+
+    teamPurgeDeletedMemberActivity($db, (string) $id);
 
     $stmt = $db->prepare("DELETE FROM users WHERE id = ?");
     $stmt->execute([$id]);

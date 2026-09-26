@@ -24,7 +24,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ValidationRuleEditor } from "@/components/forms/ValidationRuleEditor";
 import { ShareFormLinkDialog } from "@/components/forms/ShareFormLinkDialog";
 import { MediaBlock } from "@/components/forms/MediaBlock";
@@ -40,7 +40,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FormDetailDialog } from "@/components/forms/FormDetailDialog";
 import { FormPublishCampaignDialog } from "@/components/forms/FormPublishCampaignDialog";
 import { FormCampaignSendDialog } from "@/components/forms/FormCampaignSendDialog";
-import { canManageFormCampaigns, parseFormCampaign, type FormCampaignConfig } from "@/components/forms/formCampaignTypes";
+import { canManageFormCampaigns, parseFormCampaign, type FormCampaignConfig, type FormCampaignTemplate } from "@/components/forms/formCampaignTypes";
 import { isL3AdminRole, isMarketingFamilyRole, isOperationalManagerRole, normalizeAppRole } from "@/lib/roleUtils";
 import { formsManagerCacheKey } from "@/lib/formsManagerCache";
 import DocFormsHubPage from "@/modules/docForms/DocFormsHub";
@@ -689,6 +689,9 @@ export default function FormsManagerPage() {
   const [builderCampaignChannel, setBuilderCampaignChannel] = useState<"email" | "whatsapp" | null>(null);
   const [builderCampaignCfg, setBuilderCampaignCfg] = useState<FormCampaignConfig>(() => parseFormCampaign(null));
   const [savingBuilderCampaign, setSavingBuilderCampaign] = useState(false);
+  const [campaignEmailTemplates, setCampaignEmailTemplates] = useState<FormCampaignTemplate[]>([]);
+  const [campaignWaTemplates, setCampaignWaTemplates] = useState<FormCampaignTemplate[]>([]);
+  const [loadingCampaignTemplates, setLoadingCampaignTemplates] = useState(false);
   const [offerTemplates, setOfferTemplates] = useState<AutomationTemplateRow[]>([]);
   const [certTemplates, setCertTemplates] = useState<AutomationTemplateRow[]>([]);
   const [loadingDocTemplates, setLoadingDocTemplates] = useState(false);
@@ -786,10 +789,24 @@ export default function FormsManagerPage() {
     (form: LeadForm) => {
       if (!canEditForms) return false;
       if (isOrgAdmin) return true;
-      // Manager / marketing / others: edit only forms they created (assigned forms are view/copy).
-      return String(form.created_by || "") === myUserId;
+      if (myUserId !== "" && String(form.created_by || "") === myUserId) return true;
+      // L2: edit forms assigned to them in Form Management.
+      if (isManager) {
+        const assigned = assignmentsByForm[form.id] || [];
+        return assigned.some((a) => String(a.member_id) === myUserId);
+      }
+      return false;
     },
-    [canEditForms, isOrgAdmin, myUserId],
+    [canEditForms, isOrgAdmin, myUserId, isManager, assignmentsByForm],
+  );
+
+  const canDeleteFormRow = useCallback(
+    (form: LeadForm) => {
+      if (!canEditFormRow(form)) return false;
+      if (isOrgAdmin) return true;
+      return myUserId !== "" && String(form.created_by || "") === myUserId;
+    },
+    [canEditFormRow, isOrgAdmin, myUserId],
   );
 
   const canDuplicateFormRow = useCallback(
@@ -803,9 +820,12 @@ export default function FormsManagerPage() {
   );
 
   const canManageCampaignsForForm = useCallback(
-    (form: LeadForm | null) =>
-      canManageFormCampaigns(role, user?.id, form?.created_by, form?.org_id, organization?.id),
-    [role, user?.id, organization?.id],
+    (form: LeadForm | null) => {
+      if (!form) return false;
+      if (canEditFormRow(form)) return true;
+      return canManageFormCampaigns(role, user?.id, form.created_by, form.org_id, organization?.id);
+    },
+    [canEditFormRow, role, user?.id, organization?.id],
   );
 
   useEffect(() => {
@@ -1282,6 +1302,41 @@ export default function FormsManagerPage() {
       cancelled = true;
     };
   }, [builderOpen, builderTab, editing?.id, toast]);
+
+  useEffect(() => {
+    if (!builderOpen || builderTab !== "settings" || !editing?.id) {
+      setCampaignEmailTemplates([]);
+      setCampaignWaTemplates([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingCampaignTemplates(true);
+    void api.forms
+      .campaignTemplates(editing.id)
+      .then((res) => {
+        if (cancelled) return;
+        const data = (res as { data?: { email?: FormCampaignTemplate[]; whatsapp?: FormCampaignTemplate[] } })?.data || res;
+        const email = Array.isArray((data as { email?: FormCampaignTemplate[] })?.email)
+          ? (data as { email: FormCampaignTemplate[] }).email
+          : [];
+        const whatsapp = Array.isArray((data as { whatsapp?: FormCampaignTemplate[] })?.whatsapp)
+          ? (data as { whatsapp: FormCampaignTemplate[] }).whatsapp
+          : [];
+        setCampaignEmailTemplates(email);
+        setCampaignWaTemplates(whatsapp);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCampaignEmailTemplates([]);
+        setCampaignWaTemplates([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingCampaignTemplates(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [builderOpen, builderTab, editing?.id]);
 
   const formFieldOptions = useMemo(
     () => formFieldsFromQuestions(builder.questions),
@@ -2173,37 +2228,68 @@ export default function FormsManagerPage() {
                   <div className="space-y-5">
                     {editing && canManageCampaignsForForm(editing) ? (
                       <div className="space-y-3">
-                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Campaigns</p>
-                        <div className="flex flex-col gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="justify-start"
-                            disabled={!editing?.id}
-                            onClick={() => setBuilderCampaignChannel("email")}
-                          >
-                            <Mail className="h-3.5 w-3.5 mr-1.5" />
-                            Email Campaign
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="justify-start"
-                            disabled={!editing?.id}
-                            onClick={() => setBuilderCampaignChannel("whatsapp")}
-                          >
-                            <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-emerald-600" />
-                            WhatsApp Campaign
-                          </Button>
-                        </div>
-                        <div className="rounded-md border bg-muted/30 p-3 space-y-3">
-                          <p className="text-xs font-medium">Auto-send for new submissions</p>
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Email & WhatsApp</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          Pick a template, then turn Auto on. New form submissions receive the message. Use Send to push to existing leads.
+                        </p>
+                        {!editing.id ? (
+                          <p className="text-[11px] text-amber-700 dark:text-amber-400">Save the form first to configure email and WhatsApp automations.</p>
+                        ) : loadingCampaignTemplates ? (
+                          <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Loading templates…
+                          </div>
+                        ) : null}
+
+                        <div className="rounded-md border p-3 space-y-3">
+                          <p className="text-sm font-medium">Email</p>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Template</Label>
+                            <Select
+                              value={
+                                builderCampaignCfg.email_template_id
+                                  ? `marketing:${builderCampaignCfg.email_template_id}`
+                                  : "__none__"
+                              }
+                              onValueChange={(v) => {
+                                if (v === "__none__") {
+                                  void patchBuilderCampaign({
+                                    email_template_id: "",
+                                    assign_email: false,
+                                    auto_send_email: false,
+                                  });
+                                  return;
+                                }
+                                const id = v.split(":")[1] || "";
+                                void patchBuilderCampaign({
+                                  email_source: "marketing",
+                                  email_template_id: id,
+                                  assign_email: true,
+                                });
+                              }}
+                              disabled={!editing.id || savingBuilderCampaign || loadingCampaignTemplates}
+                            >
+                              <SelectTrigger className="h-9 text-xs">
+                                <SelectValue placeholder="Select email template" />
+                              </SelectTrigger>
+                              <SelectContent className="z-[210]">
+                                <SelectItem value="__none__">No email template</SelectItem>
+                                <SelectGroup>
+                                  <SelectLabel>Marketing</SelectLabel>
+                                  {campaignEmailTemplates.map((t) => (
+                                    <SelectItem key={t.id} value={`marketing:${t.id}`}>
+                                      {t.name || t.subject || t.id}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                            {editing.id && !loadingCampaignTemplates && campaignEmailTemplates.length === 0 ? (
+                              <p className="text-[11px] text-muted-foreground">Create an email draft in Email Marketing first.</p>
+                            ) : null}
+                          </div>
                           <div className="flex items-center justify-between gap-2">
-                            <Label htmlFor="builder-auto-email" className="text-xs font-normal">
-                              Auto send email
-                            </Label>
+                            <Label htmlFor="builder-auto-email" className="text-xs font-normal">Auto</Label>
                             <Switch
                               id="builder-auto-email"
                               checked={Boolean(builderCampaignCfg.auto_send_email)}
@@ -2211,10 +2297,84 @@ export default function FormsManagerPage() {
                               onCheckedChange={(v) => void patchBuilderCampaign({ auto_send_email: v })}
                             />
                           </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 w-full text-xs"
+                            disabled={!editing?.id}
+                            onClick={() => setBuilderCampaignChannel("email")}
+                          >
+                            <Mail className="h-3.5 w-3.5 mr-1.5" />
+                            Send to existing submissions
+                          </Button>
+                        </div>
+
+                        <div className="rounded-md border p-3 space-y-3">
+                          <p className="text-sm font-medium">WhatsApp</p>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">Template</Label>
+                            <Select
+                              value={
+                                builderCampaignCfg.whatsapp_template_id
+                                  ? `${builderCampaignCfg.whatsapp_source || "marketing"}:${builderCampaignCfg.whatsapp_template_id}`
+                                  : "__none__"
+                              }
+                              onValueChange={(v) => {
+                                if (v === "__none__") {
+                                  void patchBuilderCampaign({
+                                    whatsapp_template_id: "",
+                                    assign_whatsapp: false,
+                                    auto_send_whatsapp: false,
+                                  });
+                                  return;
+                                }
+                                const [src, id] = v.split(":");
+                                void patchBuilderCampaign({
+                                  whatsapp_source: src === "communications" ? "communications" : "marketing",
+                                  whatsapp_template_id: id || "",
+                                  assign_whatsapp: true,
+                                });
+                              }}
+                              disabled={!editing.id || savingBuilderCampaign || loadingCampaignTemplates}
+                            >
+                              <SelectTrigger className="h-9 text-xs">
+                                <SelectValue placeholder="Select WhatsApp template" />
+                              </SelectTrigger>
+                              <SelectContent className="z-[210]">
+                                <SelectItem value="__none__">No WhatsApp template</SelectItem>
+                                {campaignWaTemplates.filter((t) => t.source === "marketing").length ? (
+                                  <SelectGroup>
+                                    <SelectLabel>Marketing</SelectLabel>
+                                    {campaignWaTemplates
+                                      .filter((t) => t.source === "marketing")
+                                      .map((t) => (
+                                        <SelectItem key={`m:${t.id}`} value={`marketing:${t.id}`}>
+                                          {t.name || t.subject || t.id}
+                                        </SelectItem>
+                                      ))}
+                                  </SelectGroup>
+                                ) : null}
+                                {campaignWaTemplates.filter((t) => t.source === "communications").length ? (
+                                  <SelectGroup>
+                                    <SelectLabel>Communications</SelectLabel>
+                                    {campaignWaTemplates
+                                      .filter((t) => t.source === "communications")
+                                      .map((t) => (
+                                        <SelectItem key={`c:${t.id}`} value={`communications:${t.id}`}>
+                                          {t.name || t.id}
+                                        </SelectItem>
+                                      ))}
+                                  </SelectGroup>
+                                ) : null}
+                              </SelectContent>
+                            </Select>
+                            {editing.id && !loadingCampaignTemplates && campaignWaTemplates.length === 0 ? (
+                              <p className="text-[11px] text-muted-foreground">Create a WhatsApp draft or approved template first.</p>
+                            ) : null}
+                          </div>
                           <div className="flex items-center justify-between gap-2">
-                            <Label htmlFor="builder-auto-wa" className="text-xs font-normal">
-                              Auto send WhatsApp
-                            </Label>
+                            <Label htmlFor="builder-auto-wa" className="text-xs font-normal">Auto</Label>
                             <Switch
                               id="builder-auto-wa"
                               checked={Boolean(builderCampaignCfg.auto_send_whatsapp)}
@@ -2222,11 +2382,17 @@ export default function FormsManagerPage() {
                               onCheckedChange={(v) => void patchBuilderCampaign({ auto_send_whatsapp: v })}
                             />
                           </div>
-                          {!builderCampaignCfg.email_template_id && !builderCampaignCfg.whatsapp_template_id ? (
-                            <p className="text-[11px] text-muted-foreground">
-                              Assign templates on Share / publish to enable auto-send.
-                            </p>
-                          ) : null}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 w-full text-xs"
+                            disabled={!editing?.id}
+                            onClick={() => setBuilderCampaignChannel("whatsapp")}
+                          >
+                            <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-emerald-600" />
+                            Send to existing submissions
+                          </Button>
                         </div>
                       </div>
                     ) : null}
@@ -2650,7 +2816,7 @@ export default function FormsManagerPage() {
                               }
                             >
                               <SelectTrigger className="h-7 text-[11px]"><SelectValue /></SelectTrigger>
-                              <SelectContent>
+                          <SelectContent>
                                 {goToChoices(
                                   splitIntoSections(builder.questions, {
                                     isBreak: (q) => q.type === "section_break",
@@ -2661,8 +2827,8 @@ export default function FormsManagerPage() {
                                 ).map((c) => (
                                   <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
                                 ))}
-                              </SelectContent>
-                            </Select>
+                          </SelectContent>
+                        </Select>
                           </div>
                         ))}
                       </div>
@@ -2983,15 +3149,15 @@ export default function FormsManagerPage() {
                       </TableCell>
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
                         <div className="flex flex-col items-start gap-1">
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            className="h-8 w-8"
-                            title="Copy public link"
-                            onClick={() => copy(directLink, "Form link")}
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                          </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8"
+                          title="Copy public link"
+                          onClick={() => copy(directLink, "Form link")}
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                        </Button>
                           <Button
                             variant="outline"
                             size="icon"
@@ -3119,6 +3285,8 @@ export default function FormsManagerPage() {
                                     <Power className="h-3.5 w-3.5 mr-2" />
                                     {isOn ? "Set Inactive" : "Set Active"}
                                   </DropdownMenuItem>
+                                  {canDeleteFormRow(form) ? (
+                                    <>
                                   <DropdownMenuSeparator />
                                   <DropdownMenuItem
                                     className="text-destructive focus:text-destructive"
@@ -3127,6 +3295,8 @@ export default function FormsManagerPage() {
                                     <Trash2 className="h-3.5 w-3.5 mr-2" />
                                     Delete
                                   </DropdownMenuItem>
+                                    </>
+                                  ) : null}
                                 </>
                               ) : null}
                             </DropdownMenuContent>

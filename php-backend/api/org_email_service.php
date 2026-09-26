@@ -41,6 +41,8 @@ function syncpediaMailCategories(): array
         ['key' => 'hr_updates', 'label' => 'HR and fresher updates'],
         ['key' => 'timetables', 'label' => 'Class timetables'],
         ['key' => 'notifications', 'label' => 'Email notifications'],
+        ['key' => 'coupons', 'label' => 'Coupons'],
+        ['key' => 'video_intros', 'label' => 'Candidate video introductions'],
     ];
 }
 

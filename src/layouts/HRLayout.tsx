@@ -14,6 +14,7 @@ import {
   Menu,
   PhoneCall,
   Settings,
+  Tag,
   UserPlus,
   Users,
 } from "lucide-react";
@@ -37,6 +38,7 @@ const navItems: { to: string; label: string; icon: typeof LayoutDashboard; acces
   { to: "/hr/notifications", label: "Notifications", icon: Bell, accessKey: "notifications" },
   { to: "/hr/communications", label: "Communications", icon: PhoneCall, accessKey: "communications" },
   { to: "/hr/holidays", label: "Holidays", icon: Calendar, accessKey: "holidays" },
+  { to: "/hr/coupons", label: "Coupons", icon: Tag, accessKey: "" },
   { to: "/hr/offer-letters", label: "Offer Letters", icon: FileCheck, accessKey: "offer_letters" },
   { to: "/hr/form-management", label: "Form Management", icon: ClipboardList, accessKey: "form_management" },
   { to: "/hr/settings", label: "Settings", icon: Settings, accessKey: "settings" },

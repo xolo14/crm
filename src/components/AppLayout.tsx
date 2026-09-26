@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
-  BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, CalendarRange, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone
+  BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, CalendarRange, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone, Tag, Video
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import syncpediaLogoTransparent from '@/assets/syncpedia-logo-transparent.png';
@@ -24,7 +24,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { NotificationBell } from '@/components/NotificationBell';
-import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage } from '@/lib/orgAccess';
+import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage, canAccessVideoIntros } from '@/lib/orgAccess';
 import { featureKeyForPath, isOrgFeatureEnabled } from '@/lib/orgFeatures';
 import { managerFeatureKeyForPath, managerHasPageAccess, operationalManagerHasPageAccess } from '@/lib/managerPageAccess';
 import { normalizeAppRole } from '@/lib/roleUtils';
@@ -193,6 +193,12 @@ const navItems: NavItem[] = [
     label: 'Payment Records',
     roles: ['super_admin', 'org', 'manager', 'sales_representative', 'hr', 'marketing', 'operational_manager'],
   },
+  {
+    to: '/coupons',
+    icon: Tag,
+    label: 'Coupons',
+    roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'],
+  },
   { to: '/communications', icon: PhoneCall, label: 'Communications', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'],
     children: [
       { to: '/communications/whatsapp-inbox', icon: MessageSquare, label: 'WhatsApp Inbox', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
@@ -231,6 +237,7 @@ const navItems: NavItem[] = [
   { to: '/marketing/imported-leads', icon: Users, label: 'Imported Leads', roles: ['marketing'] },
   { to: '/marketing/meta-ads', icon: Megaphone, label: 'Meta Ads', roles: ['marketing'] },
   { to: '/offer-letters', icon: FileCheck, label: 'Offer Letters', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
+  { to: '/video-intros', icon: Video, label: 'Video intros', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
   { to: '/certificates', icon: Award, label: 'Certificates', roles: ['super_admin', 'org', 'manager', 'operational_manager'] },
   { to: '/payslip', icon: Receipt, label: 'Payslip', roles: ['super_admin', 'org', 'operational_manager'] },
   {
@@ -362,6 +369,7 @@ function navItemAllowed(
   }
 
   if (item.to === "/offer-letters") return canAccessOfferLetters(normalized, organization, pageAccess);
+  if (item.to === "/video-intros") return canAccessVideoIntros(normalized, organization, pageAccess);
   if (item.to === "/fresher-salary-tracker") {
     if (!canAccessFresherSalary(normalized, organization, pageAccess)) return false;
     // Admins always; sales reps / managers only when added to the tracker

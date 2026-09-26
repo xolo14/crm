@@ -27,9 +27,9 @@ export default function FormLeadHistory() {
     (async () => {
       setLoading(true);
       try {
-        const data = await api.leads.list();
+        const data = await api.leads.list({ form_leads: true, lite: true });
         const allLeads = Array.isArray(data) ? data : data.data || data.leads || [];
-        setLeads(allLeads.filter((l: any) => l.referred_by));
+        setLeads(allLeads);
       } catch (err) { console.error(err); }
       finally { setLoading(false); }
     })();

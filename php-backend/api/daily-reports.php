@@ -94,7 +94,7 @@ if ($method === 'GET') {
     $stmt = $db->prepare("
         SELECT dr.*, u.full_name as user_name, u.email as user_email
         FROM daily_reports dr
-        LEFT JOIN users u ON u.id = dr.user_id
+        INNER JOIN users u ON u.id = dr.user_id
         WHERE $where
         ORDER BY dr.report_date DESC, dr.created_at DESC
         LIMIT 2000

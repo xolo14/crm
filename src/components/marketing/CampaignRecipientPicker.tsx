@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
-import { Upload, Search, X } from "lucide-react";
+import { Upload, Search, X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
 export type CampaignPickPerson = {
@@ -19,6 +20,50 @@ export type CampaignPickPerson = {
   company?: string;
   source?: string;
 };
+
+const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+const PHONE_RE = /(?:\+?\d[\d\s().-]{8,}\d)/g;
+
+function leftoverName(line: string, match: string): string | undefined {
+  const name = line
+    .replace(match, " ")
+    .replace(/[<>"'()]/g, " ")
+    .replace(/[,;|/]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return name || undefined;
+}
+
+export type ManualEmailEntry = { email: string; name?: string };
+export type ManualPhoneEntry = { phone: string; name?: string };
+
+/** One row per line so "Tendu, tendu@x.com" keeps the name. */
+export function parseManualEmailEntries(text: string): ManualEmailEntry[] {
+  const seen = new Set<string>();
+  const out: ManualEmailEntry[] = [];
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    EMAIL_RE.lastIndex = 0;
+    const found = [...line.matchAll(EMAIL_RE)].map((m) => m[0]);
+    if (found.length === 0) continue;
+    if (found.length === 1) {
+      const email = found[0];
+      const key = normalizeEmail(email);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ email, name: leftoverName(line, email) });
+      continue;
+    }
+    for (const email of found) {
+      const key = normalizeEmail(email);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ email });
+    }
+  }
+  return out;
+}
 
 type Props = {
   mode: "email" | "phone";
@@ -37,6 +82,13 @@ type Props = {
   onSearchChange?: (query: string) => void;
   /** Hide the people list until the user types a search (email Send Campaign). */
   hideListUntilSearch?: boolean;
+  /** Lead forms for the Send Campaign form dropdown (right of search). */
+  forms?: Array<{ id: string; name: string }>;
+  formsLoading?: boolean;
+  selectedFormId?: string;
+  onSelectedFormIdChange?: (formId: string) => void;
+  formPeople?: CampaignPickPerson[];
+  formPeopleLoading?: boolean;
 };
 
 function normalizeEmail(v: string) {
@@ -48,31 +100,46 @@ function normalizePhone(v: string) {
 }
 
 export function parseManualEmails(text: string): string[] {
+  return parseManualEmailEntries(text).map((e) => e.email);
+}
+
+export function parseManualPhoneEntries(text: string): ManualPhoneEntry[] {
   const seen = new Set<string>();
-  const out: string[] = [];
-  for (const line of text.split(/[\n,;]+/)) {
-    const e = line.trim();
-    if (!e || !e.includes("@")) continue;
-    const key = normalizeEmail(e);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(e);
+  const out: ManualPhoneEntry[] = [];
+  for (const raw of String(text || "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    PHONE_RE.lastIndex = 0;
+    const found = [...line.matchAll(PHONE_RE)];
+    const valid = found.filter((m) => m[0].replace(/\D+/g, "").length >= 10);
+    if (valid.length === 0) continue;
+    if (valid.length === 1) {
+      const rawPhone = valid[0][0];
+      const phone = normalizePhone(rawPhone);
+      const digits = phone.replace(/\D+/g, "");
+      if (seen.has(digits)) continue;
+      seen.add(digits);
+      out.push({ phone, name: leftoverName(line, rawPhone) });
+      continue;
+    }
+    for (const m of valid) {
+      const phone = normalizePhone(m[0]);
+      const digits = phone.replace(/\D+/g, "");
+      if (seen.has(digits)) continue;
+      seen.add(digits);
+      out.push({ phone });
+    }
   }
   return out;
 }
 
 export function parseManualPhones(text: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const line of text.split(/[\n,;]+/)) {
-    const p = normalizePhone(line);
-    const digits = p.replace(/\D+/g, "");
-    if (!p || digits.length < 10) continue;
-    if (seen.has(digits)) continue;
-    seen.add(digits);
-    out.push(p);
-  }
-  return out;
+  return parseManualPhoneEntries(text).map((p) => p.phone);
+}
+
+export function formatManualEmailLine(entry: ManualEmailEntry): string {
+  const name = String(entry.name || "").trim();
+  return name ? `${name} <${entry.email}>` : entry.email;
 }
 
 export function CampaignRecipientPicker({
@@ -88,6 +155,12 @@ export function CampaignRecipientPicker({
   emptyHint,
   onSearchChange,
   hideListUntilSearch,
+  forms,
+  formsLoading,
+  selectedFormId,
+  onSelectedFormIdChange,
+  formPeople,
+  formPeopleLoading,
 }: Props) {
   const [query, setQuery] = useState("");
   const selected = useMemo(() => new Set(selectedIds), [selectedIds]);
@@ -148,6 +221,44 @@ export function CampaignRecipientPicker({
 
   const leads = filtered.filter((p) => p.group === "leads");
   const members = filtered.filter((p) => p.group === "members");
+  const showFormDropdown = typeof onSelectedFormIdChange === "function";
+  const formList = formPeople ?? [];
+  const formSelected = Boolean(selectedFormId);
+  const formIds = formList.map((p) => p.id);
+  const formAllSelected = formIds.length > 0 && formIds.every((id) => selected.has(id));
+  const formIdsSet = new Set(formIds);
+  const searchLeads = leads.filter((p) => !formIdsSet.has(p.id));
+  const searchMembers = members.filter((p) => !formIdsSet.has(p.id));
+  const showSearchList = !hideListUntilSearch || searchActive;
+
+  function toggleFormAll() {
+    if (formAllSelected) {
+      const drop = new Set(formIds);
+      onSelectedIdsChange(selectedIds.filter((id) => !drop.has(id)));
+      return;
+    }
+    onSelectedIdsChange(Array.from(new Set([...selectedIds, ...formIds])));
+  }
+
+  function personRow(p: CampaignPickPerson) {
+    return (
+      <label
+        key={p.id}
+        className={cn(
+          "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer hover:bg-muted/60",
+          selected.has(p.id) && "bg-emerald-50",
+        )}
+      >
+        <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggle(p.id)} className="mt-0.5" />
+        <span className="min-w-0">
+          <span className="font-medium block truncate">{p.name || "Unnamed"}</span>
+          <span className="text-[11px] text-muted-foreground block truncate">
+            {mode === "email" ? p.email : p.phone}
+          </span>
+        </span>
+      </label>
+    );
+  }
 
   return (
     <div className="space-y-3">
@@ -162,90 +273,113 @@ export function CampaignRecipientPicker({
             </Button>
           ) : null}
         </div>
-        <div className="relative mb-2">
-          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => {
-              const v = e.target.value;
-              setQuery(v);
-              onSearchChange?.(v);
-            }}
-            placeholder={
-              hideListUntilSearch
-                ? "Type to search by name, email, or phone…"
-                : "Search all leads and members by name, email, or phone…"
-            }
-            className="h-9 pl-8 text-sm"
-          />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start mb-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => {
+                const v = e.target.value;
+                setQuery(v);
+                onSearchChange?.(v);
+              }}
+              placeholder={
+                hideListUntilSearch
+                  ? "Type to search by name, email, or phone…"
+                  : "Search all leads and members by name, email, or phone…"
+              }
+              className="h-9 pl-8 text-sm"
+            />
+          </div>
+          {showFormDropdown ? (
+            <Select
+              value={selectedFormId || "__none__"}
+              onValueChange={(v) => onSelectedFormIdChange?.(v === "__none__" ? "" : v)}
+              disabled={formsLoading}
+            >
+              <SelectTrigger className="h-9 sm:w-[240px] text-sm shrink-0">
+                <SelectValue placeholder={formsLoading ? "Loading forms…" : "Select a form"} />
+              </SelectTrigger>
+              <SelectContent className="z-[210]">
+                <SelectItem value="__none__">No form</SelectItem>
+                {(forms ?? []).map((f) => (
+                  <SelectItem key={f.id} value={f.id}>
+                    {f.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
         </div>
-        {hideListUntilSearch && !searchActive ? (
+        {formSelected ? (
+          <div className="mb-2">
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1">
+                Form leads{formPeopleLoading ? "" : ` (${formList.length})`}
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                onClick={toggleFormAll}
+                disabled={formPeopleLoading || formIds.length === 0}
+              >
+                {formAllSelected ? "Clear form" : "Select all in form"}
+              </Button>
+            </div>
+            <ScrollArea className="h-[220px] rounded-md border">
+              <div className="p-2 space-y-0.5">
+                {formPeopleLoading ? (
+                  <p className="flex items-center justify-center gap-2 text-xs text-muted-foreground px-1 py-8">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Loading form leads…
+                  </p>
+                ) : formList.length === 0 ? (
+                  <p className="text-xs text-muted-foreground px-1 py-4 text-center">
+                    No leads with {mode === "email" ? "email" : "phone"} on this form.
+                  </p>
+                ) : (
+                  formList.map((p) => personRow(p))
+                )}
+              </div>
+            </ScrollArea>
+            <p className="text-[10px] text-muted-foreground mt-1 px-0.5">
+              Only ticked form leads are added to the send list.
+            </p>
+          </div>
+        ) : null}
+        {hideListUntilSearch && !searchActive && !formSelected ? (
           <p className="text-[11px] text-muted-foreground">
             {emptyHint ||
-              `Type to search, or enter ${mode === "email" ? "emails" : "phone numbers"} manually below. No list is shown until you search.`}
+              `Type to search, pick a form to list its leads, or enter ${mode === "email" ? "emails" : "phone numbers"} manually below.`}
           </p>
-        ) : (
+        ) : showSearchList ? (
           <ScrollArea className="h-[220px] rounded-md border">
             <div className="p-2 space-y-3">
-              {leads.length === 0 && members.length === 0 ? (
+              {searchLeads.length === 0 && searchMembers.length === 0 ? (
                 <p className="text-xs text-muted-foreground px-1 py-4 text-center">
                   {hideListUntilSearch
-                    ? "No matches. Try another search, or enter recipients manually below."
+                    ? "No matches. Try another search, pick a form, or enter recipients manually below."
                     : emptyHint ||
                       `Search your leads, or enter ${mode === "email" ? "emails" : "phone numbers"} manually below.`}
                 </p>
               ) : null}
-              {leads.length > 0 ? (
+              {searchLeads.length > 0 ? (
                 <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1 mb-1">Leads ({leads.length})</p>
-                  <div className="space-y-0.5">
-                    {leads.map((p) => (
-                      <label
-                        key={p.id}
-                        className={cn(
-                          "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer hover:bg-muted/60",
-                          selected.has(p.id) && "bg-emerald-50",
-                        )}
-                      >
-                        <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggle(p.id)} className="mt-0.5" />
-                        <span className="min-w-0">
-                          <span className="font-medium block truncate">{p.name || "Unnamed"}</span>
-                          <span className="text-[11px] text-muted-foreground block truncate">
-                            {mode === "email" ? p.email : p.phone}
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1 mb-1">Leads ({searchLeads.length})</p>
+                  <div className="space-y-0.5">{searchLeads.map((p) => personRow(p))}</div>
                 </div>
               ) : null}
-              {members.length > 0 ? (
+              {searchMembers.length > 0 ? (
                 <div>
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1 mb-1">Members ({members.length})</p>
-                  <div className="space-y-0.5">
-                    {members.map((p) => (
-                      <label
-                        key={p.id}
-                        className={cn(
-                          "flex items-start gap-2 rounded-md px-2 py-1.5 text-sm cursor-pointer hover:bg-muted/60",
-                          selected.has(p.id) && "bg-emerald-50",
-                        )}
-                      >
-                        <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggle(p.id)} className="mt-0.5" />
-                        <span className="min-w-0">
-                          <span className="font-medium block truncate">{p.name || "Unnamed"}</span>
-                          <span className="text-[11px] text-muted-foreground block truncate">
-                            {mode === "email" ? p.email : p.phone}
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground px-1 mb-1">Members ({searchMembers.length})</p>
+                  <div className="space-y-0.5">{searchMembers.map((p) => personRow(p))}</div>
                 </div>
               ) : null}
             </div>
           </ScrollArea>
-        )}
+        ) : null}
         {selectedContacts.length > 0 ? (
           <div className="flex flex-wrap gap-1 mt-2">
             {selectedContacts.map((p) => (
@@ -262,7 +396,9 @@ export function CampaignRecipientPicker({
             ))}
           </div>
         ) : null}
-        <p className="text-[10px] text-muted-foreground mt-1">{selectedIds.length} selected from search</p>
+        <p className="text-[10px] text-muted-foreground mt-1">
+          {selectedIds.length} selected from search / form
+        </p>
       </div>
 
       <div>
@@ -284,8 +420,8 @@ export function CampaignRecipientPicker({
           onChange={(e) => onManualTextChange(e.target.value)}
           placeholder={
             mode === "email"
-              ? "Enter emails, one per line...\njohn@example.com\njane@example.com"
-              : "Enter phone numbers, one per line...\n+919876543210\n+918765432109"
+              ? "One per line only"
+              : "One per line only"
           }
           className={cn("min-h-[110px] text-sm", mode === "phone" && "font-mono")}
         />
@@ -328,10 +464,17 @@ export function mergeCampaignEmailRecipients(
     }
   }
 
-  for (const email of parseManualEmails(manualText)) {
-    const key = normalizeEmail(email);
-    if (!byEmail.has(key)) {
-      byEmail.set(key, { email, group: "manual" });
+  for (const entry of parseManualEmailEntries(manualText)) {
+    const key = normalizeEmail(entry.email);
+    const existing = byEmail.get(key);
+    if (!existing) {
+      byEmail.set(key, {
+        email: entry.email,
+        name: entry.name,
+        group: "manual",
+      });
+    } else if (entry.name && !existing.name) {
+      existing.name = entry.name;
     }
   }
 
@@ -383,10 +526,13 @@ export function mergeCampaignPhoneRecipients(
     }
   }
 
-  for (const phone of parseManualPhones(manualText)) {
-    const digits = phone.replace(/\D+/g, "");
-    if (!byDigits.has(digits)) {
-      byDigits.set(digits, { phone });
+  for (const entry of parseManualPhoneEntries(manualText)) {
+    const digits = entry.phone.replace(/\D+/g, "");
+    const existing = byDigits.get(digits);
+    if (!existing) {
+      byDigits.set(digits, { phone: entry.phone, name: entry.name });
+    } else if (entry.name && !existing.name) {
+      existing.name = entry.name;
     }
   }
 

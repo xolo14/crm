@@ -11,6 +11,7 @@
  * Org lock:
  *   - admin / org       → only their organisation's folders
  *   - super_admin       → all orgs when no org_id; one org when ?org_id= is set
+ *   - L2 manager / operational_manager → list + create; move only into folders they created
  */
 require_once __DIR__ . '/helpers.php';
 cors();
@@ -21,10 +22,11 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $action = trim((string) ($_GET['action'] ?? ''));
 $userId = (string) ($tokenData['user_id'] ?? '');
 
-requireRole($tokenData, ['admin', 'org', 'super_admin']);
+requireRole($tokenData, ['admin', 'org', 'super_admin', 'manager', 'operational_manager']);
 
 $roleKey = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 $isSuperAdmin = $roleKey === 'super_admin';
+$isL2Folders = $roleKey === 'manager' || $roleKey === 'operational_manager';
 
 function leadFoldersEnsureSchema(PDO $db): void
 {
@@ -65,6 +67,45 @@ function leadFoldersEnsureSchema(PDO $db): void
 }
 
 leadFoldersEnsureSchema($db);
+
+function leadFoldersIsMetaAdsName(string $name): bool
+{
+    return strcasecmp(trim($name), 'Meta Ads') === 0;
+}
+
+/** @return array<string,mixed>|null */
+function leadFoldersFolderRow(PDO $db, string $id, string $orgId): ?array
+{
+    $st = $db->prepare(
+        'SELECT id, org_id, name, created_by FROM lead_source_folders WHERE id = ? AND org_id = ? LIMIT 1'
+    );
+    $st->execute([$id, $orgId]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
+}
+
+/** Current folder for a source card, if any. @return array<string,mixed>|null */
+function leadFoldersCardLocation(PDO $db, string $orgId, string $sourceKey): ?array
+{
+    $st = $db->prepare(
+        'SELECT f.id, f.name, f.created_by
+         FROM lead_source_folder_cards c
+         INNER JOIN lead_source_folders f ON f.id = c.folder_id AND f.org_id = c.org_id
+         WHERE c.org_id = ? AND c.source_key = ?
+         LIMIT 1'
+    );
+    $st->execute([$orgId, $sourceKey]);
+    $row = $st->fetch(PDO::FETCH_ASSOC);
+    return is_array($row) ? $row : null;
+}
+
+function leadFoldersUserOwnsFolder(?array $folder, string $userId): bool
+{
+    if ($folder === null || $userId === '') {
+        return false;
+    }
+    return trim((string) ($folder['created_by'] ?? '')) === $userId;
+}
 
 function leadFoldersResolveOrgId(PDO $db, array $tokenData, bool $isSuperAdmin): ?string
 {
@@ -191,6 +232,9 @@ function leadFoldersListPayload(PDO $db, ?string $orgId): array
             'org_id' => $rowOrg,
             'org_name' => $orgNames[strtolower($rowOrg)] ?? null,
             'name' => (string) ($r['name'] ?? ''),
+            'created_by' => isset($r['created_by']) && trim((string) $r['created_by']) !== ''
+                ? trim((string) $r['created_by'])
+                : null,
             'sort_order' => (int) ($r['sort_order'] ?? 0),
             'created_at' => $r['created_at'] ?? null,
             'source_keys' => $keys,
@@ -203,7 +247,7 @@ function leadFoldersListPayload(PDO $db, ?string $orgId): array
 
 if ($method === 'GET') {
     try {
-        if ($orgId !== null && $orgId !== '') {
+        if ($orgId !== null && $orgId !== '' && !$isL2Folders) {
             leadFoldersEnsureMetaAdsFolder($db, $orgId, $userId);
         }
         respond(['data' => leadFoldersListPayload($db, $orgId)]);
@@ -229,7 +273,10 @@ if ($method === 'POST' && ($action === 'create' || $action === '')) {
     if (mb_strlen($name) > 120) {
         respond(['error' => 'Folder name too long'], 422);
     }
-    if (strcasecmp($name, 'Meta Ads') === 0) {
+    if (leadFoldersIsMetaAdsName($name)) {
+        if ($isL2Folders) {
+            respond(['error' => 'The Meta Ads folder is automatic and cannot be created'], 422);
+        }
         leadFoldersEnsureMetaAdsFolder($db, $orgId, $userId);
         $ex = $db->prepare(
             "SELECT id FROM lead_source_folders
@@ -271,16 +318,39 @@ if ($method === 'POST' && $action === 'move') {
     }
 
     if ($folderId === null || $folderId === '' || $folderId === false) {
+        if ($isL2Folders) {
+            $current = leadFoldersCardLocation($db, $orgId, $sourceKey);
+            if ($current && leadFoldersIsMetaAdsName((string) ($current['name'] ?? ''))) {
+                respond(['error' => 'Meta Ads cards stay in the Meta Ads folder'], 422);
+            }
+            if ($current && !leadFoldersUserOwnsFolder($current, $userId)) {
+                respond(['error' => 'This card is in a shared folder and cannot be moved'], 403);
+            }
+        }
         $del = $db->prepare('DELETE FROM lead_source_folder_cards WHERE org_id = ? AND source_key = ?');
         $del->execute([$orgId, $sourceKey]);
         respond(['data' => leadFoldersListPayload($db, $orgId), 'message' => 'Card removed from folder']);
     }
 
     $folderId = (string) $folderId;
-    $chk = $db->prepare('SELECT id FROM lead_source_folders WHERE id = ? AND org_id = ? LIMIT 1');
-    $chk->execute([$folderId, $orgId]);
-    if (!$chk->fetchColumn()) {
+    $dest = leadFoldersFolderRow($db, $folderId, $orgId);
+    if ($dest === null) {
         respond(['error' => 'Folder not found'], 404);
+    }
+    if (leadFoldersIsMetaAdsName((string) ($dest['name'] ?? ''))) {
+        respond(['error' => 'The Meta Ads folder is automatic and cannot be filed into'], 422);
+    }
+    if ($isL2Folders) {
+        if (!leadFoldersUserOwnsFolder($dest, $userId)) {
+            respond(['error' => 'You can only file cards into folders you created'], 403);
+        }
+        $current = leadFoldersCardLocation($db, $orgId, $sourceKey);
+        if ($current && leadFoldersIsMetaAdsName((string) ($current['name'] ?? ''))) {
+            respond(['error' => 'Meta Ads cards stay in the Meta Ads folder'], 422);
+        }
+        if ($current && !leadFoldersUserOwnsFolder($current, $userId)) {
+            respond(['error' => 'This card is in a shared folder and cannot be moved'], 403);
+        }
     }
 
     $existing = $db->prepare('SELECT id FROM lead_source_folder_cards WHERE org_id = ? AND source_key = ? LIMIT 1');
@@ -305,6 +375,16 @@ if ($method === 'PUT' && $action === 'rename') {
     if ($id === '' || $name === '') {
         respond(['error' => 'id and name required'], 422);
     }
+    $existingFolder = leadFoldersFolderRow($db, $id, $orgId);
+    if ($existingFolder === null) {
+        respond(['error' => 'Folder not found'], 404);
+    }
+    if (leadFoldersIsMetaAdsName((string) ($existingFolder['name'] ?? ''))) {
+        respond(['error' => 'The Meta Ads folder cannot be renamed'], 422);
+    }
+    if ($isL2Folders && !leadFoldersUserOwnsFolder($existingFolder, $userId)) {
+        respond(['error' => 'You can only rename folders you created'], 403);
+    }
     $upd = $db->prepare('UPDATE lead_source_folders SET name = ? WHERE id = ? AND org_id = ?');
     $upd->execute([$name, $id, $orgId]);
     if ($upd->rowCount() < 1) {
@@ -318,11 +398,16 @@ if ($method === 'DELETE') {
     if ($id === '') {
         respond(['error' => 'id required'], 400);
     }
-    $nameSt = $db->prepare('SELECT name FROM lead_source_folders WHERE id = ? AND org_id = ? LIMIT 1');
-    $nameSt->execute([$id, $orgId]);
-    $folderName = (string) ($nameSt->fetchColumn() ?: '');
-    if ($folderName !== '' && strcasecmp(trim($folderName), 'Meta Ads') === 0) {
+    $existingFolder = leadFoldersFolderRow($db, $id, $orgId);
+    if ($existingFolder === null) {
+        respond(['error' => 'Folder not found'], 404);
+    }
+    $folderName = (string) ($existingFolder['name'] ?? '');
+    if ($folderName !== '' && leadFoldersIsMetaAdsName($folderName)) {
         respond(['error' => 'The Meta Ads folder is automatic and cannot be deleted'], 422);
+    }
+    if ($isL2Folders && !leadFoldersUserOwnsFolder($existingFolder, $userId)) {
+        respond(['error' => 'You can only delete folders you created'], 403);
     }
     $db->prepare('DELETE FROM lead_source_folder_cards WHERE folder_id = ? AND org_id = ?')->execute([$id, $orgId]);
     $del = $db->prepare('DELETE FROM lead_source_folders WHERE id = ? AND org_id = ?');

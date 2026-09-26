@@ -56,7 +56,7 @@ export default function ReferralAnalytics() {
         /* non-blocking */
       }
       const [profilesData, leadsData, reportsData] = await Promise.all([
-        api.profiles.list(), api.leads.list(), api.dailyReports.list()
+        api.profiles.list(), api.leads.list({ lite: true }), api.dailyReports.list()
       ]);
       const parsedProfiles = Array.isArray(profilesData)
         ? profilesData

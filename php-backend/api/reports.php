@@ -139,10 +139,14 @@ if ($action === 'team') {
             (SELECT COUNT(*) FROM deals d2 WHERE d2.owner_id = u.id AND d2.status = 'won'{$dealOrgClause}) as deals_won,
             (SELECT COALESCE(SUM(value), 0) FROM deals d3 WHERE d3.owner_id = u.id AND d3.status = 'won'{$dealOrgClause3}) as revenue
             FROM users u WHERE u.is_active = 1{$userScope['sql']} ORDER BY revenue DESC";
-    $params = $userScope['params'];
+    // Subquery ? placeholders appear before the users WHERE clause.
+    $params = [];
     if ($orgId) {
-        $params = array_merge($params, [$orgId, $orgId, $orgId]);
+        $params[] = $orgId;
+        $params[] = $orgId;
+        $params[] = $orgId;
     }
+    $params = array_merge($params, $userScope['params']);
     $stmt = $db->prepare($sql);
     $stmt->execute($params);
     respond(['data' => $stmt->fetchAll()]);

@@ -43,10 +43,6 @@ function hasAuthSession(): boolean {
   }
 }
 
-function getHrToken(): string | null {
-  return getToken();
-}
-
 function setToken(_token: string) {
   // Intentionally do not store JWT in localStorage (XSS harvest vector).
   try {
@@ -238,10 +234,24 @@ async function requestBlob(endpoint: string): Promise<Blob> {
     }
     throw new Error('Session expired');
   }
-  if (!res.ok) {
-    throw new Error(res.status === 404 ? 'PDF not found' : 'Could not load file');
+  const buf = await res.arrayBuffer();
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const looksPdf = ct.includes('pdf') || ct.includes('octet-stream');
+  const looksVideo = ct.includes('video/');
+  if (!res.ok || (!looksPdf && !looksVideo)) {
+    let msg = res.status === 404 ? 'File not found' : 'Could not load file';
+    try {
+      const data = JSON.parse(new TextDecoder().decode(buf)) as { error?: unknown };
+      if (typeof data.error === 'string' && data.error.trim()) {
+        msg = data.error;
+      }
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(msg);
   }
-  return res.blob();
+  const type = looksVideo ? (ct.split(';')[0] || 'video/webm') : 'application/pdf';
+  return new Blob([buf], { type });
 }
 
 // Auth
@@ -264,16 +274,6 @@ export const api = {
       }),
     listSuperAdminLoginEmails: () =>
       request('/auth.php?action=list_super_admin_login_emails', { method: 'POST', body: '{}' }),
-    addSuperAdminLoginEmail: (email: string) =>
-      request('/auth.php?action=add_super_admin_login_email', {
-        method: 'POST',
-        body: JSON.stringify({ email }),
-      }),
-    removeSuperAdminLoginEmail: (id: string) =>
-      request('/auth.php?action=remove_super_admin_login_email', {
-        method: 'POST',
-        body: JSON.stringify({ id }),
-      }),
     saveSuperAdminLoginEmails: (emails: string[]) =>
       request('/auth.php?action=save_super_admin_login_emails', {
         method: 'POST',
@@ -356,20 +356,6 @@ export const api = {
   },
 
   hr: {
-    login: async (email: string, password: string) => {
-      const data = await request('/auth.php?action=login', {
-        method: 'POST',
-        body: JSON.stringify({ email, password }),
-      });
-      const role = String(data?.user?.role || '').toLowerCase();
-      if (role !== 'hr') {
-        throw new Error('This account is not an HR account');
-      }
-      setToken(data.token);
-      setStoredUser(data.user);
-      localStorage.setItem('hr_user', JSON.stringify(data.user));
-      return data;
-    },
     logout: async () => {
       try {
         await request('/auth.php?action=logout', { method: 'POST', body: '{}' });
@@ -380,22 +366,14 @@ export const api = {
       localStorage.removeItem('hr_user');
       clearToken();
     },
-    getToken: () => getHrToken() || getToken(),
     getStoredUser: () => {
       const u = localStorage.getItem('hr_user');
       return u ? JSON.parse(u) : null;
     },
-    create: (payload: any) => request('/hr.php?action=create_hr', { method: 'POST', body: JSON.stringify(payload) }),
     list: (orgId?: string) =>
       request(`/hr.php?action=list_hrs${orgId && orgId !== 'all' ? `&org_id=${encodeURIComponent(orgId)}` : ''}`),
     update: (payload: any) => request('/hr.php?action=update_hr', { method: 'PUT', body: JSON.stringify(payload) }),
-    delete: (id: string) => request('/hr.php?action=delete_hr', { method: 'DELETE', body: JSON.stringify({ id }) }),
     dashboard: () => request('/hr.php?action=hr_dashboard'),
-    addLead: (payload: any) => request('/hr.php?action=add_lead', { method: 'POST', body: JSON.stringify(payload) }),
-    myLeads: (search = '', status = 'all') => request(`/hr.php?action=my_leads&search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
-    assignedLeads: (search = '', status = 'all') => request(`/hr.php?action=assigned_leads&search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
-    updateLeadStatus: (id: string, status: string) =>
-      request('/hr.php?action=assigned_leads', { method: 'PUT', body: JSON.stringify({ id, status }) }),
     tasks: () => request('/hr.php?action=tasks'),
     updateTaskStatus: (id: string, status: string) => request('/hr.php?action=tasks', { method: 'PUT', body: JSON.stringify({ id, status }) }),
     reports: (range = 'month') => request(`/hr.php?action=reports&range=${encodeURIComponent(range)}`),
@@ -412,6 +390,10 @@ export const api = {
       search?: string;
       referred_by?: string;
       form_leads?: boolean;
+      /** Fetch a single lead by id (picker merge / edit dialogs). */
+      id?: string;
+      /** Skip payment-link enrichment and creator-name joins. */
+      lite?: boolean;
       /** Super-admin: filter leads to one organisation */
       org_id?: string;
       /** Mobile/web: leads whose status you changed in a period */
@@ -426,7 +408,10 @@ export const api = {
         if (params?.status) q.set('status', params.status);
         if (params?.search) q.set('search', params.search);
         if (params?.referred_by) q.set('referred_by', params.referred_by);
-        if (params?.form_leads) q.set('form_leads', '1');
+        if (params?.form_leads === true) q.set('form_leads', '1');
+        else if (params?.form_leads === false) q.set('form_leads', '0');
+        if (params?.id) q.set('id', params.id);
+        if (params?.lite) q.set('lite', '1');
         if (params?.org_id) q.set('org_id', params.org_id);
         if (params?.status_changed) q.set('status_changed', params.status_changed);
         q.set('limit', String(limit));
@@ -521,23 +506,6 @@ export const api = {
         headers: orgId ? { 'X-Org-Id': orgId } : {},
       });
     },
-    rename: (id: string, name: string, orgId?: string) => {
-      const q = new URLSearchParams({ id, action: 'rename' });
-      if (orgId) q.set('org_id', orgId);
-      return request(`/lead-folders.php?${q}`, {
-        method: 'PUT',
-        body: JSON.stringify({ name }),
-        headers: orgId ? { 'X-Org-Id': orgId } : {},
-      });
-    },
-    delete: (id: string, orgId?: string) => {
-      const q = new URLSearchParams({ id });
-      if (orgId) q.set('org_id', orgId);
-      return request(`/lead-folders.php?${q}`, {
-        method: 'DELETE',
-        headers: orgId ? { 'X-Org-Id': orgId } : {},
-      });
-    },
   },
 
   /** Form / assessment source-card → manager visibility grants */
@@ -562,26 +530,6 @@ export const api = {
     },
   },
 
-  // Contacts
-  contacts: {
-    list: () => request('/contacts.php'),
-    create: (data: any) => request('/contacts.php', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: any) => request(`/contacts.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id: string) => request(`/contacts.php?id=${id}`, { method: 'DELETE' }),
-  },
-
-  // Deals
-  deals: {
-    list: (params?: { status?: string }) => {
-      const q = new URLSearchParams(params as any).toString();
-      return request(`/deals.php${q ? '?' + q : ''}`);
-    },
-    stages: () => request('/deals.php?stages=1'),
-    create: (data: any) => request('/deals.php', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: any) => request(`/deals.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id: string) => request(`/deals.php?id=${id}`, { method: 'DELETE' }),
-  },
-
   // Tasks
   tasks: {
     list: () => request('/tasks.php'),
@@ -599,8 +547,6 @@ export const api = {
       return request(`/activities.php${qs ? `?${qs}` : ''}`);
     },
     create: (data: any) => request('/activities.php', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: any) => request(`/activities.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id: string) => request(`/activities.php?id=${id}`, { method: 'DELETE' }),
   },
 
   // Students
@@ -644,20 +590,6 @@ export const api = {
  method: 'POST',
  body: JSON.stringify({ batches, ...(opts?.org_id ? { org_id: opts.org_id } : {}) }),
  }),
- },
-
-  // Payments
-  payments: {
-    list: (params?: { date_from?: string; date_to?: string }) => {
-      const q = new URLSearchParams();
-      if (params?.date_from) q.set('date_from', params.date_from);
-      if (params?.date_to) q.set('date_to', params.date_to);
-      const suffix = q.toString() ? `?${q.toString()}` : '';
-      return request(`/payments.php${suffix}`);
-    },
-    create: (data: any) => request('/payments.php', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: any) => request(`/payments.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id: string) => request(`/payments.php?id=${id}`, { method: 'DELETE' }),
   },
 
   // Manual payment submissions (Payment Records → Payments / Approvals)
@@ -742,9 +674,6 @@ export const api = {
 
   // Settings
   settings: {
-    users: () => request('/settings.php'),
-    updateUser: (id: string, data: any) => request(`/settings.php?id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    stages: () => request('/deals.php?stages=1'),
     emailSetup: () => request('/email-settings.php'),
     saveEmailSetup: (data: {
       accounts: Array<{ slot: number; label: string; email: string; from_name: string; app_password?: string }>;
@@ -924,6 +853,57 @@ export const api = {
       request(`/timetables.php?action=send&id=${encodeURIComponent(id)}`, { method: 'POST', body: JSON.stringify(data) }),
   },
 
+  coupons: {
+    list: () => request('/coupons.php'),
+    create: (
+      data: {
+        name: string;
+        email: string;
+        phone: string;
+        discount: number;
+        min_amount: number;
+        code?: string;
+        lead_id?: string;
+        expires_at: string;
+        send_email?: boolean;
+        smtp_account_id?: string;
+      },
+      orgId?: string,
+    ) => {
+      const q = orgId ? `?org_id=${encodeURIComponent(orgId)}` : '';
+      return request(`/coupons.php${q}`, { method: 'POST', body: JSON.stringify(data) });
+    },
+    delete: (id: string) => request(`/coupons.php?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    listMailboxes: (orgId?: string) => {
+      const q = new URLSearchParams({ action: 'mailboxes' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/coupons.php?${q.toString()}`);
+    },
+    getApiKey: (orgId?: string) => {
+      const q = new URLSearchParams({ action: 'api_key' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/coupons.php?${q.toString()}`);
+    },
+    generateApiKey: (orgId?: string) => {
+      const q = new URLSearchParams({ action: 'api_key' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/coupons.php?${q.toString()}`, { method: 'POST' });
+    },
+    getMinAmount: (orgId?: string) => {
+      const q = new URLSearchParams({ action: 'min_amount' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/coupons.php?${q.toString()}`);
+    },
+    setMinAmount: (minAmount: number, orgId?: string) => {
+      const q = new URLSearchParams({ action: 'min_amount' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/coupons.php?${q.toString()}`, {
+        method: 'POST',
+        body: JSON.stringify({ min_amount: minAmount }),
+      });
+    },
+  },
+
   // Holidays
   holidays: {
     list: (year?: string) => request(`/holidays.php${year ? '?year=' + year : ''}`),
@@ -1012,19 +992,6 @@ export const api = {
   // Lead Assignments
   leadAssignments: {
     list: (leadId?: string) => request(`/lead-assignments.php${leadId ? '?lead_id=' + leadId : ''}`),
-    myLeads: (params?: { status?: string; search?: string }) => {
-      const q = new URLSearchParams({ action: 'my_leads' });
-      if (params?.status) q.set('status', params.status);
-      if (params?.search) q.set('search', params.search);
-      return request(`/lead-assignments.php?${q.toString()}`);
-    },
-    myFormLeads: (params?: { status?: string; search?: string }) => {
-      const q = new URLSearchParams({ action: 'my_form_leads' });
-      if (params?.status) q.set('status', params.status);
-      if (params?.search) q.set('search', params.search);
-      return request(`/lead-assignments.php?${q.toString()}`);
-    },
-    assign: (data: any) => request('/lead-assignments.php', { method: 'POST', body: JSON.stringify(data) }),
     /** Atomically replace assignees for one lead (multi-member). */
     setAssignees: (leadId: string, userIds: string[]) =>
       request('/lead-assignments.php?action=set', {
@@ -1041,7 +1008,6 @@ export const api = {
             : { lead_ids: leadIds, user_id: userIdOrIds },
         ),
       }),
-    delete: (id: string) => request(`/lead-assignments.php?id=${id}`, { method: 'DELETE' }),
   },
 
   // Document forms (Certificates & Offer Letters forms — separate from lead_forms)
@@ -1103,6 +1069,8 @@ export const api = {
       request('/doc-forms.php?action=issue', { method: 'POST', body: JSON.stringify(data) }),
     issued: (kind?: 'offer_letter' | 'certificate') =>
       request(`/doc-forms.php?action=issued${kind ? `&doc_kind=${kind}` : ''}`),
+    deleteIssued: (id: string) =>
+      request(`/doc-forms.php?action=issued&id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
     deleteSubmission: (id: string) =>
       request(`/doc-forms.php?action=submission&id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
   },
@@ -1341,6 +1309,8 @@ export const api = {
       request('/issued-certificates.php', { method: 'POST', body: JSON.stringify({ certificates }) }),
     updateIssuedStatus: (id: string, status: 'issued' | 'revoked' | 'expired') =>
       request(`/issued-certificates.php?id=${id}`, { method: 'PUT', body: JSON.stringify({ status }) }),
+    deleteIssued: (id: string) =>
+      request(`/issued-certificates.php?id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
     issue: (data: {
       recipientId: string;
       templateId: string;
@@ -1429,4 +1399,103 @@ export const api = {
       return row && typeof row === 'object' ? row : { enrolled: false };
     },
   },
+
+  videoIntros: {
+    list: (q: { q?: string; status?: string; org_id?: string } = {}) => {
+      const qs = new URLSearchParams();
+      if (q.q) qs.set('q', q.q);
+      if (q.status && q.status !== 'all') qs.set('status', q.status);
+      if (q.org_id) qs.set('org_id', q.org_id);
+      const s = qs.toString();
+      return request(`/video-intros.php${s ? `?${s}` : ''}`) as Promise<{
+        data: VideoIntroInvitation[];
+        counts: Record<string, number>;
+      }>;
+    },
+    get: (id: string) =>
+      request(`/video-intros.php?id=${encodeURIComponent(id)}`) as Promise<{
+        data: VideoIntroInvitation;
+        recording: VideoIntroRecordingMeta | null;
+        events: VideoIntroEvent[];
+        retention_days: number;
+      }>,
+    create: (data: Record<string, unknown>, orgId?: string) => {
+      const qs = orgId ? `?org_id=${encodeURIComponent(orgId)}` : '';
+      return request(`/video-intros.php${qs}`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }) as Promise<{ message: string; data: VideoIntroInvitation }>;
+    },
+    revoke: (id: string) =>
+      request(`/video-intros.php?action=revoke&id=${encodeURIComponent(id)}`, { method: 'POST' }),
+    regenerate: (id: string) =>
+      request(`/video-intros.php?action=regenerate&id=${encodeURIComponent(id)}`, { method: 'POST' }) as Promise<{
+        message: string;
+        data: VideoIntroInvitation;
+      }>,
+    deleteRecording: (id: string) =>
+      request(`/video-intros.php?action=delete_recording&id=${encodeURIComponent(id)}`, { method: 'POST' }),
+    delete: (id: string) =>
+      request(`/video-intros.php?action=delete&id=${encodeURIComponent(id)}`, { method: 'POST' }),
+    listMailboxes: (orgId?: string) => {
+      const q = new URLSearchParams({ action: 'mailboxes' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/video-intros.php?${q.toString()}`) as Promise<{
+        data: Array<{ id: string; slot?: number; label?: string; email: string; from_name?: string }>;
+        org_id?: string;
+      }>;
+    },
+    sendEmail: (id: string, body: { smtp_account_id: string; invite_url: string }) =>
+      request(`/video-intros.php?action=send_email&id=${encodeURIComponent(id)}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }) as Promise<{ message: string; email_sent: boolean; error?: string }>,
+    mediaBlob: (id: string) => requestBlob(`/video-intros.php?action=media&id=${encodeURIComponent(id)}`),
+  },
+};
+
+export type VideoIntroInvitation = {
+  id: string;
+  candidate_name: string;
+  email?: string | null;
+  phone?: string | null;
+  position?: string | null;
+  status: string;
+  max_duration_sec: number;
+  max_retries: number;
+  retry_count?: number;
+  retries_remaining?: number;
+  expires_at: string;
+  submitted_at?: string | null;
+  opened_at?: string | null;
+  recording_started_at?: string | null;
+  revoked_at?: string | null;
+  consent_at?: string | null;
+  created_at?: string;
+  org_id?: string | null;
+  org_name?: string | null;
+  created_by_name?: string | null;
+  has_recording?: boolean;
+  duration_ms?: number | null;
+  byte_size?: number | null;
+  invite_url?: string;
+  invite_path?: string;
+  retention_days?: number;
+};
+
+export type VideoIntroRecordingMeta = {
+  id: string;
+  mime_type: string;
+  byte_size: number;
+  duration_ms: number;
+  uploaded_at: string;
+  stored_gcs?: number;
+  stored_local?: number;
+};
+
+export type VideoIntroEvent = {
+  id: string;
+  event_type: string;
+  detail?: string | null;
+  created_at: string;
 };

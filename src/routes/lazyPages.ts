@@ -31,6 +31,7 @@ export const WhatsAppPortal = lazyWithRetry(() => import("@/pages/WhatsAppPortal
 export const WhatsAppAnalytics = lazyWithRetry(() => import("@/pages/WhatsAppAnalytics"));
 export const MarketingMetaAdsPage = lazyWithRetry(() => import("@/pages/MarketingMetaAdsPage"));
 export const Holidays = lazyWithRetry(() => import("@/pages/Holidays"));
+export const CouponsPage = lazyWithRetry(() => import("@/pages/CouponsPage"));
 export const Trash = lazyWithRetry(() => import("@/pages/Trash"));
 export const OfferLetters = lazyWithRetry(() => import("@/pages/OfferLetters"));
 export const CertificatesPage = lazyWithRetry(() => import("@/pages/CertificatesPage"));
@@ -42,6 +43,9 @@ export const PublicDocFormPage = lazyWithRetry(() => import("@/pages/PublicDocFo
 export const FormApiIntegrationsPage = lazyWithRetry(() => import("@/pages/FormApiIntegrationsPage"));
 export const SuperAdminPanel = lazyWithRetry(() => import("@/pages/SuperAdminPanel"));
 export const SuperAdminOrgDashboard = lazyWithRetry(() => import("@/pages/SuperAdminOrgDashboard"));
+export const VideoIntrosPage = lazyWithRetry(() => import("@/pages/VideoIntrosPage"));
+export const VideoIntroDetailPage = lazyWithRetry(() => import("@/pages/VideoIntroDetailPage"));
+export const PublicVideoIntroPage = lazyWithRetry(() => import("@/pages/PublicVideoIntroPage"));
 export const NotFound = lazyWithRetry(() => import("@/pages/NotFound"));
 export const HRDashboard = lazyWithRetry(() => import("@/pages/hr/HRDashboard"));
 export const HRMyLeads = lazyWithRetry(() => import("@/pages/hr/MyLeads"));
@@ -61,7 +65,6 @@ export const TemplateLibraryPage = lazyWithRetry(() => import("@/pages/communica
 export const FresherSalaryTrackerPage = lazyWithRetry(() => import("@/pages/FresherSalaryTrackerPage"));
 export const CallLogPage = lazyWithRetry(() => import("@/pages/sales/CallLogPage"));
 export const AssessmentsAdminPage = lazyWithRetry(() => import("@/pages/AssessmentsAdminPage"));
-export const PeaklyyAssessmentPage = lazyWithRetry(() => import("@/pages/PeaklyyAssessmentPage"));
 export const SyncpediaFresherAssessmentPage = lazyWithRetry(() => import("@/pages/SyncpediaFresherAssessmentPage"));
 export const PublicAssessmentPage = lazyWithRetry(() => import("@/pages/PublicAssessmentPage"));
 

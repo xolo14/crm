@@ -18,6 +18,7 @@ import { format, subDays, startOfMonth, endOfMonth } from 'date-fns';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { normalizeAppRole } from '@/lib/roleUtils';
 import AssignedAssignmentsCard from '@/components/assignments/AssignedAssignmentsCard';
 import AssignedFormLinksCard from '@/components/forms/AssignedFormLinksCard';
 import AssignedDocFormLinksCard from '@/components/forms/AssignedDocFormLinksCard';
@@ -30,6 +31,7 @@ const LEAD_SOURCES = [
 
 export default function MarketingPortalDashboard() {
   const { user, profile } = useAuth();
+  const mineOnly = normalizeAppRole(user?.role) === 'marketing';
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -53,14 +55,14 @@ export default function MarketingPortalDashboard() {
       const code = user?.referral_code || profile?.referral_code || '';
       setReferralCode(code);
       const [emailRes, waRes] = await Promise.all([
-        api.marketing.emailCampaigns({ mine: true }),
-        api.marketing.whatsappCampaigns({ mine: true }),
+        api.marketing.emailCampaigns(mineOnly ? { mine: true } : undefined),
+        api.marketing.whatsappCampaigns(mineOnly ? { mine: true } : undefined),
       ]);
       setEmailCampaigns(phpList(emailRes));
       setWaCampaigns(phpList(waRes));
 
       if (code) {
-        const leadsRes = await api.leads.list({ referred_by: code });
+        const leadsRes = await api.leads.list({ referred_by: code, lite: true });
         setFormLeads(phpList(leadsRes));
       }
     } catch (err: any) {

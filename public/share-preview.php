@@ -38,7 +38,7 @@ if (!$isBot) {
 $title = 'Syncpedia CRM';
 $description = 'EdTech sales, leads, and operations platform for training organizations in India.';
 $canonical = $origin . '/';
-$image = $origin . '/api/public-og-image.php';
+$image = $origin . '/api/public-og-image.php?v=20260924';
 
 try {
     require_once __DIR__ . '/api/helpers.php';

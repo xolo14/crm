@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { communicationsApi } from "@/services/communications";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
+import { normalizeAppRole } from "@/lib/roleUtils";
 import {
   EMPTY_FORM_CAMPAIGN,
   type FormCampaignConfig,
@@ -45,6 +47,8 @@ export function FormPublishCampaignDialog({
   onConfirm,
 }: Props) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const mineOnly = normalizeAppRole(user?.role) === "marketing";
   const [cfg, setCfg] = useState<FormCampaignConfig>({ ...EMPTY_FORM_CAMPAIGN, ...initial });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -85,8 +89,8 @@ export function FormPublishCampaignDialog({
           return { email, whatsapp };
         })
       : Promise.all([
-          api.marketing.emailDrafts({ mine: true }),
-          api.marketing.whatsappDrafts({ mine: true }),
+          api.marketing.emailDrafts(mineOnly ? { mine: true } : undefined),
+          api.marketing.whatsappDrafts(mineOnly ? { mine: true } : undefined),
           communicationsApi.templates({ status: "approved" }),
         ]).then(([emailRes, waRes, commRes]) => ({
           email: (emailRes?.data || []).map((d: { id: string; name?: string; subject?: string }) => ({
@@ -122,7 +126,7 @@ export function FormPublishCampaignDialog({
         setWaTemplates([]);
       })
       .finally(() => setLoading(false));
-  }, [open, formId]);
+  }, [open, formId, mineOnly]);
 
   const marketingEmail = emailTemplates.filter((t) => t.source === "marketing");
   const marketingWa = waTemplates.filter((t) => t.source === "marketing");

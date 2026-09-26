@@ -20,20 +20,28 @@ import {
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { normalizeAppRole } from '@/lib/roleUtils';
 import {
   CampaignRecipientPicker,
+  formatManualEmailLine,
   mergeCampaignEmailRecipients,
+  parseManualEmailEntries,
   type CampaignPickPerson,
 } from '@/components/marketing/CampaignRecipientPicker';
+import { FormLeadsCampaignTab } from '@/components/marketing/FormLeadsCampaignTab';
+import { useCampaignFormLeads } from '@/lib/campaignFormLeads';
 import { sanitizeFormDescriptionHtml } from '@/components/forms/formDescriptionHtml';
 import {
   autofillPlaceholderValues,
   extractAnglePlaceholders,
+  isNamePlaceholderKey,
   placeholderValuesComplete,
+  syncNamePlaceholderValues,
 } from '@/lib/emailDraftPlaceholders';
 
 export default function MarketingPortal() {
   const { user } = useAuth();
+  const mineOnly = normalizeAppRole(user?.role) === 'marketing';
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
@@ -42,10 +50,19 @@ export default function MarketingPortal() {
 
   const [activeTab, setActiveTab] = useState('form_leads');
   const [loading, setLoading] = useState(true);
-  const [referralCode, setReferralCode] = useState('');
-  const [formLeads, setFormLeads] = useState<any[]>([]);
   const [campaignLeads, setCampaignLeads] = useState<any[]>([]);
   const [marketingMembers, setMarketingMembers] = useState<any[]>([]);
+  const {
+    campaignForms,
+    campaignFormsLoading,
+    selectedFormId,
+    setSelectedFormId,
+    formLeadRows,
+    formLeadsLoading,
+    formLeadDestination,
+    formPeopleEmail: formPeople,
+    extraFormPeople,
+  } = useCampaignFormLeads();
 
   // Drafts
   const [drafts, setDrafts] = useState<any[]>([]);
@@ -106,13 +123,13 @@ export default function MarketingPortal() {
       }));
     const seen = new Set<string>();
     const out: CampaignPickPerson[] = [];
-    for (const p of [...leads, ...members]) {
+    for (const p of [...extraFormPeople, ...formPeople, ...leads, ...members]) {
       if (seen.has(p.id)) continue;
       seen.add(p.id);
       out.push(p);
     }
     return out;
-  }, [campaignLeads, marketingMembers]);
+  }, [campaignLeads, marketingMembers, formPeople, extraFormPeople]);
 
   useEffect(() => {
     fetchAll();
@@ -122,8 +139,8 @@ export default function MarketingPortal() {
     setLoading(true);
     try {
       const [draftsRes, campaignsRes, membersRes] = await Promise.all([
-        api.marketing.emailDrafts({ mine: true }),
-        api.marketing.emailCampaigns({ mine: true }),
+        api.marketing.emailDrafts(mineOnly ? { mine: true } : undefined),
+        api.marketing.emailCampaigns(mineOnly ? { mine: true } : undefined),
         api.marketing.members().catch(() => ({ data: [] })),
       ]);
       const draftsData = phpList(draftsRes);
@@ -131,26 +148,7 @@ export default function MarketingPortal() {
       setDrafts(draftsData);
       setCampaigns(campaignsData);
       setMarketingMembers(phpList(membersRes));
-
-      const code = String(user?.referral_code || "").trim();
-      setReferralCode(code);
-
-      try {
-        const leadsRes = code
-          ? await api.leads.list({ referred_by: code, all: false, limit: 5000 })
-          : await api.leads.list({ all: false, limit: 5000 });
-        setFormLeads(phpList(leadsRes));
-      } catch {
-        if (code) {
-          const leadsRes = await api.leads.list({ referred_by: code, all: false, limit: 5000 }).catch(() => ({ data: [] }));
-          setFormLeads(phpList(leadsRes));
-        } else {
-          setFormLeads([]);
-        }
-      }
-
       setCampaignLeads([]);
-
       if (campaignsData.length > 0) {
         const sendsRes = await api.marketing.emailSends(campaignsData.map((c: any) => c.id));
         setSends(phpList(sendsRes));
@@ -229,15 +227,22 @@ export default function MarketingPortal() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
-      // Extract emails from CSV (first column or any email pattern)
-      const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-      const found = text.match(emailRegex) || [];
-      const unique = [...new Set(found)];
-      setBulkEmails(prev => {
-        const existing = prev.split('\n').map(e => e.trim()).filter(Boolean);
-        return [...new Set([...existing, ...unique])].join('\n');
+      const found = parseManualEmailEntries(text);
+      if (found.length === 0) {
+        toast({ variant: 'destructive', title: 'No emails found in file' });
+        return;
+      }
+      setBulkEmails((prev) => {
+        const byEmail = new Map(parseManualEmailEntries(prev).map((e) => [e.email.toLowerCase(), e]));
+        for (const row of found) {
+          const key = row.email.toLowerCase();
+          const existing = byEmail.get(key);
+          if (!existing) byEmail.set(key, row);
+          else if (row.name && !existing.name) existing.name = row.name;
+        }
+        return Array.from(byEmail.values()).map(formatManualEmailLine).join('\n');
       });
-      toast({ title: `Found ${unique.length} emails from file` });
+      toast({ title: `Found ${found.length} email${found.length === 1 ? '' : 's'} from file` });
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -249,9 +254,20 @@ export default function MarketingPortal() {
     if (fillRows.length === 0) { toast({ variant: 'destructive', title: 'No valid emails provided' }); return; }
     const selectedDraft = drafts.find((d) => d.id === selectedDraftId);
     const keys = extractAnglePlaceholders(String(selectedDraft?.subject || ''), String(selectedDraft?.html_body || ''));
-    const incomplete = fillRows.find((r) => !placeholderValuesComplete(keys, r.values));
+    const rowsReady = fillRows.map((r) => ({
+      ...r,
+      values: syncNamePlaceholderValues(r.name, keys, r.values),
+    }));
+    const incomplete = rowsReady.find((r) => !placeholderValuesComplete(keys, r.values));
     if (incomplete) {
-      toast({ variant: 'destructive', title: 'Fill all placeholders', description: `Complete <<fields>> for ${incomplete.email} before sending.` });
+      const missing = keys.filter((k) => String(incomplete.values[k] ?? '').trim() === '');
+      toast({
+        variant: 'destructive',
+        title: 'Fill all placeholders',
+        description: missing.some((k) => isNamePlaceholderKey(k))
+          ? `Enter a name for ${incomplete.email} (used for <<name>>).`
+          : `Complete <<${missing[0] || 'fields'}>> for ${incomplete.email} before sending.`,
+      });
       return;
     }
 
@@ -261,7 +277,7 @@ export default function MarketingPortal() {
         draft_id: selectedDraftId,
         smtp_account_id: smtpAccountId,
         scheduled_at: campaignSchedule || null,
-        recipients: fillRows.map((r) => ({
+        recipients: rowsReady.map((r) => ({
           email: r.email,
           values: r.values,
           scheduled_at: r.scheduledAt || null,
@@ -295,6 +311,10 @@ export default function MarketingPortal() {
     const d = drafts.find((x) => x.id === selectedDraftId);
     return extractAnglePlaceholders(String(d?.subject || ''), String(d?.html_body || ''));
   }, [drafts, selectedDraftId]);
+  const extraPlaceholderKeys = useMemo(
+    () => placeholderKeys.filter((k) => !isNamePlaceholderKey(k)),
+    [placeholderKeys],
+  );
   const editorTokens = useMemo(
     () => extractAnglePlaceholders(draftSubject, draftBody),
     [draftSubject, draftBody],
@@ -311,6 +331,23 @@ export default function MarketingPortal() {
       .catch(() => setMailboxes([]));
   }, [showBulkSend]);
 
+  const openSendFromFormLeads = () => {
+    if (!selectedFormId) {
+      toast({ variant: 'destructive', title: 'Select a form first' });
+      return;
+    }
+    const ticked = selectedRecipientIds.filter((id) => formPeople.some((p) => p.id === id));
+    if (ticked.length === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Tick form leads to send',
+        description: 'Only ticked leads with an email are sent the draft.',
+      });
+      return;
+    }
+    setShowBulkSend(true);
+  };
+
   useEffect(() => {
     if (!showBulkSend) return;
     const details = mergeCampaignEmailRecipients(recipientPeople, selectedRecipientIds, bulkEmails);
@@ -321,17 +358,21 @@ export default function MarketingPortal() {
         const person =
           recipientPeople.find((p) => p.id === d.personId) ||
           recipientPeople.find((p) => String(p.email || '').toLowerCase() === d.email.toLowerCase());
-        const auto = autofillPlaceholderValues(person, placeholderKeys);
+        const auto = autofillPlaceholderValues(
+          { ...(person || {}), name: d.name || person?.name || existing?.name || '', email: d.email },
+          placeholderKeys,
+        );
         const values: Record<string, string> = {};
         for (const k of placeholderKeys) {
           const prevVal = existing?.values?.[k];
           values[k] = prevVal != null && String(prevVal).trim() !== '' ? String(prevVal) : (auto[k] || '');
         }
+        const name = String(existing?.name || d.name || person?.name || values.name || '').trim();
         return {
           key: existing?.key ?? d.email.toLowerCase(),
           email: d.email,
-          name: d.name || existing?.name || person?.name || '',
-          values,
+          name,
+          values: syncNamePlaceholderValues(name, placeholderKeys, values),
           scheduledAt: existing?.scheduledAt ?? '',
         };
       });
@@ -343,7 +384,7 @@ export default function MarketingPortal() {
     const query = q.trim();
     if (query.length < 2) return;
     leadSearchTimer.current = window.setTimeout(() => {
-      void api.leads.list({ search: query, all: false, limit: 300 })
+      void api.leads.list({ search: query, all: false, limit: 300, lite: true })
         .then((res) => {
           const extra = phpList(res);
           if (!extra.length) return;
@@ -420,7 +461,7 @@ export default function MarketingPortal() {
         <Card className="border-l-4 border-l-blue-500">
           <CardContent className="p-3">
             <div className="flex items-center gap-2 mb-1"><Users className="h-3.5 w-3.5 text-blue-500" /><span className="text-[10px] uppercase tracking-wider text-muted-foreground">Form Leads</span></div>
-            <p className="text-lg md:text-xl font-bold text-blue-600">{formLeads.length}</p>
+            <p className="text-lg md:text-xl font-bold text-blue-600">{formLeadRows.length}</p>
           </CardContent>
         </Card>
       </div>
@@ -436,50 +477,22 @@ export default function MarketingPortal() {
 
         {/* Form Leads */}
         <TabsContent value="form_leads">
-          <Card>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-xs">#</TableHead>
-                      <TableHead className="text-xs">Name</TableHead>
-                      <TableHead className="text-xs">Email</TableHead>
-                      <TableHead className="text-xs">Phone</TableHead>
-                      <TableHead className="text-xs">Source</TableHead>
-                      <TableHead className="text-xs">Status</TableHead>
-                      <TableHead className="text-xs">Date</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {formLeads.length === 0 ? (
-                      <TableRow><TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-8">
-                        <Users className="h-10 w-10 mx-auto mb-3 text-muted-foreground/30" />
-                        No form leads yet. Share your form link to collect leads.
-                      </TableCell></TableRow>
-                    ) : formLeads.map((lead, i) => (
-                      <TableRow key={lead.id}>
-                        <TableCell className="text-xs text-muted-foreground">{i + 1}</TableCell>
-                        <TableCell className="text-sm font-medium">{lead.name}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{lead.email || '—'}</TableCell>
-                        <TableCell className="text-xs">{lead.phone || '—'}</TableCell>
-                        <TableCell><Badge variant="outline" className="text-[10px]">{lead.source || 'website'}</Badge></TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className={
-                            lead.status === 'converted' || lead.status === 'enrolled' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            lead.status === 'interested' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                            lead.status === 'lost' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-gray-50 text-gray-700 border-gray-200'
-                          }>{lead.status === 'enrolled' ? 'Enroll' : (lead.status || 'new').replace(/_/g, ' ')}</Badge>
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{format(new Date(lead.created_at), 'dd MMM yyyy')}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
+          <FormLeadsCampaignTab
+            forms={campaignForms}
+            formsLoading={campaignFormsLoading}
+            selectedFormId={selectedFormId}
+            onSelectedFormIdChange={(id) => {
+              setSelectedFormId(id);
+              setSelectedRecipientIds([]);
+            }}
+            leads={formLeadRows}
+            leadsLoading={formLeadsLoading}
+            destination={formLeadDestination}
+            selectedIds={selectedRecipientIds}
+            onSelectedIdsChange={setSelectedRecipientIds}
+            contactKind="email"
+            onSendSelected={openSendFromFormLeads}
+          />
         </TabsContent>
 
         {/* Drafts */}
@@ -497,6 +510,7 @@ export default function MarketingPortal() {
                     <p className="text-sm font-semibold truncate">{d.name || d.subject || '(No name)'}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       Subject: {d.subject || '(No subject)'} · Updated {format(new Date(d.updated_at), 'dd MMM yyyy HH:mm')}
+                      {d.created_by_name ? ` · ${d.created_by_name}` : ''}
                       <Badge variant="outline" className="ml-2 text-[10px]">{d.status}</Badge>
                     </p>
                   </div>
@@ -688,7 +702,6 @@ export default function MarketingPortal() {
       <Dialog open={showBulkSend} onOpenChange={(open) => {
         setShowBulkSend(open);
         if (!open) {
-          setSelectedRecipientIds([]);
           setFillRows([]);
           setCampaignSchedule('');
           setCampaignLeads([]);
@@ -749,14 +762,24 @@ export default function MarketingPortal() {
               fileInputRef={fileInputRef}
               onSearchChange={onLeadSearch}
               hideListUntilSearch
+              forms={campaignForms}
+              formsLoading={campaignFormsLoading}
+              selectedFormId={selectedFormId}
+              onSelectedFormIdChange={setSelectedFormId}
+              formPeople={formPeople}
+              formPeopleLoading={formLeadsLoading}
             />
             {fillRows.length > 0 ? (
-              <div className="rounded-md border overflow-x-auto">
+              <div className="space-y-1">
+                <p className="text-[11px] text-muted-foreground">
+                  Type a name for pasted emails. CRM leads fill it automatically. This value is used for {'<<name>>'}.
+                </p>
+                <div className="rounded-md border overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="text-xs sticky left-0 bg-background min-w-[160px]">Recipient</TableHead>
-                      {placeholderKeys.map((k) => (
+                      <TableHead className="text-xs sticky left-0 bg-background min-w-[200px]">Recipient</TableHead>
+                      {extraPlaceholderKeys.map((k) => (
                         <TableHead key={k} className="text-xs font-mono min-w-[140px]">{`<<${k}>>`}</TableHead>
                       ))}
                       <TableHead className="text-xs min-w-[190px]">Schedule</TableHead>
@@ -765,11 +788,23 @@ export default function MarketingPortal() {
                   <TableBody>
                     {fillRows.map((row) => (
                       <TableRow key={row.key}>
-                        <TableCell className="text-xs sticky left-0 bg-background">
-                          <div className="font-medium truncate max-w-[180px]">{row.name || '—'}</div>
-                          <div className="text-muted-foreground truncate max-w-[180px]">{row.email}</div>
+                        <TableCell className="text-xs sticky left-0 bg-background space-y-1">
+                          <Input
+                            className={`h-8 text-xs${placeholderKeys.some(isNamePlaceholderKey) && !String(row.name).trim() ? ' border-amber-400' : ''}`}
+                            placeholder="Recipient name"
+                            value={row.name}
+                            onChange={(e) => {
+                              const name = e.target.value;
+                              setFillRows((prev) => prev.map((r) => (
+                                r.key === row.key
+                                  ? { ...r, name, values: syncNamePlaceholderValues(name, placeholderKeys, r.values) }
+                                  : r
+                              )));
+                            }}
+                          />
+                          <div className="text-muted-foreground truncate max-w-[220px] px-0.5">{row.email}</div>
                         </TableCell>
-                        {placeholderKeys.map((k) => (
+                        {extraPlaceholderKeys.map((k) => (
                           <TableCell key={k}>
                             <Input
                               className="h-8 text-xs"
@@ -798,6 +833,7 @@ export default function MarketingPortal() {
                     ))}
                   </TableBody>
                 </Table>
+                </div>
               </div>
             ) : selectedDraftId ? (
               <p className="text-xs text-muted-foreground">Search and select leads, or enter emails manually, to build the send list.</p>

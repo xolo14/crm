@@ -9,6 +9,7 @@ import {
   Eye,
   Link2,
   Loader2,
+  Printer,
   MoreHorizontal,
   Pencil,
   Play,
@@ -2436,10 +2437,127 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
   );
 }
 
-export function DocIssuedPanel({ docKind }: { docKind: DocFormType }) {
+function issuedPdfIdsFromRow(
+  row: import("@/modules/docForms/types").DocIssuedDocument,
+): { certificateId: string; offerLetterId: string } {
+  const raw = String(row.pdf_url || "").trim();
+  let certificateId = "";
+  let offerLetterId = "";
+  try {
+    const u = new URL(raw, typeof window !== "undefined" ? window.location.origin : "https://local.invalid");
+    const path = u.pathname.toLowerCase();
+    if (path.includes("certificates.php")) {
+      certificateId = (u.searchParams.get("certificate_id") || "").trim();
+    }
+    if (path.includes("offer-letters.php")) {
+      offerLetterId = (u.searchParams.get("id") || "").trim();
+    }
+  } catch {
+    const cert = raw.match(/[?&]certificate_id=([^&#]+)/i);
+    if (cert) certificateId = decodeURIComponent(cert[1]).trim();
+    const offer = raw.match(/offer-letters\.php\?[^#]*[?&]id=([^&#]+)/i);
+    if (offer) offerLetterId = decodeURIComponent(offer[1]).trim();
+  }
+  let meta: Record<string, unknown> = {};
+  const rawMeta = row.meta_json as unknown;
+  if (rawMeta && typeof rawMeta === "object" && !Array.isArray(rawMeta)) {
+    meta = rawMeta as Record<string, unknown>;
+  } else if (typeof rawMeta === "string" && rawMeta.trim()) {
+    try {
+      const parsed = JSON.parse(rawMeta) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        meta = parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  if (!certificateId) {
+    const fromMeta = String(meta.cert_id || meta.certificate_id || meta.sync_id || "").trim();
+    if (fromMeta) certificateId = fromMeta;
+  }
+  if (!certificateId && /^[A-Z]{2}-[A-Z]{2}-[A-Z0-9-]+$/i.test(raw)) {
+    certificateId = raw;
+  }
+  if (!offerLetterId) {
+    const fromMeta = String(meta.offer_letter_id || meta.sent_id || "").trim();
+    if (fromMeta) offerLetterId = fromMeta;
+  }
+  return { certificateId, offerLetterId };
+}
+
+function IssuedDocPdfViewer({ row }: { row: import("@/modules/docForms/types").DocIssuedDocument }) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let revoked: string | null = null;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setUrl("");
+    void (async () => {
+      try {
+        const ids = issuedPdfIdsFromRow(row);
+        let blob: Blob;
+        if (ids.certificateId) {
+          blob = await api.certificates.pdf(ids.certificateId);
+        } else if (ids.offerLetterId) {
+          blob = await api.offerLetters.fetchSentPdfBlob(ids.offerLetterId);
+        } else {
+          throw new Error("No stored PDF is linked to this document.");
+        }
+        if (cancelled) return;
+        const next = URL.createObjectURL(blob);
+        revoked = next;
+        setUrl(next);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Could not load PDF");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
+  }, [row]);
+
+  if (loading) {
+    return (
+      <div className="flex min-h-[280px] items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" />
+        Loading PDF…
+      </div>
+    );
+  }
+  if (error || !url) {
+    return (
+      <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+        {error || "PDF not available."}
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border bg-muted/20">
+      <iframe
+        title="Issued document PDF"
+        src={url}
+        className="h-[min(70vh,820px)] w-full bg-white"
+      />
+    </div>
+  );
+}
+
+export function DocIssuedPanel({ docKind, canDelete = false }: { docKind: DocFormType; canDelete?: boolean }) {
   const { toast } = useToast();
   const [rows, setRows] = useState<import("@/modules/docForms/types").DocIssuedDocument[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState("");
+  const [preview, setPreview] = useState<import("@/modules/docForms/types").DocIssuedDocument | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -2458,6 +2576,24 @@ export function DocIssuedPanel({ docKind }: { docKind: DocFormType }) {
     return () => { alive = false; };
   }, [docKind, toast]);
 
+  async function deleteIssued(row: import("@/modules/docForms/types").DocIssuedDocument) {
+    if (!canDelete) return;
+    const label = row.recipient_name || row.recipient_email || "this document";
+    if (!window.confirm(`Delete the issued document for ${label}? This also removes the PDF from storage.`)) {
+      return;
+    }
+    setDeletingId(row.id);
+    try {
+      await api.docForms.deleteIssued(row.id);
+      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      toast({ title: "Issued document deleted" });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Could not delete", description: e?.message || "Try again." });
+    } finally {
+      setDeletingId("");
+    }
+  }
+
   if (loading) return <div className="py-10 flex justify-center"><Loader2 className="h-5 w-5 animate-spin" /></div>;
   if (!rows.length) {
     return (
@@ -2469,7 +2605,10 @@ export function DocIssuedPanel({ docKind }: { docKind: DocFormType }) {
     );
   }
 
+  const previewIds = preview ? issuedPdfIdsFromRow(preview) : { certificateId: "", offerLetterId: "" };
+
   return (
+    <>
     <div className="rounded-md border overflow-auto">
       <Table>
         <TableHeader>
@@ -2479,7 +2618,8 @@ export function DocIssuedPanel({ docKind }: { docKind: DocFormType }) {
             <TableHead>Subject</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Issued</TableHead>
-            <TableHead>PDF</TableHead>
+            <TableHead>Actions</TableHead>
+            {canDelete ? <TableHead className="w-12" /> : null}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -2490,13 +2630,107 @@ export function DocIssuedPanel({ docKind }: { docKind: DocFormType }) {
               <TableCell className="text-xs">{r.subject || "—"}</TableCell>
               <TableCell><Badge variant="secondary" className="text-[10px]">{r.status}</Badge></TableCell>
               <TableCell className="text-xs">{r.issued_at ? new Date(r.issued_at).toLocaleString() : "—"}</TableCell>
-              <TableCell className="text-xs">
-                {r.pdf_url ? <a className="text-primary underline" href={r.pdf_url} target="_blank" rel="noreferrer">View</a> : "—"}
+              <TableCell>
+                {(() => {
+                  const ids = issuedPdfIdsFromRow(r);
+                  const canPreview = Boolean(r.pdf_url || ids.certificateId || ids.offerLetterId);
+                  if (!canPreview) return <span className="text-xs text-muted-foreground">—</span>;
+                  return (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setPreview(r);
+                    }}
+                  >
+                    Preview
+                  </Button>
+                  );
+                })()}
               </TableCell>
+              {canDelete ? (
+                <TableCell>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive"
+                    disabled={deletingId === r.id}
+                    onClick={() => void deleteIssued(r)}
+                    aria-label="Delete issued letter"
+                  >
+                    {deletingId === r.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                  </Button>
+                </TableCell>
+              ) : null}
             </TableRow>
           ))}
         </TableBody>
       </Table>
     </div>
+      <Dialog open={!!preview} onOpenChange={(open) => { if (!open) setPreview(null); }}>
+        <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)]">
+          <DialogHeader>
+            <DialogTitle>{docKind === "certificate" ? "Certificate Preview" : "Offer letter preview"}</DialogTitle>
+            <DialogDescription className="text-xs">
+              {preview?.recipient_name || preview?.recipient_email || "Issued document"}
+              {docKind === "certificate" ? " — same PDF generated at issue time." : ""}
+            </DialogDescription>
+          </DialogHeader>
+          {preview ? <IssuedDocPdfViewer row={preview} /> : null}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPreview(null)}>
+              Close
+            </Button>
+            <Button
+              type="button"
+              className="gap-1.5"
+              disabled={!previewIds.certificateId && !previewIds.offerLetterId}
+              onClick={() => {
+                void (async () => {
+                  if (!preview) return;
+                  try {
+                    const ids = issuedPdfIdsFromRow(preview);
+                    const blob = ids.certificateId
+                      ? await api.certificates.pdf(ids.certificateId)
+                      : await api.offerLetters.fetchSentPdfBlob(ids.offerLetterId);
+                    const url = URL.createObjectURL(blob);
+                    const w = window.open(url, "_blank");
+                    if (!w) {
+                      toast({
+                        variant: "destructive",
+                        title: "Popup blocked",
+                        description: "Allow popups to print or save the PDF.",
+                      });
+                    } else {
+                      w.addEventListener("load", () => {
+                        try {
+                          w.print();
+                        } catch {
+                          /* user can print from the tab */
+                        }
+                      });
+                    }
+                    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                  } catch (e: unknown) {
+                    toast({
+                      variant: "destructive",
+                      title: "PDF unavailable",
+                      description: e instanceof Error ? e.message : "Could not open PDF.",
+                    });
+                  }
+                })();
+              }}
+            >
+              <Printer className="h-3.5 w-3.5" /> Print / Save as PDF
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

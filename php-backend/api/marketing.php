@@ -52,6 +52,48 @@ function marketingEnsurePageAccess(PDO $db, array $tokenData): void
     }
 }
 
+/**
+ * created_by visibility after org filter:
+ * super_admin / org / OM — all in org; manager — self + downline; marketing — own.
+ *
+ * @return array{0: string, 1: array}
+ */
+function marketingCreatorScopeSql(PDO $db, array $tokenData, string $col = 'created_by'): array
+{
+    $role = marketingNormRole($tokenData);
+    if (in_array($role, ['super_admin', 'admin', 'org', 'operational_manager'], true)) {
+        return ['', []];
+    }
+    $userId = (string) ($tokenData['user_id'] ?? '');
+    if ($role === 'manager') {
+        $ids = hierarchyGetVisibleUserIds($db, $tokenData);
+        if (empty($ids)) {
+            return [' AND 1=0', []];
+        }
+        $in = implode(',', array_fill(0, count($ids), '?'));
+        return [" AND {$col} IN ({$in})", array_values($ids)];
+    }
+    if ($userId === '') {
+        return [' AND 1=0', []];
+    }
+    return [" AND {$col} = ?", [$userId]];
+}
+
+function marketingCreatorAllowed(PDO $db, array $tokenData, ?string $createdBy): bool
+{
+    $role = marketingNormRole($tokenData);
+    if (in_array($role, ['super_admin', 'admin', 'org', 'operational_manager'], true)) {
+        return true;
+    }
+    $owner = trim((string) ($createdBy ?? ''));
+    $userId = (string) ($tokenData['user_id'] ?? '');
+    if ($role === 'manager') {
+        $ids = hierarchyGetVisibleUserIds($db, $tokenData);
+        return $owner !== '' && in_array($owner, $ids, true);
+    }
+    return $userId !== '' && $owner === $userId;
+}
+
 /** WHERE fragment + params: SuperAdmin master view → all rows; switched org / tenant → own org only */
 function marketingOrgScope(PDO $db, array $tokenData, string $alias): array {
     $role = marketingNormRole($tokenData);
@@ -117,6 +159,9 @@ function marketingAssertRowInScope(PDO $db, string $table, string $id, array $to
     $rowOrg = trim((string) ($row['org_id'] ?? ''));
     if ($orgId !== null && $orgId !== '') {
         if ($rowOrg === '' || $rowOrg !== $orgId) {
+            respond(['error' => 'Forbidden'], 403);
+        }
+        if ($table !== 'marketing_members' && !marketingCreatorAllowed($db, $tokenData, isset($row['created_by']) ? (string) $row['created_by'] : null)) {
             respond(['error' => 'Forbidden'], 403);
         }
         return $row;
@@ -217,12 +262,17 @@ if ($action === 'org_mailboxes') {
 if ($action === 'email_drafts') {
     if ($method === 'GET') {
         requireRole($tokenData, marketingGateRoles());
-        [$w, $params] = marketingOrgScope($db, $tokenData, '');
-        if ((!empty($_GET['mine']) && $_GET['mine'] !== '0') || marketingNormRole($tokenData) === 'marketing') {
-            $w .= ' AND created_by = ?';
-            $params[] = $userId;
-        }
-        $stmt = $db->prepare("SELECT * FROM email_drafts WHERE ($w) ORDER BY updated_at DESC");
+        [$w, $params] = marketingOrgScope($db, $tokenData, 'ed');
+        [$cs, $cp] = marketingCreatorScopeSql($db, $tokenData, 'ed.created_by');
+        $w .= $cs;
+        $params = array_merge($params, $cp);
+        $stmt = $db->prepare("
+            SELECT ed.*, COALESCE(NULLIF(TRIM(u.full_name), ''), NULLIF(TRIM(u.email), ''), NULL) AS created_by_name
+            FROM email_drafts ed
+            LEFT JOIN users u ON u.id = ed.created_by
+            WHERE ($w)
+            ORDER BY ed.updated_at DESC
+        ");
         $stmt->execute($params);
         respond(['data' => $stmt->fetchAll()]);
     }
@@ -279,10 +329,9 @@ if ($action === 'email_campaigns') {
     if ($method === 'GET') {
         requireRole($tokenData, marketingGateRoles());
         [$w, $params] = marketingOrgScope($db, $tokenData, 'ec');
-        if ((!empty($_GET['mine']) && $_GET['mine'] !== '0') || marketingNormRole($tokenData) === 'marketing') {
-            $w .= ' AND ec.created_by = ?';
-            $params[] = $userId;
-        }
+        [$cs, $cp] = marketingCreatorScopeSql($db, $tokenData, 'ec.created_by');
+        $w .= $cs;
+        $params = array_merge($params, $cp);
         $stmt = $db->prepare("
             SELECT ec.*, ed.name as draft_name
             FROM email_campaigns ec
@@ -333,12 +382,17 @@ if ($action === 'email_campaigns') {
 if ($action === 'whatsapp_drafts') {
     if ($method === 'GET') {
         requireRole($tokenData, marketingGateRoles());
-        [$w, $params] = marketingOrgScope($db, $tokenData, '');
-        if ((!empty($_GET['mine']) && $_GET['mine'] !== '0') || marketingNormRole($tokenData) === 'marketing') {
-            $w .= ' AND created_by = ?';
-            $params[] = $userId;
-        }
-        $stmt = $db->prepare("SELECT * FROM whatsapp_drafts WHERE ($w) ORDER BY updated_at DESC");
+        [$w, $params] = marketingOrgScope($db, $tokenData, 'wd');
+        [$cs, $cp] = marketingCreatorScopeSql($db, $tokenData, 'wd.created_by');
+        $w .= $cs;
+        $params = array_merge($params, $cp);
+        $stmt = $db->prepare("
+            SELECT wd.*, COALESCE(NULLIF(TRIM(u.full_name), ''), NULLIF(TRIM(u.email), ''), NULL) AS created_by_name
+            FROM whatsapp_drafts wd
+            LEFT JOIN users u ON u.id = wd.created_by
+            WHERE ($w)
+            ORDER BY wd.updated_at DESC
+        ");
         $stmt->execute($params);
         respond(['data' => $stmt->fetchAll()]);
     }
@@ -395,10 +449,9 @@ if ($action === 'whatsapp_campaigns') {
     if ($method === 'GET') {
         requireRole($tokenData, marketingGateRoles());
         [$w, $params] = marketingOrgScope($db, $tokenData, 'wc');
-        if ((!empty($_GET['mine']) && $_GET['mine'] !== '0') || marketingNormRole($tokenData) === 'marketing') {
-            $w .= ' AND wc.created_by = ?';
-            $params[] = $userId;
-        }
+        [$cs, $cp] = marketingCreatorScopeSql($db, $tokenData, 'wc.created_by');
+        $w .= $cs;
+        $params = array_merge($params, $cp);
         $stmt = $db->prepare("
             SELECT wc.*, wd.name as draft_name
             FROM whatsapp_campaigns wc

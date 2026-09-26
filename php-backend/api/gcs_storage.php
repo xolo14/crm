@@ -205,6 +205,111 @@ function syncpediaGcsUploadObject(string $objectName, string $pdfBinary, string 
 }
 
 /**
+ * Stream a GCS object to the current HTTP client (admin playback). Avoids loading the whole video into RAM.
+ */
+function syncpediaGcsStreamObjectToClient(string $objectName, string $contentType): void
+{
+    $objectName = ltrim(str_replace('\\', '/', $objectName), '/');
+    $tok = syncpediaGcsAccessToken();
+    $bucket = syncpediaGcsBucket();
+    if (empty($tok['ok']) || $bucket === '' || $objectName === '') {
+        http_response_code(502);
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode(['error' => 'Video storage unavailable']);
+        exit;
+    }
+    $url = 'https://storage.googleapis.com/storage/v1/b/'
+        . rawurlencode($bucket)
+        . '/o/'
+        . rawurlencode($objectName)
+        . '?alt=media';
+
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+    if (!defined('SYNCPIEDIA_API_DONE')) {
+        define('SYNCPIEDIA_API_DONE', true);
+    }
+    header('Content-Type: ' . $contentType);
+    header('Cache-Control: private, no-store');
+    header('X-Content-Type-Options: nosniff');
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $tok['token']],
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT => 300,
+        CURLOPT_WRITEFUNCTION => static function ($ch, $data) {
+            echo $data;
+            return strlen($data);
+        },
+    ]);
+    curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($status < 200 || $status >= 300) {
+        if (!headers_sent()) {
+            http_response_code(502);
+        }
+    }
+    exit;
+}
+
+/**
+ * Delete an object from GCS.
+ * Missing objects (HTTP 404) count as success.
+ *
+ * @return array{ok: bool, error?: string}
+ */
+function syncpediaGcsDeleteObject(string $objectName): array
+{
+    $objectName = ltrim(str_replace('\\', '/', trim($objectName)), '/');
+    if ($objectName === '') {
+        return ['ok' => true];
+    }
+    if (!syncpediaGcsEnabled()) {
+        return ['ok' => false, 'error' => 'GCS disabled'];
+    }
+    $bucket = syncpediaGcsBucket();
+    if ($bucket === '') {
+        return ['ok' => false, 'error' => 'GCS_BUCKET not configured'];
+    }
+
+    $tok = syncpediaGcsAccessToken();
+    if (empty($tok['ok']) || empty($tok['token'])) {
+        return ['ok' => false, 'error' => $tok['error'] ?? 'No GCS access token'];
+    }
+
+    $url = 'https://storage.googleapis.com/storage/v1/b/'
+        . rawurlencode($bucket)
+        . '/o/'
+        . rawurlencode($objectName);
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_CUSTOMREQUEST => 'DELETE',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . $tok['token'],
+        ],
+        CURLOPT_TIMEOUT => 60,
+    ]);
+    $body = curl_exec($ch);
+    $errno = curl_errno($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($errno !== 0) {
+        return ['ok' => false, 'error' => 'GCS delete failed (curl)'];
+    }
+    if ($status === 404 || $status === 204 || ($status >= 200 && $status < 300)) {
+        return ['ok' => true];
+    }
+    $snippet = is_string($body) ? substr($body, 0, 240) : '';
+    return ['ok' => false, 'error' => 'GCS delete HTTP ' . $status . ($snippet !== '' ? ': ' . $snippet : '')];
+}
+
+/**
  * Build a V4 signed GET URL (for server-side fetch only; short TTL).
  * @return array{ok: bool, url?: string, error?: string}
  */

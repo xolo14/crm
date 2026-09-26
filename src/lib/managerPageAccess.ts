@@ -9,6 +9,7 @@ import {
   FEATURE_MARKETING,
   FEATURE_OFFER_LETTERS,
   FEATURE_TIMETABLES,
+  FEATURE_VIDEO_INTROS,
   IMPLEMENTED_ORG_FEATURES,
   featureKeyForPath,
 } from "@/lib/orgFeatures";
@@ -174,6 +175,7 @@ export function firstAllowedOperationalManagerPath(
  { key: "payments", path: "/payments" },
  { key: FEATURE_COMMUNICATIONS, path: "/communications" },
  { key: FEATURE_OFFER_LETTERS, path: "/offer-letters" },
+ { key: FEATURE_VIDEO_INTROS, path: "/video-intros" },
  { key: FEATURE_MARKETING, path: "/marketing/portal" },
  { key: "tasks", path: "/tasks" },
  { key: "notifications", path: "/notifications" },

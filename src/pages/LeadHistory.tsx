@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
+import { getImportSetTag, IMPORT_SET_PREFIX } from '@/lib/leadSources';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,8 +12,6 @@ import { useToast } from '@/hooks/use-toast';
 import { ArrowLeft, Trash2, Loader2, CalendarDays, TrendingUp } from 'lucide-react';
 import * as perms from '@/lib/permissions';
 
-const IMPORT_SET_PREFIX = 'import_set:';
-
 const toDateKey = (value: string | null | undefined) => {
   if (!value) return '';
   const d = new Date(value);
@@ -21,22 +20,6 @@ const toDateKey = (value: string | null | undefined) => {
 };
 
 const toMonthKey = (value: string | null | undefined) => toDateKey(value).slice(0, 7);
-
-const parseLeadTags = (tags: unknown): string[] => {
-  if (Array.isArray(tags)) return tags.filter(Boolean).map(String);
-  if (typeof tags === 'string') {
-    try {
-      const parsed = JSON.parse(tags);
-      if (Array.isArray(parsed)) return parsed.filter(Boolean).map(String);
-    } catch {}
-    return tags.split(',').map(t => t.trim()).filter(Boolean);
-  }
-  return [];
-};
-
-const getImportSetTag = (tags: unknown): string | null => {
-  return parseLeadTags(tags).find(tag => tag.startsWith(IMPORT_SET_PREFIX)) ?? null;
-};
 
 export default function LeadHistory() {
   const { role } = useAuth();
@@ -55,9 +38,9 @@ export default function LeadHistory() {
   const fetchLeads = async () => {
     setLoading(true);
     try {
-      const data = await api.leads.list();
+      const data = await api.leads.list({ form_leads: false, lite: true });
       const allLeads = data.data || [];
-      setLeads(allLeads.filter((l: any) => !l.referred_by));
+      setLeads(allLeads);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };
@@ -75,7 +58,7 @@ export default function LeadHistory() {
   const importSets = useMemo(() => {
     const sets: Record<string, { count: number; latest: string }> = {};
     for (const lead of leads) {
-      const setTag = getImportSetTag(lead.tags);
+      const setTag = getImportSetTag(lead);
       if (!setTag) continue;
       if (!sets[setTag]) sets[setTag] = { count: 0, latest: lead.created_at || '' };
       sets[setTag].count += 1;

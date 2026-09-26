@@ -277,6 +277,127 @@ function syncpediaDocumentStorageDeleteLocal(?string $storedPath): void
 }
 
 /**
+ * Remove a stored PDF from disk and, when present, from GCS.
+ */
+function syncpediaDocumentStorageDeleteLocalAndGcs(?string $storedPath, ?string $gcsObject): void
+{
+    $object = ltrim(str_replace('\\', '/', trim((string) $gcsObject)), '/');
+    if ($object !== '' && function_exists('syncpediaGcsDeleteObject')) {
+        $gcsOn = !function_exists('syncpediaGcsEnabled') || syncpediaGcsEnabled();
+        if ($gcsOn) {
+            $del = syncpediaGcsDeleteObject($object);
+            if (empty($del['ok'])) {
+                error_log('[document_storage] GCS delete failed: ' . ($del['error'] ?? 'unknown'));
+            }
+        }
+    }
+    $path = trim((string) $storedPath);
+    if ($path !== '') {
+        syncpediaDocumentStorageDeleteLocal($path);
+    }
+}
+
+/** Extract issued certificate id from a stored pdf_url (certificates.php?certificate_id=). */
+function syncpediaCertificateIdFromPdfUrl(?string $pdfUrl): string
+{
+    $url = trim((string) $pdfUrl);
+    if ($url === '' || stripos($url, 'certificates.php') === false) {
+        return '';
+    }
+    if (preg_match('/[?&]certificate_id=([^&#]+)/i', $url, $m)) {
+        return trim(rawurldecode((string) $m[1]));
+    }
+    return '';
+}
+
+/**
+ * Delete local + GCS PDFs and related rows for an issued certificate id (sync_id).
+ */
+function syncpediaPurgeIssuedCertificate(PDO $db, array $tokenData, string $certificateId): bool
+{
+    $certificateId = trim($certificateId);
+    if ($certificateId === '') {
+        return false;
+    }
+    if (function_exists('syncpediaDocumentEnsureColumn')) {
+        syncpediaDocumentEnsureColumn($db, 'certificate_issue_artifacts', 'pdf_path', 'TEXT DEFAULT NULL');
+        syncpediaDocumentEnsureColumn($db, 'certificate_issue_artifacts', 'gcs_object', 'TEXT DEFAULT NULL');
+    }
+
+    $found = false;
+    $org = orgFilter($tokenData, '');
+    $artParams = array_merge([$certificateId], $org['params']);
+    try {
+        $st = $db->prepare("SELECT id, pdf_path, gcs_object, sync_id FROM certificate_issue_artifacts WHERE sync_id = ? AND {$org['where']}");
+        $st->execute($artParams);
+        $arts = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($arts as $row) {
+            $found = true;
+            if (function_exists('syncpediaDocumentStorageDeleteLocalAndGcs')) {
+                syncpediaDocumentStorageDeleteLocalAndGcs(
+                    isset($row['pdf_path']) ? (string) $row['pdf_path'] : null,
+                    isset($row['gcs_object']) ? (string) $row['gcs_object'] : null,
+                );
+            }
+            $safe = preg_replace('/[^A-Za-z0-9._-]/', '_', (string) ($row['sync_id'] ?? $certificateId));
+            if ($safe !== '' && function_exists('syncpediaDocumentStorageDeleteLocal')) {
+                syncpediaDocumentStorageDeleteLocal('storage/certificates/' . $safe . '.pdf');
+            }
+        }
+        if ($arts) {
+            $db->prepare("DELETE FROM certificate_issue_artifacts WHERE sync_id = ? AND {$org['where']}")->execute($artParams);
+        }
+    } catch (Throwable $e) {
+        error_log('[purgeIssuedCertificate] artifacts: ' . $e->getMessage());
+    }
+
+    try {
+        $ic = $db->prepare("SELECT id FROM issued_certificates WHERE id = ? AND {$org['where']} LIMIT 1");
+        $ic->execute($artParams);
+        if ($ic->fetch(PDO::FETCH_ASSOC)) {
+            $found = true;
+            $db->prepare("DELETE FROM issued_certificates WHERE id = ? AND {$org['where']}")->execute($artParams);
+        }
+    } catch (Throwable $e) {
+        error_log('[purgeIssuedCertificate] issued_certificates: ' . $e->getMessage());
+    }
+
+    try {
+        $db->prepare('DELETE FROM certificate_email_logs WHERE certificate_id = ?')->execute([$certificateId]);
+    } catch (Throwable $e) {
+        /* ignore */
+    }
+
+    try {
+        $likeA = '%certificates.php%certificate_id=' . $certificateId . '%';
+        $likeB = '%certificates.php%certificate_id=' . rawurlencode($certificateId) . '%';
+        $sql = 'DELETE FROM doc_issued_documents WHERE (pdf_url LIKE ? OR pdf_url LIKE ?) AND ' . $org['where'];
+        $db->prepare($sql)->execute(array_merge([$likeA, $likeB], $org['params']));
+    } catch (Throwable $e) {
+        error_log('[purgeIssuedCertificate] doc_issued cascade: ' . $e->getMessage());
+    }
+
+    return $found;
+}
+
+/** Extract offer_letters_sent id from a stored pdf_url, if the URL points at this API. */
+function syncpediaOfferLetterSentIdFromPdfUrl(?string $pdfUrl): string
+{
+    $url = trim((string) $pdfUrl);
+    if ($url === '') {
+        return '';
+    }
+    if (preg_match('/offer-letters\.php\?[^#]*[?&]id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i', $url, $m)) {
+        return strtolower($m[1]);
+    }
+    if (preg_match('/[?&]id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i', $url, $m)
+        && stripos($url, 'offer-letters') !== false) {
+        return strtolower($m[1]);
+    }
+    return '';
+}
+
+/**
  * Stream PDF from local path or GCS object. Exits on success.
  */
 function syncpediaDocumentStorageStreamLocalOrGcs(

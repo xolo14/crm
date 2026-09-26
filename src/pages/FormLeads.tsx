@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
@@ -128,6 +128,10 @@ export default function FormLeads() {
   const [formAssignmentsByFormId, setFormAssignmentsByFormId] = useState<
     Record<string, Array<{ member_id: string; full_name?: string | null }>>
   >({});
+  const formAssignmentsByFormIdRef = useRef(formAssignmentsByFormId);
+  formAssignmentsByFormIdRef.current = formAssignmentsByFormId;
+  const formAssignLoadingRef = useRef<Set<string>>(new Set());
+  const fetchDataGen = useRef(0);
   const [sourceDialogKey, setSourceDialogKey] = useState<string | null>(null);
   const [sourceDialogLabel, setSourceDialogLabel] = useState('');
   const [sourceDialogStatus, setSourceDialogStatus] = useState('all');
@@ -157,48 +161,24 @@ export default function FormLeads() {
     isManager || rl.startsWith('marketing') || rl === 'hr';
 
   useEffect(() => {
-    fetchData();
-    if (formLeadsAssignmentRoster) fetchTeam();
-    api.forms.list()
-      .then(async (res) => {
-        const rows = Array.isArray(res) ? res : res?.data || [];
-        const forms = rows
-          .filter((f: { id?: string; slug?: string; name?: string }) => f?.id && f?.slug && f?.name)
-          .map((f: { id: string; slug: string; name: string }) => ({
-            id: String(f.id),
-            slug: String(f.slug),
-            name: String(f.name),
-          }));
-        setLeadForms(forms);
-        if (!formLeadsAssignmentRoster || forms.length === 0) {
-          setFormAssignmentsByFormId({});
-          return;
-        }
-        const pairs = await Promise.all(
-          forms.map(async (form) => {
-            try {
-              const a = await api.forms.assignments(form.id);
-              return [form.id, (a?.data || []) as Array<{ member_id: string; full_name?: string | null }>] as const;
-            } catch {
-              return [form.id, []] as const;
-            }
-          }),
-        );
-        const next: Record<string, Array<{ member_id: string; full_name?: string | null }>> = {};
-        for (const [id, list] of pairs) next[id] = list;
-        setFormAssignmentsByFormId(next);
-      })
-      .catch(() => {});
+    void fetchData();
+    if (formLeadsAssignmentRoster) void fetchTeam();
+    void loadLeadForms();
+    return () => {
+      fetchDataGen.current += 1;
+    };
   }, [role, user?.id, profile?.referral_code]);
 
   const fetchData = async () => {
+    const gen = ++fetchDataGen.current;
     setLoading(true);
     try {
       const [leadsData, profilesData, assignRes] = await Promise.all([
-        api.leads.list(),
+        api.leads.list({ form_leads: true }),
         api.profiles.list(),
         api.leadAssignments.list().catch(() => ({ data: [] })),
       ]);
+      if (gen !== fetchDataGen.current) return;
       const allLeads = Array.isArray(leadsData) ? leadsData : leadsData.data || leadsData.leads || [];
       const myRef = profile?.referral_code || user?.referral_code || '';
       setLeads(allLeads.filter((l: any) => {
@@ -226,7 +206,7 @@ export default function FormLeads() {
       }
       setLeadAssignments(map);
     } catch (err) { console.error(err); }
-    finally { setLoading(false); }
+    finally { if (gen === fetchDataGen.current) setLoading(false); }
   };
 
   const fetchTeam = async () => {
@@ -270,6 +250,54 @@ export default function FormLeads() {
       );
     } catch {}
   };
+
+  const loadLeadForms = useCallback(async () => {
+    try {
+      const res = await api.forms.list();
+      const rows = Array.isArray(res) ? res : res?.data || [];
+      const forms = rows
+        .filter((f: { id?: string; slug?: string; name?: string }) => f?.id && f?.slug && f?.name)
+        .map((f: { id: string; slug: string; name: string }) => ({
+          id: String(f.id),
+          slug: String(f.slug),
+          name: String(f.name),
+        }));
+      setLeadForms(forms);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const ensureFormAssignmentsLoaded = useCallback(
+    async (sourceKey: string | null | undefined) => {
+      if (!formLeadsAssignmentRoster || !sourceKey || !String(sourceKey).startsWith('form_')) return;
+      const slug = String(sourceKey).slice('form_'.length);
+      const form = leadForms.find((f) => String(f.slug || '').toLowerCase() === slug.toLowerCase());
+      if (!form?.id) return;
+      if (formAssignmentsByFormIdRef.current[form.id] || formAssignLoadingRef.current.has(form.id)) return;
+      formAssignLoadingRef.current.add(form.id);
+      try {
+        const a = await api.forms.assignments(form.id);
+        const rows = (a?.data || []) as Array<{ member_id: string; full_name?: string | null }>;
+        setFormAssignmentsByFormId((prev) => ({ ...prev, [form.id]: rows }));
+      } catch {
+        setFormAssignmentsByFormId((prev) => ({ ...prev, [form.id]: [] }));
+      } finally {
+        formAssignLoadingRef.current.delete(form.id);
+      }
+    },
+    [formLeadsAssignmentRoster, leadForms],
+  );
+
+  useEffect(() => {
+    void ensureFormAssignmentsLoaded(sourceDialogKey);
+  }, [sourceDialogKey, ensureFormAssignmentsLoaded]);
+
+  useEffect(() => {
+    if (!assignLeadId) return;
+    const lead = leads.find((l) => l.id === assignLeadId);
+    void ensureFormAssignmentsLoaded(getFormSourceKey(lead));
+  }, [assignLeadId, leads, ensureFormAssignmentsLoaded]);
 
   const codeToName = useMemo(() => {
     const map: Record<string, string> = {};

@@ -122,8 +122,26 @@ export default function LogCallDialog({
   });
 
   const { data: leadsRes } = useQuery({
-    queryKey: ["leads", "pick-call-log"],
-    queryFn: () => api.leads.list(),
+    queryKey: ["leads", "pick-call-log", editLog?.lead_id || initialLeadId || ""],
+    queryFn: async () => {
+      const linkedId = String(editLog?.lead_id || initialLeadId || "").trim();
+      const [page, one] = await Promise.all([
+        api.leads.list({ all: false, limit: 200, lite: true }),
+        linkedId
+          ? api.leads.list({ all: false, limit: 1, lite: true, id: linkedId })
+          : Promise.resolve(null),
+      ]);
+      const pageRows = Array.isArray(page) ? page : (page as { data?: unknown[] })?.data || [];
+      const oneRows = one
+        ? (Array.isArray(one) ? one : (one as { data?: unknown[] })?.data || [])
+        : [];
+      const byId = new Map<string, unknown>();
+      for (const row of [...pageRows, ...oneRows] as Array<{ id?: string }>) {
+        const id = String(row?.id || "").trim();
+        if (id) byId.set(id, row);
+      }
+      return { data: [...byId.values()] };
+    },
     enabled: open,
   });
   const leads = Array.isArray(leadsRes) ? leadsRes : (leadsRes as any)?.data || [];

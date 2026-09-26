@@ -50,6 +50,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { normalizeAppRole } from "@/lib/roleUtils";
 import { TEMPLATE_FONT_FACES, TEMPLATE_FONT_SIZES, matchTemplateFontFace, matchTemplateFontSize } from "@/components/templates/DocumentTemplateEditor";
 import { CanvasTextBoxFrame, cycleTextBoxDivider, normalizeTextBoxDivider } from "@/components/templates/CanvasTextBoxFrame";
 import { DocFormsWorkspace, DocIssuedPanel } from "@/modules/docForms/DocFormsHub";
@@ -3310,6 +3311,7 @@ function SingleIssueCertDialog({
           search: q,
           limit: 50,
           all: false,
+          lite: true,
         });
         const rows = Array.isArray((res as any)?.data) ? (res as any).data : [];
         const next = rows
@@ -3866,6 +3868,7 @@ function IssueCertWizard({
           search: q,
           limit: 50,
           all: false,
+          lite: true,
         });
         const rows = Array.isArray((res as any)?.data) ? (res as any).data : [];
         const next = rows
@@ -4984,10 +4987,14 @@ function IssuedCertificatesTable({
   issuedCerts,
   templates,
   onRevoke,
+  canDelete,
+  onDelete,
 }: {
   issuedCerts: IssuedCertificate[];
   templates: CertTemplate[];
   onRevoke: (id: string) => Promise<void>;
+  canDelete?: boolean;
+  onDelete?: (id: string) => Promise<void>;
 }) {
   const { toast } = useToast();
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
@@ -5078,6 +5085,31 @@ function IssuedCertificatesTable({
                         >
                           {confirmRevokeId === c.id ? "Confirm revoke" : "Revoke"}
                         </Button>
+                        {canDelete && onDelete ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs text-destructive hover:text-destructive"
+                            title="Delete certificate and PDF"
+                            onClick={() => {
+                              if (!window.confirm(`Delete the certificate for ${c.recipientName}? This also removes the PDF from storage.`)) {
+                                return;
+                              }
+                              void onDelete(c.id).then(
+                                () => toast({ title: "Certificate deleted" }),
+                                (e: any) => {
+                                  toast({
+                                    variant: "destructive",
+                                    title: "Could not delete",
+                                    description: e?.message || "Try again.",
+                                  });
+                                },
+                              );
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        ) : null}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -5505,7 +5537,8 @@ export function CertificateVerifyPage() {
 
 export default function CertificatesPage() {
   const { toast } = useToast();
-  const { organization } = useAuth();
+  const { organization, role } = useAuth();
+  const canDeleteIssued = normalizeAppRole(role) === "super_admin" || normalizeAppRole(role) === "org";
 
   const [claimedPrefix, setClaimedPrefix] = useState(() => normalizeCertPrefix(organization?.cert_prefix));
 
@@ -5722,6 +5755,11 @@ export default function CertificatesPage() {
     await fetchIssuedCertificates();
   };
 
+  const deleteIssued = async (id: string) => {
+    await api.certificates.deleteIssued(id);
+    await fetchIssuedCertificates();
+  };
+
   const activeTemplates = useMemo(() => templates.filter((t) => t.status !== "archived"), [templates]);
   const archivedTemplates = useMemo(() => templates.filter((t) => t.status === "archived"), [templates]);
 
@@ -5783,7 +5821,7 @@ export default function CertificatesPage() {
         </TabsContent>
 
         <TabsContent value="form_issued" className="space-y-4">
-          <DocIssuedPanel docKind="certificate" />
+          <DocIssuedPanel docKind="certificate" canDelete={canDeleteIssued} />
         </TabsContent>
 
         <TabsContent value="templates" className="space-y-4">
@@ -5879,7 +5917,13 @@ export default function CertificatesPage() {
               </CardContent>
             </Card>
           ) : (
-            <IssuedCertificatesTable issuedCerts={issuedCerts} templates={templates} onRevoke={revokeIssued} />
+            <IssuedCertificatesTable
+              issuedCerts={issuedCerts}
+              templates={templates}
+              onRevoke={revokeIssued}
+              canDelete={canDeleteIssued}
+              onDelete={deleteIssued}
+            />
           )}
         </TabsContent>
       </Tabs>

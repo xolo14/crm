@@ -149,7 +149,7 @@ export default function CreatePaymentLinkModal({
       try {
         const [batchRes, leadRes] = await Promise.all([
           api.batches.list(),
-          api.leads.list(),
+          api.leads.list({ all: false, limit: 250, lite: true }),
         ]);
         if (cancelled) return;
 

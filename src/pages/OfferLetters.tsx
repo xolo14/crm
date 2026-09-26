@@ -55,6 +55,7 @@ import {
   Plus, FileText, Send, Trash2, Edit, Eye, Upload, Download, Loader2, Mail, Copy, Image, Users, X, ChevronLeft, FilePlus, FileSpreadsheet, Variable, Lock, Unlock
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { normalizeAppRole } from '@/lib/roleUtils';
 
 interface OfferTemplate {
   id: string;
@@ -547,7 +548,7 @@ export default function OfferLetters() {
   const { user, role } = useAuth();
   const { toast } = useToast();
   // Template/sent delete is admin/org only (API requireRole); managers can create/send.
-  const canDeleteTemplates = ["super_admin", "admin", "org"].includes(String(role || "").toLowerCase());
+  const canDeleteLetters = normalizeAppRole(role) === 'super_admin' || normalizeAppRole(role) === 'org';
   const isMobile = useIsMobile();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const letterheadInputRef = useRef<HTMLInputElement>(null);
@@ -605,6 +606,7 @@ export default function OfferLetters() {
   const [leadSuggestQuery, setLeadSuggestQuery] = useState('');
   const [leadSuggestOpen, setLeadSuggestOpen] = useState(false);
   const [bulkLeadSuggestRowId, setBulkLeadSuggestRowId] = useState<string | null>(null);
+  const [bulkSuggestPos, setBulkSuggestPos] = useState<{ top: number; left: number; width: number } | null>(null);
 
   // Bulk generation state
   interface BulkCandidate {
@@ -895,7 +897,7 @@ export default function OfferLetters() {
   };
 
   const deleteTemplate = async (id: string) => {
-    if (!canDeleteTemplates) {
+    if (!canDeleteLetters) {
       toast({ variant: 'destructive', title: 'Permission denied', description: 'Only admins can delete offer letter templates.' });
       return;
     }
@@ -904,6 +906,23 @@ export default function OfferLetters() {
       toast({ title: 'Template deleted' });
       fetchData();
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
+  };
+
+  const deleteSentLetter = async (row: SentLetter) => {
+    if (!canDeleteLetters) {
+      toast({ variant: 'destructive', title: 'Permission denied', description: 'Only Super Admin and Admin can delete sent letters.' });
+      return;
+    }
+    if (!window.confirm(`Delete the offer letter for ${row.recipient_name || row.recipient_email}? This also removes the PDF from storage.`)) {
+      return;
+    }
+    try {
+      await api.offerLetters.deleteSent(row.id);
+      toast({ title: 'Offer letter deleted' });
+      setSentLetters((prev) => prev.filter((s) => s.id !== row.id));
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Could not delete', description: err?.message || 'Try again.' });
+    }
   };
 
   const openPreview = (html: string) => {
@@ -939,15 +958,30 @@ export default function OfferLetters() {
     return buildMultiPagePrintableHtml(joinPages(normalized));
   };
 
-  const loadOfferLeads = useCallback(async () => {
+  const loadOfferLeads = useCallback(async (search?: string) => {
     try {
-      const res = await api.leads.list();
+      const q = String(search || '').trim();
+      const res = await api.leads.list({
+        all: false,
+        lite: true,
+        limit: q.length >= 2 ? 40 : 80,
+        ...(q.length >= 2 ? { search: q } : {}),
+      });
       const list = Array.isArray(res) ? res : (res as any)?.data || (res as any)?.leads || [];
       setOfferLeads(Array.isArray(list) ? list : []);
     } catch {
       setOfferLeads([]);
     }
   }, []);
+
+  useEffect(() => {
+    if (!showSend && !showBulk) return;
+    const q = leadSuggestQuery.trim();
+    const handle = window.setTimeout(() => {
+      void loadOfferLeads(q);
+    }, q.length >= 2 ? 250 : 0);
+    return () => window.clearTimeout(handle);
+  }, [showSend, showBulk, leadSuggestQuery, loadOfferLeads]);
 
   const openSendDialog = async (t: OfferTemplate) => {
     // Always load fresh template so compose uses the latest saved mail_json body/subject
@@ -972,7 +1006,6 @@ export default function OfferLetters() {
     setSendExtraValues({});
     setLeadSuggestQuery('');
     setLeadSuggestOpen(false);
-    void loadOfferLeads();
     setShowSend(true);
   };
 
@@ -1285,7 +1318,7 @@ export default function OfferLetters() {
     setBulkFillField('');
     setBulkFillValue('');
     setBulkLeadSuggestRowId(null);
-    void loadOfferLeads();
+    setLeadSuggestQuery('');
     setShowBulk(true);
   };
 
@@ -1811,11 +1844,30 @@ export default function OfferLetters() {
       );
       setBulkExtraByRowId((ex) => ({ ...ex, [rowId]: applied.extras }));
       setBulkLeadSuggestRowId(null);
+      setBulkSuggestPos(null);
       toast({
         title: 'Lead applied',
         description: `Filled ${Object.keys(mapped).length} matching field(s).`,
       });
     };
+
+    const placeBulkSuggest = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      setBulkSuggestPos({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 240) });
+    };
+
+    const suggestRow = bulkCandidates.find((c) => c.id === bulkLeadSuggestRowId) || null;
+    const suggestQuery = String(suggestRow?.candidate_name || '').trim().toLowerCase();
+    const bulkLeadMatches = suggestQuery.length < 2
+      ? []
+      : offerLeads
+          .filter((l) =>
+            [l?.name, l?.email, l?.phone, l?.college, l?.company]
+              .join(' ')
+              .toLowerCase()
+              .includes(suggestQuery),
+          )
+          .slice(0, 8);
 
     const bulkRowComplete = (c: typeof bulkCandidates[0]) => {
       for (const f of BULK_FIELDS) {
@@ -1840,7 +1892,7 @@ export default function OfferLetters() {
               {BULK_FIELDS.length || bulkCompanyKeys.length
                 ? ` (${[...BULK_FIELDS.map((f) => f.key), ...bulkCompanyKeys].map((k) => `{{${k}}}`).join(", ")})`
                 : ""}
-              . Import Excel or type rows.
+              . Import Excel, type a row, or search a lead from Candidate name. Matching template fields are filled from the lead.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1964,12 +2016,17 @@ export default function OfferLetters() {
                               if (f.extra) setBulkExtraValue(c.id, f.key, v);
                               else updateBulkCandidate(c.id, f.key, v);
                               if (f.key === 'candidate_name') {
+                                setLeadSuggestQuery(v);
                                 setBulkLeadSuggestRowId(v.trim().length >= 2 ? c.id : null);
+                                if (v.trim().length >= 2) placeBulkSuggest(e.currentTarget);
+                                else setBulkSuggestPos(null);
                               }
                             }}
-                            onFocus={() => {
+                            onFocus={(e) => {
                               if (f.key === 'candidate_name' && c.candidate_name.trim().length >= 2) {
+                                setLeadSuggestQuery(c.candidate_name);
                                 setBulkLeadSuggestRowId(c.id);
+                                placeBulkSuggest(e.currentTarget);
                               }
                             }}
                             onBlur={() => {
@@ -1977,43 +2034,9 @@ export default function OfferLetters() {
                                 setBulkLeadSuggestRowId((cur) => (cur === c.id ? null : cur));
                               }, 150);
                             }}
-                            placeholder={f.placeholder}
+                            placeholder={f.key === 'candidate_name' ? 'Search lead or type name' : f.placeholder}
                             autoComplete="off"
                           />
-                          {f.key === 'candidate_name' && bulkLeadSuggestRowId === c.id && c.candidate_name.trim().length >= 2 ? (
-                            <div className="absolute z-30 left-1 right-1 mt-0.5 max-h-40 overflow-y-auto rounded-md border bg-popover shadow-md py-1">
-                              {(() => {
-                                const matches = offerLeads
-                                  .filter((l) =>
-                                    String(l?.name || '')
-                                      .toLowerCase()
-                                      .includes(c.candidate_name.trim().toLowerCase()),
-                                  )
-                                  .slice(0, 6);
-                                if (matches.length === 0) {
-                                  return (
-                                    <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                                      No matching leads
-                                    </div>
-                                  );
-                                }
-                                return matches.map((lead) => (
-                                  <button
-                                    key={lead.id}
-                                    type="button"
-                                    className="w-full text-left px-2 py-1.5 text-[11px] hover:bg-muted/80"
-                                    onMouseDown={(e) => e.preventDefault()}
-                                    onClick={() => applyLeadToBulkRow(c.id, lead)}
-                                  >
-                                    <span className="font-medium block truncate">{lead.name}</span>
-                                    <span className="text-muted-foreground truncate block">
-                                      {[lead.email, lead.phone].filter(Boolean).join(' · ')}
-                                    </span>
-                                  </button>
-                                ));
-                              })()}
-                            </div>
-                          ) : null}
                         </td>
                       ))}
                       <td className="px-1 py-1">
@@ -2030,6 +2053,31 @@ export default function OfferLetters() {
             </div>
           </CardContent>
         </Card>
+        {suggestRow && bulkSuggestPos && suggestQuery.length >= 2 ? (
+          <div
+            className="fixed z-50 max-h-48 overflow-y-auto rounded-md border bg-popover shadow-md py-1"
+            style={{ top: bulkSuggestPos.top, left: bulkSuggestPos.left, width: bulkSuggestPos.width }}
+          >
+            {bulkLeadMatches.length === 0 ? (
+              <div className="px-2 py-1.5 text-[11px] text-muted-foreground">No matching leads. You can still type this row.</div>
+            ) : (
+              bulkLeadMatches.map((lead) => (
+                <button
+                  key={lead.id}
+                  type="button"
+                  className="w-full text-left px-2 py-1.5 text-[11px] hover:bg-muted/80"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => applyLeadToBulkRow(suggestRow.id, lead)}
+                >
+                  <span className="font-medium block truncate">{lead.name}</span>
+                  <span className="text-muted-foreground truncate block">
+                    {[lead.email, lead.phone].filter(Boolean).join(' · ')}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -2059,7 +2107,7 @@ export default function OfferLetters() {
         </TabsContent>
 
         <TabsContent value="issued">
-          <DocIssuedPanel docKind="offer_letter" />
+          <DocIssuedPanel docKind="offer_letter" canDelete={canDeleteLetters} />
         </TabsContent>
 
         <TabsContent value="templates">
@@ -2092,7 +2140,7 @@ export default function OfferLetters() {
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => duplicateTemplate(t)}><Copy className="h-3 w-3" />Duplicate</Button>
                       <Button size="sm" className="h-7 text-xs gap-1" onClick={() => void openSendDialog(t)}><Send className="h-3 w-3" />Send</Button>
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openBulkGenerate(t)}><Users className="h-3 w-3" />Bulk</Button>
-                      {canDeleteTemplates && (
+                      {canDeleteLetters && (
                         <Button variant="ghost" size="sm" className="h-7 text-xs gap-1 text-destructive hover:text-destructive" onClick={() => deleteTemplate(t.id)}><Trash2 className="h-3 w-3" /></Button>
                       )}
                     </div>
@@ -2144,6 +2192,15 @@ export default function OfferLetters() {
                                 title={s.pdf_url ? 'Open PDF saved on server' : 'Print / Save as PDF from browser'}
                                 onClick={() => void openSentLetterPdf(s)}
                               ><Download className="h-3 w-3" /></Button>
+                              {canDeleteLetters ? (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 text-xs text-destructive hover:text-destructive"
+                                  title="Delete letter and PDF"
+                                  onClick={() => void deleteSentLetter(s)}
+                                ><Trash2 className="h-3 w-3" /></Button>
+                              ) : null}
                             </div>
                           </TableCell>
                         </TableRow>

@@ -58,7 +58,7 @@ export default function MyReferrals() {
         /* ignore */
       }
       const [leadsData, profilesData, reportsData] = await Promise.all([
-        api.leads.list(),
+        api.leads.list({ lite: true }),
         api.profiles.list(),
         api.dailyReports.list(),
       ]);

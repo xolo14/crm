@@ -3,6 +3,7 @@
  * Form-linked email / WhatsApp campaigns (marketing + communications templates).
  */
 require_once __DIR__ . '/communications_org.php';
+require_once __DIR__ . '/lib/MarketingEmailDispatch.php';
 
 /** @return array<string,mixed> */
 function formCampaignParseConfig(array $meta): array
@@ -142,22 +143,32 @@ function formCampaignFetchMarketingDrafts(PDO $db, array $tokenData, string $cha
     $userId = (string) ($tokenData['user_id'] ?? '');
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     $table = $channel === 'email' ? 'email_drafts' : 'whatsapp_drafts';
-    $ownerOnly = ($role === 'marketing');
     $rows = [];
 
-    if ($ownerOnly) {
-        $where = 'created_by = ?';
-        $params = [$userId];
-        if ($orgId !== '') {
-            $where .= ' AND (org_id = ? OR org_id IS NULL)';
-            $params[] = $orgId;
+    $where = '1=1';
+    $params = [];
+    if ($orgId !== '') {
+        $where = '(org_id = ? OR org_id IS NULL)';
+        $params[] = $orgId;
+    }
+    if (in_array($role, ['super_admin', 'admin', 'org', 'operational_manager'], true)) {
+        // full org
+    } elseif ($role === 'manager') {
+        $ids = hierarchyGetVisibleUserIds($db, $tokenData);
+        if (empty($ids)) {
+            $where .= ' AND 1=0';
+        } else {
+            $in = implode(',', array_fill(0, count($ids), '?'));
+            $where .= " AND created_by IN ({$in})";
+            $params = array_merge($params, array_values($ids));
         }
-    } elseif ($orgId !== '') {
-        $where = 'org_id = ? OR org_id IS NULL';
-        $params = [$orgId];
     } else {
-        $where = 'created_by = ?';
-        $params = [$userId];
+        if ($userId === '') {
+            $where .= ' AND 1=0';
+        } else {
+            $where .= ' AND created_by = ?';
+            $params[] = $userId;
+        }
     }
 
     $select = $channel === 'email'
@@ -180,30 +191,43 @@ function formCampaignFetchMarketingDrafts(PDO $db, array $tokenData, string $cha
 
 function formCampaignCanManage(PDO $db, array $tokenData, array $formRow): bool
 {
-    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if (function_exists('formsCallerCanEditForm')) {
+        return formsCallerCanEditForm($db, $formRow, $tokenData);
+    }
 
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     if ($role === 'super_admin') {
         return true;
     }
 
     $formOrgId = trim((string) ($formRow['org_id'] ?? ''));
     $userOrgId = formCampaignUserOrgId($db, $tokenData);
+    $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    $ownerId = trim((string) ($formRow['created_by'] ?? ''));
 
     if (in_array($role, ['admin', 'org'], true)) {
         return $formOrgId !== '' && $userOrgId !== '' && $formOrgId === $userOrgId;
     }
-
-    $userId = trim((string) ($tokenData['user_id'] ?? ''));
-    $ownerId = trim((string) ($formRow['created_by'] ?? ''));
-    if ($role !== 'marketing') {
-        return false;
-    }
-
     if ($userId !== '' && $ownerId !== '' && $userId === $ownerId) {
         return true;
     }
-
-    return $formOrgId !== '' && $userOrgId !== '' && $formOrgId === $userOrgId;
+    if (in_array($role, ['manager', 'operational_manager'], true)) {
+        $formId = trim((string) ($formRow['id'] ?? ''));
+        if ($formId === '' || $userId === '') {
+            return false;
+        }
+        try {
+            $st = $db->prepare('SELECT 1 FROM lead_form_assignments WHERE form_id = ? AND member_id = ? LIMIT 1');
+            $st->execute([$formId, $userId]);
+            return (bool) $st->fetchColumn();
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+    if ($role === 'marketing') {
+        return $formOrgId !== '' && $userOrgId !== '' && $formOrgId === $userOrgId;
+    }
+    return false;
 }
 
 function formCampaignN8nWebhook(string $type): ?string
@@ -225,6 +249,14 @@ function formCampaignPersonalize(string $text, array $lead): string
     $name = trim((string) ($lead['name'] ?? $lead['full_name'] ?? ''));
     $email = trim((string) ($lead['email'] ?? ''));
     $phone = trim((string) ($lead['phone'] ?? ''));
+    $values = [
+        'name' => $name,
+        'full_name' => $name,
+        'email' => $email,
+        'phone' => $phone,
+        'link' => trim((string) ($lead['link'] ?? $lead['meeting_link'] ?? $lead['url'] ?? '')),
+    ];
+    $text = marketingFillAnglePlaceholders($text, $values);
     return str_replace(
         ['{{name}}', '{{email}}', '{{phone}}', '{{full_name}}'],
         [$name, $email, $phone, $name],
@@ -335,11 +367,22 @@ function formCampaignLoadEmailDraft(PDO $db, array $tokenData, array $formRow, s
         return $draft;
     }
 
-    if (in_array($role, ['admin', 'org'], true)) {
+    if (in_array($role, ['admin', 'org', 'operational_manager'], true)) {
         if ($orgId !== '' && $draftOrg !== '' && $draftOrg !== $orgId) {
             return null;
         }
         return $draft;
+    }
+
+    if ($role === 'manager') {
+        if ($orgId !== '' && $draftOrg !== '' && $draftOrg !== $orgId) {
+            return null;
+        }
+        $ids = hierarchyGetVisibleUserIds($db, $tokenData);
+        if ($ownerId !== '' && in_array($ownerId, $ids, true)) {
+            return $draft;
+        }
+        return null;
     }
 
     if ($ownerId !== '' && $ownerId === $userId) {
@@ -626,27 +669,42 @@ function formCampaignAutoSendForNewLead(PDO $db, array $formRow, array $lead): v
         $meta = [];
     }
     $cfg = formCampaignParseConfig($meta);
-    if ($cfg === []) {
-        return;
-    }
     $ownerId = trim((string) ($formRow['created_by'] ?? ''));
-    if ($ownerId === '') {
-        return;
-    }
-    $tokenShim = ['user_id' => $ownerId, 'role' => 'marketing'];
+    $formOrg = trim((string) ($formRow['org_id'] ?? ''));
+    // Public submit has no JWT. Load org-scoped drafts (not "marketing owned by form creator"),
+    // otherwise auto-send silently no-ops when an admin picks a teammate's template.
+    $tokenShim = [
+        'user_id' => $ownerId,
+        'role' => 'org',
+        'org_id' => $formOrg !== '' ? $formOrg : null,
+    ];
 
     if (!empty($cfg['auto_send_email']) && !empty($cfg['email_template_id'])) {
         $source = (string) ($cfg['email_source'] ?? 'marketing');
         $tid = (string) $cfg['email_template_id'];
         if ($tid !== '') {
-            formCampaignSendEmail($db, $tokenShim, $formRow, $source, $tid, [$lead], $ownerId);
+            try {
+                $res = formCampaignSendEmail($db, $tokenShim, $formRow, $source, $tid, [$lead], $ownerId);
+                if (empty($res['ok'])) {
+                    error_log('[form campaign auto email] ' . (string) ($res['error'] ?? 'send failed'));
+                }
+            } catch (Throwable $e) {
+                error_log('[form campaign auto email] ' . $e->getMessage());
+            }
         }
     }
     if (!empty($cfg['auto_send_whatsapp']) && !empty($cfg['whatsapp_template_id'])) {
         $source = (string) ($cfg['whatsapp_source'] ?? 'marketing');
         $tid = (string) $cfg['whatsapp_template_id'];
         if ($tid !== '') {
-            formCampaignSendWhatsapp($db, $tokenShim, $formRow, $source, $tid, [$lead], $ownerId);
+            try {
+                $res = formCampaignSendWhatsapp($db, $tokenShim, $formRow, $source, $tid, [$lead], $ownerId);
+                if (empty($res['ok'])) {
+                    error_log('[form campaign auto whatsapp] ' . (string) ($res['error'] ?? 'send failed'));
+                }
+            } catch (Throwable $e) {
+                error_log('[form campaign auto whatsapp] ' . $e->getMessage());
+            }
         }
     }
 }

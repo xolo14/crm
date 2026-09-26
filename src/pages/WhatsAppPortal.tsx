@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { phpList } from '@/lib/phpList';
@@ -26,22 +26,36 @@ import {
   mergeCampaignPhoneRecipients,
   type CampaignPickPerson,
 } from '@/components/marketing/CampaignRecipientPicker';
+import { FormLeadsCampaignTab } from '@/components/marketing/FormLeadsCampaignTab';
+import { useCampaignFormLeads } from '@/lib/campaignFormLeads';
 import { WhatsAppCampaignSetupPanel } from '@/components/marketing/WhatsAppCampaignSetupPanel';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import { fillTemplatePreview, templateVarCount } from '@/components/WhatsApp/waUtils';
 
 export default function WhatsAppPortal() {
   const { user } = useAuth();
+  const mineOnly = normalizeAppRole(user?.role) === 'marketing';
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const leadSearchTimer = useRef<number | null>(null);
 
   const [activeTab, setActiveTab] = useState('form_leads');
   const [loading, setLoading] = useState(true);
-  const [referralCode, setReferralCode] = useState('');
-  const [formLeads, setFormLeads] = useState<any[]>([]);
+  const [campaignLeads, setCampaignLeads] = useState<any[]>([]);
+  const {
+    campaignForms,
+    campaignFormsLoading,
+    selectedFormId,
+    setSelectedFormId,
+    formLeadRows,
+    formLeadsLoading,
+    formLeadDestination,
+    formPeoplePhone: formPeople,
+    extraFormPeople,
+  } = useCampaignFormLeads();
   const [metaTemplates, setMetaTemplates] = useState<any[]>([]);
   const [pendingTemplates, setPendingTemplates] = useState(0);
   const [waConnected, setWaConnected] = useState(false);
@@ -76,17 +90,28 @@ export default function WhatsAppPortal() {
   const canManageCredentials = ['super_admin', 'admin', 'org', 'manager'].includes(role);
 
   const recipientPeople = useMemo<CampaignPickPerson[]>(() => {
-    // WhatsApp campaigns target leads/students only — not marketing members.
-    return formLeads
+    const leads: CampaignPickPerson[] = campaignLeads
       .filter((l) => String(l.phone || '').replace(/\D+/g, '').length >= 10)
       .map((l) => ({
         id: `lead:${l.id}`,
         name: String(l.name || l.full_name || 'Lead'),
         email: String(l.email || '').trim() || undefined,
         phone: String(l.phone || '').trim(),
+        college: String(l.college || '').trim() || undefined,
+        course: String(l.course_interest || l.course || '').trim() || undefined,
+        company: String(l.company || '').trim() || undefined,
+        source: String(l.source || '').trim() || undefined,
         group: 'leads' as const,
       }));
-  }, [formLeads]);
+    const seen = new Set<string>();
+    const out: CampaignPickPerson[] = [];
+    for (const p of [...extraFormPeople, ...formPeople, ...leads]) {
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
+      out.push(p);
+    }
+    return out;
+  }, [campaignLeads, formPeople, extraFormPeople]);
 
   const recipientCount = mergeCampaignPhoneRecipients(recipientPeople, selectedRecipientIds, bulkPhones).length;
 
@@ -114,20 +139,18 @@ export default function WhatsAppPortal() {
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [draftsRes, campaignsRes, templatesRes, hubRes, allTplRes] = await Promise.all([
-        api.marketing.whatsappDrafts({ mine: true }),
-        api.marketing.whatsappCampaigns({ mine: true }),
-        communicationsApi.templates({ status: 'approved' }).catch(() => ({ data: [] })),
-        communicationsApi.hubSummary().catch(() => null),
+      const [draftsRes, campaignsRes, templatesRes, hubRes] = await Promise.all([
+        api.marketing.whatsappDrafts(mineOnly ? { mine: true } : undefined),
+        api.marketing.whatsappCampaigns(mineOnly ? { mine: true } : undefined),
         communicationsApi.templates().catch(() => ({ data: [] })),
+        communicationsApi.hubSummary().catch(() => null),
       ]);
       const draftsData = phpList(draftsRes);
       const campaignsData = phpList(campaignsRes);
       setDrafts(draftsData);
       setCampaigns(campaignsData);
-      const approved = Array.isArray(templatesRes?.data) ? templatesRes.data : phpList(templatesRes);
-      setMetaTemplates(approved);
-      const allTpl = Array.isArray(allTplRes?.data) ? allTplRes.data : phpList(allTplRes);
+      const allTpl = Array.isArray(templatesRes?.data) ? templatesRes.data : phpList(templatesRes);
+      setMetaTemplates(allTpl.filter((t: any) => String(t.status || '') === 'approved'));
       setPendingTemplates(allTpl.filter((t: any) => String(t.status || '') !== 'approved').length);
 
       const orgWa = hubRes?.org_whatsapp;
@@ -135,17 +158,7 @@ export default function WhatsAppPortal() {
       setWaConnected(connected);
       setWaBusinessPhone(orgWa?.business_phone ? String(orgWa.business_phone) : null);
       setWaConnectionStatus(orgWa?.connection_status ? String(orgWa.connection_status) : connected ? 'connected' : 'not_connected');
-
-      const code = String(user?.referral_code || "").trim();
-      setReferralCode(code);
-      try {
-        const leadsRes = code
-          ? await api.leads.list({ referred_by: code })
-          : await api.leads.list();
-        setFormLeads(phpList(leadsRes));
-      } catch {
-        setFormLeads([]);
-      }
+      setCampaignLeads([]);
       if (campaignsData.length > 0) {
         const sendsRes = await api.marketing.whatsappSends(campaignsData.map((c: any) => c.id));
         setSends(phpList(sendsRes));
@@ -351,6 +364,53 @@ export default function WhatsAppPortal() {
     setShowBulkSend(true);
   };
 
+  const openSendFromFormLeads = () => {
+    if (!waConnected) {
+      toast({
+        variant: 'destructive',
+        title: 'Connect WhatsApp first',
+        description: 'Use Setup step 1 above, then try Send Campaign again.',
+      });
+      return;
+    }
+    if (!selectedFormId) {
+      toast({ variant: 'destructive', title: 'Select a form first' });
+      return;
+    }
+    const ticked = selectedRecipientIds.filter((id) => formPeople.some((p) => p.id === id));
+    if (ticked.length === 0) {
+      toast({
+        variant: 'destructive',
+        title: 'Tick form leads to send',
+        description: 'Only ticked leads with a phone number are sent the template.',
+      });
+      return;
+    }
+    setShowBulkSend(true);
+  };
+
+  const onLeadSearch = useCallback((q: string) => {
+    if (leadSearchTimer.current) window.clearTimeout(leadSearchTimer.current);
+    const query = q.trim();
+    if (query.length < 2) return;
+    leadSearchTimer.current = window.setTimeout(() => {
+      void api.leads.list({ search: query, all: false, limit: 300, lite: true })
+        .then((res) => {
+          const extra = phpList(res);
+          if (!extra.length) return;
+          setCampaignLeads((prev) => {
+            const byId = new Map(prev.map((l) => [String(l.id), l]));
+            for (const row of extra) {
+              const id = String(row?.id || '');
+              if (id) byId.set(id, row);
+            }
+            return Array.from(byId.values());
+          });
+        })
+        .catch(() => undefined);
+    }, 300);
+  }, []);
+
   const totalSent = campaigns.reduce((s: number, c: any) => s + (c.sent_count || 0), 0);
   const totalFailed = campaigns.reduce((s: number, c: any) => s + (c.failed_count || 0), 0);
   const totalPending = campaigns.reduce((s: number, c: any) => s + (c.pending_count || 0), 0);
@@ -427,7 +487,7 @@ export default function WhatsAppPortal() {
         <Card className="border-l-4 border-l-blue-500">
           <CardContent className="p-3">
             <div className="flex items-center gap-2 mb-1"><Users className="h-3.5 w-3.5 text-blue-500" /><span className="text-[10px] uppercase tracking-wider text-muted-foreground">Form Leads</span></div>
-            <p className="text-lg md:text-xl font-bold text-blue-600">{formLeads.length}</p>
+            <p className="text-lg md:text-xl font-bold text-blue-600">{formLeadRows.length}</p>
           </CardContent>
         </Card>
       </div>
@@ -443,49 +503,22 @@ export default function WhatsAppPortal() {
 
         {/* Form Leads */}
         <TabsContent value="form_leads">
-          <Card>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-xs">#</TableHead>
-                      <TableHead className="text-xs">Name</TableHead>
-                      <TableHead className="text-xs">Email</TableHead>
-                      <TableHead className="text-xs">Phone</TableHead>
-                      <TableHead className="text-xs">Source</TableHead>
-                      <TableHead className="text-xs">Status</TableHead>
-                      <TableHead className="text-xs">Date</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {formLeads.length === 0 ? (
-                      <TableRow><TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-8">
-                        <Users className="h-10 w-10 mx-auto mb-3 text-muted-foreground/30" />No form leads yet.
-                      </TableCell></TableRow>
-                    ) : formLeads.map((lead: any, i: number) => (
-                      <TableRow key={lead.id}>
-                        <TableCell className="text-xs text-muted-foreground">{i + 1}</TableCell>
-                        <TableCell className="text-sm font-medium">{lead.name}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{lead.email || '—'}</TableCell>
-                        <TableCell className="text-xs">{lead.phone || '—'}</TableCell>
-                        <TableCell><Badge variant="outline" className="text-[10px]">{lead.source || 'website'}</Badge></TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className={
-                            lead.status === 'converted' || lead.status === 'enrolled' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            lead.status === 'interested' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                            lead.status === 'lost' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-gray-50 text-gray-700 border-gray-200'
-                          }>{lead.status === 'enrolled' ? 'Enroll' : (lead.status || 'new').replace(/_/g, ' ')}</Badge>
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{format(new Date(lead.created_at), 'dd MMM yyyy')}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
+          <FormLeadsCampaignTab
+            forms={campaignForms}
+            formsLoading={campaignFormsLoading}
+            selectedFormId={selectedFormId}
+            onSelectedFormIdChange={(id) => {
+              setSelectedFormId(id);
+              setSelectedRecipientIds([]);
+            }}
+            leads={formLeadRows}
+            leadsLoading={formLeadsLoading}
+            destination={formLeadDestination}
+            selectedIds={selectedRecipientIds}
+            onSelectedIdsChange={setSelectedRecipientIds}
+            contactKind="phone"
+            onSendSelected={openSendFromFormLeads}
+          />
         </TabsContent>
 
         {/* Drafts */}
@@ -502,6 +535,7 @@ export default function WhatsAppPortal() {
                     <p className="text-sm font-semibold truncate">{d.name || d.subject || '(No name)'}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       Title: {d.subject || '(No title)'} · Updated {format(new Date(d.updated_at), 'dd MMM yyyy HH:mm')}
+                      {d.created_by_name ? ` · ${d.created_by_name}` : ''}
                       <Badge variant="outline" className="ml-2 text-[10px]">{d.status}</Badge>
                     </p>
                   </div>
@@ -667,11 +701,11 @@ export default function WhatsAppPortal() {
       <Dialog open={showBulkSend} onOpenChange={(open) => {
         setShowBulkSend(open);
         if (!open) {
-          setSelectedRecipientIds([]);
           setTemplateVars([]);
+          setCampaignLeads([]);
         }
       }}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-5xl w-[min(96rem,calc(100%-1rem))] max-h-[min(94dvh,calc(100dvh-1rem))] overflow-y-auto">
           <DialogHeader><DialogTitle className="flex items-center gap-2"><MessageSquare className="h-4 w-4 text-emerald-500" />Send WhatsApp Campaign</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -772,6 +806,7 @@ export default function WhatsAppPortal() {
             )}
 
             <CampaignRecipientPicker
+              key={showBulkSend ? 'wa-send-open' : 'wa-send-closed'}
               mode="phone"
               people={recipientPeople}
               selectedIds={selectedRecipientIds}
@@ -780,8 +815,16 @@ export default function WhatsAppPortal() {
               onManualTextChange={setBulkPhones}
               onUploadFile={handleFileUpload}
               fileInputRef={fileInputRef}
-              listLabel="Select leads / students"
-              emptyHint="No phone numbers found on leads/students."
+              listLabel="Search leads / students"
+              emptyHint="Type to search, pick a form to list its leads, or enter phone numbers manually below."
+              onSearchChange={onLeadSearch}
+              hideListUntilSearch
+              forms={campaignForms}
+              formsLoading={campaignFormsLoading}
+              selectedFormId={selectedFormId}
+              onSelectedFormIdChange={setSelectedFormId}
+              formPeople={formPeople}
+              formPeopleLoading={formLeadsLoading}
             />
             <DialogFooter>
               <Button onClick={handleBulkSend} disabled={sending || !waConnected} className="w-full gap-1.5 bg-emerald-600 hover:bg-emerald-700">

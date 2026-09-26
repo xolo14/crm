@@ -80,7 +80,7 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
             ],
         ]);
     }
-    if ($role === 'manager') {
+    if (in_array($role, ['manager', 'operational_manager'], true)) {
         respond([
             'data' => [
                 'grants' => [],
@@ -98,12 +98,16 @@ if ($method === 'GET' && $action === 'managers') {
         $st = $db->prepare(
             "SELECT id, full_name, email, role, is_active
              FROM users
-             WHERE org_id = ? AND LOWER(TRIM(role)) = 'manager'
+             WHERE org_id = ?
              ORDER BY full_name ASC"
         );
         $st->execute([$orgId]);
         while ($u = $st->fetch(PDO::FETCH_ASSOC)) {
             if (!is_array($u)) {
+                continue;
+            }
+            $rk = syncpediaNormalizeRoleKey((string) ($u['role'] ?? ''));
+            if (!in_array($rk, ['manager', 'operational_manager'], true)) {
                 continue;
             }
             $active = $u['is_active'] ?? 1;
@@ -115,7 +119,7 @@ if ($method === 'GET' && $action === 'managers') {
                 'id' => (string) ($u['id'] ?? ''),
                 'full_name' => (string) ($u['full_name'] ?? ''),
                 'email' => (string) ($u['email'] ?? ''),
-                'role' => 'manager',
+                'role' => $rk,
             ];
         }
     } catch (Throwable $e) {
@@ -149,12 +153,22 @@ if ($method === 'POST' && $action === 'set') {
     if ($cleanIds !== []) {
         $ph = implode(',', array_fill(0, count($cleanIds), '?'));
         $st = $db->prepare(
-            "SELECT id FROM users
-             WHERE org_id = ? AND LOWER(TRIM(role)) = 'manager' AND id IN ($ph)"
+            "SELECT id, role FROM users
+             WHERE org_id = ? AND id IN ($ph)"
         );
         $st->execute(array_merge([$orgId], $cleanIds));
-        while ($id = $st->fetchColumn()) {
-            $valid[] = (string) $id;
+        while ($u = $st->fetch(PDO::FETCH_ASSOC)) {
+            if (!is_array($u)) {
+                continue;
+            }
+            $rk = syncpediaNormalizeRoleKey((string) ($u['role'] ?? ''));
+            if (!in_array($rk, ['manager', 'operational_manager'], true)) {
+                continue;
+            }
+            $id = trim((string) ($u['id'] ?? ''));
+            if ($id !== '') {
+                $valid[] = $id;
+            }
         }
     }
 

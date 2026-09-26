@@ -63,6 +63,13 @@ export function canManageFormCampaigns(
   const formOrg = String(formOrgId || "").trim();
   const userOrg = String(userOrgId || "").trim();
   if (isL3AdminRole(r)) {
+    return userOrg !== "" && (formOrg === "" || formOrg === userOrg);
+  }
+
+  if (r === "manager" || r === "operational_manager") {
+    if (String(formCreatedBy || "") !== "" && String(formCreatedBy) === String(userId || "")) {
+      return true;
+    }
     return formOrg !== "" && userOrg !== "" && formOrg === userOrg;
   }
 

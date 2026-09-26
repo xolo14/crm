@@ -11,6 +11,7 @@ export const FEATURE_PAYSLIP = "payslip";
 export const FEATURE_FORM_MANAGEMENT = "form_management";
 export const FEATURE_TIMETABLES = "timetables";
 export const FEATURE_COMMUNICATIONS = "communications";
+export const FEATURE_VIDEO_INTROS = "video_intros";
 
 /** Features that exist as pages in this CRM build. */
 export const IMPLEMENTED_ORG_FEATURES: {
@@ -35,6 +36,7 @@ export const IMPLEMENTED_ORG_FEATURES: {
   { key: "holidays", section: "Reports", label: "Holidays", description: "Org holiday calendar" },
   { key: FEATURE_CERTIFICATES, section: "HR & Docs", label: "Certificates", description: "Certificate templates and issuance" },
   { key: FEATURE_OFFER_LETTERS, section: "HR & Docs", label: "Offer Letters", description: "Offer letter templates and sending" },
+  { key: FEATURE_VIDEO_INTROS, section: "HR & Docs", label: "Video introductions", description: "Candidate self-introduction video invitations and review" },
   { key: FEATURE_FRESHER_SALARY, section: "HR & Docs", label: "Fresher Salary Tracker", description: "Sales fresher salary evaluation" },
 ];
 
@@ -54,6 +56,7 @@ export const CORE_DEFAULT_FEATURES = [
   "payments",
   "daily_reports",
   "holidays",
+  FEATURE_VIDEO_INTROS,
 ];
 
 export function isSyncpediaOrganization(org: { slug?: string | null } | null): boolean {
@@ -84,7 +87,7 @@ export function isOrgFeatureEnabled(
   if (role === "super_admin") return true;
 
   if (isSyncpediaOrganization(org)) {
-    if (featureKey === FEATURE_OFFER_LETTERS || featureKey === FEATURE_FRESHER_SALARY) {
+    if (featureKey === FEATURE_OFFER_LETTERS || featureKey === FEATURE_FRESHER_SALARY || featureKey === FEATURE_VIDEO_INTROS) {
       return true;
     }
   }
@@ -92,6 +95,10 @@ export function isOrgFeatureEnabled(
   const feats = org?.features;
   if (!orgHasConfiguredFeatures(org)) {
     return CORE_DEFAULT_FEATURES.includes(featureKey);
+  }
+
+  if (featureKey === FEATURE_VIDEO_INTROS && feats && !Object.prototype.hasOwnProperty.call(feats, FEATURE_VIDEO_INTROS)) {
+    return true;
   }
 
   return feats?.[featureKey] === true;
@@ -124,6 +131,7 @@ export function featureKeyForPath(pathname: string): string | null {
   if (p.startsWith("/marketing")) return FEATURE_MARKETING;
   if (p.startsWith("/certificates")) return FEATURE_CERTIFICATES;
   if (p.startsWith("/offer-letters")) return FEATURE_OFFER_LETTERS;
+  if (p.startsWith("/video-intros")) return FEATURE_VIDEO_INTROS;
   if (p.startsWith("/fresher-salary-tracker")) return FEATURE_FRESHER_SALARY;
   if (p.startsWith("/team")) return "team";
   if (p.startsWith("/settings")) return "settings";
