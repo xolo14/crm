@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
+import { searchAccessibleLeads } from '@/lib/searchAccessibleLeads';
 import { phpList } from '@/lib/phpList';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -16,10 +17,10 @@ import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Mail, Send, Plus, Eye, Loader2, FileText, Trash2,
-  CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, CalendarClock
+  CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, CalendarClock, Paperclip, X
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import {
   CampaignRecipientPicker,
@@ -29,8 +30,9 @@ import {
   type CampaignPickPerson,
 } from '@/components/marketing/CampaignRecipientPicker';
 import { FormLeadsCampaignTab } from '@/components/marketing/FormLeadsCampaignTab';
+import EmailAnalytics from '@/pages/EmailAnalytics';
+import { campaignCanRetry, campaignDisplaySummary, emailSendOutcome } from '@/lib/emailSendStatus';
 import { useCampaignFormLeads } from '@/lib/campaignFormLeads';
-import { sanitizeFormDescriptionHtml } from '@/components/forms/formDescriptionHtml';
 import {
   autofillPlaceholderValues,
   extractAnglePlaceholders,
@@ -39,16 +41,37 @@ import {
   syncNamePlaceholderValues,
 } from '@/lib/emailDraftPlaceholders';
 
+/** Same HTML the mailbox sends. Full documents keep their <style> and tables; plain text is escaped. */
+function emailPreviewSrcDoc(body: unknown): string {
+  const raw = String(body ?? '').trim();
+  if (!raw) {
+    return '<!DOCTYPE html><html><body><p style="margin:0;color:#999;font-family:system-ui,sans-serif">No content yet</p></body></html>';
+  }
+  if (/<!doctype\s+html|<html[\s>]/i.test(raw)) return raw;
+  if (/<[a-z][\s\S]*>/i.test(raw)) {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0">${raw}</body></html>`;
+  }
+  const escaped = raw
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\r?\n/g, '<br>');
+  return `<!DOCTYPE html><html><body style="margin:0;padding:16px;font-family:system-ui,sans-serif;color:#0f172a">${escaped}</body></html>`;
+}
+
 export default function MarketingPortal() {
   const { user } = useAuth();
   const mineOnly = normalizeAppRole(user?.role) === 'marketing';
   const { toast } = useToast();
   const isMobile = useIsMobile();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [activeTab, setActiveTab] = useState('form_leads');
+  const marketingTabs = ['form_leads', 'drafts', 'campaigns', 'history', 'analytics'] as const;
+  const [activeTab, setActiveTab] = useState(() => {
+    const t = searchParams.get('tab') || '';
+    return marketingTabs.includes(t as (typeof marketingTabs)[number]) ? t : 'form_leads';
+  });
   const [loading, setLoading] = useState(true);
   const [campaignLeads, setCampaignLeads] = useState<any[]>([]);
   const [marketingMembers, setMarketingMembers] = useState<any[]>([]);
@@ -71,6 +94,10 @@ export default function MarketingPortal() {
   const [draftName, setDraftName] = useState('');
   const [draftSubject, setDraftSubject] = useState('');
   const [draftBody, setDraftBody] = useState('');
+  const [draftPdfFile, setDraftPdfFile] = useState<File | null>(null);
+  const [draftPdfName, setDraftPdfName] = useState('');
+  const [draftPdfRemove, setDraftPdfRemove] = useState(false);
+  const draftPdfInputRef = useRef<HTMLInputElement | null>(null);
   const [savingDraft, setSavingDraft] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
 
@@ -79,6 +106,10 @@ export default function MarketingPortal() {
   const [sends, setSends] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [campaignLog, setCampaignLog] = useState<any | null>(null);
+  const [campaignLogRows, setCampaignLogRows] = useState<any[]>([]);
+  const [campaignLogLoading, setCampaignLogLoading] = useState(false);
+  const [retryingCampaignId, setRetryingCampaignId] = useState('');
 
   // Bulk send dialog
   const [showBulkSend, setShowBulkSend] = useState(false);
@@ -135,8 +166,9 @@ export default function MarketingPortal() {
     fetchAll();
   }, []);
 
-  const fetchAll = async () => {
-    setLoading(true);
+  const fetchAll = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     try {
       const [draftsRes, campaignsRes, membersRes] = await Promise.all([
         api.marketing.emailDrafts(mineOnly ? { mine: true } : undefined),
@@ -148,7 +180,7 @@ export default function MarketingPortal() {
       setDrafts(draftsData);
       setCampaigns(campaignsData);
       setMarketingMembers(phpList(membersRes));
-      setCampaignLeads([]);
+      if (!silent) setCampaignLeads([]);
       if (campaignsData.length > 0) {
         const sendsRes = await api.marketing.emailSends(campaignsData.map((c: any) => c.id));
         setSends(phpList(sendsRes));
@@ -156,22 +188,58 @@ export default function MarketingPortal() {
         setSends([]);
       }
     } catch (err: any) {
-      toast({ variant: 'destructive', title: 'Error', description: err.message });
+      if (!silent) toast({ variant: 'destructive', title: 'Error', description: err.message });
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   // Draft CRUD
+  const resetDraftPdf = () => {
+    setDraftPdfFile(null);
+    setDraftPdfName('');
+    setDraftPdfRemove(false);
+    if (draftPdfInputRef.current) draftPdfInputRef.current.value = '';
+  };
+
+  const chooseDraftPdf = (file: File | null) => {
+    if (!file) return;
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      toast({ variant: 'destructive', title: 'Attachment must be a PDF' });
+      if (draftPdfInputRef.current) draftPdfInputRef.current.value = '';
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      toast({ variant: 'destructive', title: 'PDF must be 50 MB or smaller' });
+      if (draftPdfInputRef.current) draftPdfInputRef.current.value = '';
+      return;
+    }
+    setDraftPdfFile(file);
+    setDraftPdfName(file.name);
+    setDraftPdfRemove(false);
+  };
+
   const saveDraft = async () => {
     if (!draftName.trim()) { toast({ variant: 'destructive', title: 'Draft name is required' }); return; }
     if (!draftSubject.trim()) { toast({ variant: 'destructive', title: 'Subject is required' }); return; }
     setSavingDraft(true);
+    const hadSavedPdf = Boolean(editingDraft?.attachment_name);
     try {
-      if (editingDraft) {
-        await api.marketing.updateEmailDraft(editingDraft.id, { name: draftName, subject: draftSubject, html_body: draftBody });
+      let id = editingDraft?.id ? String(editingDraft.id) : '';
+      if (id) {
+        await api.marketing.updateEmailDraft(id, { name: draftName, subject: draftSubject, html_body: draftBody });
       } else {
-        await api.marketing.createEmailDraft({ name: draftName, subject: draftSubject, html_body: draftBody });
+        const created = await api.marketing.createEmailDraft({ name: draftName, subject: draftSubject, html_body: draftBody });
+        id = String(created?.id || '');
+        if (!id) throw new Error('Draft was saved without an id');
+        setEditingDraft({ id, name: draftName, subject: draftSubject, html_body: draftBody, attachment_name: '' });
+      }
+      if (draftPdfFile) {
+        const uploaded = await api.marketing.uploadEmailDraftAttachment(id, draftPdfFile);
+        setEditingDraft((prev: any) => prev ? { ...prev, attachment_name: uploaded?.attachment_name || draftPdfFile.name } : prev);
+      } else if (draftPdfRemove && hadSavedPdf) {
+        await api.marketing.deleteEmailDraftAttachment(id);
       }
       toast({ title: editingDraft ? 'Draft updated' : 'Draft saved' });
       setShowEditor(false);
@@ -179,6 +247,7 @@ export default function MarketingPortal() {
       setDraftName('');
       setDraftSubject('');
       setDraftBody('');
+      resetDraftPdf();
       fetchAll();
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error', description: err.message });
@@ -198,11 +267,13 @@ export default function MarketingPortal() {
   };
 
   const openEditor = (draft?: any) => {
+    resetDraftPdf();
     if (draft) {
       setEditingDraft(draft);
       setDraftName(draft.name || '');
       setDraftSubject(draft.subject);
       setDraftBody(draft.html_body || '');
+      setDraftPdfName(String(draft.attachment_name || ''));
     } else {
       setEditingDraft(null);
       setDraftName('');
@@ -219,6 +290,20 @@ export default function MarketingPortal() {
     next.delete('create');
     setSearchParams(next, { replace: true });
   }, [loading, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    const t = searchParams.get('tab') || '';
+    const next = marketingTabs.includes(t as (typeof marketingTabs)[number]) ? t : 'form_leads';
+    if (next !== activeTab) setActiveTab(next);
+  }, [searchParams]);
+
+  const changeTab = (value: string) => {
+    setActiveTab(value);
+    const next = new URLSearchParams(searchParams);
+    if (value === 'form_leads') next.delete('tab');
+    else next.set('tab', value);
+    setSearchParams(next, { replace: true });
+  };
 
   // Bulk send
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -291,7 +376,7 @@ export default function MarketingPortal() {
       }
       toast({
         title: res?.message || `Sent ${sent} email(s)`,
-        description: [failed ? `${failed} failed` : '', pending ? `${pending} scheduled` : ''].filter(Boolean).join(' · ') || 'Delivered via your organization mailbox.',
+        description: [failed ? `${failed} failed` : '', pending ? `${pending} queued` : ''].filter(Boolean).join(' · ') || 'Delivered via your organization mailbox.',
       });
       setShowBulkSend(false);
       setBulkEmails('');
@@ -382,17 +467,15 @@ export default function MarketingPortal() {
   const onLeadSearch = useCallback((q: string) => {
     if (leadSearchTimer.current) window.clearTimeout(leadSearchTimer.current);
     const query = q.trim();
-    if (query.length < 2) return;
+    if (query.length < 1) return;
     leadSearchTimer.current = window.setTimeout(() => {
-      void api.leads.list({ search: query, all: false, limit: 300, lite: true })
-        .then((res) => {
-          const extra = phpList(res);
-          if (!extra.length) return;
+      void searchAccessibleLeads(query)
+        .then(({ leads }) => {
+          if (!leads.length) return;
           setCampaignLeads((prev) => {
             const byId = new Map(prev.map((l) => [String(l.id), l]));
-            for (const row of extra) {
-              const id = String(row?.id || '');
-              if (id) byId.set(id, row);
+            for (const row of leads) {
+              if (row.id) byId.set(row.id, row);
             }
             return Array.from(byId.values());
           });
@@ -401,18 +484,103 @@ export default function MarketingPortal() {
     }, 300);
   }, []);
 
-  // Stats
-  const totalSent = campaigns.reduce((s, c) => s + (c.sent_count || 0), 0);
-  const totalFailed = campaigns.reduce((s, c) => s + (c.failed_count || 0), 0);
-  const totalPending = campaigns.reduce((s, c) => s + (c.pending_count || 0), 0);
+  const sendsByCampaign = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const row of sends) {
+      const id = String(row.campaign_id || '');
+      if (!id) continue;
+      const list = map.get(id);
+      if (list) list.push(row);
+      else map.set(id, [row]);
+    }
+    return map;
+  }, [sends]);
+
+  const anyCampaignSending = useMemo(
+    () => campaigns.some((c) => campaignDisplaySummary(sendsByCampaign.get(String(c.id)) || [], c.status).status === 'sending'),
+    [campaigns, sendsByCampaign],
+  );
+  const fetchAllRef = useRef(fetchAll);
+  fetchAllRef.current = fetchAll;
+  useEffect(() => {
+    if (!anyCampaignSending) return;
+    const timer = window.setInterval(() => {
+      void fetchAllRef.current({ silent: true });
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [anyCampaignSending]);
+
+  const retryCampaign = async (campaign: { id?: string }) => {
+    const id = String(campaign.id || '');
+    if (!id || retryingCampaignId) return;
+    setRetryingCampaignId(id);
+    try {
+      const res = await api.marketing.retryEmailCampaign(id);
+      const queued = Number(res?.queued ?? 0);
+      if (queued <= 0) {
+        throw new Error(res?.error || res?.message || 'No failed emails to retry');
+      }
+      toast({
+        title: res?.message || `Sending ${queued}. You can leave this page; they go out about every 3 seconds.`,
+      });
+      await fetchAll({ silent: true });
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Retry failed', description: err.message });
+    } finally {
+      setRetryingCampaignId('');
+    }
+  };
+
+  // Stats follow the email log: a row counts as sent only when it has a send time.
+  const sendTotals = useMemo(() => {
+    let sent = 0;
+    let failed = 0;
+    let pending = 0;
+    for (const row of sends) {
+      const tone = emailSendOutcome(row).tone;
+      if (tone === 'sent') sent += 1;
+      else if (tone === 'pending') pending += 1;
+      else failed += 1;
+    }
+    return { sent, failed, pending };
+  }, [sends]);
+  const totalSent = sendTotals.sent;
+  const totalFailed = sendTotals.failed;
+  const totalPending = sendTotals.pending;
+
+  const campaignLogRequest = useRef(0);
+  const openCampaignLog = (campaign: any) => {
+    const request = campaignLogRequest.current + 1;
+    campaignLogRequest.current = request;
+    const cached = sendsByCampaign.get(String(campaign.id)) || [];
+    setCampaignLog(campaign);
+    setCampaignLogRows(cached);
+    setCampaignLogLoading(true);
+    void api.marketing.emailSends([String(campaign.id)])
+      .then((res) => {
+        if (campaignLogRequest.current !== request) return;
+        setCampaignLogRows(phpList(res));
+      })
+      .catch(() => {
+        if (campaignLogRequest.current !== request) return;
+        setCampaignLogRows(cached);
+      })
+      .finally(() => {
+        if (campaignLogRequest.current !== request) return;
+        setCampaignLogLoading(false);
+      });
+  };
 
   const filteredSends = sends.filter(s => {
-    if (statusFilter !== 'all' && s.status !== statusFilter) return false;
+    const outcome = emailSendOutcome(s);
+    if (statusFilter === 'sent' && outcome.tone !== 'sent') return false;
+    if (statusFilter === 'failed' && outcome.tone !== 'failed') return false;
+    if (statusFilter === 'pending' && outcome.tone !== 'pending') return false;
     if (searchQuery && !s.recipient_email?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     return true;
   });
 
-  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
+  if (loading && activeTab !== 'analytics') return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -426,9 +594,6 @@ export default function MarketingPortal() {
           <p className="text-xs md:text-sm text-muted-foreground">Compose, preview & send email campaigns</p>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="ghost" className="gap-1.5" onClick={() => navigate('/marketing/analytics')}>
-            <BarChart3 className="h-3.5 w-3.5" />Analytics
-          </Button>
           <Button size="sm" variant="outline" className="gap-1.5" onClick={() => openEditor()}>
             <Plus className="h-3.5 w-3.5" />New Draft
           </Button>
@@ -438,7 +603,7 @@ export default function MarketingPortal() {
         </div>
       </div>
 
-      {/* Quick Stats */}
+      {activeTab !== 'analytics' ? (
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card className="border-l-4 border-l-emerald-500">
           <CardContent className="p-3">
@@ -465,14 +630,16 @@ export default function MarketingPortal() {
           </CardContent>
         </Card>
       </div>
+      ) : null}
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <Tabs value={activeTab} onValueChange={changeTab}>
         <TabsList className="w-full md:w-auto">
           <TabsTrigger value="form_leads" className="text-xs gap-1"><Users className="h-3 w-3" />Form Leads</TabsTrigger>
           <TabsTrigger value="drafts" className="text-xs gap-1"><FileText className="h-3 w-3" />Drafts</TabsTrigger>
           <TabsTrigger value="campaigns" className="text-xs gap-1"><Send className="h-3 w-3" />Campaigns</TabsTrigger>
           <TabsTrigger value="history" className="text-xs gap-1"><Mail className="h-3 w-3" />Email History</TabsTrigger>
+          <TabsTrigger value="analytics" className="text-xs gap-1"><BarChart3 className="h-3 w-3" />Analytics</TabsTrigger>
         </TabsList>
 
         {/* Form Leads */}
@@ -510,6 +677,7 @@ export default function MarketingPortal() {
                     <p className="text-sm font-semibold truncate">{d.name || d.subject || '(No name)'}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       Subject: {d.subject || '(No subject)'} · Updated {format(new Date(d.updated_at), 'dd MMM yyyy HH:mm')}
+                      {d.attachment_name ? ` · PDF: ${d.attachment_name}` : ''}
                       {d.created_by_name ? ` · ${d.created_by_name}` : ''}
                       <Badge variant="outline" className="ml-2 text-[10px]">{d.status}</Badge>
                     </p>
@@ -550,23 +718,43 @@ export default function MarketingPortal() {
                   <TableBody>
                     {campaigns.length === 0 ? (
                       <TableRow><TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-8">No campaigns yet</TableCell></TableRow>
-                    ) : campaigns.map(c => (
-                      <TableRow key={c.id}>
+                    ) : campaigns.map(c => {
+                      const summary = campaignDisplaySummary(sendsByCampaign.get(String(c.id)) || [], c.status);
+                      const recipients = summary.total > 0 ? summary.total : Number(c.recipient_count || 0);
+                      return (
+                      <TableRow key={c.id} className="cursor-pointer hover:bg-muted/50" onClick={() => openCampaignLog(c)}>
                         <TableCell className="text-sm font-medium max-w-[200px] truncate">{c.subject}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{format(new Date(c.created_at), 'dd MMM HH:mm')}</TableCell>
-                        <TableCell className="text-center text-sm">{c.recipient_count}</TableCell>
-                        <TableCell className="text-center"><Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">{c.sent_count}</Badge></TableCell>
-                        <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{c.failed_count}</Badge></TableCell>
+                        <TableCell className="text-center text-sm">{recipients}</TableCell>
+                        <TableCell className="text-center"><Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">{summary.sent}</Badge></TableCell>
+                        <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{summary.failed}</Badge></TableCell>
                         <TableCell>
-                          <Badge variant="outline" className={
-                            c.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            c.status === 'sending' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                            c.status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-amber-50 text-amber-700 border-amber-200'
-                          }>{c.status}</Badge>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className={
+                              summary.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                              summary.status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
+                              summary.status === 'sending' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                              'bg-amber-50 text-amber-700 border-amber-200'
+                            }>{summary.label}</Badge>
+                            {campaignCanRetry(summary) ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs"
+                                disabled={retryingCampaignId === String(c.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void retryCampaign(c);
+                                }}
+                              >
+                                {retryingCampaignId === String(c.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Retry'}
+                              </Button>
+                            ) : null}
+                          </div>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -589,7 +777,7 @@ export default function MarketingPortal() {
                     <SelectItem value="all">All Status</SelectItem>
                     <SelectItem value="sent">Sent</SelectItem>
                     <SelectItem value="failed">Failed</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="pending">Scheduled</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -609,31 +797,82 @@ export default function MarketingPortal() {
                   <TableBody>
                     {filteredSends.length === 0 ? (
                       <TableRow><TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-8">No emails found</TableCell></TableRow>
-                    ) : filteredSends.slice(0, 100).map(s => (
+                    ) : filteredSends.map(s => {
+                      const outcome = emailSendOutcome(s);
+                      return (
                       <TableRow key={s.id}>
                         <TableCell className="text-sm">{s.recipient_email}</TableCell>
                         <TableCell>
                           <Badge variant="outline" className={
-                            s.status === 'sent' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            s.status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
+                            outcome.tone === 'sent' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                            outcome.tone === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
                             'bg-amber-50 text-amber-700 border-amber-200'
-                          }>{s.status}</Badge>
+                          }>{outcome.label}</Badge>
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">{s.scheduled_at ? format(new Date(s.scheduled_at), 'dd MMM HH:mm') : '—'}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
-                        <TableCell className="text-xs text-red-500 max-w-[200px] truncate">{s.error_message || '—'}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{outcome.tone === 'sent' && s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
+                        <TableCell className="text-xs text-red-600 max-w-[360px] whitespace-normal">{outcome.reason || '—'}</TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="analytics">
+          <EmailAnalytics embedded />
+        </TabsContent>
       </Tabs>
 
+      <Dialog open={!!campaignLog} onOpenChange={(open) => { if (!open) setCampaignLog(null); }}>
+        <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{campaignLog?.subject || 'Campaign emails'}</DialogTitle>
+          </DialogHeader>
+          {campaignLogLoading ? <p className="text-xs text-muted-foreground">Loading email log…</p> : null}
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs">Recipient</TableHead>
+                  <TableHead className="text-xs">Status</TableHead>
+                  <TableHead className="text-xs">Scheduled</TableHead>
+                  <TableHead className="text-xs">Sent At</TableHead>
+                  <TableHead className="text-xs">Error</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {campaignLogRows.length === 0 ? (
+                  <TableRow><TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-8">No emails for this campaign</TableCell></TableRow>
+                ) : campaignLogRows.map((s) => {
+                  const outcome = emailSendOutcome(s);
+                  return (
+                    <TableRow key={s.id}>
+                      <TableCell className="text-sm">{s.recipient_email}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={
+                          outcome.tone === 'sent' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                          outcome.tone === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
+                          'bg-amber-50 text-amber-700 border-amber-200'
+                        }>{outcome.label}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{s.scheduled_at ? format(new Date(s.scheduled_at), 'dd MMM HH:mm') : '—'}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{outcome.tone === 'sent' && s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
+                      <TableCell className="text-xs text-red-600 max-w-[360px] whitespace-normal">{outcome.reason || '—'}</TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Draft Editor Dialog */}
-      <Dialog open={showEditor} onOpenChange={(open) => { setShowEditor(open); if (!open) { setEditingDraft(null); setDraftName(''); setDraftSubject(''); setDraftBody(''); } }}>
+      <Dialog open={showEditor} onOpenChange={(open) => { setShowEditor(open); if (!open) { setEditingDraft(null); setDraftName(''); setDraftSubject(''); setDraftBody(''); resetDraftPdf(); } }}>
         <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader><DialogTitle>{editingDraft ? 'Edit Draft' : 'New Email Draft'}</DialogTitle></DialogHeader>
           <div className="space-y-4">
@@ -672,6 +911,41 @@ export default function MarketingPortal() {
               )}
             </div>
             <DialogFooter className="gap-2">
+              <div className="flex items-center gap-2 min-w-0 md:mr-1">
+                <input
+                  ref={draftPdfInputRef}
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  className="hidden"
+                  onChange={(e) => {
+                    chooseDraftPdf(e.target.files?.[0] ?? null);
+                    e.target.value = '';
+                  }}
+                />
+                <Button type="button" variant="outline" className="gap-1.5" onClick={() => draftPdfInputRef.current?.click()}>
+                  <Paperclip className="h-4 w-4" />Attachment
+                </Button>
+                {draftPdfName ? (
+                  <>
+                    <span className="text-xs text-muted-foreground truncate max-w-[180px]" title={draftPdfName}>{draftPdfName}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 shrink-0"
+                      onClick={() => {
+                        setDraftPdfFile(null);
+                        setDraftPdfName('');
+                        setDraftPdfRemove(true);
+                        if (draftPdfInputRef.current) draftPdfInputRef.current.value = '';
+                      }}
+                      aria-label="Remove attachment"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </>
+                ) : null}
+              </div>
               <Button variant="outline" onClick={() => setShowEditor(false)}>Cancel</Button>
               <Button onClick={saveDraft} disabled={savingDraft} className="gap-1.5">
                 {savingDraft && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -684,16 +958,19 @@ export default function MarketingPortal() {
 
       {/* Preview Dialog */}
       <Dialog open={showPreview} onOpenChange={setShowPreview}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-4xl w-[min(56rem,calc(100%-1.5rem))] max-h-[92vh] overflow-hidden flex flex-col">
           <DialogHeader><DialogTitle>Email Preview</DialogTitle></DialogHeader>
-          <div className="border rounded-lg overflow-hidden">
-            <div className="bg-muted/50 px-4 py-2.5 border-b">
+          <div className="border rounded-lg overflow-hidden flex flex-col min-h-0">
+            <div className="bg-muted/50 px-4 py-2.5 border-b shrink-0">
               <p className="text-xs text-muted-foreground">Subject:</p>
               <p className="text-sm font-semibold">{draftSubject || '(No subject)'}</p>
             </div>
-            <div className="p-4 bg-white min-h-[200px]">
-              <div dangerouslySetInnerHTML={{ __html: sanitizeFormDescriptionHtml(draftBody || '<p style="color: #999;">No content yet</p>') }} />
-            </div>
+            <iframe
+              title="Email body preview"
+              sandbox=""
+              srcDoc={emailPreviewSrcDoc(draftBody)}
+              className="w-full h-[min(72vh,760px)] bg-white border-0"
+            />
           </div>
         </DialogContent>
       </Dialog>

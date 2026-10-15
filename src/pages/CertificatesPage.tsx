@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import JSZip from "jszip";
@@ -49,12 +49,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
+import { searchAccessibleLeads } from "@/lib/searchAccessibleLeads";
 import { cn } from "@/lib/utils";
 import { normalizeAppRole } from "@/lib/roleUtils";
 import { TEMPLATE_FONT_FACES, TEMPLATE_FONT_SIZES, matchTemplateFontFace, matchTemplateFontSize } from "@/components/templates/DocumentTemplateEditor";
 import { CanvasTextBoxFrame, cycleTextBoxDivider, normalizeTextBoxDivider } from "@/components/templates/CanvasTextBoxFrame";
 import { DocFormsWorkspace, DocIssuedPanel } from "@/modules/docForms/DocFormsHub";
-import { applyPlaceholders, extractPlaceholderKeys } from "@/modules/docForms/types";
 import {
   downloadPlaceholderExcelTemplate,
   mapSheetRowsToPlaceholders,
@@ -69,6 +69,8 @@ import {
   getCertificateSharedKeys,
   getCertificateTemplatePlaceholderKeys,
   layerHasCertPlaceholderTokens,
+  certSampleTextHasPlaceholderTokens,
+  buildCertTemplatePreviewPlaceholderValues,
 } from "@/lib/certificatePlaceholders";
 import { ProtectedUploadImage } from "@/components/ProtectedUploadImage";
 import { PlaceholderPalette } from "@/components/templates/PlaceholderPalette";
@@ -279,67 +281,6 @@ function CertificatePreviewFit({
           children
         )}
       </div>
-    </div>
-  );
-}
-
-/**
- * Card/list thumbnail.
- * Landscape keeps the classic scale preview (stable, full page visible).
- * Portrait uses contain-fit so the tall page is not clipped.
- */
-function CertificatePreviewThumb({
-  template,
-  height = 140,
-  className,
-  ...previewProps
-}: {
-  template: CertTemplate;
-  height?: number;
-  className?: string;
-} & Omit<
-  ComponentProps<typeof CertificatePreview>,
-  "template" | "scale"
->) {
-  const isPortrait = certPageIsPortrait(template.style.pageFormat);
-
-  if (!isPortrait) {
-    // Same design px as PDF capture, then scale — keeps font proportions correct.
-    const { widthPx: designW, heightPx: designH } = certPageSizePx(
-      getCertPageSpec(template.style.pageFormat),
-    );
-    const scale = height / Math.max(1, designH);
-    return (
-      <div
-        className={cn("overflow-hidden rounded-md w-full bg-gray-100", className)}
-        style={{ height, position: "relative" }}
-      >
-        <div
-          style={{
-            width: designW,
-            height: designH,
-            transform: `scale(${scale})`,
-            transformOrigin: "top left",
-            pointerEvents: "none",
-            position: "absolute",
-            top: 0,
-            left: 0,
-          }}
-        >
-          <CertificatePreview template={template} renderPdfBackground {...previewProps} />
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={cn("overflow-hidden rounded-md w-full bg-gray-100 flex flex-col", className)}
-      style={{ height }}
-    >
-      <CertificatePreviewFit pageFormat={template.style.pageFormat} className="flex-1 min-h-0 h-full">
-        <CertificatePreview template={template} renderPdfBackground {...previewProps} />
-      </CertificatePreviewFit>
     </div>
   );
 }
@@ -1193,23 +1134,35 @@ function CertificatePreview({
 
   const resolveLayerContent = (layer: CertLayer) => {
     let content = layer.content || "";
-    // Template builder: show the exact preview text / <<tokens>> from the editor
-    if (editable) {
+    const editingThisLayer =
+      editable && isCertFreeTextLayer(layer.type) && selectedLayerID === layer.id;
+    if (editable && editingThisLayer) {
       return content;
     }
+    const previewDefaults = buildCertTemplatePreviewPlaceholderValues(template, {
+      recipientName,
+      domainName,
+      companyName: resolvedCompanyName,
+      issueDate: date,
+      certId: idForQr,
+    });
+    const domainForTokens =
+      domainName && !certSampleTextHasPlaceholderTokens(domainName)
+        ? domainName
+        : previewDefaults.domain_name;
     const tokenValues: Record<string, string> = {
+      ...previewDefaults,
       recipient_name: recipientName || "",
       name: recipientName || "",
-      domain_name: domainName || "",
-      domain: domainName || "",
-      course: domainName || "",
-      course_name: domainName || "",
+      domain_name: domainForTokens,
+      domain: domainForTokens,
+      course: domainForTokens,
+      course_name: domainForTokens,
       company_name: resolvedCompanyName || "",
       company: resolvedCompanyName || "",
       issue_date: date || "",
       date: date || "",
       ...(placeholderValues || {}),
-      // Always Cert ID (never template UUID / sync-id label)
       cert_id: idForQr,
       certID: idForQr,
       CertID: idForQr,
@@ -3062,14 +3015,9 @@ function TemplateCard({
       </CardHeader>
 
       <CardContent className="space-y-3 flex-1 flex flex-col">
-        <button
-          type="button"
-          className="w-full text-left rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={onPreview}
-          title="Preview template"
-        >
-          <CertificatePreviewThumb template={template} height={140} />
-        </button>
+        <p className="text-xs text-muted-foreground">
+          Use <span className="font-medium text-foreground">Preview</span> (eye icon) to see the certificate layout.
+        </p>
 
         <div className="flex flex-wrap gap-2 mt-auto">
           <Button size="sm" className="h-8 text-xs gap-1.5" onClick={onIssue} disabled={template.status !== "active"}>
@@ -3246,6 +3194,7 @@ function SingleIssueCertDialog({
   const [leadSuggestionsOpen, setLeadSuggestionsOpen] = useState(false);
   const [leadSearch, setLeadSearch] = useState("");
   const [leads, setLeads] = useState<CertLeadOption[]>([]);
+  const [leadsTruncated, setLeadsTruncated] = useState(false);
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [issuePayload, setIssuePayload] = useState<{
@@ -3289,8 +3238,10 @@ function SingleIssueCertDialog({
     for (const k of getCertificateTemplatePlaceholderKeys(template)) {
       if (k === "issue_date") continue;
       if (k === "company_name") seed[k] = template.fields.companyName || "";
-      else if (k === "domain_name") seed[k] = template.fields.domainName || "";
-      else seed[k] = "";
+      else if (k === "domain_name") {
+        const sample = template.fields.domainName || "";
+        seed[k] = certSampleTextHasPlaceholderTokens(sample) ? "" : sample;
+      } else seed[k] = "";
     }
     setValues(seed);
   }, [open, template]);
@@ -3300,6 +3251,7 @@ function SingleIssueCertDialog({
     const q = leadSearch.trim();
     if (!leadSuggestionsOpen || q.length < 1) {
       setLeads([]);
+      setLeadsTruncated(false);
       setLeadsLoading(false);
       return;
     }
@@ -3307,19 +3259,19 @@ function SingleIssueCertDialog({
     const timer = window.setTimeout(async () => {
       setLeadsLoading(true);
       try {
-        const res = await api.leads.list({
-          search: q,
-          limit: 50,
-          all: false,
-          lite: true,
-        });
-        const rows = Array.isArray((res as any)?.data) ? (res as any).data : [];
-        const next = rows
+        const { leads: matches, truncated } = await searchAccessibleLeads(q);
+        const next = matches
           .map(normalizeLeadOption)
           .filter((l: CertLeadOption | null): l is CertLeadOption => !!l && (!!l.name || !!l.email));
-        if (!cancelled) setLeads(next);
+        if (!cancelled) {
+          setLeads(next);
+          setLeadsTruncated(truncated);
+        }
       } catch {
-        if (!cancelled) setLeads([]);
+        if (!cancelled) {
+          setLeads([]);
+          setLeadsTruncated(false);
+        }
       } finally {
         if (!cancelled) setLeadsLoading(false);
       }
@@ -3371,8 +3323,18 @@ function SingleIssueCertDialog({
       issue_date: issueDate,
       date: issueDate,
       name: recipientName,
+      recipient_name: recipientName,
       domain: domainName,
+      domain_name: domainName,
+      course: domainName,
+      course_name: domainName,
+      Course: domainName,
       company: companyName,
+      company_name: companyName,
+      start: values.start ?? "",
+      end: values.end ?? "",
+      Start: values.start ?? "",
+      End: values.end ?? "",
     }),
     [values, issueDate, recipientName, domainName, companyName],
   );
@@ -3470,8 +3432,8 @@ function SingleIssueCertDialog({
         to: payload.studentEmail,
         cc: "",
         bcc: "",
-        subject: applyPlaceholders(mailCfg.mail_subject, emailValues),
-        body: applyPlaceholders(mailCfg.mail_body, emailValues),
+        subject: applyCertPlaceholders(mailCfg.mail_subject, emailValues),
+        body: applyCertPlaceholders(mailCfg.mail_body, emailValues),
         attachmentUrl: payload.pdfUrl,
         attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.certificateId}.pdf`,
       });
@@ -3590,38 +3552,45 @@ function SingleIssueCertDialog({
                                   No leads found. Keep typing to enter the name manually.
                                 </p>
                               ) : (
-                                leads.map((lead) => {
-                                  const meta = [lead.email, lead.phone, lead.company, lead.course_interest]
-                                    .filter(Boolean)
-                                    .join(" · ");
-                                  return (
-                                    <button
-                                      key={lead.id}
-                                      type="button"
-                                      className={cn(
-                                        "flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-muted/60 transition-colors",
-                                        selectedLeadId === lead.id && "bg-primary/5",
-                                      )}
-                                      onMouseDown={(e) => e.preventDefault()}
-                                      onClick={() => applyLead(lead)}
-                                    >
-                                      <Check
+                                <>
+                                  {leads.map((lead) => {
+                                    const meta = [lead.email, lead.phone, lead.company, lead.course_interest]
+                                      .filter(Boolean)
+                                      .join(" · ");
+                                    return (
+                                      <button
+                                        key={lead.id}
+                                        type="button"
                                         className={cn(
-                                          "mt-0.5 h-4 w-4 shrink-0",
-                                          selectedLeadId === lead.id ? "opacity-100 text-primary" : "opacity-0",
+                                          "flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-muted/60 transition-colors",
+                                          selectedLeadId === lead.id && "bg-primary/5",
                                         )}
-                                      />
-                                      <div className="min-w-0 flex-1">
-                                        <div className="truncate text-sm font-medium">
-                                          {lead.name || lead.email || "Unnamed lead"}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onClick={() => applyLead(lead)}
+                                      >
+                                        <Check
+                                          className={cn(
+                                            "mt-0.5 h-4 w-4 shrink-0",
+                                            selectedLeadId === lead.id ? "opacity-100 text-primary" : "opacity-0",
+                                          )}
+                                        />
+                                        <div className="min-w-0 flex-1">
+                                          <div className="truncate text-sm font-medium">
+                                            {lead.name || lead.email || "Unnamed lead"}
+                                          </div>
+                                          {meta ? (
+                                            <div className="truncate text-[11px] text-muted-foreground">{meta}</div>
+                                          ) : null}
                                         </div>
-                                        {meta ? (
-                                          <div className="truncate text-[11px] text-muted-foreground">{meta}</div>
-                                        ) : null}
-                                      </div>
-                                    </button>
-                                  );
-                                })
+                                      </button>
+                                    );
+                                  })}
+                                  {leadsTruncated ? (
+                                    <p className="px-3 py-2 text-[11px] text-muted-foreground">
+                                      Showing latest matches. Type more of the name.
+                                    </p>
+                                  ) : null}
+                                </>
                               )}
                             </div>
                           </div>
@@ -3776,6 +3745,7 @@ function IssueCertWizard({
   const [bulkLeadSuggestionsOpen, setBulkLeadSuggestionsOpen] = useState(false);
   const [bulkLeadSearch, setBulkLeadSearch] = useState("");
   const [bulkLeads, setBulkLeads] = useState<CertLeadOption[]>([]);
+  const [bulkLeadsTruncated, setBulkLeadsTruncated] = useState(false);
   const [bulkLeadsLoading, setBulkLeadsLoading] = useState(false);
   const sheetInputRef = useRef<HTMLInputElement | null>(null);
   const [isIssuing, setIsIssuing] = useState(false);
@@ -3834,10 +3804,10 @@ function IssueCertWizard({
     () => students.filter((r) => selectedRecipientIds.includes(r.id)),
     [selectedRecipientIds, students],
   );
-  const templateBulkKeys = useMemo(
-    () => getCertificateTemplatePlaceholderKeys(selectedTemplate),
-    [selectedTemplate],
-  );
+  const templateBulkKeys = useMemo(() => {
+    const keys = getCertificateTemplatePlaceholderKeys(selectedTemplate);
+    return keys.includes("recipient_email") ? keys : [...keys, "recipient_email"];
+  }, [selectedTemplate]);
   const templateRowKeys = useMemo(() => getCertificateBulkRowKeys(templateBulkKeys), [templateBulkKeys]);
   const templateSharedKeys = useMemo(() => getCertificateSharedKeys(templateBulkKeys), [templateBulkKeys]);
   const templateHasDomain = templateBulkKeys.includes("domain_name");
@@ -3857,6 +3827,7 @@ function IssueCertWizard({
     const q = bulkLeadSearch.trim();
     if (!bulkLeadSuggestionsOpen || q.length < 1) {
       setBulkLeads([]);
+      setBulkLeadsTruncated(false);
       setBulkLeadsLoading(false);
       return;
     }
@@ -3864,19 +3835,19 @@ function IssueCertWizard({
     const timer = window.setTimeout(async () => {
       setBulkLeadsLoading(true);
       try {
-        const res = await api.leads.list({
-          search: q,
-          limit: 50,
-          all: false,
-          lite: true,
-        });
-        const rows = Array.isArray((res as any)?.data) ? (res as any).data : [];
-        const next = rows
+        const { leads: matches, truncated } = await searchAccessibleLeads(q);
+        const next = matches
           .map(normalizeLeadOption)
           .filter((l: CertLeadOption | null): l is CertLeadOption => !!l && (!!l.name || !!l.email));
-        if (!cancelled) setBulkLeads(next);
+        if (!cancelled) {
+          setBulkLeads(next);
+          setBulkLeadsTruncated(truncated);
+        }
       } catch {
-        if (!cancelled) setBulkLeads([]);
+        if (!cancelled) {
+          setBulkLeads([]);
+          setBulkLeadsTruncated(false);
+        }
       } finally {
         if (!cancelled) setBulkLeadsLoading(false);
       }
@@ -4298,8 +4269,8 @@ function IssueCertWizard({
         to: payload.studentEmail,
         cc: "",
         bcc: "",
-        subject: applyPlaceholders(mailCfg.mail_subject, emailValues),
-        body: applyPlaceholders(mailCfg.mail_body, emailValues),
+        subject: applyCertPlaceholders(mailCfg.mail_subject, emailValues),
+        body: applyCertPlaceholders(mailCfg.mail_body, emailValues),
         attachmentUrl: payload.pdfUrl,
         attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.certificateId}.pdf`,
       });
@@ -4641,25 +4612,32 @@ function IssueCertWizard({
                             No leads found. Keep typing and press Add for a manual recipient.
                           </p>
                         ) : (
-                          bulkLeads.map((lead) => {
-                            const meta = [lead.email, lead.phone, lead.company, lead.course_interest]
-                              .filter(Boolean)
-                              .join(" · ");
-                            return (
-                              <button
-                                key={lead.id}
-                                type="button"
-                                className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-muted/60"
-                                onMouseDown={(e) => e.preventDefault()}
-                                onClick={() => addLeadAsRecipient(lead)}
-                              >
-                                <div className="min-w-0">
-                                  <div className="truncate text-sm font-medium">{lead.name || lead.email}</div>
-                                  {meta ? <div className="truncate text-[11px] text-muted-foreground">{meta}</div> : null}
-                                </div>
-                              </button>
-                            );
-                          })
+                          <>
+                            {bulkLeads.map((lead) => {
+                              const meta = [lead.email, lead.phone, lead.company, lead.course_interest]
+                                .filter(Boolean)
+                                .join(" · ");
+                              return (
+                                <button
+                                  key={lead.id}
+                                  type="button"
+                                  className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-muted/60"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => addLeadAsRecipient(lead)}
+                                >
+                                  <div className="min-w-0">
+                                    <div className="truncate text-sm font-medium">{lead.name || lead.email}</div>
+                                    {meta ? <div className="truncate text-[11px] text-muted-foreground">{meta}</div> : null}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                            {bulkLeadsTruncated ? (
+                              <p className="px-3 py-2 text-[11px] text-muted-foreground">
+                                Showing latest matches. Type more of the name.
+                              </p>
+                            ) : null}
+                          </>
                         )}
                       </div>
                     </div>
@@ -6011,9 +5989,23 @@ export default function CertificatesPage() {
                     previewTemplate.certPrefix || certOrgContext.orgPrefix,
                   )}
                   recipientName={previewTemplate.fields.recipientName}
-                  domainName={previewTemplate.fields.domainName}
+                  domainName={
+                    certSampleTextHasPlaceholderTokens(previewTemplate.fields.domainName)
+                      ? ""
+                      : previewTemplate.fields.domainName
+                  }
                   companyName={previewTemplate.fields.companyName || certOrgContext.orgName}
                   date={stableNowISODate()}
+                  placeholderValues={buildCertTemplatePreviewPlaceholderValues(previewTemplate, {
+                    recipientName: previewTemplate.fields.recipientName,
+                    domainName: previewTemplate.fields.domainName,
+                    companyName: previewTemplate.fields.companyName || certOrgContext.orgName,
+                    issueDate: stableNowISODate(),
+                    certId: sampleCertIdPattern(
+                      previewTemplate.certType,
+                      previewTemplate.certPrefix || certOrgContext.orgPrefix,
+                    ),
+                  })}
                   renderPdfBackground
                 />
               </CertificatePreviewFit>

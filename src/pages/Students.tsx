@@ -15,9 +15,11 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Search, Download, Upload, MoreHorizontal, Pencil, Trash2, Loader2, Info } from 'lucide-react';
+import { Plus, Search, Download, Upload, MoreHorizontal, Pencil, Trash2, Loader2, Info, GraduationCap, Users } from 'lucide-react';
 import { BulkActionsBar } from '@/components/BulkActions';
 import * as perms from '@/lib/permissions';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { canUseLmsStudentsTab, LmsStudentsTab } from '@/components/lms/LmsStudentsTab';
 
 const STUDENT_STATUSES = ['active', 'completed', 'dropped'] as const;
 
@@ -86,10 +88,42 @@ function StudentPaymentProgress({
 }
 
 export default function Students() {
-  return <StudentsRoster />;
+  const { role, organization } = useAuth();
+  const showLmsTab = canUseLmsStudentsTab(role, organization);
+
+  if (!showLmsTab) {
+    return <StudentsRoster />;
+  }
+
+  return (
+    <div>
+      <div className="mb-4">
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Students</h1>
+        <p className="text-sm text-muted-foreground mt-1">CRM roster and LMS Classes students</p>
+      </div>
+      <Tabs defaultValue="crm">
+        <TabsList>
+          <TabsTrigger value="crm" className="gap-1.5">
+            <GraduationCap className="h-3.5 w-3.5" />
+            CRM Students
+          </TabsTrigger>
+          <TabsTrigger value="lms" className="gap-1.5">
+            <Users className="h-3.5 w-3.5" />
+            LMS Students
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="crm" className="mt-4">
+          <StudentsRoster hidePageTitle />
+        </TabsContent>
+        <TabsContent value="lms" className="mt-4">
+          <LmsStudentsTab />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
 }
 
-function StudentsRoster() {
+function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) {
   const { toast } = useToast();
   const { role, organization } = useAuth();
   const isMobile = useIsMobile();
@@ -282,10 +316,14 @@ function StudentsRoster() {
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Students</h1>
-          <p className="text-sm text-muted-foreground mt-1">{students.length} enrolled students</p>
-        </div>
+        {!hidePageTitle ? (
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Students</h1>
+            <p className="text-sm text-muted-foreground mt-1">{students.length} enrolled students</p>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">{students.length} enrolled students</p>
+        )}
         <div className="flex items-center gap-2 flex-wrap">
           {hasImport && (
             <>

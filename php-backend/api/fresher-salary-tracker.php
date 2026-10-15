@@ -39,8 +39,9 @@ function fsmEnsureTable(PDO $db): void
           PRIMARY KEY (id)
         )
     ");
-    $db->exec('CREATE INDEX IF NOT EXISTS idx_fsm_org ON fresher_salary_members (org_id)');
-    $db->exec('CREATE INDEX IF NOT EXISTS idx_fsm_updated ON fresher_salary_members (updated_at)');
+    // MySQL does not support CREATE INDEX IF NOT EXISTS on all versions.
+    syncpediaEnsureIndex($db, 'idx_fsm_org', 'fresher_salary_members', 'org_id');
+    syncpediaEnsureIndex($db, 'idx_fsm_updated', 'fresher_salary_members', 'updated_at');
     $done = true;
 }
 

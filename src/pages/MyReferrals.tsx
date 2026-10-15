@@ -50,15 +50,10 @@ export default function MyReferrals() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Backfill daily_reports from call_logs (All Time needs a deep window).
-      // Non-blocking if sync fails — list still loads.
-      try {
-        await callLogsApi.syncDailyReportsFromCallLogs(730);
-      } catch {
-        /* ignore */
-      }
+      // List first — awaiting syncDailyReports(730) blocked this page for minutes
+      // (org/manager syncs every sales rep × up to 730 dates before the spinner clears).
       const [leadsData, profilesData, reportsData] = await Promise.all([
-        api.leads.list({ lite: true }),
+        api.leads.list({ lite: true, limit: 5000 }),
         api.profiles.list(),
         api.dailyReports.list(),
       ]);
@@ -76,6 +71,24 @@ export default function MyReferrals() {
       setTeamMembers(profiles.filter((p: any) => p.user_id));
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
+    void callLogsApi
+      .syncDailyReportsFromCallLogs(90)
+      .then(async () => {
+        try {
+          const reportsData = await api.dailyReports.list();
+          const reports = Array.isArray(reportsData)
+            ? reportsData
+            : Array.isArray(reportsData?.data)
+              ? reportsData.data
+              : reportsData?.reports || [];
+          setDailyReports(reports);
+        } catch {
+          /* ignore */
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
   };
 
   const userIdToName = useMemo(() => {

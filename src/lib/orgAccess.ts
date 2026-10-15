@@ -228,10 +228,16 @@ export function canSubmitManualPayment(role: string | null): boolean {
   return canAccessPaymentRecords(role);
 }
 
-/** Approvals tab for manager / org / super_admin / operational_manager. */
+/** Approvals tab for org admin, super admin, and operational manager. */
 export function canApproveManualPayments(role: string | null): boolean {
   const r = normalizeAppRole(role);
-  return r === "super_admin" || r === "org" || r === "manager" || r === "operational_manager";
+  return r === "super_admin" || r === "org" || r === "operational_manager";
+}
+
+/** Excel export on payment links and payment records. */
+export function canExportPaymentExcel(role: string | null): boolean {
+  const r = normalizeAppRole(role);
+  return r === "super_admin" || r === "org" || r === "operational_manager";
 }
 
 /** Team summary table on Payment Records (org/manager/OM). */

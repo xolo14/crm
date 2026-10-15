@@ -7,8 +7,8 @@
   RewriteEngine On
   RewriteBase /
 
-  # Block sensitive files from direct download (root + common names)
-  <FilesMatch "^(\.env|\.git|database\.sql|database\.mysql\.sql|config\.php|config\.example\.php)$">
+  # Block sensitive files from direct download (root + common names / backups)
+  <FilesMatch "^(\.env|\.git|database\.sql|database\.mysql\.sql|config\.php|config\.example\.php|.*\.(bak|sql\.gz|dump|pem|key)|crm-config\.php\.vps)$">
     <IfModule mod_authz_core.c>
       Require all denied
     </IfModule>
@@ -102,7 +102,7 @@
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
   Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
   Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
-  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https: wss:; frame-src https://www.facebook.com https://web.facebook.com; object-src 'none'; base-uri 'self'; form-action 'self'"
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https: wss:; frame-src https://www.facebook.com https://web.facebook.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; upgrade-insecure-requests"
 
   <FilesMatch "\.(js|css|woff2?|ttf|eot|ico|png|jpg|jpeg|webp|svg|gif)$">
     Header set Cache-Control "public, max-age=31536000, immutable"

@@ -1,6 +1,7 @@
 <?php
 
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/lib/LmsClassesClient.php';
 
 cors();
 
@@ -338,7 +339,16 @@ if ($method === 'POST') {
 
  }
 
- respond(['id' => $id, 'message' => 'Batch created'], 201);
+ $lmsSync = ['pushed' => false, 'skipped' => 'not_attempted', 'error' => null, 'lms_id' => null];
+ if (lmsClassesCallerCanPushBatches($db, $tokenData, $orgId !== null ? (string) $orgId : null)) {
+  $lmsSync = lmsClassesPushBatchCreate($db, (string) $id);
+ }
+
+ respond([
+  'id' => $id,
+  'message' => 'Batch created',
+  'lms_sync' => $lmsSync,
+ ], 201);
 
 }
 
@@ -358,11 +368,30 @@ if ($method === 'PUT') {
 
  $catalog = tenantBatchCatalogWhere($db, $tokenData, 'b', 'c');
 
- $cur = $db->prepare("SELECT b.start_date, b.end_date FROM batches b LEFT JOIN courses c ON b.course_id = c.id WHERE b.id = ? AND ({$catalog['where']}) LIMIT 1");
+ // Ensure lms_id exists for Syncpedia LMS link pushes
+ try {
+  $db->query('SELECT lms_id FROM batches LIMIT 0');
+ } catch (Throwable $e) {
+  try {
+   $db->exec('ALTER TABLE `batches` ADD COLUMN `lms_id` VARCHAR(64) DEFAULT NULL');
+  } catch (Throwable $e2) {
+   /* ignore */
+  }
+ }
 
- $cur->execute(array_merge([$id], $catalog['params']));
+ $cur = $db->prepare("SELECT b.start_date, b.end_date, b.org_id, b.lms_id FROM batches b LEFT JOIN courses c ON b.course_id = c.id WHERE b.id = ? AND ({$catalog['where']}) LIMIT 1");
 
- $existing = $cur->fetch(PDO::FETCH_ASSOC);
+ try {
+  $cur->execute(array_merge([$id], $catalog['params']));
+  $existing = $cur->fetch(PDO::FETCH_ASSOC);
+ } catch (Throwable $e) {
+  $cur = $db->prepare("SELECT b.start_date, b.end_date, b.org_id FROM batches b LEFT JOIN courses c ON b.course_id = c.id WHERE b.id = ? AND ({$catalog['where']}) LIMIT 1");
+  $cur->execute(array_merge([$id], $catalog['params']));
+  $existing = $cur->fetch(PDO::FETCH_ASSOC);
+  if (is_array($existing)) {
+   $existing['lms_id'] = null;
+  }
+ }
 
  if (!$existing) {
 
@@ -422,7 +451,17 @@ if ($method === 'PUT') {
 
  $stmt->execute(array_merge($params, $catalog['params']));
 
- respond(['message' => 'Batch updated', 'status' => $input['status']]);
+ $lmsSync = ['pushed' => false, 'skipped' => 'not_attempted', 'error' => null];
+ $batchOrgId = trim((string) ($existing['org_id'] ?? ($tokenData['org_id'] ?? '')));
+ if (lmsClassesCallerCanPushBatches($db, $tokenData, $batchOrgId)) {
+  $lmsSync = lmsClassesPushBatchUpdate($db, (string) $id);
+ }
+
+ respond([
+  'message' => 'Batch updated',
+  'status' => $input['status'],
+  'lms_sync' => $lmsSync,
+ ]);
 
 }
 

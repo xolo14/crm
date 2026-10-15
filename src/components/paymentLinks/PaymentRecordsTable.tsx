@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
 import { RefreshCw, User } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/hooks/use-toast";
+import { canExportPaymentExcel } from "@/lib/orgAccess";
+import { downloadExcelSheet, excelFileStamp } from "@/lib/downloadExcel";
+import ExportExcelButton from "@/components/paymentLinks/ExportExcelButton";
 import {
   buildMemberSummariesFromCandidates,
   type MemberPaymentSummary,
@@ -62,6 +67,9 @@ export default function PaymentRecordsTable({
   onRefresh,
   onMemberClick,
 }: Props) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const canExport = canExportPaymentExcel(user?.role ?? null);
   const [page, setPage] = useState(1);
 
   const customRange =
@@ -169,6 +177,38 @@ export default function PaymentRecordsTable({
   const pageStart = (currentPage - 1) * PAGE_SIZE;
   const pageRows = memberRows.slice(pageStart, pageStart + PAGE_SIZE);
 
+  async function exportExcel() {
+    if (memberRows.length === 0) {
+      toast({ variant: "destructive", title: "Nothing to export" });
+      return;
+    }
+    const rupees = (paise: number) => Math.round(paise) / 100;
+    try {
+      await downloadExcelSheet(
+        `payment-records-team-${excelFileStamp()}.xlsx`,
+        "Team summary",
+        memberRows.map((row) => ({
+          Member: row.creator.full_name || "",
+          Email: row.creator.email || "",
+          "Staff ID": row.creator.referral_code || "",
+          "Payment links": row.totalLinks,
+          Paid: row.paidCount,
+          Partial: row.partialCount,
+          "Payments received": row.paymentsReceivedCount,
+          "Total pitch (INR)": rupees(row.totalPitchPaise ?? 0),
+          "Total collected (INR)": rupees(row.totalCollectedPaise),
+        })),
+      );
+      toast({ title: "Excel downloaded", description: `${memberRows.length} member(s)` });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Could not create the Excel file",
+      });
+    }
+  }
+
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
@@ -235,7 +275,13 @@ export default function PaymentRecordsTable({
             className={inputCls}
           />
         </div>
-        <div className="flex justify-end mt-3">
+        <div className="flex justify-end items-center gap-3 mt-3">
+          {canExport ? (
+            <ExportExcelButton
+              onClick={() => void exportExcel()}
+              disabled={loading || memberRows.length === 0}
+            />
+          ) : null}
           <button
             type="button"
             onClick={onRefresh}

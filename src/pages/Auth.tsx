@@ -24,11 +24,18 @@ const SUPER_ADMIN_PORTAL = {
 } as const;
 
 export default function Auth() {
+  const location = useLocation();
+  if (pathnameToAuthRoleParam(location.pathname) !== "superadmin") {
+    return <Navigate to={AUTH_PORTAL.login} replace />;
+  }
+  return <SuperAdminAuth />;
+}
+
+function SuperAdminAuth() {
   const { user, loading, signIn, signOut } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
-  const isSuperAdminPortal = pathnameToAuthRoleParam(location.pathname) === "superadmin";
 
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -37,13 +44,11 @@ export default function Auth() {
   /** Default: passwordless email. "Try another way" → password. */
   const [loginMode, setLoginMode] = useState<"email" | "password">("email");
   const [emailSent, setEmailSent] = useState(false);
+  const [pollToken, setPollToken] = useState<string | null>(null);
+  const [emailWaitError, setEmailWaitError] = useState("");
   const [completingEmailLogin, setCompletingEmailLogin] = useState(false);
   const wrongPortalSignOutRef = useRef(false);
   const emailOkHandled = useRef(false);
-
-  if (!isSuperAdminPortal) {
-    return <Navigate to={AUTH_PORTAL.login} replace />;
-  }
 
   const roleMatchesPortal = (rawRole?: string | null) => isSuperAdminPortalRole(normalizeAppRole(rawRole));
 
@@ -81,8 +86,52 @@ export default function Auth() {
   }, [location.search, navigate, toast]);
 
   useEffect(() => {
+    if (!pollToken) return;
+    let cancelled = false;
+    let busy = false;
+    const tick = async () => {
+      if (cancelled || busy) return;
+      busy = true;
+      try {
+        const data = await api.auth.pollSuperAdminEmailLogin(pollToken);
+        if (cancelled) return;
+        if (data?.status === "signed_in") {
+          cancelled = true;
+          if (!roleMatchesPortal(data.user?.role)) {
+            await api.auth.logout();
+            setPollToken(null);
+            setEmailWaitError("This account is not a Super Admin. Request a new email.");
+            return;
+          }
+          toast({ title: "Signed in", description: "Email login approved." });
+          window.location.replace(getPostLoginPath(data.user?.role));
+          return;
+        }
+        if (data?.status === "expired" || data?.status === "invalid" || data?.status === "used") {
+          cancelled = true;
+          setPollToken(null);
+          setEmailWaitError("This login link expired or was already used. Request a new email.");
+        }
+      } catch {
+        // Keep polling through a brief network error.
+      } finally {
+        busy = false;
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => {
+      void tick();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [pollToken, toast]);
+
+  useEffect(() => {
     if (loading || !user || completingEmailLogin) return;
     if (roleMatchesPortal(user.role)) return;
+    if (normalizeAppRole(user.role) === "assessment_viewer") return;
     if (wrongPortalSignOutRef.current) return;
     wrongPortalSignOutRef.current = true;
     void (async () => {
@@ -121,12 +170,16 @@ export default function Auth() {
     e.preventDefault();
     setSubmitting(true);
     setEmailSent(false);
+    setEmailWaitError("");
+    setPollToken(null);
     try {
-      await api.auth.requestSuperAdminEmailLogin(loginEmail.trim());
+      const res = await api.auth.requestSuperAdminEmailLogin(loginEmail.trim());
       setEmailSent(true);
+      const token = typeof res?.poll_token === "string" ? res.poll_token : "";
+      setPollToken(token || null);
       toast({
         title: "Check your email",
-        description: "Open the message and click Yes to finish signing in.",
+        description: "Click Yes, log me in. This page will open the app when you do.",
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Something went wrong";
@@ -211,9 +264,12 @@ export default function Auth() {
                       <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900 flex gap-2">
                         <Mail className="h-4 w-4 shrink-0 mt-0.5" />
                         <p>
-                          Check your inbox and click <strong>Yes, log me in</strong>. The link expires in 15 minutes.
+                          Check your inbox on any device and click <strong>Yes, log me in</strong>. This page stays open and signs you in here. The link expires in 15 minutes.
                         </p>
                       </div>
+                    ) : null}
+                    {emailWaitError ? (
+                      <p className="mt-3 text-sm text-destructive">{emailWaitError}</p>
                     ) : null}
                     <button
                       type="button"
@@ -221,6 +277,8 @@ export default function Auth() {
                       onClick={() => {
                         setLoginMode("password");
                         setEmailSent(false);
+                        setPollToken(null);
+                        setEmailWaitError("");
                       }}
                     >
                       Try another way

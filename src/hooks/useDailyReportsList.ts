@@ -82,16 +82,10 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
   const fetchReports = useCallback(async () => {
     setLoading(true);
     try {
-      // Backfill daily_reports from call_logs before listing.
-      // Deep window so "All" / long timelines are not empty after sync.
-      // Org/manager/OM: sync all sales reps in scope. Sales: sync self only.
-      try {
-        await callLogsApi.syncDailyReportsFromCallLogs(730);
-      } catch {
-        /* non-blocking — list still loads if sync fails */
-      }
       const params: { user_id?: string } = {};
       if (isSalesRep && user?.id) params.user_id = user.id;
+      // List first so the page is not stuck on a spinner while sync walks
+      // up to 150 reps × 730 call_dates (can take minutes on Hostinger).
       const data = await api.dailyReports.list(params);
       setReports(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
     } catch (err) {
@@ -99,6 +93,22 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
     } finally {
       setLoading(false);
     }
+    // Background backfill (90 days keeps Hostinger load reasonable; list already painted).
+    void callLogsApi
+      .syncDailyReportsFromCallLogs(90)
+      .then(async () => {
+        try {
+          const params: { user_id?: string } = {};
+          if (isSalesRep && user?.id) params.user_id = user.id;
+          const data = await api.dailyReports.list(params);
+          setReports(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
+        } catch {
+          /* ignore refresh errors */
+        }
+      })
+      .catch(() => {
+        /* non-blocking */
+      });
   }, [isSalesRep, user?.id]);
 
   const fetchTeam = useCallback(async () => {

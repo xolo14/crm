@@ -84,6 +84,10 @@ function peaklyyEnsureTables(PDO $db): void
     } catch (Throwable $e) {
     }
     try {
+        $db->exec('ALTER TABLE peaklyy_attempts ADD COLUMN task_started_at DATETIME NULL');
+    } catch (Throwable $e) {
+    }
+    try {
         $db->exec('ALTER TABLE peaklyy_attempts ADD COLUMN graduation_year VARCHAR(20) NULL');
     } catch (Throwable $e) {
     }
@@ -137,6 +141,148 @@ function peaklyyIsSystemAssignmentSlug(string $slug): bool
 {
     $s = strtolower(trim($slug));
     return $s === 'syncpedia-fresher-basics' || $s === 'syncpedia-assignment';
+}
+
+/**
+ * @return array{ok:bool, error?:string, email?:string, viewer_id?:string|null}
+ */
+function peaklyyPrepareResultLogin(PDO $db, ?string $assessmentId, string $email, string $password): array
+{
+    ensureUsersResultAssessmentColumn($db);
+    $email = strtolower(trim($email));
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return ['ok' => false, 'error' => 'Enter a valid results email'];
+    }
+    $min = 8;
+    if (function_exists('syncpediaMinPasswordLength')) {
+        $min = max(8, (int) syncpediaMinPasswordLength());
+    }
+    if (strlen($password) < $min) {
+        return ['ok' => false, 'error' => "Password must be at least {$min} characters"];
+    }
+    $viewerId = null;
+    if ($assessmentId !== null && $assessmentId !== '') {
+        $st = $db->prepare(
+            "SELECT id FROM users WHERE result_assessment_id = ? AND role = 'assessment_viewer' LIMIT 1"
+        );
+        $st->execute([$assessmentId]);
+        $viewer = $st->fetch(PDO::FETCH_ASSOC);
+        if ($viewer) {
+            $viewerId = (string) $viewer['id'];
+        }
+    }
+    $byEmail = $db->prepare('SELECT id, role FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1');
+    $byEmail->execute([$email]);
+    $emailRow = $byEmail->fetch(PDO::FETCH_ASSOC);
+    if ($emailRow && ($viewerId === null || (string) $emailRow['id'] !== $viewerId)) {
+        $existingRole = syncpediaNormalizeRoleKey((string) ($emailRow['role'] ?? ''));
+        if ($existingRole === 'assessment_viewer') {
+            return ['ok' => false, 'error' => 'That email is already the results login for another assignment'];
+        }
+        return ['ok' => false, 'error' => 'That email belongs to a CRM user'];
+    }
+    return ['ok' => true, 'email' => $email, 'viewer_id' => $viewerId];
+}
+
+/**
+ * Create or replace the single results login for an assignment.
+ * @return array{ok:bool, error?:string, email?:string, user_id?:string}
+ */
+function peaklyySaveResultLogin(PDO $db, string $assessmentId, string $email, string $password): array
+{
+    $check = peaklyyPrepareResultLogin($db, $assessmentId, $email, $password);
+    if (empty($check['ok'])) {
+        return $check;
+    }
+    $email = (string) $check['email'];
+    $hash = password_hash($password, PASSWORD_DEFAULT);
+    $viewerId = $check['viewer_id'] ?? null;
+    try {
+        if (is_string($viewerId) && $viewerId !== '') {
+            $db->prepare(
+                "UPDATE users
+                 SET email = ?, password_hash = ?, full_name = ?, role = 'assessment_viewer',
+                     result_assessment_id = ?, is_active = 1
+                 WHERE id = ?"
+            )->execute([$email, $hash, 'Results', $assessmentId, $viewerId]);
+            if (function_exists('syncpediaBumpUserTokenVersion')) {
+                syncpediaBumpUserTokenVersion($db, $viewerId);
+            }
+            return ['ok' => true, 'user_id' => $viewerId, 'email' => $email];
+        }
+        $id = generateUUID();
+        $db->prepare(
+            "INSERT INTO users (id, email, password_hash, full_name, role, is_active, result_assessment_id)
+             VALUES (?,?,?,?, 'assessment_viewer', 1, ?)"
+        )->execute([$id, $email, $hash, 'Results', $assessmentId]);
+        return ['ok' => true, 'user_id' => $id, 'email' => $email];
+    } catch (Throwable $e) {
+        error_log('[assessments] result login: ' . $e->getMessage());
+        $detail = $e->getMessage();
+        if (stripos($detail, 'role') !== false || stripos($detail, 'truncated') !== false || stripos($detail, '1265') !== false) {
+            return ['ok' => false, 'error' => 'Could not save the results login because this database rejected the results role'];
+        }
+        return ['ok' => false, 'error' => 'Could not save the results login'];
+    }
+}
+
+function peaklyyResultViewerAssessmentId(PDO $db, array $token): string
+{
+    if (syncpediaNormalizeRoleKey((string) ($token['role'] ?? '')) !== 'assessment_viewer') {
+        return '';
+    }
+    ensureUsersResultAssessmentColumn($db);
+    $uid = trim((string) ($token['user_id'] ?? $token['id'] ?? ''));
+    if ($uid === '') {
+        return '';
+    }
+    $st = $db->prepare(
+        "SELECT result_assessment_id FROM users WHERE id = ? AND role = 'assessment_viewer' LIMIT 1"
+    );
+    $st->execute([$uid]);
+    return trim((string) ($st->fetchColumn() ?: ''));
+}
+
+function peaklyyAssertViewerAssessment(PDO $db, array $token, string $assessmentId): void
+{
+    if (syncpediaNormalizeRoleKey((string) ($token['role'] ?? '')) !== 'assessment_viewer') {
+        return;
+    }
+    $allowed = peaklyyResultViewerAssessmentId($db, $token);
+    if ($allowed === '' || $allowed !== $assessmentId) {
+        respond(['error' => 'This account can only open its assignment results'], 403);
+    }
+}
+
+/** @param array<int, array<string, mixed>> $rows */
+function peaklyyAttachResultLoginEmails(PDO $db, array &$rows): void
+{
+    ensureUsersResultAssessmentColumn($db);
+    try {
+        $q = $db->query(
+            "SELECT result_assessment_id, email FROM users
+             WHERE role = 'assessment_viewer'
+               AND result_assessment_id IS NOT NULL
+               AND result_assessment_id <> ''"
+        );
+        $map = [];
+        foreach ($q ? $q->fetchAll(PDO::FETCH_ASSOC) : [] as $row) {
+            $aid = trim((string) ($row['result_assessment_id'] ?? ''));
+            if ($aid !== '') {
+                $map[$aid] = (string) ($row['email'] ?? '');
+            }
+        }
+        foreach ($rows as &$r) {
+            $aid = trim((string) ($r['id'] ?? ''));
+            $r['result_login_email'] = $map[$aid] ?? null;
+        }
+        unset($r);
+    } catch (Throwable $e) {
+        foreach ($rows as &$r) {
+            $r['result_login_email'] = null;
+        }
+        unset($r);
+    }
 }
 
 function peaklyyEnsureApiKeys(PDO $db): void
@@ -357,17 +503,27 @@ function peaklyySeedBank(PDO $db): void
 {
     $defs = peaklyyQuestionDefinitions();
     $expected = count($defs);
+    $hiringKeys = function_exists('peaklyyHiringDomainKeys') ? peaklyyHiringDomainKeys() : [];
     $activeCount = 0;
     $newDomainCount = 0;
     try {
-        $activeCount = (int) $db->query('SELECT COUNT(*) FROM peaklyy_question_bank WHERE is_active = 1')->fetchColumn();
+        if ($hiringKeys) {
+            $in = implode(',', array_fill(0, count($hiringKeys), '?'));
+            $countStmt = $db->prepare(
+                "SELECT COUNT(*) FROM peaklyy_question_bank WHERE is_active = 1 AND domain_key NOT IN ($in)"
+            );
+            $countStmt->execute($hiringKeys);
+            $activeCount = (int) $countStmt->fetchColumn();
+        } else {
+            $activeCount = (int) $db->query('SELECT COUNT(*) FROM peaklyy_question_bank WHERE is_active = 1')->fetchColumn();
+        }
         $newDomainCount = (int) $db->query(
             "SELECT COUNT(*) FROM peaklyy_question_bank WHERE domain_key = 'java' AND is_active = 1"
         )->fetchColumn();
     } catch (Throwable $e) {
         return;
     }
-    // Already on current bank (MCQs + tasks)
+    // Already on current beginner bank (MCQs + tasks). Hiring rows are seeded separately.
     if ($activeCount === $expected && $newDomainCount > 0) {
         return;
     }
@@ -386,9 +542,15 @@ function peaklyySeedBank(PDO $db): void
         return;
     }
 
-    // Soft-deactivate old rows, then insert the new bank (keeps historical IDs for submitted attempts).
+    // Soft-deactivate beginner rows only. Hiring questions belong to the separate assignment.
     try {
-        $db->exec('UPDATE peaklyy_question_bank SET is_active = 0');
+        if ($hiringKeys) {
+            $in = implode(',', array_fill(0, count($hiringKeys), '?'));
+            $off = $db->prepare("UPDATE peaklyy_question_bank SET is_active = 0 WHERE domain_key NOT IN ($in)");
+            $off->execute($hiringKeys);
+        } else {
+            $db->exec('UPDATE peaklyy_question_bank SET is_active = 0');
+        }
     } catch (Throwable $e) {
         return;
     }
@@ -414,19 +576,181 @@ function peaklyySeedBank(PDO $db): void
     }
 }
 
+/** Ensure hiring Part 2 bank rows expose a blank notepad (safe to run anytime). */
+function peaklyyPatchHiringTaskNotepadSchemas(PDO $db): void
+{
+    if (!function_exists('peaklyyHiringDomainKeys')) {
+        return;
+    }
+    $keys = peaklyyHiringDomainKeys();
+    if (!$keys) {
+        return;
+    }
+    $schema = json_encode(
+        ['allow_notepad' => true, 'allow_upload' => false, 'mode' => 'notepad'],
+        JSON_UNESCAPED_UNICODE
+    );
+    $in = implode(',', array_fill(0, count($keys), '?'));
+    try {
+        $stmt = $db->prepare(
+            "UPDATE peaklyy_question_bank
+             SET task_schema_json = ?
+             WHERE is_active = 1 AND q_type = 'task' AND domain_key IN ($in)"
+        );
+        $stmt->execute(array_merge([$schema], $keys));
+    } catch (Throwable $e) {
+        // ignore
+    }
+}
+
+/** Hiring questions for the separate Peaklyy Hiring assignment. Does not touch beginner rows. */
+function peaklyySeedHiringBank(PDO $db): void
+{
+    if (!function_exists('peaklyyHiringQuestionDefinitions') || !function_exists('peaklyyHiringDomainKeys')) {
+        return;
+    }
+    $defs = peaklyyHiringQuestionDefinitions();
+    $expected = count($defs);
+    $keys = peaklyyHiringDomainKeys();
+    if ($expected < 1 || !$keys) {
+        return;
+    }
+    $in = implode(',', array_fill(0, count($keys), '?'));
+    try {
+        $countStmt = $db->prepare(
+            "SELECT COUNT(*) FROM peaklyy_question_bank WHERE is_active = 1 AND domain_key IN ($in)"
+        );
+        $countStmt->execute($keys);
+        $active = (int) $countStmt->fetchColumn();
+    } catch (Throwable $e) {
+        return;
+    }
+    if ($active === $expected) {
+        peaklyyPatchHiringTaskNotepadSchemas($db);
+        return;
+    }
+    try {
+        $open = $db->prepare(
+            "SELECT COUNT(*) FROM peaklyy_attempts
+             WHERE status IN ('registered','in_progress') AND domain_key IN ($in)"
+        );
+        $open->execute($keys);
+        if ((int) $open->fetchColumn() > 0 && $active > 0) {
+            error_log('[peaklyy] skip hiring bank reseed: open hiring attempt(s)');
+            peaklyyPatchHiringTaskNotepadSchemas($db);
+            return;
+        }
+    } catch (Throwable $e) {
+    }
+    try {
+        $off = $db->prepare("UPDATE peaklyy_question_bank SET is_active = 0 WHERE domain_key IN ($in)");
+        $off->execute($keys);
+    } catch (Throwable $e) {
+        return;
+    }
+    $ins = $db->prepare(
+        'INSERT INTO peaklyy_question_bank
+         (id, domain_key, level_key, q_type, prompt, options_json, correct_option, task_schema_json, points, sort_order, is_active)
+         VALUES (?,?,?,?,?,?,?,?,?,?,1)'
+    );
+    foreach ($defs as $q) {
+        $ins->execute([
+            generateUUID(),
+            $q['domain_key'],
+            $q['level_key'],
+            $q['q_type'],
+            $q['prompt'],
+            $q['options'] ? json_encode($q['options'], JSON_UNESCAPED_UNICODE) : null,
+            $q['correct_option'],
+            $q['task_schema'] ? json_encode($q['task_schema'], JSON_UNESCAPED_UNICODE) : null,
+            (int) $q['points'],
+            (int) $q['sort_order'],
+        ]);
+    }
+}
+
+function peaklyyEnsureHiringAssessment(PDO $db): void
+{
+    if (!function_exists('peaklyyHiringAssessmentSlug')) {
+        return;
+    }
+    $slug = peaklyyHiringAssessmentSlug();
+    $qCount = function_exists('peaklyyHiringQuestionCount') ? (int) peaklyyHiringQuestionCount() : 34;
+    $mcqMinutes = function_exists('peaklyyHiringMcqDurationMinutes') ? (int) peaklyyHiringMcqDurationMinutes() : 15;
+    $title = 'Peaklyy Hiring';
+    $brand = 'Peaklyy';
+    $tagline = 'Web Developer and Data Analyst';
+    try {
+        $stmt = $db->prepare('SELECT id FROM peaklyy_assessments WHERE slug = ? LIMIT 1');
+        $stmt->execute([$slug]);
+        $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        return;
+    }
+    if ($existing && !empty($existing['id'])) {
+        try {
+            $db->prepare(
+                'UPDATE peaklyy_assessments
+                 SET title = ?, brand_name = ?, brand_tagline = ?, duration_minutes = ?, question_count = ?, source_mode = ?, ui_theme = ?, is_active = 1
+                 WHERE id = ?'
+            )->execute([$title, $brand, $tagline, $mcqMinutes, $qCount, 'domain_bank', 'peaklyy', $existing['id']]);
+        } catch (Throwable $e) {
+            try {
+                $db->prepare('UPDATE peaklyy_assessments SET duration_minutes = ?, question_count = ?, is_active = 1 WHERE id = ?')
+                    ->execute([$mcqMinutes, $qCount, $existing['id']]);
+            } catch (Throwable $e2) {
+            }
+        }
+        peaklyyPatchHiringTaskNotepadSchemas($db);
+        return;
+    }
+    $id = generateUUID();
+    $apiKey = peaklyyGenerateApiKey();
+    try {
+        $db->prepare(
+            'INSERT INTO peaklyy_assessments
+             (id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, source_mode,
+              pass_score, once_per_candidate, anti_cheat, result_webhook_url, result_api_key, is_active, created_by, ui_theme)
+             VALUES (?,?,?,?,?,?,?, ?, 70, 1, 1, NULL, ?, 1, NULL, ?)'
+        )->execute([$id, $slug, $title, $brand, $tagline, $mcqMinutes, $qCount, 'domain_bank', $apiKey, 'peaklyy']);
+    } catch (Throwable $e) {
+        try {
+            $db->prepare(
+                'INSERT INTO peaklyy_assessments
+                 (id, slug, title, brand_name, brand_tagline, duration_minutes, question_count, pass_score,
+                  once_per_candidate, anti_cheat, result_api_key, is_active)
+                 VALUES (?,?,?,?,?,?,?,70,1,1,?,1)'
+            )->execute([$id, $slug, $title, $brand, $tagline, $mcqMinutes, $qCount, $apiKey]);
+            try {
+                $db->prepare('UPDATE peaklyy_assessments SET source_mode = ?, ui_theme = ? WHERE id = ?')
+                    ->execute(['domain_bank', 'peaklyy', $id]);
+            } catch (Throwable $e3) {
+            }
+        } catch (Throwable $e2) {
+            error_log('[peaklyy] hiring assessment: ' . $e2->getMessage());
+        }
+    }
+}
+
 /** Domain-bank assessments: 15 beginner MCQs + 1 task, untimed (duration 0). */
 function peaklyyNormalizeDomainAssessments(PDO $db): void
 {
     $qCount = (int) peaklyyDomainQuestionCount();
+    $hiringSlug = function_exists('peaklyyHiringAssessmentSlug') ? peaklyyHiringAssessmentSlug() : 'peaklyy-hiring';
     try {
-        $db->exec(
+        $stmt = $db->prepare(
             "UPDATE peaklyy_assessments
-             SET duration_minutes = 0, question_count = {$qCount}
-             WHERE COALESCE(source_mode, 'domain_bank') = 'domain_bank'"
+             SET duration_minutes = 0, question_count = ?
+             WHERE COALESCE(source_mode, 'domain_bank') = 'domain_bank'
+               AND slug <> ?"
         );
+        $stmt->execute([$qCount, $hiringSlug]);
     } catch (Throwable $e) {
         try {
-            $db->exec("UPDATE peaklyy_assessments SET duration_minutes = 0, question_count = {$qCount}");
+            $stmt = $db->prepare(
+                "UPDATE peaklyy_assessments SET duration_minutes = 0, question_count = ? WHERE slug <> ?"
+            );
+            $stmt->execute([$qCount, $hiringSlug]);
         } catch (Throwable $e2) {
         }
     }
@@ -956,6 +1280,19 @@ function peaklyyQuestionsForClient(array $questions): array
             continue;
         }
         unset($q['correct_option'], $q['_correct_option'], $q['correct']);
+        $domain = (string) ($q['domain_key'] ?? '');
+        $qType = strtolower((string) ($q['q_type'] ?? 'mcq'));
+        // Hiring Part 2: typing/notepad only (strip legacy upload flags from cached papers).
+        if ($qType === 'task' && str_starts_with($domain, 'hiring_')) {
+            $q['allow_notepad'] = true;
+            $q['allow_upload'] = false;
+            if (!isset($q['task_schema']) || !is_array($q['task_schema'])) {
+                $q['task_schema'] = [];
+            }
+            $q['task_schema']['allow_notepad'] = true;
+            $q['task_schema']['allow_upload'] = false;
+            $q['task_schema']['mode'] = 'notepad';
+        }
         $out[] = $q;
     }
     return $out;
@@ -977,6 +1314,9 @@ function peaklyyPickMcqQuestions(PDO $db, string $domain, ?int $mcqCount = null)
     $all = $stmt->fetchAll(PDO::FETCH_ASSOC);
     if (!$all) {
         return [];
+    }
+    if (function_exists('peaklyyDomainServesFullPaper') && peaklyyDomainServesFullPaper($domain)) {
+        return $all;
     }
     $byLevel = ['easy' => [], 'medium' => [], 'hard' => []];
     foreach ($all as $row) {
@@ -1016,6 +1356,15 @@ function peaklyyPickMcqQuestions(PDO $db, string $domain, ?int $mcqCount = null)
  */
 function peaklyyPickTaskQuestions(PDO $db, string $domain, ?int $taskLimit = null): array
 {
+    if (function_exists('peaklyyDomainServesFullPaper') && peaklyyDomainServesFullPaper($domain)) {
+        $allTasks = $db->prepare(
+            "SELECT * FROM peaklyy_question_bank
+             WHERE domain_key = ? AND is_active = 1 AND q_type = 'task'
+             ORDER BY sort_order ASC"
+        );
+        $allTasks->execute([$domain]);
+        return $allTasks->fetchAll(PDO::FETCH_ASSOC);
+    }
     $taskLimit = max(1, $taskLimit ?? peaklyyDomainTaskCount());
     $taskStmt = $db->prepare(
         "SELECT * FROM peaklyy_question_bank
@@ -1290,7 +1639,9 @@ function peaklyySendWebhook(array $assessment, array $attempt, string $event = '
 try {
     peaklyyEnsureTables($db);
     peaklyySeedBank($db);
+    peaklyySeedHiringBank($db);
     peaklyyNormalizeDomainAssessments($db);
+    peaklyyEnsureHiringAssessment($db);
     peaklyyEnsureApiKeys($db);
     syncpediaEnsureFresherBasicsAssessment($db);
 } catch (Throwable $e) {
@@ -1341,6 +1692,7 @@ if ($action === 'list' && $method === 'GET') {
             }
             unset($r);
         }
+        peaklyyAttachResultLoginEmails($db, $rows);
     } else {
         $stmt = $db->prepare(
             'SELECT a.* FROM peaklyy_assessments a
@@ -1396,6 +1748,15 @@ if ($action === 'create' && $method === 'POST') {
     if ($sourceMode === 'domain_bank') {
         $duration = 0;
         $qCount = peaklyyDomainQuestionCount();
+    }
+    $needResults = !empty($input['need_results']);
+    $resultEmail = trim((string) ($input['result_email'] ?? ''));
+    $resultPassword = (string) ($input['result_password'] ?? '');
+    if ($needResults) {
+        $loginCheck = peaklyyPrepareResultLogin($db, null, $resultEmail, $resultPassword);
+        if (empty($loginCheck['ok'])) {
+            respond(['error' => (string) ($loginCheck['error'] ?? 'Results login is invalid')], 400);
+        }
     }
     if ($sourceMode === 'custom') {
         if (count($customQs) < 1) {
@@ -1460,6 +1821,19 @@ if ($action === 'create' && $method === 'POST') {
         $db->prepare('UPDATE peaklyy_assessments SET question_count = ? WHERE id = ?')->execute([$inserted, $id]);
         $qCount = $inserted;
     }
+    $savedLoginEmail = null;
+    if ($needResults) {
+        $saved = peaklyySaveResultLogin($db, $id, $resultEmail, $resultPassword);
+        if (empty($saved['ok'])) {
+            try {
+                $db->prepare('DELETE FROM peaklyy_assessment_questions WHERE assessment_id = ?')->execute([$id]);
+            } catch (Throwable $ignored) {
+            }
+            $db->prepare('DELETE FROM peaklyy_assessments WHERE id = ?')->execute([$id]);
+            respond(['error' => (string) ($saved['error'] ?? 'Could not save the results login')], 400);
+        }
+        $savedLoginEmail = (string) ($saved['email'] ?? $resultEmail);
+    }
     $openUrl = peaklyyOpenUrl($slug, $apiKey);
     respond([
         'id' => $id,
@@ -1471,7 +1845,10 @@ if ($action === 'create' && $method === 'POST') {
         'question_count' => $qCount,
         'source_mode' => $sourceMode,
         'custom_questions' => $inserted,
-        'message' => 'Assignment created with permanent API key',
+        'result_login_email' => $savedLoginEmail,
+        'message' => $savedLoginEmail
+            ? 'Assignment created with permanent API key and results login'
+            : 'Assignment created with permanent API key',
     ], 201);
 }
 
@@ -1495,6 +1872,31 @@ if ($action === 'regenerate_api_key' && $method === 'POST') {
         'result_api_key' => $apiKey,
         'open_url' => peaklyyOpenUrl((string) $row['slug'], $apiKey),
         'message' => 'API key regenerated',
+    ]);
+}
+
+if ($action === 'result_login' && $method === 'POST') {
+    $token = verifyToken();
+    requireRole($token, ['super_admin']);
+    $id = trim((string) ($input['id'] ?? $input['assessment_id'] ?? ''));
+    $email = trim((string) ($input['result_email'] ?? $input['email'] ?? ''));
+    $password = (string) ($input['result_password'] ?? $input['password'] ?? '');
+    if ($id === '') {
+        respond(['error' => 'id required'], 400);
+    }
+    $stmt = $db->prepare('SELECT id FROM peaklyy_assessments WHERE id = ? LIMIT 1');
+    $stmt->execute([$id]);
+    if (!$stmt->fetch(PDO::FETCH_ASSOC)) {
+        respond(['error' => 'Not found'], 404);
+    }
+    $saved = peaklyySaveResultLogin($db, $id, $email, $password);
+    if (empty($saved['ok'])) {
+        respond(['error' => (string) ($saved['error'] ?? 'Could not save the results login')], 400);
+    }
+    respond([
+        'id' => $id,
+        'result_login_email' => (string) ($saved['email'] ?? $email),
+        'message' => 'Results login saved',
     ]);
 }
 
@@ -1697,14 +2099,22 @@ if ($action === 'attempts' && $method === 'GET') {
         peaklyyIntegrityEnsureColumns($db);
     }
     $token = verifyToken();
-    requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
+    $role = syncpediaNormalizeRoleKey((string) ($token['role'] ?? ''));
     $aid = trim((string) ($_GET['assessment_id'] ?? ''));
+    if ($role === 'assessment_viewer') {
+        $mine = peaklyyResultViewerAssessmentId($db, $token);
+        if ($aid === '') {
+            $aid = $mine;
+        }
+        peaklyyAssertViewerAssessment($db, $token, $aid);
+    } else {
+        requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
+    }
     if ($aid === '') {
         respond(['error' => 'assessment_id required'], 400);
     }
-    $role = (string) ($token['role'] ?? '');
     $userId = (string) ($token['user_id'] ?? $token['id'] ?? '');
-    if ($role !== 'super_admin') {
+    if ($role !== 'super_admin' && $role !== 'assessment_viewer') {
         $chkAssign = $db->prepare('SELECT 1 FROM peaklyy_assessment_assignments WHERE assessment_id = ? AND user_id = ? LIMIT 1');
         $chkAssign->execute([$aid, $userId]);
         if (!$chkAssign->fetch()) {
@@ -1740,8 +2150,24 @@ if ($action === 'attempts' && $method === 'GET') {
             $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         }
     }
+    $domainCatalog = function_exists('peaklyyDomainCatalog') ? peaklyyDomainCatalog() : [];
+    if (function_exists('peaklyyHiringDomainCatalog')) {
+        $domainCatalog = array_merge($domainCatalog, peaklyyHiringDomainCatalog());
+    }
+    if (function_exists('syncpediaBasicsDomainCatalog')) {
+        $domainCatalog = array_merge($domainCatalog, syncpediaBasicsDomainCatalog());
+    }
     $out = [];
     foreach ($rows as $r) {
+        $domainKey = trim((string) ($r['domain_key'] ?? ''));
+        $domainLabel = trim((string) ($domainCatalog[$domainKey] ?? ''));
+        if ($domainLabel === '' && $domainKey !== '' && $domainKey !== 'custom') {
+            $domainLabel = $domainKey;
+        }
+        if ($domainLabel === '') {
+            $domainLabel = trim((string) ($r['degree_branch'] ?? ''));
+        }
+        $r['domain_label'] = $domainLabel;
         $timeline = peaklyyBuildAttemptTimeline($r);
         unset($r['timeline_json']);
         $r['timeline'] = $timeline;
@@ -1775,7 +2201,17 @@ if ($action === 'attempts' && $method === 'GET') {
         }
         $out[] = $r;
     }
-    respond(['data' => $out]);
+    $assessmentTitle = '';
+    try {
+        $titleStmt = $db->prepare('SELECT title FROM peaklyy_assessments WHERE id = ? LIMIT 1');
+        $titleStmt->execute([$aid]);
+        $assessmentTitle = trim((string) ($titleStmt->fetchColumn() ?: ''));
+    } catch (Throwable $ignored) {
+    }
+    respond([
+        'data' => $out,
+        'assessment' => ['id' => $aid, 'title' => $assessmentTitle],
+    ]);
 }
 
 if ($action === 'attempt_detail' && $method === 'GET') {
@@ -1783,7 +2219,10 @@ if ($action === 'attempt_detail' && $method === 'GET') {
         peaklyyIntegrityEnsureColumns($db);
     }
     $token = verifyToken();
-    requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
+    $viewerRole = syncpediaNormalizeRoleKey((string) ($token['role'] ?? ''));
+    if ($viewerRole !== 'assessment_viewer') {
+        requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
+    }
     $attemptId = trim((string) ($_GET['attempt_id'] ?? ''));
     if ($attemptId === '') {
         respond(['error' => 'attempt_id required'], 400);
@@ -1822,6 +2261,7 @@ if ($action === 'attempt_detail' && $method === 'GET') {
     if (!$attempt) {
         respond(['error' => 'Attempt not found'], 404);
     }
+    peaklyyAssertViewerAssessment($db, $token, trim((string) ($attempt['assessment_id'] ?? '')));
     $questions = [];
     foreach (['mcq_questions_json', 'task_questions_json', 'questions_json'] as $col) {
         if (empty($attempt[$col])) {
@@ -1906,6 +2346,22 @@ if ($action === 'attempt_detail' && $method === 'GET') {
     if (function_exists('peaklyyIntegrityAttachToRow')) {
         $attempt = peaklyyIntegrityAttachToRow($attempt);
     }
+    $detailCatalog = function_exists('peaklyyDomainCatalog') ? peaklyyDomainCatalog() : [];
+    if (function_exists('peaklyyHiringDomainCatalog')) {
+        $detailCatalog = array_merge($detailCatalog, peaklyyHiringDomainCatalog());
+    }
+    if (function_exists('syncpediaBasicsDomainCatalog')) {
+        $detailCatalog = array_merge($detailCatalog, syncpediaBasicsDomainCatalog());
+    }
+    $detailDomainKey = trim((string) ($attempt['domain_key'] ?? ''));
+    $detailDomainLabel = trim((string) ($detailCatalog[$detailDomainKey] ?? ''));
+    if ($detailDomainLabel === '' && $detailDomainKey !== '' && $detailDomainKey !== 'custom') {
+        $detailDomainLabel = $detailDomainKey;
+    }
+    if ($detailDomainLabel === '') {
+        $detailDomainLabel = trim((string) ($attempt['degree_branch'] ?? ''));
+    }
+    $attempt['domain_label'] = $detailDomainLabel;
 
     respond([
         'data' => $attempt,
@@ -1920,7 +2376,10 @@ if ($action === 'attempt_detail' && $method === 'GET') {
 // ── Admin: download all task files for one attempt as ZIP ──
 if ($action === 'download_tasks_zip' && $method === 'GET') {
     $token = verifyToken();
-    requireRole($token, ['super_admin']);
+    $zipRole = syncpediaNormalizeRoleKey((string) ($token['role'] ?? ''));
+    if ($zipRole !== 'assessment_viewer') {
+        requireRole($token, ['super_admin']);
+    }
     $attemptId = trim((string) ($_GET['attempt_id'] ?? ''));
     if ($attemptId === '') {
         respond(['error' => 'attempt_id required'], 400);
@@ -1934,6 +2393,7 @@ if ($action === 'download_tasks_zip' && $method === 'GET') {
     if (!$attempt) {
         respond(['error' => 'Attempt not found'], 404);
     }
+    peaklyyAssertViewerAssessment($db, $token, trim((string) ($attempt['assessment_id'] ?? '')));
 
     $qById = [];
     foreach (['task_questions_json', 'questions_json', 'mcq_questions_json'] as $col) {
@@ -2110,7 +2570,20 @@ if ($action === 'public_get' && $method === 'GET') {
     $duration = max(0, (int) ($row['duration_minutes'] ?? 0));
     $qCount = max(1, (int) ($row['question_count'] ?? 15));
     $sourceMode = strtolower((string) ($row['source_mode'] ?? 'domain_bank'));
-    if ($sourceMode === 'domain_bank') {
+    $isHiringPaper = function_exists('peaklyyIsHiringAssessmentSlug') && peaklyyIsHiringAssessmentSlug($slug);
+    if ($sourceMode === 'domain_bank' && $isHiringPaper) {
+        $duration = function_exists('peaklyyHiringMcqDurationMinutes') ? peaklyyHiringMcqDurationMinutes() : 15;
+        $qCount = function_exists('peaklyyHiringQuestionCount') ? peaklyyHiringQuestionCount() : 34;
+        $row['duration_minutes'] = $duration;
+        $row['question_count'] = $qCount;
+        $row['two_part'] = true;
+        $row['mcq_count'] = function_exists('peaklyyHiringMcqCount') ? peaklyyHiringMcqCount() : 30;
+        $row['task_count'] = function_exists('peaklyyHiringTaskCount') ? peaklyyHiringTaskCount() : 4;
+        $row['mcq_duration_minutes'] = $duration;
+        $row['task_duration_minutes'] = function_exists('peaklyyHiringTaskDurationMinutes')
+            ? peaklyyHiringTaskDurationMinutes()
+            : 20;
+    } elseif ($sourceMode === 'domain_bank') {
         $duration = 0;
         $qCount = peaklyyDomainQuestionCount();
         $row['duration_minutes'] = 0;
@@ -2186,9 +2659,15 @@ if ($action === 'public_get' && $method === 'GET') {
         } else {
             $instructions[] = 'No time limit — submit when you finish';
         }
-        if ($sourceMode === 'domain_bank') {
-            $instructions[] = 'Part 1 — MCQ test: 15 beginner questions (auto-scored; results sent to the partner website)';
-            $instructions[] = 'Part 2 — Task test: 1 very basic practical task with notepad and/or file upload (manual grading)';
+        if ($sourceMode === 'domain_bank' && $isHiringPaper) {
+            $instructions[] = 'Part 1 — 30 MCQs · 15 minutes (auto-scored)';
+            $taskMins = function_exists('peaklyyHiringTaskDurationMinutes') ? peaklyyHiringTaskDurationMinutes() : 20;
+            $instructions[] = 'Part 2 unlocks only after you finish Part 1';
+            $instructions[] = 'Part 2 — 4 written questions · ' . $taskMins . ' minutes · type answers in the notepad only (no file upload)';
+            $instructions[] = 'Choose a role: Web Developer or Data Analyst';
+        } elseif ($sourceMode === 'domain_bank') {
+            $instructions[] = 'Part 1 — 15 MCQs (auto-scored; results sent to the partner website)';
+            $instructions[] = 'Part 2 — 1 practical task with notepad and/or file upload (manual grading)';
         } else {
             $instructions[] = $qCount . ' question' . ($qCount === 1 ? '' : 's')
                 . ' (basics for freshers)';
@@ -2220,7 +2699,9 @@ if ($action === 'public_get' && $method === 'GET') {
         'data' => $row,
         'domains' => ($slug === syncpediaFresherBasicsSlug() && function_exists('syncpediaBasicsDomainCatalog'))
             ? syncpediaBasicsDomainCatalog()
-            : peaklyyDomainCatalog(),
+            : (($isHiringPaper && function_exists('peaklyyHiringDomainCatalog'))
+                ? peaklyyHiringDomainCatalog()
+                : peaklyyDomainCatalog()),
         'degrees' => peaklyyDegreeOptions(),
         'instructions' => $instructions,
     ]);
@@ -2251,10 +2732,16 @@ if ($action === 'register' && $method === 'POST') {
     }
     $sourceMode = (string) ($assessment['source_mode'] ?? 'domain_bank');
     $isBasics = ($slug === syncpediaFresherBasicsSlug());
+    $isHiringPaper = function_exists('peaklyyIsHiringAssessmentSlug') && peaklyyIsHiringAssessmentSlug($slug);
     if ($isBasics) {
         $catalog = function_exists('syncpediaBasicsDomainCatalog') ? syncpediaBasicsDomainCatalog() : [];
         if (!isset($catalog[$domain])) {
             respond(['error' => 'Please select a valid domain'], 400);
+        }
+    } elseif ($isHiringPaper) {
+        $domains = function_exists('peaklyyHiringDomainCatalog') ? peaklyyHiringDomainCatalog() : [];
+        if (!isset($domains[$domain])) {
+            respond(['error' => 'Please select a role'], 400);
         }
     } elseif ($sourceMode === 'custom') {
         $domain = 'custom';
@@ -2449,8 +2936,17 @@ if ($action === 'start' && $method === 'POST') {
     if ($phase === '' || $phase === 'done') {
         $phase = 'mcq';
     }
-    // Client may request task phase after MCQ
-    if ($requestedPhase === 'task' && in_array($phase, ['task', 'mcq_done'], true)) {
+    $assessSlug = (string) ($attempt['slug'] ?? '');
+    $isHiringPaper = function_exists('peaklyyIsHiringAssessmentSlug') && peaklyyIsHiringAssessmentSlug($assessSlug);
+    $mcqDone = !empty($attempt['mcq_submitted_at']) || in_array($phase, ['task', 'mcq_done'], true);
+    // Part 2 only after Part 1 MCQ is completed.
+    if ($requestedPhase === 'task') {
+        if (!$mcqDone) {
+            respond([
+                'error' => 'Complete Part 1 (MCQ) before starting Part 2',
+                'hint' => 'Submit the MCQ test first. Part 2 unlocks only after Part 1 is finished.',
+            ], 409);
+        }
         $phase = 'task';
     }
 
@@ -2593,6 +3089,37 @@ if ($action === 'start' && $method === 'POST') {
     if ((string) ($attempt['slug'] ?? '') === syncpediaFresherBasicsSlug() && function_exists('syncpediaBasicsDurationMinutes')) {
         $durationMinutes = syncpediaBasicsDurationMinutes();
     }
+    if ($isHiringPaper) {
+        // Hiring: 15-min MCQ (Part 1), 20-min notepad typing (Part 2).
+        if ($phase === 'task') {
+            $durationMinutes = function_exists('peaklyyHiringTaskDurationMinutes')
+                ? peaklyyHiringTaskDurationMinutes()
+                : 20;
+            $taskStarted = trim((string) ($attempt['task_started_at'] ?? ''));
+            if ($taskStarted === '') {
+                try {
+                    $db->prepare('UPDATE peaklyy_attempts SET task_started_at = NOW() WHERE id = ? AND task_started_at IS NULL')
+                        ->execute([$attempt['id']]);
+                } catch (Throwable $e) {
+                    // Column may be missing on very old schemas — fall back to clock reset.
+                    try {
+                        $db->prepare('UPDATE peaklyy_attempts SET started_at = NOW() WHERE id = ?')->execute([$attempt['id']]);
+                    } catch (Throwable $e2) {
+                    }
+                }
+                $started = date('Y-m-d H:i:s');
+            } else {
+                $started = $taskStarted;
+            }
+        } else {
+            $durationMinutes = function_exists('peaklyyHiringMcqDurationMinutes')
+                ? peaklyyHiringMcqDurationMinutes()
+                : 15;
+        }
+    } elseif ($phase === 'task') {
+        // Beginner domain Part 2 is untimed.
+        $durationMinutes = 0;
+    }
     $endsAt = $durationMinutes > 0
         ? date('c', strtotime($started) + ($durationMinutes * 60))
         : null;
@@ -2603,15 +3130,27 @@ if ($action === 'start' && $method === 'POST') {
         $domainLabel = $attempt['title'] ?: 'Custom Assignment';
     }
     if ($phase === 'task') {
-        peaklyyAppendTimeline($db, (string) $attempt['id'], 'task_started', 'Part 2 — practical tasks started');
+        peaklyyAppendTimeline(
+            $db,
+            (string) $attempt['id'],
+            'task_started',
+            $isHiringPaper ? 'Part 2 — written notepad questions started (20 minutes)' : 'Part 2 — practical tasks started'
+        );
     } else {
         peaklyyAppendTimeline(
             $db,
             (string) $attempt['id'],
             $phase === 'single' ? 'started' : 'mcq_started',
-            $phase === 'single' ? 'Assignment started' : 'Part 1 — MCQ test started'
+            $phase === 'single'
+                ? 'Assignment started'
+                : ($isHiringPaper ? 'Part 1 — MCQ test started (15 minutes)' : 'Part 1 — MCQ test started')
         );
     }
+    $partTitle = $phase === 'task'
+        ? ($isHiringPaper ? 'Part 2 — Written questions (20 min)' : 'Part 2 — Practical tasks')
+        : ($phase === 'mcq'
+            ? ($isHiringPaper ? 'Part 1 — MCQ test (15 min)' : 'Part 1 — MCQ test')
+            : ($attempt['title'] ?? 'Assignment'));
     respond([
         'attempt_id' => $attempt['id'],
         'phase' => $phase === 'single' ? 'single' : $phase,
@@ -2621,7 +3160,7 @@ if ($action === 'start' && $method === 'POST') {
         'domain_key' => $attempt['domain_key'],
         'domain_label' => $domainLabel,
         'questions' => peaklyyQuestionsForClient($questions),
-        'title' => $phase === 'task' ? 'Part 2 — Practical tasks' : ($phase === 'mcq' ? 'Part 1 — MCQ test' : ($attempt['title'] ?? 'Assignment')),
+        'title' => $partTitle,
     ]);
 }
 
@@ -3359,6 +3898,9 @@ if ($action === 'submit' && $method === 'POST') {
             }
         }
 
+        $hiringSlug = function_exists('peaklyyHiringAssessmentSlug') ? peaklyyHiringAssessmentSlug() : 'peaklyy-hiring';
+        $isHiringSubmit = strtolower((string) ($assessment['slug'] ?? '')) === $hiringSlug
+            || (function_exists('peaklyyIsHiringAssessmentSlug') && peaklyyIsHiringAssessmentSlug((string) ($assessment['slug'] ?? '')));
         respond([
             'phase' => 'mcq',
             'next_phase' => 'task',
@@ -3370,7 +3912,9 @@ if ($action === 'submit' && $method === 'POST') {
             'redirect_url' => $passed ? $redirect : null,
             'attempt_token' => $token,
             'task_questions' => $taskQuestions,
-            'message' => 'MCQ test complete. Results posted to partner API. Continue to practical tasks (Part 2).',
+            'message' => $isHiringSubmit
+                ? 'Part 1 MCQ complete. Continue to Part 2 — 4 written notepad questions (20 minutes, typing only).'
+                : 'MCQ test complete. Results posted to partner API. Continue to practical tasks (Part 2).',
             'webhook' => ['sent' => !empty($hook['sent']), 'status' => $hook['status'] ?? null],
         ]);
     }

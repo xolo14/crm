@@ -767,6 +767,8 @@ CREATE TABLE IF NOT EXISTS `email_drafts` (
   `html_body` LONGTEXT NOT NULL DEFAULT '',
   `plain_text` TEXT DEFAULT NULL,
   `status` VARCHAR(20) NOT NULL DEFAULT 'draft',
+  `attachment_path` VARCHAR(500) DEFAULT NULL,
+  `attachment_name` VARCHAR(255) DEFAULT NULL,
   `created_by` CHAR(36) NOT NULL,
   `org_id` CHAR(36) DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

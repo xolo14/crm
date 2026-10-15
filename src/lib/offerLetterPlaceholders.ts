@@ -20,11 +20,16 @@ export const OFFER_AUTO_PLACEHOLDER_KEYS = new Set(['date', 'ref_number', 'lette
 export const OFFER_SEND_FORM_KEY_MAP: Record<string, string> = {
   candidate_name: 'recipient_name',
   recipient_name: 'recipient_name',
+  name: 'recipient_name',
   recipient_email: 'recipient_email',
+  email: 'recipient_email',
   role_title: 'role_title',
   company_name: 'company_name',
+  company: 'company_name',
   department: 'department',
   start_date: 'start_date',
+  start: 'start_date',
+  from: 'start_date',
   salary: 'salary',
   reporting_to: 'reporting_to',
   deadline: 'deadline',
@@ -39,6 +44,56 @@ export const OFFER_SEND_FORM_KEY_MAP: Record<string, string> = {
   employment_type: 'employment_type',
   probation_period: 'probation_period',
 };
+
+export function canonicalOfferPlaceholderKey(raw: string): string {
+  const lower = String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_|_$/g, '');
+  const aliases: Record<string, string> = {
+    name: 'candidate_name',
+    full_name: 'candidate_name',
+    recipient_name: 'candidate_name',
+    candidate_name: 'candidate_name',
+    email: 'recipient_email',
+    recipient_email: 'recipient_email',
+    start: 'start_date',
+    start_date: 'start_date',
+    from: 'start_date',
+    joining_date: 'start_date',
+    end: 'end',
+    end_date: 'end',
+    to: 'end',
+    company: 'company_name',
+    company_name: 'company_name',
+    date: 'date',
+    ref_number: 'ref_number',
+    letterhead_url: 'letterhead_url',
+  };
+  return aliases[lower] || lower;
+}
+
+export function lookupOfferPlaceholderValue(raw: string, values: Record<string, string>): string | undefined {
+  const canon = canonicalOfferPlaceholderKey(raw);
+  if (!canon) return undefined;
+  const direct = values?.[canon];
+  if (direct != null && String(direct).trim() !== '') return String(direct);
+  for (const [k, v] of Object.entries(values || {})) {
+    if (k === canon) continue;
+    if (canonicalOfferPlaceholderKey(k) !== canon) continue;
+    if (v != null && String(v).trim() !== '') return String(v);
+  }
+  return undefined;
+}
+
+/** Replace {{tokens}} using canonical keys so Start/start share one value. */
+export function applyOfferPlaceholders(text: string, values: Record<string, string>): string {
+  return String(text || '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (full, key: string) => {
+    const v = lookupOfferPlaceholderValue(key, values);
+    return v !== undefined ? v : full;
+  });
+}
 
 /** Bulk candidate row field keys (not extras). */
 export const OFFER_BULK_CANDIDATE_KEYS = new Set([
@@ -76,23 +131,38 @@ export function offerPlaceholderLabel(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** All placeholders used in template letter + mail settings (unique, stable order). */
+/** Placeholders the letter form must fill: letter HTML only (not mail-only tokens). */
 export function getOfferTemplatePlaceholderKeys(
   htmlContent: string,
   mail: OfferMailCfg,
 ): string[] {
-  const keys = extractPlaceholderKeys(
-    htmlContent || '',
-    mail.mail_subject || '',
-    mail.mail_body || '',
-    mail.pdf_filename_pattern || '',
+  const found = new Set<string>();
+  for (const raw of extractPlaceholderKeys(htmlContent || '')) {
+    const canon = canonicalOfferPlaceholderKey(raw);
+    if (!canon || OFFER_AUTO_PLACEHOLDER_KEYS.has(canon)) continue;
+    found.add(canon);
+  }
+  const emailKey = canonicalOfferPlaceholderKey(
+    String(mail.recipient_email_placeholder || 'recipient_email').replace(/^\{\{\s*|\s*\}\}$/g, ''),
   );
-  // recipient_email_placeholder is often stored without {{ }} braces
-  const emailKey = String(mail.recipient_email_placeholder || 'recipient_email')
-    .replace(/^\{\{\s*|\s*\}\}$/g, '')
-    .trim();
-  if (emailKey && !keys.includes(emailKey)) keys.push(emailKey);
-  return keys;
+  if (emailKey && !OFFER_AUTO_PLACEHOLDER_KEYS.has(emailKey)) found.add(emailKey);
+
+  const order = [
+    'candidate_name',
+    'recipient_email',
+    'role_title',
+    'start_date',
+    'end',
+    'company_name',
+  ];
+  const ordered: string[] = [];
+  for (const k of order) {
+    if (found.has(k)) {
+      ordered.push(k);
+      found.delete(k);
+    }
+  }
+  return [...ordered, ...[...found].sort()];
 }
 
 /** Keys the user must fill (excludes auto date). */
@@ -105,9 +175,11 @@ export function getOfferPlaceholderValue(
   sendForm: Record<string, string>,
   extras: Record<string, string>,
 ): string {
-  const formKey = OFFER_SEND_FORM_KEY_MAP[key];
+  const canon = canonicalOfferPlaceholderKey(key);
+  const formKey = OFFER_SEND_FORM_KEY_MAP[canon] || OFFER_SEND_FORM_KEY_MAP[key];
   if (formKey) return String(sendForm[formKey] ?? '').trim();
-  return String(extras[key] ?? '').trim();
+  const fromExtras = lookupOfferPlaceholderValue(canon, extras);
+  return fromExtras !== undefined ? fromExtras.trim() : String(extras[key] ?? extras[canon] ?? '').trim();
 }
 
 export function findMissingOfferPlaceholders(
@@ -202,7 +274,7 @@ export function applyMappedValuesToSendState(
   const nextForm = { ...sendForm };
   const nextExtras = { ...extras };
   for (const [key, value] of Object.entries(mapped)) {
-    const formKey = OFFER_SEND_FORM_KEY_MAP[key];
+    const formKey = OFFER_SEND_FORM_KEY_MAP[canonicalOfferPlaceholderKey(key)] || OFFER_SEND_FORM_KEY_MAP[key];
     if (formKey) {
       nextForm[formKey] = value;
     } else {
@@ -220,14 +292,16 @@ export function applyMappedValuesToBulkRow(
   const nextRow = { ...row };
   const nextExtras = { ...extras };
   for (const [key, value] of Object.entries(mapped)) {
-    if (key === 'recipient_name' || key === 'candidate_name') {
+    const canon = canonicalOfferPlaceholderKey(key);
+    if (canon === 'recipient_name' || canon === 'candidate_name') {
       nextRow.candidate_name = value;
       continue;
     }
-    if (OFFER_BULK_CANDIDATE_KEYS.has(key)) {
-      nextRow[key] = value;
-    } else if (!OFFER_COMPANY_SENDER_KEYS.has(key) && key !== 'date' && key !== 'ref_number') {
-      nextExtras[key] = value;
+    const bulkKey = OFFER_BULK_CANDIDATE_KEYS.has(canon) ? canon : (OFFER_BULK_CANDIDATE_KEYS.has(key) ? key : '');
+    if (bulkKey) {
+      nextRow[bulkKey] = value;
+    } else if (!OFFER_COMPANY_SENDER_KEYS.has(canon) && canon !== 'date' && canon !== 'ref_number') {
+      nextExtras[canon] = value;
     }
   }
   return { row: nextRow, extras: nextExtras };

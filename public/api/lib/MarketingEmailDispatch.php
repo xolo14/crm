@@ -1,4 +1,6 @@
 <?php
+// Direct HTTP access blocked (nginx may ignore .htaccess)
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 /**
  * Marketing email campaign dispatch: <<placeholders>>, per-recipient schedule, org mailbox.
  */
@@ -136,6 +138,96 @@ function marketingScheduleIsDue(?string $mysqlDatetime, int $graceSeconds = 30):
     }
 }
 
+/** Completed only when every row was sent. Partial when some were. Failed when none were. */
+function marketingCampaignStatusFromCounts(int $sent, int $failed, int $pending, int $sending = 0): string
+{
+    $total = $sent + $failed + $pending + $sending;
+    if ($total > 0 && $sent === $total) {
+        return 'completed';
+    }
+    if ($sending > 0) {
+        return 'sending';
+    }
+    if ($sent === 0 && $failed === 0 && $pending > 0) {
+        return 'scheduled';
+    }
+    if ($sent > 0) {
+        return 'partial';
+    }
+    return 'failed';
+}
+
+/**
+ * Recount each campaign from its email log.
+ * A row is sent only when status is sent and sent_at is a real time.
+ *
+ * @param array<int, array<string, mixed>> $rows
+ */
+function marketingApplyEmailCampaignLogStatus(PDO $db, array &$rows): void
+{
+    if ($rows === []) {
+        return;
+    }
+    marketingEnsureEmailDispatchSchema($db);
+    $ids = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $id = trim((string) ($row['id'] ?? ''));
+        if ($id !== '') {
+            $ids[] = $id;
+        }
+    }
+    if ($ids === []) {
+        return;
+    }
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    try {
+        $agg = $db->prepare(
+            "SELECT campaign_id,
+                COUNT(*) AS total_count,
+                SUM(CASE WHEN status = 'sent' AND sent_at IS NOT NULL AND sent_at > '1970-01-02 00:00:00' THEN 1 ELSE 0 END) AS sent_count,
+                SUM(CASE WHEN status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at > NOW() THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= NOW()) THEN 1 ELSE 0 END) AS sending_count
+             FROM email_sends
+             WHERE campaign_id IN ($placeholders)
+             GROUP BY campaign_id"
+        );
+        $agg->execute($ids);
+    } catch (Throwable $e) {
+        error_log('[marketingApplyEmailCampaignLogStatus] ' . $e->getMessage());
+        return;
+    }
+    $byId = [];
+    foreach ($agg->fetchAll(PDO::FETCH_ASSOC) as $c) {
+        if (!is_array($c)) {
+            continue;
+        }
+        $byId[(string) ($c['campaign_id'] ?? '')] = $c;
+    }
+    foreach ($rows as &$row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $id = trim((string) ($row['id'] ?? ''));
+        $c = $byId[$id] ?? null;
+        $total = is_array($c) ? (int) ($c['total_count'] ?? 0) : 0;
+        $sent = is_array($c) ? (int) ($c['sent_count'] ?? 0) : 0;
+        $pending = is_array($c) ? (int) ($c['pending_count'] ?? 0) : 0;
+        $sending = is_array($c) ? (int) ($c['sending_count'] ?? 0) : 0;
+        $failed = max(0, $total - $sent - $pending - $sending);
+        $row['sent_count'] = $sent;
+        $row['failed_count'] = $failed;
+        $row['pending_count'] = $pending + $sending;
+        if ($total > 0) {
+            $row['recipient_count'] = $total;
+        }
+        $row['status'] = $total === 0 ? 'failed' : marketingCampaignStatusFromCounts($sent, $failed, $pending, $sending);
+    }
+    unset($row);
+}
+
 function marketingEnsureEmailDispatchSchema(PDO $db): void
 {
     static $done = false;
@@ -159,6 +251,8 @@ function marketingEnsureEmailDispatchSchema(PDO $db): void
     $add($db, 'email_sends', 'sent_html', 'ALTER TABLE email_sends ADD COLUMN sent_html LONGTEXT DEFAULT NULL');
     $add($db, 'email_sends', 'values_json', 'ALTER TABLE email_sends ADD COLUMN values_json TEXT DEFAULT NULL');
     $add($db, 'email_sends', 'smtp_account_id', 'ALTER TABLE email_sends ADD COLUMN smtp_account_id CHAR(36) DEFAULT NULL');
+    $add($db, 'email_drafts', 'attachment_path', 'ALTER TABLE email_drafts ADD COLUMN attachment_path VARCHAR(500) DEFAULT NULL');
+    $add($db, 'email_drafts', 'attachment_name', 'ALTER TABLE email_drafts ADD COLUMN attachment_name VARCHAR(255) DEFAULT NULL');
     try {
         $db->exec('CREATE INDEX idx_es_pending_due ON email_sends (status, scheduled_at)');
     } catch (Throwable $e) {
@@ -200,7 +294,141 @@ function marketingLoadOrgMailbox(PDO $db, string $orgId, string $accountId): ?ar
     ];
 }
 
+function marketingEmailDraftPdfMaxBytes(): int
+{
+    return 50 * 1024 * 1024;
+}
+
+function marketingEmailDraftPdfName(string $original): string
+{
+    $base = basename(str_replace('\\', '/', $original));
+    $base = preg_replace('/[^A-Za-z0-9._ -]/', '_', $base) ?? '';
+    $base = trim((string) $base, '. ');
+    if ($base === '' || strtolower(substr($base, -4)) !== '.pdf') {
+        $base = ($base !== '' ? preg_replace('/\.pdf$/i', '', $base) : 'attachment') . '.pdf';
+    }
+    if (strlen($base) > 180) {
+        $base = substr($base, 0, 176) . '.pdf';
+    }
+    return $base;
+}
+
+function marketingRemoveEmailDraftAttachmentFile(?string $rel): void
+{
+    $rel = trim((string) $rel);
+    if ($rel === '' || strpos($rel, '..') !== false || strpos($rel, '/uploads/email_drafts/') !== 0) {
+        return;
+    }
+    if (!function_exists('peaklyyResolveUploadFsPath')) {
+        return;
+    }
+    $fs = peaklyyResolveUploadFsPath($rel);
+    if ($fs !== null && is_file($fs)) {
+        @unlink($fs);
+    }
+}
+
 /**
+ * @param array<string, mixed> $file
+ * @return array{ok:bool,path?:string,name?:string,error?:string}
+ */
+function marketingSaveEmailDraftPdf(array $file, string $draftId): array
+{
+    if (!preg_match('/^[0-9a-fA-F-]{36}$/', $draftId)) {
+        return ['ok' => false, 'error' => 'Invalid draft'];
+    }
+    $err = (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE);
+    if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+        return ['ok' => false, 'error' => 'PDF must be 50 MB or smaller.'];
+    }
+    if ($err === UPLOAD_ERR_NO_FILE) {
+        return ['ok' => false, 'error' => 'Choose a PDF to attach.'];
+    }
+    if ($err !== UPLOAD_ERR_OK) {
+        return ['ok' => false, 'error' => 'PDF upload failed.'];
+    }
+    $tmp = (string) ($file['tmp_name'] ?? '');
+    if ($tmp === '' || !is_uploaded_file($tmp)) {
+        return ['ok' => false, 'error' => 'Invalid PDF upload.'];
+    }
+    $size = (int) ($file['size'] ?? 0);
+    if ($size <= 0 || $size > marketingEmailDraftPdfMaxBytes()) {
+        return ['ok' => false, 'error' => 'PDF must be 50 MB or smaller.'];
+    }
+    $display = marketingEmailDraftPdfName((string) ($file['name'] ?? 'attachment.pdf'));
+    if (strtolower(substr($display, -4)) !== '.pdf') {
+        return ['ok' => false, 'error' => 'Attachment must be a PDF.'];
+    }
+    $mime = '';
+    if (class_exists('finfo')) {
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = (string) ($finfo->file($tmp) ?: '');
+    }
+    if ($mime !== '' && !in_array($mime, ['application/pdf', 'application/x-pdf'], true)) {
+        return ['ok' => false, 'error' => 'Attachment must be a PDF.'];
+    }
+    $head = '';
+    $fh = fopen($tmp, 'rb');
+    if ($fh) {
+        $head = (string) fread($fh, 5);
+        fclose($fh);
+    }
+    if ($head !== '%PDF-') {
+        return ['ok' => false, 'error' => 'Attachment must be a PDF.'];
+    }
+    $uploadParent = dirname(__DIR__, 2) . '/uploads/email_drafts';
+    if (!is_dir($uploadParent) && !mkdir($uploadParent, 0755, true) && !is_dir($uploadParent)) {
+        return ['ok' => false, 'error' => 'Cannot store the PDF.'];
+    }
+    $baseDir = realpath($uploadParent);
+    if ($baseDir === false) {
+        return ['ok' => false, 'error' => 'Cannot store the PDF.'];
+    }
+    $destFs = $baseDir . DIRECTORY_SEPARATOR . $draftId . '.pdf';
+    $stageFs = $destFs . '.uploading';
+    if (is_file($stageFs)) {
+        @unlink($stageFs);
+    }
+    if (!move_uploaded_file($tmp, $stageFs)) {
+        return ['ok' => false, 'error' => 'Could not save the PDF.'];
+    }
+    if (is_file($destFs)) {
+        @unlink($destFs);
+    }
+    if (!rename($stageFs, $destFs)) {
+        @unlink($stageFs);
+        return ['ok' => false, 'error' => 'Could not save the PDF.'];
+    }
+    return [
+        'ok' => true,
+        'path' => '/uploads/email_drafts/' . $draftId . '.pdf',
+        'name' => $display,
+    ];
+}
+
+/**
+ * @param array<string, mixed> $draft
+ * @return list<array{path?:string,name?:string,missing?:bool}>
+ */
+function marketingEmailDraftAttachments(array $draft): array
+{
+    $path = trim((string) ($draft['attachment_path'] ?? ''));
+    if ($path === '') {
+        return [];
+    }
+    $name = marketingEmailDraftPdfName((string) ($draft['attachment_name'] ?? 'attachment.pdf'));
+    if (strpos($path, '..') !== false || strpos($path, '/uploads/email_drafts/') !== 0) {
+        return [['missing' => true, 'name' => $name]];
+    }
+    $fs = function_exists('peaklyyResolveUploadFsPath') ? peaklyyResolveUploadFsPath($path) : null;
+    if ($fs === null) {
+        return [['missing' => true, 'name' => $name]];
+    }
+    return [['path' => $fs, 'name' => $name]];
+}
+
+/**
+ * @param list<array{path?:string,name?:string,missing?:bool}> $attachments
  * @return array{ok:bool,error?:string,from?:string}
  */
 function marketingSendOneCampaignEmail(
@@ -209,8 +437,14 @@ function marketingSendOneCampaignEmail(
     string $to,
     string $subject,
     string $html,
-    string $fromName = ''
+    string $fromName = '',
+    array $attachments = []
 ): array {
+    foreach ($attachments as $file) {
+        if (!empty($file['missing'])) {
+            return ['ok' => false, 'error' => 'The PDF attached to this draft is missing, so this message was not sent.'];
+        }
+    }
     if (function_exists('syncpediaSetMailContext')) {
         syncpediaSetMailContext($orgId !== '' ? $orgId : null, 'marketing_campaigns');
     }
@@ -219,10 +453,16 @@ function marketingSendOneCampaignEmail(
     }
     $fromAddr = function_exists('syncpediaSupportMailAddress') ? syncpediaSupportMailAddress() : 'support@syncpedia.in';
     $name = $fromName !== '' ? $fromName : 'Syncpedia';
-    if (!function_exists('syncpediaSendHtmlEmailViaSmtp')) {
+    if (!function_exists('syncpediaSendHtmlEmailViaSmtpWithOptions')) {
+        $transport = dirname(__DIR__) . '/mail_transport.php';
+        if (is_file($transport)) {
+            require_once $transport;
+        }
+    }
+    if (!function_exists('syncpediaSendHtmlEmailViaSmtpWithOptions')) {
         return ['ok' => false, 'error' => 'Mail transport unavailable'];
     }
-    return syncpediaSendHtmlEmailViaSmtp($to, $subject, $html, $fromAddr, $name);
+    return syncpediaSendHtmlEmailViaSmtpWithOptions($to, $subject, $html, $fromAddr, $name, '', '', $attachments);
 }
 
 /**
@@ -394,72 +634,39 @@ function marketingDispatchEmailCampaign(
     $sent = 0;
     $failed = 0;
     $pending = 0;
+    $queuedNow = 0;
     $firstError = null;
-    $fromName = $mailbox['from_name'] !== '' ? $mailbox['from_name'] : ($mailbox['label'] !== '' ? $mailbox['label'] : 'Syncpedia');
 
     foreach ($rows as $r) {
         $id = generateUUID();
         $due = marketingScheduleIsDue($r['scheduled_at']);
-        if (!$due) {
-            $pending++;
-            if ($hasSendExtra) {
-                $sendStmt->execute([
-                    $id,
-                    $campaignId,
-                    $r['email'],
-                    'pending',
-                    null,
-                    $r['scheduled_at'],
-                    $r['subject'],
-                    $r['html'],
-                    json_encode($r['values'], JSON_UNESCAPED_UNICODE),
-                    $mailbox['id'],
-                    null,
-                ]);
-            } else {
-                $sendStmt->execute([$id, $campaignId, $r['email'], 'pending', null]);
-            }
-            continue;
-        }
-
-        $res = marketingSendOneCampaignEmail($orgId, $mailbox['id'], $r['email'], $r['subject'], $r['html'], $fromName);
-        $ok = !empty($res['ok']);
-        if ($ok) {
-            $sent++;
+        if ($due) {
+            $queuedNow++;
         } else {
-            $failed++;
-            if ($firstError === null) {
-                $firstError = trim((string) ($res['error'] ?? 'SMTP send failed'));
-            }
+            $pending++;
         }
         if ($hasSendExtra) {
             $sendStmt->execute([
                 $id,
                 $campaignId,
                 $r['email'],
-                $ok ? 'sent' : 'failed',
-                $ok ? null : ($res['error'] ?? 'Send failed'),
+                'pending',
+                null,
                 $r['scheduled_at'],
                 $r['subject'],
                 $r['html'],
                 json_encode($r['values'], JSON_UNESCAPED_UNICODE),
                 $mailbox['id'],
-                $ok ? date('Y-m-d H:i:s') : null,
+                null,
             ]);
         } else {
-            $sendStmt->execute([
-                $id,
-                $campaignId,
-                $r['email'],
-                $ok ? 'sent' : 'failed',
-                $ok ? null : ($res['error'] ?? 'Send failed'),
-            ]);
+            $sendStmt->execute([$id, $campaignId, $r['email'], 'pending', null]);
         }
     }
 
-    $finalStatus = $pending > 0 ? 'scheduled' : (($sent === 0 && $failed > 0) ? 'failed' : 'completed');
+    $finalStatus = $queuedNow > 0 ? 'sending' : marketingCampaignStatusFromCounts($sent, $failed, $pending, 0);
     $db->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
-        ->execute([$sent, $failed, $pending, $finalStatus, $campaignId]);
+        ->execute([$sent, $failed, $queuedNow + $pending, $finalStatus, $campaignId]);
 
     if ($sent >= 2) {
         syncpediaNotifyOrgAdminsOfBulkKind(
@@ -483,16 +690,14 @@ function marketingDispatchEmailCampaign(
         );
     }
 
-    $ok = $sent > 0 || $pending > 0;
+    $waiting = $queuedNow + $pending;
+    $ok = $waiting > 0;
     $msgParts = [];
-    if ($sent > 0) {
-        $msgParts[] = "Sent {$sent}";
+    if ($queuedNow > 0) {
+        $msgParts[] = "Sending {$queuedNow}";
     }
     if ($pending > 0) {
         $msgParts[] = "{$pending} scheduled";
-    }
-    if ($failed > 0) {
-        $msgParts[] = "{$failed} failed";
     }
 
     return [
@@ -500,16 +705,69 @@ function marketingDispatchEmailCampaign(
         'campaign_id' => $campaignId,
         'sent' => $sent,
         'failed' => $failed,
-        'pending' => $pending,
-        'error' => $ok ? null : ($firstError ?: 'No emails were sent. Configure Email Setup for your organization.'),
-        'message' => $ok ? implode(', ', $msgParts) : ($firstError ?: 'Send failed'),
+        'pending' => $waiting,
+        'queued_now' => $queuedNow,
+        'error' => $ok ? null : ($firstError ?: 'No emails were queued.'),
+        'message' => $ok
+            ? (implode(', ', $msgParts) . ($queuedNow > 0 ? '. You can leave this page; they go out about every 3 seconds.' : ''))
+            : ($firstError ?: 'Send failed'),
     ];
+}
+
+/** Finish the HTTP response, then send due campaign mail without the 120 second page limit. */
+function marketingEchoJsonAndContinue(array $data, int $status = 200): void
+{
+    ignore_user_abort(true);
+    @set_time_limit(0);
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+    http_response_code($status);
+    header('Content-Type: application/json; charset=UTF-8');
+    header('Connection: close');
+    $json = json_encode($data, JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        $json = '{"ok":true}';
+    }
+    header('Content-Length: ' . strlen($json));
+    echo $json;
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    } else {
+        @flush();
+    }
 }
 
 /**
  * @return array{scanned:int,sent:int,failed:int,skipped:int}
  */
-function marketingProcessDueEmailSends(PDO $db, int $limit = 80): array
+function marketingProcessDueEmailSends(PDO $db, int $limit = 200): array
+{
+    $out = ['scanned' => 0, 'sent' => 0, 'failed' => 0, 'skipped' => 0];
+    $lock = $db->query("SELECT GET_LOCK('syncpedia_mkt_email', 0)");
+    $gotLock = 0;
+    if ($lock) {
+        $gotLock = (int) $lock->fetchColumn();
+        $lock->closeCursor();
+    }
+    if ($gotLock !== 1) {
+        return $out;
+    }
+    try {
+        return marketingProcessDueEmailSendsLocked($db, $limit);
+    } finally {
+        $rel = $db->query("SELECT RELEASE_LOCK('syncpedia_mkt_email')");
+        if ($rel) {
+            $rel->fetchColumn();
+            $rel->closeCursor();
+        }
+    }
+}
+
+/**
+ * @return array{scanned:int,sent:int,failed:int,skipped:int}
+ */
+function marketingProcessDueEmailSendsLocked(PDO $db, int $limit = 200): array
 {
     $out = ['scanned' => 0, 'sent' => 0, 'failed' => 0, 'skipped' => 0];
     marketingEnsureEmailDispatchSchema($db);
@@ -521,9 +779,11 @@ function marketingProcessDueEmailSends(PDO $db, int $limit = 80): array
 
     try {
         $st = $db->query(
-            "SELECT es.*, ec.org_id AS campaign_org_id, ec.smtp_account_id AS campaign_smtp
+            "SELECT es.*, ec.org_id AS campaign_org_id, ec.smtp_account_id AS campaign_smtp,
+                    ed.attachment_path AS draft_attachment_path, ed.attachment_name AS draft_attachment_name
              FROM email_sends es
              INNER JOIN email_campaigns ec ON ec.id = es.campaign_id
+             LEFT JOIN email_drafts ed ON ed.id = ec.draft_id
              WHERE es.status = 'pending'
                AND (es.scheduled_at IS NULL OR es.scheduled_at <= NOW())
              ORDER BY es.scheduled_at ASC
@@ -550,18 +810,64 @@ function marketingProcessDueEmailSends(PDO $db, int $limit = 80): array
         $subject = (string) ($row['sent_subject'] ?? '');
         $html = (string) ($row['sent_html'] ?? '');
         if ($id === '' || $to === '' || $html === '') {
+            $reason = $to === ''
+                ? 'Recipient email is missing, so this message was not sent.'
+                : ($html === ''
+                    ? 'No email body was saved for this recipient, so it was not sent.'
+                    : 'This send row is incomplete, so it was not sent.');
+            if ($id !== '') {
+                try {
+                    $upd->execute(['failed', $reason, null, $id]);
+                } catch (Throwable $e) {
+                    error_log('[marketingProcessDueEmailSends] update: ' . $e->getMessage());
+                }
+                $out['failed']++;
+                $cid = trim((string) ($row['campaign_id'] ?? ''));
+                if ($cid !== '') {
+                    $touchedCampaigns[$cid] = true;
+                }
+            }
             $out['skipped']++;
             continue;
         }
         $mailbox = marketingLoadOrgMailbox($db, $orgId, $smtpId);
-        $fromName = $mailbox ? ($mailbox['from_name'] ?: $mailbox['label']) : 'Syncpedia';
-        $accountId = $mailbox['id'] ?? $smtpId;
-        $res = marketingSendOneCampaignEmail($orgId, $accountId, $to, $subject !== '' ? $subject : 'Campaign', $html, $fromName);
+        if ($mailbox === null) {
+            try {
+                $upd->execute([
+                    'failed',
+                    'The mailbox for this campaign is missing or inactive. Check Email Setup.',
+                    null,
+                    $id,
+                ]);
+            } catch (Throwable $e) {
+                error_log('[marketingProcessDueEmailSends] update: ' . $e->getMessage());
+            }
+            $out['failed']++;
+            $cid = trim((string) ($row['campaign_id'] ?? ''));
+            if ($cid !== '') {
+                $touchedCampaigns[$cid] = true;
+            }
+            continue;
+        }
+        $fromName = $mailbox['from_name'] !== '' ? $mailbox['from_name'] : ($mailbox['label'] !== '' ? $mailbox['label'] : 'Syncpedia');
+        $accountId = $mailbox['id'];
+        $res = marketingSendOneCampaignEmail(
+            $orgId,
+            $accountId,
+            $to,
+            $subject !== '' ? $subject : 'Campaign',
+            $html,
+            $fromName,
+            marketingEmailDraftAttachments([
+                'attachment_path' => $row['draft_attachment_path'] ?? '',
+                'attachment_name' => $row['draft_attachment_name'] ?? '',
+            ])
+        );
         $ok = !empty($res['ok']);
         try {
             $upd->execute([
                 $ok ? 'sent' : 'failed',
-                $ok ? null : ($res['error'] ?? 'Send failed'),
+                $ok ? null : (trim((string) ($res['error'] ?? '')) ?: 'Send failed. The mail server did not accept this message.'),
                 $ok ? date('Y-m-d H:i:s') : null,
                 $id,
             ]);
@@ -583,23 +889,184 @@ function marketingProcessDueEmailSends(PDO $db, int $limit = 80): array
         try {
             $agg = $db->prepare(
                 "SELECT
-                    SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS sent_count,
-                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count
+                    COUNT(*) AS total_count,
+                    SUM(CASE WHEN status = 'sent' AND sent_at IS NOT NULL AND sent_at > '1970-01-02 00:00:00' THEN 1 ELSE 0 END) AS sent_count,
+                    SUM(CASE WHEN status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at > NOW() THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= NOW()) THEN 1 ELSE 0 END) AS sending_count
                  FROM email_sends WHERE campaign_id = ?"
             );
             $agg->execute([$cid]);
             $c = $agg->fetch(PDO::FETCH_ASSOC) ?: [];
             $sentC = (int) ($c['sent_count'] ?? 0);
-            $failC = (int) ($c['failed_count'] ?? 0);
             $pendC = (int) ($c['pending_count'] ?? 0);
-            $stt = $pendC > 0 ? 'scheduled' : (($sentC === 0 && $failC > 0) ? 'failed' : 'completed');
+            $sendC = (int) ($c['sending_count'] ?? 0);
+            $failC = max(0, (int) ($c['total_count'] ?? 0) - $sentC - $pendC - $sendC);
+            $stt = marketingCampaignStatusFromCounts($sentC, $failC, $pendC, $sendC);
             $db->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
-                ->execute([$sentC, $failC, $pendC, $stt, $cid]);
+                ->execute([$sentC, $failC, $pendC + $sendC, $stt, $cid]);
         } catch (Throwable $e) {
             error_log('[marketingProcessDueEmailSends] campaign: ' . $e->getMessage());
         }
     }
 
     return $out;
+}
+
+/** How many campaign rows are waiting to send right now. */
+function marketingCountDueEmailSends(PDO $db): int
+{
+    try {
+        $q = $db->query(
+            "SELECT COUNT(*) FROM email_sends
+             WHERE status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= NOW())"
+        );
+        if (!$q) {
+            return 0;
+        }
+        $n = (int) $q->fetchColumn();
+        $q->closeCursor();
+        return $n;
+    } catch (Throwable $e) {
+        error_log('[marketingCountDueEmailSends] ' . $e->getMessage());
+        return 0;
+    }
+}
+
+/**
+ * Send due campaign mail one message at a time, 3 seconds apart.
+ * Holds the send lock for the whole drain so a second worker exits immediately.
+ *
+ * @return array{scanned:int,sent:int,failed:int,skipped:int}
+ */
+function marketingDrainDueEmailCampaigns(PDO $db): array
+{
+    @set_time_limit(0);
+    ignore_user_abort(true);
+    $totals = ['scanned' => 0, 'sent' => 0, 'failed' => 0, 'skipped' => 0];
+    $lock = $db->query("SELECT GET_LOCK('syncpedia_mkt_email', 0)");
+    $gotLock = 0;
+    if ($lock) {
+        $gotLock = (int) $lock->fetchColumn();
+        $lock->closeCursor();
+    }
+    if ($gotLock !== 1) {
+        return $totals;
+    }
+    try {
+        while (true) {
+            $batch = marketingProcessDueEmailSendsLocked($db, 1);
+            $totals['scanned'] += (int) ($batch['scanned'] ?? 0);
+            $totals['sent'] += (int) ($batch['sent'] ?? 0);
+            $totals['failed'] += (int) ($batch['failed'] ?? 0);
+            $totals['skipped'] += (int) ($batch['skipped'] ?? 0);
+            if ((int) ($batch['scanned'] ?? 0) < 1) {
+                break;
+            }
+            if (marketingCountDueEmailSends($db) < 1) {
+                break;
+            }
+            sleep(3);
+        }
+    } finally {
+        $rel = $db->query("SELECT RELEASE_LOCK('syncpedia_mkt_email')");
+        if ($rel) {
+            $rel->fetchColumn();
+            $rel->closeCursor();
+        }
+    }
+    return $totals;
+}
+
+/** Start the slow sender in a separate PHP process. Returns false when that is not possible. */
+function marketingKickEmailCampaignWorker(): bool
+{
+    if (!function_exists('exec')) {
+        return false;
+    }
+    $disabled = array_map('trim', explode(',', (string) ini_get('disable_functions')));
+    if (in_array('exec', $disabled, true)) {
+        return false;
+    }
+    $script = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'cron_email_campaigns.php';
+    if (!is_file($script)) {
+        return false;
+    }
+    $php = 'php';
+    $bin = defined('PHP_BINARY') ? (string) PHP_BINARY : '';
+    $base = $bin !== '' ? strtolower(basename($bin)) : '';
+    if ($bin !== '' && strpos($base, 'php-fpm') === false && strpos($base, 'php-cgi') === false) {
+        $php = $bin;
+    }
+    $cmd = escapeshellarg($php) . ' ' . escapeshellarg($script);
+    if (DIRECTORY_SEPARATOR === '\\') {
+        $handle = @popen('start /B "" ' . $cmd . ' > NUL 2>&1', 'r');
+        if (is_resource($handle)) {
+            pclose($handle);
+        }
+        return true;
+    }
+    exec('nohup ' . $cmd . ' > /dev/null 2>&1 < /dev/null &');
+    return true;
+}
+
+/**
+ * Put failed rows for one campaign back on the queue. Messages that already
+ * have a send time stay sent.
+ *
+ * @return array{ok:bool,queued:int,error:?string,message?:string}
+ */
+function marketingRetryFailedEmailCampaign(PDO $db, string $campaignId): array
+{
+    $campaignId = trim($campaignId);
+    if ($campaignId === '') {
+        return ['ok' => false, 'queued' => 0, 'error' => 'campaign_id required'];
+    }
+    marketingEnsureEmailDispatchSchema($db);
+    $failedSql = "campaign_id = ?
+           AND (
+             status = 'failed'
+             OR (status = 'sent' AND (sent_at IS NULL OR sent_at <= '1970-01-02 00:00:00'))
+           )";
+    $count = $db->prepare('SELECT COUNT(*) FROM email_sends WHERE ' . $failedSql);
+    $count->execute([$campaignId]);
+    $queued = (int) $count->fetchColumn();
+    $count->closeCursor();
+    if ($queued < 1) {
+        return ['ok' => false, 'queued' => 0, 'error' => 'No failed emails to retry.'];
+    }
+    $upd = $db->prepare(
+        'UPDATE email_sends
+         SET status = \'pending\', error_message = NULL, sent_at = NULL
+         WHERE ' . $failedSql
+    );
+    $upd->execute([$campaignId]);
+
+    try {
+        $agg = $db->prepare(
+            "SELECT
+                COUNT(*) AS total_count,
+                SUM(CASE WHEN status = 'sent' AND sent_at IS NOT NULL AND sent_at > '1970-01-02 00:00:00' THEN 1 ELSE 0 END) AS sent_count,
+                SUM(CASE WHEN status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at > NOW() THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= NOW()) THEN 1 ELSE 0 END) AS sending_count
+             FROM email_sends WHERE campaign_id = ?"
+        );
+        $agg->execute([$campaignId]);
+        $c = $agg->fetch(PDO::FETCH_ASSOC) ?: [];
+        $sentC = (int) ($c['sent_count'] ?? 0);
+        $pendC = (int) ($c['pending_count'] ?? 0);
+        $sendC = (int) ($c['sending_count'] ?? 0);
+        $failC = max(0, (int) ($c['total_count'] ?? 0) - $sentC - $pendC - $sendC);
+        $stt = marketingCampaignStatusFromCounts($sentC, $failC, $pendC, $sendC);
+        $db->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
+            ->execute([$sentC, $failC, $pendC + $sendC, $stt, $campaignId]);
+    } catch (Throwable $e) {
+        error_log('[marketingRetryFailedEmailCampaign] ' . $e->getMessage());
+    }
+
+    return [
+        'ok' => true,
+        'queued' => $queued,
+        'error' => null,
+        'message' => "Sending {$queued}. You can leave this page; they go out about every 3 seconds.",
+    ];
 }

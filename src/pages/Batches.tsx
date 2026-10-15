@@ -17,6 +17,7 @@ import { normalizeAppRole } from '@/lib/roleUtils';
 import { Plus, Download, Upload, MoreHorizontal, Pencil, Trash2, Loader2 } from 'lucide-react';
 import { buildBatchTemplateCsv, downloadBatchTemplate, downloadBatchTemplateExcel, mapCsvRowsToBatches } from '@/lib/batchImportCsv';
 import { parseLeadImportFile } from '@/lib/leadImportCsv';
+import { MatchLmsButton } from '@/components/lms/MatchLmsDialog';
 import {
  batchScheduleStatus,
  batchStatusLabel,
@@ -26,9 +27,9 @@ import {
  formatBatchDate,
 } from '@/utils/batchSchedule';
 
-const CAN_CREATE_ROLES = ['super_admin', 'admin', 'manager'];
-const CAN_EDIT_ALL_ROLES = ['super_admin', 'admin', 'manager'];
-const CAN_DELETE_ROLES = ['super_admin', 'admin'];
+const CAN_CREATE_ROLES = ['super_admin', 'admin', 'org', 'manager', 'operational_manager'];
+const CAN_EDIT_ALL_ROLES = ['super_admin', 'admin', 'org', 'manager', 'operational_manager'];
+const CAN_DELETE_ROLES = ['super_admin', 'admin', 'org'];
 
 const NO_COURSES_MSG =
  'No courses yet. Create a course on the Courses page before creating a batch.';
@@ -196,14 +197,25 @@ export default function Batches() {
  }
  const fd = new FormData(e.currentTarget as HTMLFormElement);
  try {
- await api.batches.create({
+ const result: any = await api.batches.create({
  name: fd.get('name'),
  course_id: fd.get('course_id') || null,
  start_date: fd.get('start'),
  end_date: fd.get('end'),
  seat_limit: Number(fd.get('seats') || 30),
  });
+ const lms = result?.lms_sync;
+ if (lms?.pushed) {
+ toast({ title: 'Batch created', description: 'Also created on LMS Classes.' });
+ } else if (lms?.error) {
+ toast({
+ title: 'Batch created in CRM',
+ description: `LMS create skipped: ${lms.error}`,
+ variant: 'destructive',
+ });
+ } else {
  toast({ title: 'Batch created' });
+ }
  setDialogOpen(false);
  fetchBatches();
  } catch (err: any) {
@@ -216,14 +228,25 @@ export default function Batches() {
  if (!editingBatch) return;
  const fd = new FormData(e.currentTarget as HTMLFormElement);
  try {
- await api.batches.update(editingBatch.id, {
+ const result: any = await api.batches.update(editingBatch.id, {
  name: fd.get('name'),
  course_id: fd.get('course_id') || null,
  start_date: fd.get('start'),
  end_date: fd.get('end'),
  seat_limit: Number(fd.get('seats') || 30),
  });
+ const lms = result?.lms_sync;
+ if (lms?.pushed) {
+ toast({ title: 'Batch updated', description: 'Also updated on LMS Classes.' });
+ } else if (lms?.error) {
+ toast({
+ title: 'Batch updated in CRM',
+ description: `LMS sync failed: ${lms.error}`,
+ variant: 'destructive',
+ });
+ } else {
  toast({ title: 'Batch updated' });
+ }
  setEditDialogOpen(false);
  setEditingBatch(null);
  fetchBatches();
@@ -335,6 +358,7 @@ export default function Batches() {
  </p>
  </div>
  <div className="flex items-center gap-2 flex-wrap">
+ <MatchLmsButton resource="batches" onApplied={() => void fetchBatches()} />
  {hasExport && (
  <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExport}>
  <Download className="h-4 w-4" />

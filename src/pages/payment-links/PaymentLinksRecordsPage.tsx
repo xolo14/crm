@@ -220,19 +220,19 @@ export default function PaymentLinksRecordsPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
-        <button
-          type="button"
-          onClick={() => setTab("records")}
-          className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            tab === "records"
-              ? "border-[#2ed573] text-gray-900"
-              : "border-transparent text-gray-500 hover:text-gray-800"
-          }`}
-        >
-          Records
-        </button>
-        {showApprovals ? (
+      {showApprovals ? (
+        <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
+          <button
+            type="button"
+            onClick={() => setTab("records")}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              tab === "records"
+                ? "border-[#2ed573] text-gray-900"
+                : "border-transparent text-gray-500 hover:text-gray-800"
+            }`}
+          >
+            Records
+          </button>
           <button
             type="button"
             onClick={() => setTab("approvals")}
@@ -249,8 +249,8 @@ export default function PaymentLinksRecordsPage() {
               </span>
             ) : null}
           </button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       {error && tab === "records" ? (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-5 text-sm text-red-700">
@@ -298,44 +298,42 @@ export default function PaymentLinksRecordsPage() {
         </div>
       ) : null}
 
-      {tab === "records" ? (
-        teamView && teamSummaryMode && !drillMember ? (
-          <PaymentRecordsTable
-            team={team}
-            candidates={candidates}
-            candidatesAllTime={candidatesAllTime}
-            loading={loading}
-            period={period}
-            onPeriodChange={setPeriod}
-            filters={filters}
-            onFilterChange={setFilters}
-            onRefresh={loadData}
-            onMemberClick={(row: MemberPaymentSummary) =>
-              setDrillMember({
-                id: row.creator.id,
-                name: row.creator.full_name || row.creator.email || "Member",
-              })
-            }
-          />
-        ) : (
-          <CandidatePaymentRecords
-            ownerUserId={drillMember?.id}
-            ownerName={drillMember?.name}
-            showOwnerColumn={teamView || orgCandidatesView}
-            onBack={
-              drillMember
-                ? () => setDrillMember(null)
-                : undefined
-            }
-            onRefreshParent={loadData}
-          />
-        )
-      ) : (
+      {tab === "approvals" && showApprovals ? (
         <ManualPaymentApprovalsTab
           rows={pending}
           loading={approvalsLoading}
           canDeleteApproved={canDeleteApproved}
           onChanged={() => void refreshAll()}
+        />
+      ) : teamView && teamSummaryMode && !drillMember ? (
+        <PaymentRecordsTable
+          team={team}
+          candidates={candidates}
+          candidatesAllTime={candidatesAllTime}
+          loading={loading}
+          period={period}
+          onPeriodChange={setPeriod}
+          filters={filters}
+          onFilterChange={setFilters}
+          onRefresh={loadData}
+          onMemberClick={(row: MemberPaymentSummary) =>
+            setDrillMember({
+              id: row.creator.id,
+              name: row.creator.full_name || row.creator.email || "Member",
+            })
+          }
+        />
+      ) : (
+        <CandidatePaymentRecords
+          ownerUserId={drillMember?.id}
+          ownerName={drillMember?.name}
+          showOwnerColumn={teamView || orgCandidatesView}
+          onBack={
+            drillMember
+              ? () => setDrillMember(null)
+              : undefined
+          }
+          onRefreshParent={loadData}
         />
       )}
 

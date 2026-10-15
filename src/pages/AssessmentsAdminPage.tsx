@@ -241,7 +241,7 @@ function exportAttemptsCsv(
       ? r.interest_topics.join(", ")
       : r.domain_key === "custom"
         ? "Custom"
-        : opts.domains[r.domain_key] || r.domain_key,
+        : r.domain_label || opts.domains[r.domain_key] || r.domain_key,
     r.domain_key,
     r.score ?? "",
     r.stars ?? "",
@@ -277,7 +277,7 @@ function isSyncpediaAssessment(a: PeaklyyAssessment): boolean {
 
 function isSystemAssignment(a: PeaklyyAssessment): boolean {
   const slug = String(a.slug || "").toLowerCase();
-  return slug === "syncpedia-fresher-basics" || slug === "syncpedia-assignment";
+  return slug === "syncpedia-fresher-basics" || slug === "syncpedia-assignment" || slug === "peaklyy-hiring";
 }
 
 function assignmentUserId(value: unknown): string {
@@ -298,6 +298,11 @@ export default function AssessmentsAdminPage() {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [linkDialogId, setLinkDialogId] = useState<string | null>(null);
+  const [dialogResultLogin, setDialogResultLogin] = useState({
+    need: false,
+    email: "",
+    password: "",
+  });
   const [form, setForm] = useState({
     title: "Syncpedia Assignment",
     duration_minutes: 0,
@@ -306,6 +311,9 @@ export default function AssessmentsAdminPage() {
     once_per_candidate: true,
     anti_cheat: true,
     source_mode: "domain_bank" as PeaklyySourceMode,
+    need_results: false,
+    result_email: "",
+    result_password: "",
   });
   const [customQuestions, setCustomQuestions] = useState<PeaklyyCustomQuestionInput[]>([emptyQuestion()]);
   const [detailAttemptId, setDetailAttemptId] = useState<string | null>(null);
@@ -522,8 +530,25 @@ export default function AssessmentsAdminPage() {
     }
   };
 
+  const resultLoginBody = () => {
+    if (!form.need_results) return {};
+    const email = form.result_email.trim();
+    if (!email || !form.result_password) {
+      throw new Error("Email and password are required for the results login");
+    }
+    if (form.result_password.length < 8) {
+      throw new Error("Password must be at least 8 characters");
+    }
+    return {
+      need_results: true,
+      result_email: email,
+      result_password: form.result_password,
+    };
+  };
+
   const createMut = useMutation({
     mutationFn: () => {
+      const login = resultLoginBody();
       if (form.source_mode === "custom") {
         const cleaned = customQuestions
           .map((q) => {
@@ -562,6 +587,7 @@ export default function AssessmentsAdminPage() {
           brand_name: "Syncpedia",
           brand_tagline: "Cybersecurity · Ethical Hacking · AI — basics",
           questions: cleaned,
+          ...login,
         });
       }
       return assessmentsApi.create({
@@ -575,6 +601,7 @@ export default function AssessmentsAdminPage() {
         ui_theme: "syncpedia",
         brand_name: "Syncpedia",
         brand_tagline: "Cybersecurity · Ethical Hacking · AI — basics",
+        ...login,
       });
     },
     onSuccess: (r) => {
@@ -582,14 +609,40 @@ export default function AssessmentsAdminPage() {
         title: "Assignment created",
         description: `${r.source_mode === "custom" ? "Custom" : "Domain bank"} · permanent API key · ${
           r.source_mode === "domain_bank" || !r.duration_minutes ? "untimed" : `${r.duration_minutes} min`
-        } · ${r.question_count} questions`,
+        } · ${r.question_count} questions${r.result_login_email ? ` · results login ${r.result_login_email}` : ""}`,
       });
+      setForm((f) => ({ ...f, need_results: false, result_email: "", result_password: "" }));
       qc.invalidateQueries({ queryKey: ["peaklyy"] });
       setSelectedId(r.id);
       setAdminTab("syncpedia");
       if (form.source_mode === "custom") {
         setCustomQuestions([emptyQuestion()]);
       }
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: e.message }),
+  });
+
+  const resultLoginMut = useMutation({
+    mutationFn: () => {
+      if (!linkDialogId) return Promise.reject(new Error("Open an assignment first"));
+      if (!dialogResultLogin.need) return Promise.resolve(null);
+      const email = dialogResultLogin.email.trim();
+      if (!email || !dialogResultLogin.password) {
+        return Promise.reject(new Error("Email and password are required for the results login"));
+      }
+      if (dialogResultLogin.password.length < 8) {
+        return Promise.reject(new Error("Password must be at least 8 characters"));
+      }
+      return assessmentsApi.saveResultLogin(linkDialogId, email, dialogResultLogin.password);
+    },
+    onSuccess: (r) => {
+      if (!r) {
+        toast({ title: "Results login left unchanged" });
+        return;
+      }
+      toast({ title: "Results login saved", description: r.result_login_email });
+      setDialogResultLogin((s) => ({ ...s, password: "" }));
+      qc.invalidateQueries({ queryKey: ["peaklyy"] });
     },
     onError: (e: Error) => toast({ variant: "destructive", title: e.message }),
   });
@@ -782,7 +835,7 @@ export default function AssessmentsAdminPage() {
                             ) : null}
                             {r.domain_key && r.domain_key !== "custom" ? (
                               <Badge variant="outline" className="text-[10px] mt-0.5">
-                                {domains[r.domain_key] || r.domain_key}
+                                {r.domain_label || domains[r.domain_key] || r.domain_key}
                               </Badge>
                             ) : null}
                           </TableCell>
@@ -1098,6 +1151,38 @@ export default function AssessmentsAdminPage() {
               </p>
             )}
 
+            <label className="flex items-center gap-2 text-sm cursor-pointer pt-1">
+              <Checkbox
+                checked={form.need_results}
+                onCheckedChange={(v) => setForm((f) => ({ ...f, need_results: !!v }))}
+              />
+              Need to have results
+            </label>
+            {form.need_results ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label>Email</Label>
+                  <Input
+                    type="email"
+                    autoComplete="off"
+                    value={form.result_email}
+                    onChange={(e) => setForm((f) => ({ ...f, result_email: e.target.value }))}
+                    placeholder="results@example.com"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Password</Label>
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={form.result_password}
+                    onChange={(e) => setForm((f) => ({ ...f, result_password: e.target.value }))}
+                    placeholder="At least 8 characters"
+                  />
+                </div>
+              </div>
+            ) : null}
+
             <Button
               className="w-full bg-emerald-800 hover:bg-emerald-900 gap-1.5"
               onClick={() => createMut.mutate()}
@@ -1130,6 +1215,11 @@ export default function AssessmentsAdminPage() {
                       onClick={() => {
                         setSelectedId(a.id);
                         setLinkDialogId(a.id);
+                        setDialogResultLogin({
+                          need: Boolean(a.result_login_email),
+                          email: a.result_login_email || "",
+                          password: "",
+                        });
                       }}
                       className="w-full text-left"
                     >
@@ -1273,6 +1363,52 @@ export default function AssessmentsAdminPage() {
                 ) : (
                   <p className="text-xs text-muted-foreground">No API key yet — regenerate to create one.</p>
                 )}
+              </div>
+
+              <div className="space-y-2 border-t pt-3 min-w-0">
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <Checkbox
+                    checked={dialogResultLogin.need}
+                    onCheckedChange={(v) => setDialogResultLogin((s) => ({ ...s, need: !!v }))}
+                  />
+                  Need to have results
+                </label>
+                {dialogResultLogin.need ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Email</Label>
+                      <Input
+                        type="email"
+                        autoComplete="off"
+                        value={dialogResultLogin.email}
+                        onChange={(e) => setDialogResultLogin((s) => ({ ...s, email: e.target.value }))}
+                        placeholder="results@example.com"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Password</Label>
+                      <Input
+                        type="password"
+                        autoComplete="new-password"
+                        value={dialogResultLogin.password}
+                        onChange={(e) => setDialogResultLogin((s) => ({ ...s, password: e.target.value }))}
+                        placeholder="At least 8 characters"
+                      />
+                    </div>
+                  </div>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  className="bg-emerald-800 hover:bg-emerald-900"
+                  disabled={resultLoginMut.isPending}
+                  onClick={() => resultLoginMut.mutate()}
+                >
+                  {resultLoginMut.isPending ? "Saving…" : "OK"}
+                </Button>
+                <p className="text-[11px] text-muted-foreground">
+                  OK saves this email and password. The person signs in at the normal login and sees only this assignment’s results.
+                </p>
               </div>
 
               {isSuperAdmin && (
@@ -1483,7 +1619,7 @@ export default function AssessmentsAdminPage() {
                   </Badge>
                 ) : null}
                 <Badge variant="secondary">
-                  {domains[attemptDetail.data.domain_key] || attemptDetail.data.domain_key}
+                  {attemptDetail.data.domain_label || domains[attemptDetail.data.domain_key] || attemptDetail.data.domain_key}
                 </Badge>
               </div>
             ) : null}

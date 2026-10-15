@@ -26,6 +26,11 @@ if ($rawPath[0] !== '/') {
 if (strpos($rawPath, '..') !== false) {
     respond(['error' => 'Invalid path'], 400);
 }
+if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'assessment_viewer') {
+    if (strpos($rawPath, '/uploads/assessment_answers/') !== 0) {
+        respond(['error' => 'This account can only open assignment results'], 403);
+    }
+}
 
 $allowedPrefixes = [
     '/uploads/resumes/',
@@ -85,22 +90,43 @@ $userId = (string) ($tokenData['user_id'] ?? '');
 $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 
 if (strpos($rawPath, '/uploads/assessment_answers/') === 0) {
-    if ($role !== 'super_admin') {
-        respond(['error' => 'Forbidden'], 403);
-    }
     $found = false;
+    $like = '%' . $rawPath . '%';
     try {
-        $st = $db->prepare(
-            "SELECT id FROM peaklyy_attempt_answers
-             WHERE answer_json LIKE ? LIMIT 1"
-        );
-        $st->execute(['%' . $rawPath . '%']);
-        $found = (bool) $st->fetch(PDO::FETCH_ASSOC);
+        if ($role === 'assessment_viewer') {
+            ensureUsersResultAssessmentColumn($db);
+            $mineStmt = $db->prepare(
+                "SELECT result_assessment_id FROM users WHERE id = ? AND role = 'assessment_viewer' LIMIT 1"
+            );
+            $mineStmt->execute([$userId]);
+            $mine = trim((string) ($mineStmt->fetchColumn() ?: ''));
+            if ($mine !== '') {
+                $st = $db->prepare(
+                    "SELECT ans.id
+                     FROM peaklyy_attempt_answers ans
+                     INNER JOIN peaklyy_attempts att ON att.id = ans.attempt_id
+                     WHERE ans.answer_json LIKE ? AND att.assessment_id = ?
+                     LIMIT 1"
+                );
+                $st->execute([$like, $mine]);
+                $found = (bool) $st->fetch(PDO::FETCH_ASSOC);
+            }
+        } elseif ($role === 'super_admin') {
+            $st = $db->prepare(
+                "SELECT id FROM peaklyy_attempt_answers
+                 WHERE answer_json LIKE ? LIMIT 1"
+            );
+            $st->execute([$like]);
+            $found = (bool) $st->fetch(PDO::FETCH_ASSOC);
+        }
     } catch (Throwable $e) {
         $found = false;
     }
+    if ($role !== 'super_admin' && $role !== 'assessment_viewer') {
+        respond(['error' => 'Forbidden'], 403);
+    }
     if (!$found) {
-        respond(['error' => 'File not found'], 404);
+        respond(['error' => $role === 'assessment_viewer' ? 'Forbidden' : 'File not found'], $role === 'assessment_viewer' ? 403 : 404);
     }
 } elseif (strpos($rawPath, '/uploads/call_recordings/') === 0 || strpos($rawPath, '/uploads/recordings/') === 0) {
     $log = null;

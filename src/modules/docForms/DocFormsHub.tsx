@@ -41,14 +41,12 @@ import {
   DOC_FORM_ASSIGNABLE_ROLES,
   DOC_FORM_FIELD_TYPE_LABELS,
   DOC_FORM_FIELD_TYPES,
-  applyPlaceholders,
   defaultDocFormFields,
   docFormFieldIsContent,
   docFormFieldNeedsGrid,
   docFormFieldNeedsOptions,
   docFormKeyFromLabel,
   ensureUniqueDocFormKeys,
-  extractPlaceholderKeys,
   isAutoDocFormKey,
   uniqueDocFormKey,
   type DocForm,
@@ -75,7 +73,14 @@ import { buildPublicDocFormUrl } from "@/lib/applyFormUrl";
 import { ShareFormLinkDialog } from "@/components/forms/ShareFormLinkDialog";
 import { DocFormDetailDialog } from "@/components/forms/DocFormDetailDialog";
 import { ValidationRuleEditor } from "@/components/forms/ValidationRuleEditor";
-import { OFFER_AUTO_PLACEHOLDER_KEYS } from "@/lib/offerLetterPlaceholders";
+import { OFFER_AUTO_PLACEHOLDER_KEYS, applyOfferPlaceholders, canonicalOfferPlaceholderKey, getOfferTemplatePlaceholderKeys, lookupOfferPlaceholderValue } from "@/lib/offerLetterPlaceholders";
+import {
+  CERT_AUTO_PLACEHOLDER_KEYS,
+  applyCertPlaceholders,
+  canonicalCertPlaceholderKey,
+  getCertificateTemplatePlaceholderKeys,
+  lookupCertPlaceholderValue,
+} from "@/lib/certificatePlaceholders";
 import { ensureHtmlDocument, splitOfferHtmlPages } from "@/utils/offerLetterPdf";
 import { cn } from "@/lib/utils";
 import { filterAndSortAssignRoster } from "@/lib/assignRoster";
@@ -159,7 +164,13 @@ function downloadCsv(filename: string, rows: string[][]) {
   URL.revokeObjectURL(a.href);
 }
 type OfferTpl = { id: string; template_name: string; role_title?: string; html_content?: string; mail_json?: TemplateMailConfig | string | null };
-type CertTpl = { id: string; name: string; fields?: Record<string, string>; style?: Record<string, unknown> & TemplateMailConfig };
+type CertTpl = {
+  id: string;
+  name: string;
+  fields?: { title?: string; bodyText?: string; companyName?: string; domainName?: string };
+  layers?: Array<{ type?: string; content?: string }>;
+  style?: Record<string, unknown> & TemplateMailConfig;
+};
 
 function parseMailJson(raw: unknown): TemplateMailConfig {
   if (!raw) return {};
@@ -1837,62 +1848,51 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
 
       // Build placeholder list from linked template
       const tplId = link?.template_id || form.template_link?.template_id;
-      const tpl = templates.find((t) => t.id === tplId)?.raw;
+      let tpl = templates.find((t) => t.id === tplId)?.raw;
+      if (formType === "offer_letter" && tplId && (!tpl || !String(tpl.html_content || "").trim())) {
+        try {
+          const one = await api.offerLetters.template(String(tplId));
+          const row = (one as { data?: OfferTpl })?.data;
+          if (row && typeof row === "object") {
+            tpl = row;
+            setTemplates((prev) =>
+              prev.map((t) => (t.id === tplId ? { ...t, raw: { ...(t.raw || {}), ...row } } : t)),
+            );
+          }
+        } catch {
+          /* keep list row */
+        }
+      }
       let keys: string[] = [];
       if (formType === "offer_letter" && tpl) {
         const mail = parseMailJson(tpl.mail_json);
-        keys = extractPlaceholderKeys(
-          String(tpl.html_content || ""),
-          mail.mail_subject || "",
-          mail.mail_body || "",
-          mail.pdf_filename_pattern || "",
-        );
-        const emailKey = String(mail.recipient_email_placeholder || "recipient_email")
-          .replace(/^\{\{\s*|\s*\}\}$/g, "")
-          .trim();
-        if (emailKey && !keys.includes(emailKey)) keys.push(emailKey);
-        keys = keys.filter((k) => !["date", "ref_number", "letterhead_url"].includes(k));
+        keys = getOfferTemplatePlaceholderKeys(String(tpl.html_content || ""), {
+          mail_subject: mail.mail_subject || "",
+          mail_body: mail.mail_body || "",
+          recipient_email_placeholder: mail.recipient_email_placeholder || "recipient_email",
+          pdf_filename_pattern: mail.pdf_filename_pattern || "",
+        });
       } else if (formType === "certificate" && tpl) {
-        const style = (tpl.style || {}) as TemplateMailConfig & Record<string, unknown>;
-        const fields = tpl.fields || {};
-        const layers = Array.isArray(tpl.layers) ? tpl.layers : [];
-        const layerText = layers.map((l: any) => String(l.content || "")).join(" ");
-        keys = extractPlaceholderKeys(
-          layerText,
-          String(fields.title || ""),
-          String(style.mail_subject || ""),
-          String(style.mail_body || ""),
-          String(style.pdf_filename_pattern || ""),
-        );
-        // Only typed layers that actually exist on this template
-        const layerTypeToKey: Record<string, string> = {
-          name: "name",
-          domain: "domain",
-          date: "date",
-          company: "company",
-        };
-        for (const layer of layers) {
-          const mapped = layerTypeToKey[String(layer?.type || "")];
-          if (mapped && !keys.includes(mapped)) keys.push(mapped);
-        }
-        // Email for sending when issuing from forms
-        if (!keys.includes("email") && !keys.includes("recipient_email")) keys.push("email");
+        keys = getCertificateTemplatePlaceholderKeys(tpl);
+        if (!keys.includes("recipient_email")) keys.push("recipient_email");
       }
       if (!keys.length) {
         keys = (form.fields_json || []).map((f) => fieldKeyToPlaceholder(f.key));
       }
       setPlaceholders(keys);
       // Always sync table columns to the linked template's placeholders only
+      const canonKey = (raw: string) =>
+        formType === "offer_letter" ? canonicalOfferPlaceholderKey(raw) : canonicalCertPlaceholderKey(raw);
       const synced: DocFormColumnMap[] = keys.map((k) => {
-        const existing = maps.find((m) => m.placeholder_key === k);
-        return (
-          existing || {
-            id: crypto.randomUUID(),
-            label: k.replace(/_/g, " "),
-            placeholder_key: k,
-            editable: true,
-          }
-        );
+        const existing = maps.find((m) => m.placeholder_key === k || canonKey(m.placeholder_key) === k);
+        return existing
+          ? { ...existing, placeholder_key: k }
+          : {
+              id: crypto.randomUUID(),
+              label: k.replace(/_/g, " "),
+              placeholder_key: k,
+              editable: true,
+            };
       });
       setColumnMaps(synced);
     } catch (e: any) {
@@ -1999,9 +1999,27 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
     const form = forms.find((f) => f.id === activeFormId);
     const link = form?.template_link;
     const tplId = link?.template_id;
-    const tpl = templates.find((t) => t.id === tplId)?.raw;
+    let tpl = templates.find((t) => t.id === tplId)?.raw;
     if (!tplId || !tpl) {
       toast({ variant: "destructive", title: "Link a template first" });
+      return;
+    }
+    if (formType === "offer_letter" && !String(tpl.html_content || "").trim()) {
+      try {
+        const one = await api.offerLetters.template(String(tplId));
+        const row = (one as { data?: OfferTpl })?.data;
+        if (row && typeof row === "object") {
+          tpl = row;
+          setTemplates((prev) =>
+            prev.map((t) => (t.id === tplId ? { ...t, raw: { ...(t.raw || {}), ...row } } : t)),
+          );
+        }
+      } catch {
+        /* keep list row */
+      }
+    }
+    if (formType === "offer_letter" && !String(tpl.html_content || "").trim()) {
+      toast({ variant: "destructive", title: "Template HTML missing", description: "Reload the form link and try again." });
       return;
     }
 
@@ -2019,8 +2037,14 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
         if (m?.[1] && !m[1].includes("letterhead_url")) filled.letterhead_url = m[1];
       }
     }
-    const requiredKeys = placeholders.filter((k) => !OFFER_AUTO_PLACEHOLDER_KEYS.has(k));
-    const missing = requiredKeys.filter((k) => !String(filled[k] ?? "").trim());
+    const readValue = (key: string) =>
+      formType === "offer_letter"
+        ? lookupOfferPlaceholderValue(key, filled)
+        : lookupCertPlaceholderValue(key, filled);
+    const requiredKeys = placeholders.filter(
+      (k) => !OFFER_AUTO_PLACEHOLDER_KEYS.has(k) && !CERT_AUTO_PLACEHOLDER_KEYS.has(k),
+    );
+    const missing = requiredKeys.filter((k) => !String(readValue(k) ?? "").trim());
     if (missing.length) {
       toast({ variant: "destructive", title: "Missing required fields", description: missing.join(", ") });
       return;
@@ -2039,13 +2063,13 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
       let issuedPdfUrl = "";
       if (formType === "offer_letter") {
         const mail = parseMailJson(tpl.mail_json);
-        const html = applyPlaceholders(String(tpl.html_content || ""), filled);
-        const subject = applyPlaceholders(mail.mail_subject || "Offer Letter", filled);
-        const body = applyPlaceholders(mail.mail_body || "<p>Please find your offer letter attached.</p>", filled);
+        const html = applyOfferPlaceholders(String(tpl.html_content || ""), filled);
+        const subject = applyOfferPlaceholders(mail.mail_subject || "Offer Letter", filled);
+        const body = applyOfferPlaceholders(mail.mail_body || "<p>Please find your offer letter attached.</p>", filled);
         const emailKey = fieldKeyToPlaceholder(mail.recipient_email_placeholder || "recipient_email");
-        const email = String(filled[emailKey] || filled.recipient_email || filled.email || "").trim();
-        const name = String(filled.candidate_name || filled.name || "Candidate");
-        const filename = applyPlaceholders(mail.pdf_filename_pattern || "{{candidate_name}}_OfferLetter.pdf", filled);
+        const email = String(lookupOfferPlaceholderValue(emailKey, filled) || lookupOfferPlaceholderValue("recipient_email", filled) || "").trim();
+        const name = String(lookupOfferPlaceholderValue("candidate_name", filled) || "Candidate");
+        const filename = applyOfferPlaceholders(mail.pdf_filename_pattern || "{{candidate_name}}_OfferLetter.pdf", filled);
         if (!email) throw new Error("Recipient email is empty");
         const pdfBase64 = await (await import("@/utils/offerLetterPdf")).buildHtmlDocumentPdfBase64(html);
         await api.offerLetters.send({
@@ -2060,33 +2084,37 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
           pdf_base64: pdfBase64,
         });
       } else {
-        const email = String(filled.email || filled.recipient_email || "").trim();
-        const name = String(filled.name || filled.candidate_name || "Recipient");
+        const email = String(lookupCertPlaceholderValue("recipient_email", filled) || "").trim();
+        const name = String(lookupCertPlaceholderValue("recipient_name", filled) || "Recipient");
         if (!email) throw new Error("Recipient email is empty");
         const { captureCertificatePdfBase64 } = await import("@/pages/CertificatesPage");
+        const domainName = String(lookupCertPlaceholderValue("domain_name", filled) || "");
+        const companyName = String(lookupCertPlaceholderValue("company_name", filled) || "");
+        const issueDate = String(lookupCertPlaceholderValue("issue_date", filled) || filled.date || new Date().toISOString().slice(0, 10));
+        const certId = String(filled.certID || filled.cert_id || filled.certificate_id || "");
         const pdfBase64 = await captureCertificatePdfBase64({
           template: tpl,
           recipientName: name,
-          domainName: filled.domain || filled.course || "",
-          companyName: filled.company,
-          date: filled.date || new Date().toISOString().slice(0, 10),
-          certID: filled.certID || filled.cert_id || filled.certificate_id,
+          domainName,
+          companyName,
+          date: issueDate,
+          certID: certId,
           placeholderValues: filled,
         });
         const issued = await api.certificates.issue({
           recipientId: `docform-${playRow.id}`,
           templateId: tplId,
-          syncId: filled.certID || filled.cert_id || `CF-${Date.now()}`,
+          syncId: certId || `CF-${Date.now()}`,
           recipientName: name,
           recipientEmail: email,
-          courseName: filled.domain || "",
-          issueDate: filled.date || new Date().toISOString().slice(0, 10),
+          courseName: domainName,
+          issueDate,
           pdf_base64: pdfBase64,
         });
         issuedPdfUrl = String((issued as any)?.pdfUrl || "").trim();
         const mail = parseMailJson(tpl.mail_json || tpl.style);
-        const subject = applyPlaceholders(mail.mail_subject || "Certificate", filled);
-        const body = applyPlaceholders(mail.mail_body || "<p>Please find your certificate attached.</p>", { ...filled, recipient_name: name });
+        const subject = applyCertPlaceholders(mail.mail_subject || "Certificate", { ...filled, recipient_name: name, recipient_email: email });
+        const body = applyCertPlaceholders(mail.mail_body || "<p>Please find your certificate attached.</p>", { ...filled, recipient_name: name, recipient_email: email });
         if (issuedPdfUrl) {
           await api.certificates.sendEmail({
             certificateId: String((issued as any)?.certificateId || (issued as any)?.syncId || ""),
@@ -2105,7 +2133,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
         recipient_email: filled.recipient_email || filled.email,
         recipient_name: filled.candidate_name || filled.name,
         pdf_url: issuedPdfUrl || undefined,
-        email_subject: formType === "offer_letter" ? applyPlaceholders(parseMailJson(tpl.mail_json).mail_subject || "Offer Letter", filled) : "Certificate",
+        email_subject: formType === "offer_letter" ? applyOfferPlaceholders(parseMailJson(tpl.mail_json).mail_subject || "Offer Letter", filled) : "Certificate",
       });
 
       toast({ title: "Issued", description: formType === "certificate" ? "Certificate generated and emailed." : "Offer letter generated and emailed." });
@@ -2118,24 +2146,33 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
     }
   };
 
-  const openPreview = (row: DocFormSubmission) => {
+  const openPreview = async (row: DocFormSubmission) => {
     const form = forms.find((f) => f.id === activeFormId);
     const tplId = form?.template_link?.template_id;
-    const tpl = templates.find((t) => t.id === tplId)?.raw;
+    let tpl = templates.find((t) => t.id === tplId)?.raw;
     if (!tpl) {
       toast({ variant: "destructive", title: "No linked template" });
       return;
     }
+    if (formType === "offer_letter" && !String(tpl.html_content || "").trim() && tplId) {
+      try {
+        const one = await api.offerLetters.template(String(tplId));
+        const full = (one as { data?: OfferTpl })?.data;
+        if (full && typeof full === "object") tpl = full;
+      } catch {
+        /* keep list row */
+      }
+    }
     const values = row.values_json || {};
     if (formType === "offer_letter") {
-      setPreviewHtml(applyPlaceholders(String(tpl.html_content || ""), values));
+      setPreviewHtml(applyOfferPlaceholders(String(tpl.html_content || ""), values));
     } else {
       setPreviewHtml(
         `<div style="padding:24px;font-family:Georgia,serif">
           <h2>Certificate preview</h2>
-          <p><strong>Name:</strong> ${values.name || values.candidate_name || ""}</p>
-          <p><strong>Domain:</strong> ${values.domain || ""}</p>
-          <p><strong>Date:</strong> ${values.date || ""}</p>
+          <p><strong>Name:</strong> ${lookupCertPlaceholderValue("recipient_name", values) || ""}</p>
+          <p><strong>Domain:</strong> ${lookupCertPlaceholderValue("domain_name", values) || ""}</p>
+          <p><strong>Date:</strong> ${lookupCertPlaceholderValue("issue_date", values) || values.date || ""}</p>
           <p class="muted">Full canvas preview is available from the Certificates template editor.</p>
         </div>`,
       );
@@ -2170,7 +2207,11 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
                   row.respondent_email || row.values_json?.email || "",
                   row.referred_by || "",
                   row.status || "",
-                  ...columnMaps.map((c) => row.values_json?.[c.placeholder_key] ?? ""),
+                  ...columnMaps.map((c) =>
+                    (formType === "offer_letter"
+                      ? lookupOfferPlaceholderValue(c.placeholder_key, row.values_json || {})
+                      : lookupCertPlaceholderValue(c.placeholder_key, row.values_json || {})) ?? "",
+                  ),
                 ]);
                 downloadCsv(`${(form?.slug || form?.name || "submissions").replace(/[^\w.-]+/g, "_")}.csv`, [headers, ...rows]);
               }}
@@ -2238,7 +2279,11 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
                       <TableCell key={col.id}>
                         <Input
                           className="h-8 text-xs bg-white"
-                          value={row.values_json?.[col.placeholder_key] ?? ""}
+                          value={
+                            (formType === "offer_letter"
+                              ? lookupOfferPlaceholderValue(col.placeholder_key, row.values_json || {})
+                              : lookupCertPlaceholderValue(col.placeholder_key, row.values_json || {})) ?? ""
+                          }
                           onChange={(e) => void patchCell(row, col.placeholder_key, e.target.value)}
                         />
                       </TableCell>
@@ -2248,7 +2293,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
                         <Button size="icon" variant="outline" className="h-7 w-7" title="Play / Issue" onClick={() => openPlay(row)}>
                           <Play className="h-3.5 w-3.5" />
                         </Button>
-                        <Button size="icon" variant="outline" className="h-7 w-7" title="Preview" onClick={() => openPreview(row)}>
+                        <Button size="icon" variant="outline" className="h-7 w-7" title="Preview" onClick={() => void openPreview(row)}>
                           <Eye className="h-3.5 w-3.5" />
                         </Button>
                         <Button size="icon" variant="outline" className="h-7 w-7" title="Edit" onClick={() => { setEditRow(row); setPlayValues({ ...(row.values_json || {}) }); }}>
@@ -2291,7 +2336,15 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
               {placeholders.filter(Boolean).map((key) => (
                 <div key={key}>
                   <Label className="text-xs">{key}</Label>
-                  <Input className="h-8 text-xs" value={playValues[key] ?? ""} onChange={(e) => setPlayValues((p) => ({ ...p, [key]: e.target.value }))} />
+                  <Input
+                    className="h-8 text-xs"
+                    value={
+                      (formType === "offer_letter"
+                        ? lookupOfferPlaceholderValue(key, playValues)
+                        : lookupCertPlaceholderValue(key, playValues)) ?? ""
+                    }
+                    onChange={(e) => setPlayValues((p) => ({ ...p, [key]: e.target.value }))}
+                  />
                 </div>
               ))}
             </div>
@@ -2314,7 +2367,15 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
               {placeholders.filter(Boolean).map((key) => (
                 <div key={key}>
                   <Label className="text-xs">{key}</Label>
-                  <Input className="h-8 text-xs" value={playValues[key] ?? ""} onChange={(e) => setPlayValues((p) => ({ ...p, [key]: e.target.value }))} />
+                  <Input
+                    className="h-8 text-xs"
+                    value={
+                      (formType === "offer_letter"
+                        ? lookupOfferPlaceholderValue(key, playValues)
+                        : lookupCertPlaceholderValue(key, playValues)) ?? ""
+                    }
+                    onChange={(e) => setPlayValues((p) => ({ ...p, [key]: e.target.value }))}
+                  />
                 </div>
               ))}
             </div>

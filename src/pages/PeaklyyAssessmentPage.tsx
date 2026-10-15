@@ -120,6 +120,7 @@ export default function PeaklyyAssessmentPage() {
 
   const assessment = data?.data;
   const domains = data?.domains ?? {};
+  const isHiring = Object.keys(domains).some((key) => key.startsWith("hiring_"));
   const degrees = data?.degrees ?? [];
   const isCustom = (assessment?.source_mode || "domain_bank") === "custom";
   const passScore = Number(assessment?.pass_score) || 70;
@@ -131,14 +132,24 @@ export default function PeaklyyAssessmentPage() {
     const qCount = Number(assessment.question_count) || 30;
     const pass = Number(assessment.pass_score) || 70;
     const lines: string[] = [];
-    if (duration > 0) {
-      lines.push(`Duration: ${duration} minutes`);
+    if (isCustom) {
+      if (duration > 0) {
+        lines.push(`Duration: ${duration} minutes`);
+      } else {
+        lines.push("No time limit — submit when you finish");
+      }
+      lines.push(`${qCount} MCQ question${qCount === 1 ? "" : "s"}`);
+    } else if (Object.keys(domains).some((key) => key.startsWith("hiring_"))) {
+      const mcqMins = Number((assessment as { mcq_duration_minutes?: number })?.mcq_duration_minutes) || 15;
+      const taskMins = Number((assessment as { task_duration_minutes?: number })?.task_duration_minutes) || 20;
+      lines.push(`Part 1 — 30 MCQs · ${mcqMins} minutes (auto-scored)`);
+      lines.push("Part 2 unlocks only after you finish Part 1");
+      lines.push(
+        `Part 2 — 4 written questions · ${taskMins} minutes · type answers in the notepad only (no file upload)`,
+      );
+      lines.push("Choose a role: Web Developer or Data Analyst");
     } else {
       lines.push("No time limit — submit when you finish");
-    }
-    if (isCustom) {
-      lines.push(`${qCount} MCQ question${qCount === 1 ? "" : "s"}`);
-    } else {
       lines.push("15 beginner MCQ questions + 1 practical task for your domain");
       lines.push("MCQs are auto-scored; practical tasks are recorded for review");
     }
@@ -154,7 +165,7 @@ export default function PeaklyyAssessmentPage() {
       `Score ${pass}+ to pass (1★ at 70, 2★ at 80, 3★ at 90, 4★ at 100). Below ${pass} = Not pass`,
     );
     return lines;
-  }, [assessment, data?.instructions, isCustom]);
+  }, [assessment, data?.instructions, domains, isCustom]);
 
   useEffect(() => {
     if (isCustom) {
@@ -310,7 +321,8 @@ export default function PeaklyyAssessmentPage() {
   const current = questions[idx];
   const progress = questions.length ? ((idx + 1) / questions.length) * 100 : 0;
   const showNotepad = !!(current && (current.allow_notepad || current.q_type === "task"));
-  const showUpload = !!(current && current.allow_upload);
+  // Hiring Part 2 is typing-only for now (no file upload).
+  const showUpload = !!(current && current.allow_upload && !(isHiring && testPhase === "task"));
 
   const currentAnswerObj = useMemo(() => {
     if (!current) return { text: "", option: "", file_path: "", file_name: "" };
@@ -489,23 +501,39 @@ export default function PeaklyyAssessmentPage() {
         <span className="pk-brand-peak">{brandPeak}</span>
         <span className="pk-brand-lyy">{brandLyy || "lyy"}</span>
       </div>
-      <span className="pk-badge">AI-Powered Career Bridge</span>
-      <h1>Build real career proof with domain screening.</h1>
+      <span className="pk-badge">{isHiring ? "Hiring assessment" : "AI-Powered Career Bridge"}</span>
+      <h1 className={isHiring ? "pk-brand-title-name" : undefined}>{isHiring ? "Peaklyy Hiring" : "Build real career proof with domain screening."}</h1>
       <p>
-        {assessment.brand_tagline || "Learn · Earn · Grow"} —{" "}
-        {isCustom
-          ? "custom assignment with your questions, timed scoring, and star ratings."
-          : "beginner-friendly domain screening with 15 MCQs + 1 practical task."}
+        {isHiring
+          ? "Choose Web Developer or Data Analyst. Each role has 30 multiple-choice questions and 4 practical tasks. Questions are scored automatically. Tasks are saved for review. There is no time limit."
+          : `${assessment.brand_tagline || "Learn · Earn · Grow"} — ${
+              isCustom
+                ? "custom assignment with your questions, timed scoring, and star ratings."
+                : "beginner-friendly domain screening with 15 MCQs + 1 practical task."
+            }`}
       </p>
       <div className="pk-social-row">
         <span className="pk-social-dot" aria-hidden />
-        <span className="pk-social-label">Assignment portal</span>
+        <span className="pk-social-label">{isHiring ? "Web Developer · Data Analyst" : "Assignment portal"}</span>
       </div>
-      <div className="pk-feature">
-        <strong>Candidates</strong>
-        <span>Show skills through scored MCQs and practical domain tasks.</span>
-      </div>
-      <div className="pk-footer-strip">Start your career journey today</div>
+      {isHiring ? (
+        <>
+          <div className="pk-feature">
+            <strong>Web Developer</strong>
+            <span>HTML, CSS, JavaScript, React, APIs, and four practical builds.</span>
+          </div>
+          <div className="pk-feature">
+            <strong>Data Analyst</strong>
+            <span>SQL, Excel, Python, and a sales analysis with four practical tasks.</span>
+          </div>
+        </>
+      ) : (
+        <div className="pk-feature">
+          <strong>Candidates</strong>
+          <span>Show skills through scored MCQs and practical domain tasks.</span>
+        </div>
+      )}
+      <div className="pk-footer-strip">{isHiring ? "Select your role and begin" : "Start your career journey today"}</div>
     </aside>
   );
 
@@ -517,10 +545,14 @@ export default function PeaklyyAssessmentPage() {
           <div className="pk-main">
             {step === "register" ? (
               <div className="pk-card overflow-hidden">
-                <div className="pk-header">Candidate Registration</div>
+                <div className="pk-header">{isHiring ? "Peaklyy Hiring" : "Candidate Registration"}</div>
                 <div className="pk-body space-y-3">
                   <p className="text-xs text-center font-medium" style={{ color: "var(--pk-muted)" }}>
-                    {isCustom ? "Custom assignment · Peaklyy" : "Domain screening · Peaklyy"}
+                    {isCustom
+                      ? "Custom assignment · Peaklyy"
+                      : isHiring
+                        ? "Web Developer or Data Analyst · 30 MCQs and 4 tasks · no time limit"
+                        : "Domain screening · Peaklyy"}
                   </p>
                   <Field label="Full Name">
                     <Input
@@ -545,10 +577,10 @@ export default function PeaklyyAssessmentPage() {
                     />
                   </Field>
                   {!isCustom ? (
-                    <Field label="Domain">
+                    <Field label={isHiring ? "Role" : "Domain"}>
                       <Select value={reg.domain_key} onValueChange={(v) => setReg((r) => ({ ...r, domain_key: v }))}>
                         <SelectTrigger>
-                          <SelectValue placeholder="Select domain" />
+                          <SelectValue placeholder={isHiring ? "Select role" : "Select domain"} />
                         </SelectTrigger>
                         <SelectContent>
                           {Object.entries(domains).map(([k, label]) => (
@@ -586,7 +618,7 @@ export default function PeaklyyAssessmentPage() {
                     disabled={busy}
                     onClick={async () => {
                       if (!isCustom && !reg.domain_key) {
-                        toast({ variant: "destructive", title: "Please select a domain" });
+                        toast({ variant: "destructive", title: isHiring ? "Please select a role" : "Please select a domain" });
                         return;
                       }
                       setBusy(true);
@@ -802,7 +834,9 @@ export default function PeaklyyAssessmentPage() {
                     <span className="text-xs font-medium text-emerald-700">Saved — we received this answer</span>
                   ) : (
                     <span className="text-xs" style={{ color: "var(--pk-muted)" }}>
-                      Save notepad text, or upload a file to auto-save and continue
+                      {isHiring && testPhase === "task"
+                        ? "Type your answer in the notepad, then save"
+                        : "Save notepad text, or upload a file to auto-save and continue"}
                     </span>
                   )}
                 </div>
@@ -823,7 +857,9 @@ export default function PeaklyyAssessmentPage() {
                 ) : (
                   <Button className="pk-btn" disabled={busy} onClick={() => void submitAll()}>
                     {testPhase === "task"
-                      ? "Submit tasks →"
+                      ? isHiring
+                        ? "Submit written answers →"
+                        : "Submit tasks →"
                       : testPhase === "mcq"
                         ? "Submit MCQ test →"
                         : "Submit assignment →"}
@@ -878,8 +914,10 @@ export default function PeaklyyAssessmentPage() {
                   {result.passed ? "Passed (MCQ)" : `Not pass (below ${passScore})`}
                 </p>
                 <p className="text-sm" style={{ color: "var(--pk-muted)" }}>
-                  These MCQ results {result.passed ? "are sent to the partner website" : "were recorded"}. Next:
-                  complete 1 practical task (notepad / file upload) for manual grading.
+                  These MCQ results {result.passed ? "are sent to the partner website" : "were recorded"}. Next:{" "}
+                  {isHiring
+                    ? "complete 4 written questions in the notepad within 20 minutes (typing only — answers are saved for review)."
+                    : "complete 1 practical task (notepad / file upload) for manual grading."}
                 </p>
                 <Button
                   className="w-full pk-btn"
@@ -887,7 +925,7 @@ export default function PeaklyyAssessmentPage() {
                     setStep("task_instructions");
                   }}
                 >
-                  Continue to Part 2 — Tasks →
+                  {isHiring ? "Continue to Part 2 — Written questions →" : "Continue to Part 2 — Tasks →"}
                 </Button>
                 {result.passed && result.redirect_url ? (
                   <Button variant="outline" className="w-full" asChild>
@@ -903,20 +941,34 @@ export default function PeaklyyAssessmentPage() {
       {step === "task_instructions" ? (
         <div className="pk-center-wrap">
           <div className="pk-card overflow-hidden w-full max-w-lg">
-            <div className="pk-header">Part 2 — Practical tasks</div>
+            <div className="pk-header">{isHiring ? "Part 2 — Written questions" : "Part 2 — Practical tasks"}</div>
             <div className="pk-body space-y-4">
               <p className="text-sm" style={{ color: "var(--pk-muted)" }}>
-                Answer each task in the notepad and/or upload your file, then click <strong>Save answer</strong>. When
-                finished, submit the task test. Reviewers will grade uploads separately from your MCQ score.
+                {isHiring ? (
+                  <>
+                    You have <strong>20 minutes</strong>. Type your answer for each of the <strong>4 questions</strong>{" "}
+                    in its notepad (no file upload), then click <strong>Save answer</strong>. When finished, submit
+                    Part 2. Reviewers will check notepad answers later (separate from your MCQ score).
+                  </>
+                ) : (
+                  <>
+                    Answer each task in the notepad and/or upload your file, then click <strong>Save answer</strong>. When
+                    finished, submit the task test. Reviewers will grade uploads separately from your MCQ score.
+                  </>
+                )}
               </p>
               <ul className="pk-instr-list">
                 <li>
                   <ShieldAlert className="h-4 w-4" />
-                  <span>5 domain tasks · notepad and file upload</span>
+                  <span>
+                    {isHiring
+                      ? "4 written questions · 20 minutes · typing only"
+                      : "1 domain task · notepad and file upload"}
+                  </span>
                 </li>
                 <li>
                   <ShieldAlert className="h-4 w-4" />
-                  <span>Not auto-scored — saved for manual grading</span>
+                  <span>Not auto-scored — saved for later review</span>
                 </li>
                 <li>
                   <ShieldAlert className="h-4 w-4" />
@@ -934,7 +986,9 @@ export default function PeaklyyAssessmentPage() {
                       toast({
                         variant: "destructive",
                         title: "Fullscreen required",
-                        description: "Allow fullscreen to start the task test.",
+                        description: isHiring
+                          ? "Allow fullscreen to start the written questions."
+                          : "Allow fullscreen to start the task test.",
                       });
                       setBusy(false);
                       return;
@@ -946,7 +1000,9 @@ export default function PeaklyyAssessmentPage() {
                     setDomainLabel(res.domain_label);
                     setAntiCheat(res.anti_cheat);
                     setTestPhase("task");
-                    setPartTitle(res.title || "Part 2 — Practical tasks");
+                    setPartTitle(
+                      res.title || (isHiring ? "Part 2 — Written questions" : "Part 2 — Practical tasks"),
+                    );
                     setAnswers({});
                     setSavedIds({});
                     setIdx(0);
@@ -956,14 +1012,14 @@ export default function PeaklyyAssessmentPage() {
                     exitFullscreenSafe();
                     toast({
                       variant: "destructive",
-                      title: e instanceof Error ? e.message : "Could not start tasks",
+                      title: e instanceof Error ? e.message : "Could not start Part 2",
                     });
                   } finally {
                     setBusy(false);
                   }
                 }}
               >
-                Start Part 2 — Tasks →
+                {isHiring ? "Start Part 2 — Written questions →" : "Start Part 2 — Tasks →"}
               </Button>
             </div>
           </div>

@@ -1,8 +1,10 @@
 <?php
+// Direct HTTP access blocked (nginx may ignore .htaccess)
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 /**
  * Syncpedia Basics question banks (generated).
  * 100 quantitative aptitude + 100 per domain. Attempt paper is 10 aptitude + 20 domain in 20 minutes.
- * Do not edit by hand — regenerate via _emit_basics_banks.py
+ * Question bank shipped with the API. Edit this file directly.
  */
 function syncpediaBasicsBankDefs(): array
 {

@@ -17,6 +17,9 @@ import * as perms from '@/lib/permissions';
 import { Plus, BookOpen, Download, Upload, MoreHorizontal, Pencil, Trash2, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { buildCourseTemplateCsv, downloadCourseTemplate, downloadCourseTemplateExcel, mapCsvRowsToCourses } from '@/lib/courseImportCsv';
 import { parseLeadImportFile } from '@/lib/leadImportCsv';
+import { isSyncpediaOrganization } from '@/lib/orgFeatures';
+import { normalizeAppRole } from '@/lib/roleUtils';
+import { LmsCoursesView } from '@/components/lms/LmsCoursesView';
 
 type Course = {
  id: string; name: string; description: string; price: number;
@@ -29,6 +32,18 @@ const CAN_DELETE_ROLES = ['super_admin', 'admin'];
 const CAN_TOGGLE_ROLES = ['super_admin', 'admin', 'manager'];
 
 export default function Courses() {
+ const { role, organization } = useAuth();
+ // Syncpedia (and super_admin): show LMS catalogue only — no CRM course CRUD.
+ // Keep this branch in a separate component so CRM hooks are not called conditionally.
+ const useLmsCatalogue =
+   normalizeAppRole(role) === 'super_admin' || isSyncpediaOrganization(organization);
+ if (useLmsCatalogue) {
+   return <LmsCoursesView />;
+ }
+ return <CrmCoursesAdmin />;
+}
+
+function CrmCoursesAdmin() {
  const { toast } = useToast();
  const { role, organization } = useAuth();
  const isMobile = useIsMobile();

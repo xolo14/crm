@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
-  BarChart3, BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, CalendarRange, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone, Tag, Video
+  BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, CalendarRange, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone, Tag, Video
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import syncpediaLogoTransparent from '@/assets/syncpedia-logo-transparent.png';
@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { NotificationBell } from '@/components/NotificationBell';
 import { canAccessFresherSalary, canAccessOfferLetters, canAccessCertificates, canAccessPayslip, canAccessPaymentRecords, canAccessPaymentsPage, canAccessVideoIntros } from '@/lib/orgAccess';
-import { featureKeyForPath, isOrgFeatureEnabled } from '@/lib/orgFeatures';
+import { featureKeyForPath, isOrgFeatureEnabled, isSyncpediaOrganization } from '@/lib/orgFeatures';
 import { managerFeatureKeyForPath, managerHasPageAccess, operationalManagerHasPageAccess } from '@/lib/managerPageAccess';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import { useFresherSalaryAccess } from '@/hooks/useFresherSalaryAccess';
@@ -176,6 +176,12 @@ const navItems: NavItem[] = [
     roles: ['super_admin', 'org', 'manager', 'sales_representative', 'operational_manager'],
   },
   {
+    to: '/live-classes',
+    icon: Video,
+    label: 'Live Classes',
+    roles: ['super_admin', 'org', 'manager', 'operational_manager'],
+  },
+  {
     to: '/timetables',
     icon: CalendarRange,
     label: 'Timetables',
@@ -214,24 +220,16 @@ const navItems: NavItem[] = [
   {
     to: '/marketing-admin', icon: Mail, label: 'Marketing', roles: ['super_admin', 'org'],
     children: [
-      { to: '/marketing-email', icon: Mail, label: 'Email Templates', roles: ['super_admin', 'org'] },
-      { to: '/marketing-whatsapp', icon: MessageSquare, label: 'WhatsApp Templates', roles: ['super_admin', 'org'] },
-      { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['super_admin', 'org'] },
-      { to: '/marketing/whatsapp-analytics', icon: MessageSquare, label: 'WhatsApp Analytics', roles: ['super_admin', 'org'] },
+      { to: '/marketing-email', icon: Mail, label: 'Email Marketing', roles: ['super_admin', 'org'] },
+      { to: '/marketing-whatsapp', icon: MessageSquare, label: 'WhatsApp Marketing', roles: ['super_admin', 'org'] },
       { to: '/marketing/meta-ads', icon: Megaphone, label: 'Meta Ads', roles: ['super_admin', 'org'] },
     ],
   },
   {
     to: '/marketing/portal', icon: Mail, label: 'Email Marketing', roles: ['marketing', 'operational_manager'],
-    children: [
-      { to: '/marketing/analytics', icon: BarChart3, label: 'Email Analytics', roles: ['marketing', 'operational_manager'] },
-    ],
   },
   {
     to: '/marketing/whatsapp', icon: MessageSquare, label: 'WhatsApp Marketing', roles: ['marketing', 'operational_manager'],
-    children: [
-      { to: '/marketing/whatsapp-analytics', icon: BarChart3, label: 'WA Analytics', roles: ['marketing', 'operational_manager'] },
-    ],
   },
   { to: '/marketing/form-leads', icon: FileText, label: 'Form Leads', roles: ['marketing'] },
   { to: '/marketing/imported-leads', icon: Users, label: 'Imported Leads', roles: ['marketing'] },
@@ -369,6 +367,12 @@ function navItemAllowed(
   }
 
   if (item.to === "/offer-letters") return canAccessOfferLetters(normalized, organization, pageAccess);
+  // Syncpedia LMS overlay — not a generic org feature flag
+  if (item.to === "/live-classes") {
+    if (normalized === "super_admin") return true;
+    return isSyncpediaOrganization(organization);
+  }
+
   if (item.to === "/video-intros") return canAccessVideoIntros(normalized, organization, pageAccess);
   if (item.to === "/fresher-salary-tracker") {
     if (!canAccessFresherSalary(normalized, organization, pageAccess)) return false;
@@ -442,17 +446,20 @@ function SidebarContent({
   const currentPath = location.pathname;
   const fresherAccess = useFresherSalaryAccess();
   const isSuperAdmin = normalizeAppRole(role) === "super_admin";
+  const resultsOnly = normalizeAppRole(role) === "assessment_viewer";
   const { data: myAssignmentsRes } = useQuery({
     queryKey: ["my_assignments"],
     queryFn: () => assessmentsApi.myAssignments(),
-    enabled: Boolean(role && !isSuperAdmin),
+    enabled: Boolean(role && !isSuperAdmin && !resultsOnly),
     staleTime: 60_000,
   });
   const hasAssignedAssignments = isSuperAdmin || Boolean(myAssignmentsRes?.data && myAssignmentsRes.data.length > 0);
 
-  const filteredNav = navItems.filter((item) =>
-    navItemAllowed(item, role, organization, pageAccess, fresherAccess.enrolled, hasAssignedAssignments),
-  );
+  const filteredNav = resultsOnly
+    ? []
+    : navItems.filter((item) =>
+        navItemAllowed(item, role, organization, pageAccess, fresherAccess.enrolled, hasAssignedAssignments),
+      );
   const [showNewBadge, setShowNewBadge] = React.useState<boolean>(
     !localStorage.getItem("cert_nav_seen")
   );
@@ -533,6 +540,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const [compactMode, setCompactMode] = useState(() => storedAppearance().compactMode);
   const [sheetOpen, setSheetOpen] = useState(false);
   const showOrgViewingBadge = role === 'super_admin' && !!organization && location.pathname === '/org-crm';
+  const resultsOnly = normalizeAppRole(role) === "assessment_viewer";
 
   useEffect(() => {
     document.documentElement.classList.toggle("crm-compact", compactMode);
@@ -561,6 +569,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       {/* Desktop sidebar */}
       <aside className={cn(
         "hidden md:flex flex-col transition-all duration-200 relative shrink-0",
+        resultsOnly && "md:hidden",
         collapsed ? "w-16" : "w-60"
       )}>
         <SidebarContent collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} />
@@ -579,6 +588,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
       >
         <div className="flex items-center gap-3 px-4 py-3 min-h-[52px]">
+          {resultsOnly ? null : (
           <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="h-10 w-10 rounded-xl touch-target shrink-0"><Menu className="h-5 w-5" /></Button>
@@ -594,6 +604,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               />
             </SheetContent>
           </Sheet>
+          )}
           <div className="flex min-w-0 items-center gap-2">
             {organization?.logo_url ? (
               <>
@@ -615,7 +626,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             )}
           </div>
           <div className="ml-auto flex items-center gap-1 shrink-0">
-            <NotificationBell />
+            {resultsOnly ? null : <NotificationBell />}
             <HeaderUserMenu profile={profile} role={role} onSignOut={handleSignOut} />
           </div>
         </div>
@@ -636,7 +647,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             )}
           </div>
           <div className="flex items-center gap-1">
-            <NotificationBell />
+            {resultsOnly ? null : <NotificationBell />}
             <HeaderUserMenu profile={profile} role={role} onSignOut={handleSignOut} />
           </div>
         </div>

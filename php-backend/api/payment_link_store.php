@@ -516,7 +516,7 @@ function paymentLinkUpsertFromRazorpay(
         );
     }
 
-    leadFormSyncLeadPaymentFromNotes($notes, $status, $amountPaid);
+    leadFormSyncLeadPaymentFromNotes($notes, $status, $amountPaid, $amount);
 
     return paymentLinkFindByRazorpayId($plinkId);
 }
@@ -961,19 +961,20 @@ function paymentLinkMergeRazorpayWithCrm(array $item, array $crmRow): array
 }
 
 /**
- * Re-fetch recent pending links from Razorpay so paid status appears without waiting on webhooks.
+ * Re-fetch open links from Razorpay so a later partial payment is saved
+ * without waiting on a webhook. Covers links created in the last 120 days.
+ * Partially paid links are checked first so a second payment on an older
+ * link is not skipped when many newer unpaid links are also open.
  *
  * @param array<int, mixed> $items
  */
 function paymentLinksRefreshStalePending(array &$items, int $maxRefresh = 80): void
 {
     $now = time();
-    $refreshed = 0;
+    $maxAge = 120 * 86400;
+    $queue = [];
 
     foreach ($items as $idx => $item) {
-        if ($refreshed >= $maxRefresh) {
-            break;
-        }
         if (!is_array($item)) {
             continue;
         }
@@ -984,7 +985,7 @@ function paymentLinksRefreshStalePending(array &$items, int $maxRefresh = 80): v
         }
 
         $createdAt = (int) ($item['created_at'] ?? 0);
-        if ($createdAt > 0 && ($now - $createdAt) > 30 * 86400) {
+        if ($createdAt > 0 && ($now - $createdAt) > $maxAge) {
             continue;
         }
 
@@ -992,6 +993,29 @@ function paymentLinksRefreshStalePending(array &$items, int $maxRefresh = 80): v
         if ($id === '') {
             continue;
         }
+
+        $queue[] = [
+            'idx' => $idx,
+            'id' => $id,
+            'partial' => $status === 'partially_paid' ? 0 : 1,
+            'created' => $createdAt,
+        ];
+    }
+
+    usort($queue, static function (array $a, array $b): int {
+        if ($a['partial'] !== $b['partial']) {
+            return $a['partial'] <=> $b['partial'];
+        }
+        return $a['created'] <=> $b['created'];
+    });
+
+    $refreshed = 0;
+    foreach ($queue as $job) {
+        if ($refreshed >= $maxRefresh) {
+            break;
+        }
+        $idx = $job['idx'];
+        $id = $job['id'];
 
         try {
             $fresh = razorpayFetchPaymentLink($id);
@@ -1245,10 +1269,39 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
 }
 
 /**
- * Keep lead.tags payment fields in sync with Razorpay link status.
- * Paid / partially_paid → paid; cancelled / expired / created → not_paid.
+ * Lead-form offer letters and certificates run only when the link is fully settled.
+ *
+ * Fully paid: amount > 0 and amount_paid >= amount, or mapped/CRM status is exactly paid.
+ * Not fully paid: status partially_paid, or amount_paid > 0 but still below amount.
  */
-function leadFormSyncLeadPaymentFromNotes(array $notes, string $status, int $amountPaid): void
+function paymentLinkIsFullyPaid(string $status, int $amount, int $amountPaid): bool
+{
+    $amount = max(0, $amount);
+    $amountPaid = max(0, $amountPaid);
+    if ($amount > 0 && $amountPaid >= $amount) {
+        return true;
+    }
+    if ($amount > 0 && $amountPaid > 0 && $amountPaid < $amount) {
+        return false;
+    }
+    $st = strtolower(trim($status));
+    if ($st === 'partially_paid') {
+        return false;
+    }
+    if ($st === 'paid') {
+        return true;
+    }
+    return paymentLinkMapRazorpayStatus($status, $amountPaid, $amount) === 'paid';
+}
+
+/**
+ * Keep lead.tags payment fields in sync with Razorpay link status.
+ * payment_status is paid only when the link is fully settled.
+ * A partial payment is stored as partially_paid and does not queue auto documents.
+ *
+ * @param int $amount Link total in paise. 0 if the caller does not know it.
+ */
+function leadFormSyncLeadPaymentFromNotes(array $notes, string $status, int $amountPaid, int $amount = 0): void
 {
     $source = strtolower(trim((string) ($notes['source'] ?? $notes['crm_source'] ?? '')));
     if ($source !== 'lead_form') {
@@ -1259,8 +1312,28 @@ function leadFormSyncLeadPaymentFromNotes(array $notes, string $status, int $amo
         return;
     }
     $st = strtolower(trim($status));
-    $paid = $amountPaid > 0 || in_array($st, ['paid', 'partially_paid'], true);
-    $paymentStatus = $paid ? 'paid' : 'not_paid';
+    if ($amount <= 0) {
+        try {
+            $linkRow = paymentLinkFindByLeadId($leadId);
+            if (is_array($linkRow)) {
+                $storedAmount = (int) ($linkRow['amount'] ?? 0);
+                if ($storedAmount > 0) {
+                    $amount = $storedAmount;
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[lead_form] sync payment amount: ' . $e->getMessage());
+        }
+    }
+    $fullyPaid = paymentLinkIsFullyPaid($st, $amount, $amountPaid);
+    $partial = !$fullyPaid && ($amountPaid > 0 || $st === 'partially_paid');
+    if ($fullyPaid) {
+        $paymentStatus = 'paid';
+    } elseif ($partial) {
+        $paymentStatus = 'partially_paid';
+    } else {
+        $paymentStatus = 'not_paid';
+    }
     try {
         $db = paymentLinksDb();
         $sel = $db->prepare('SELECT tags FROM leads WHERE id = ? LIMIT 1');
@@ -1276,23 +1349,24 @@ function leadFormSyncLeadPaymentFromNotes(array $notes, string $status, int $amo
             $tags['payment_link_id'] = $plinkId;
         }
         $tags['payment_status'] = $paymentStatus;
-        if ($paid) {
+        if ($fullyPaid || $amountPaid > 0) {
             unset($tags['payment_free']);
         }
         $db->prepare('UPDATE leads SET tags = ? WHERE id = ?')->execute([
             json_encode($tags, JSON_UNESCAPED_UNICODE),
             $leadId,
         ]);
-        if ($paid) {
-            $formSlug = trim((string) ($notes['form_slug'] ?? ''));
-            if ($formSlug !== '') {
-                require_once __DIR__ . '/form_campaigns.php';
-                $formSt = $db->prepare('SELECT * FROM lead_forms WHERE LOWER(TRIM(slug)) = LOWER(?) LIMIT 1');
-                $formSt->execute([$formSlug]);
-                $formRow = $formSt->fetch(PDO::FETCH_ASSOC);
-                if (is_array($formRow)) {
-                    leadFormQueueAutoDocuments($db, $formRow, $leadId, true);
-                }
+        if (!$fullyPaid) {
+            return;
+        }
+        $formSlug = trim((string) ($notes['form_slug'] ?? ''));
+        if ($formSlug !== '') {
+            require_once __DIR__ . '/form_campaigns.php';
+            $formSt = $db->prepare('SELECT * FROM lead_forms WHERE LOWER(TRIM(slug)) = LOWER(?) LIMIT 1');
+            $formSt->execute([$formSlug]);
+            $formRow = $formSt->fetch(PDO::FETCH_ASSOC);
+            if (is_array($formRow)) {
+                leadFormQueueAutoDocuments($db, $formRow, $leadId, true);
             }
         }
     } catch (Throwable $e) {
@@ -1358,6 +1432,35 @@ function paymentLinkFindByLeadId(string $leadId): ?array
 }
 
 /**
+ * True only when this lead's form payment link is fully paid, or the lead is payment_free.
+ * Partial, unpaid, and missing links are false.
+ */
+function paymentLinkLeadIsPaid(PDO $db, string $leadId): bool
+{
+    $leadId = trim($leadId);
+    if ($leadId === '') {
+        return false;
+    }
+    $row = paymentLinkFindByLeadId($leadId);
+    if (is_array($row)) {
+        return paymentLinkIsFullyPaid(
+            (string) ($row['status'] ?? ''),
+            (int) ($row['amount'] ?? 0),
+            (int) ($row['amount_paid'] ?? 0),
+        );
+    }
+    try {
+        $st = $db->prepare('SELECT tags FROM leads WHERE id = ? LIMIT 1');
+        $st->execute([$leadId]);
+        $tags = json_decode((string) $st->fetchColumn(), true);
+        return is_array($tags) && !empty($tags['payment_free']);
+    } catch (Throwable $e) {
+        error_log('[paymentLinkLeadIsPaid] tags: ' . $e->getMessage());
+        return false;
+    }
+}
+
+/**
  * Create a Razorpay payment link for a public lead-form submission (unauthenticated).
  *
  * @return array{url?: string, id?: string, error?: string}
@@ -1402,17 +1505,21 @@ function paymentLinkCreateForLeadForm(array $opts): array
         $url = trim((string) ($existing['razorpay_short_url'] ?? ''));
         $existingAmt = (int) ($existing['amount'] ?? 0);
         $existingPaid = (int) ($existing['amount_paid'] ?? 0);
-        // Completed payment → treat as paid (no new Razorpay checkout).
-        if (in_array($st, ['paid', 'partially_paid'], true) || $existingPaid > 0) {
+        // Fully settled only. A partial balance must stay open so automations wait.
+        if (paymentLinkIsFullyPaid($st, $existingAmt, $existingPaid)) {
             return ['url' => '', 'id' => (string) ($existing['razorpay_payment_link_id'] ?? ''), 'already_paid' => true];
         }
-        // Open / unpaid link with same amount → reopen same Razorpay URL.
+        // Open, unpaid, or partial link with the same amount → reopen the same Razorpay URL.
         if (
             $url !== ''
             && $existingAmt === $amountPaise
             && !in_array($st, ['cancelled', 'expired'], true)
         ) {
-            return ['url' => $url, 'id' => (string) ($existing['razorpay_payment_link_id'] ?? '')];
+            $out = ['url' => $url, 'id' => (string) ($existing['razorpay_payment_link_id'] ?? '')];
+            if ($st === 'partially_paid' || ($existingAmt > 0 && $existingPaid > 0 && $existingPaid < $existingAmt)) {
+                $out['partially_paid'] = true;
+            }
+            return $out;
         }
         // Cancelled / expired / amount changed → create a fresh link below.
     }

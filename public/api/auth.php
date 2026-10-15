@@ -52,6 +52,20 @@ function syncpediaPasswordResetLoginPath(string $role): string
     return '/login';
 }
 
+/** @param array<string,mixed> $user */
+function authAttachResultAssessment(PDO $db, array &$user): void
+{
+    ensureUsersResultAssessmentColumn($db);
+    try {
+        $st = $db->prepare('SELECT result_assessment_id FROM users WHERE id = ? LIMIT 1');
+        $st->execute([(string) ($user['id'] ?? '')]);
+        $id = trim((string) ($st->fetchColumn() ?: ''));
+        $user['result_assessment_id'] = $id !== '' ? $id : null;
+    } catch (Throwable $e) {
+        $user['result_assessment_id'] = null;
+    }
+}
+
 function normalizeRoleForPortal(string $role): string {
     $cleaned = strtolower(trim($role));
     if (strpos($cleaned, 'marketing') === 0 || $cleaned === 'sales_marketing') {
@@ -118,7 +132,7 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
     }
 
     $normalizedRole = normalizeRoleForPortal($user['role'] ?? '');
-    if ($normalizedRole !== 'marketing' && $normalizedRole !== 'super_admin') {
+    if ($normalizedRole !== 'marketing' && $normalizedRole !== 'super_admin' && $normalizedRole !== 'assessment_viewer') {
         $mstmt = $db->prepare("SELECT id FROM marketing_members WHERE user_id = ? OR email = ? LIMIT 1");
         $mstmt->execute([$user['id'], $user['email']]);
         if ($mstmt->fetch()) {
@@ -139,6 +153,7 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
         }
     }
     userAttachPageAccess($user);
+    authAttachResultAssessment($db, $user);
 
     // Super admin master panel: no org in JWT until switch_org selects a tenant.
     $tokenOrgId = $user['org_id'] ?? null;
@@ -206,6 +221,14 @@ function ensureSuperAdminEmailLoginTables(PDO $db): void
                 KEY idx_sa_login_status (status)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
         );
+        try {
+            $db->exec('ALTER TABLE super_admin_login_approvals ADD COLUMN poll_token_hash CHAR(64) NULL');
+        } catch (Throwable $e) {
+        }
+        try {
+            $db->exec('CREATE UNIQUE INDEX uq_sa_login_poll ON super_admin_login_approvals (poll_token_hash)');
+        } catch (Throwable $e) {
+        }
     } catch (Throwable $e) {
         error_log('[auth] super_admin email login tables: ' . $e->getMessage());
     }
@@ -280,8 +303,19 @@ if ($method === 'GET' && (($_GET['action'] ?? '') === 'approve_super_admin_login
     if (!$row) {
         syncpediaSuperAdminEmailLoginHtml('Invalid link', 'This login link was not found. Request a new one from the login page.');
     }
-    if (($row['status'] ?? '') !== 'pending') {
+    $approvalStatus = (string) ($row['status'] ?? '');
+    if ($approvalStatus === 'approved') {
+        syncpediaSuperAdminEmailLoginHtml(
+            'Login approved',
+            'Go back to the browser or device where you clicked Login. That screen will open the Super Admin app.',
+            true
+        );
+    }
+    if ($approvalStatus === 'used') {
         syncpediaSuperAdminEmailLoginHtml('Already used', 'This login link was already used. Request a new one if you need to sign in again.');
+    }
+    if ($approvalStatus !== 'pending') {
+        syncpediaSuperAdminEmailLoginHtml('Link expired', 'This login link is no longer valid. Request a new email from the Super Admin login page.');
     }
     $exp = strtotime((string) ($row['expires_at'] ?? '') . ' UTC');
     if ($exp === false || $exp < time()) {
@@ -304,25 +338,15 @@ if ($method === 'GET' && (($_GET['action'] ?? '') === 'approve_super_admin_login
     if (!(int) ($user['is_active'] ?? 0)) {
         syncpediaSuperAdminEmailLoginHtml('Account deactivated', 'This account is deactivated.');
     }
-    $db->prepare(
+    $updated = $db->prepare(
         "UPDATE super_admin_login_approvals SET status = 'approved', approved_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'pending'"
-    )->execute([(string) $row['id']]);
-    syncpediaAuditLog(
-        $db,
-        ['user_id' => $user['id'], 'org_id' => $user['org_id'] ?? null],
-        'logged_in',
-        'auth',
-        (string) $user['id'],
-        'Super admin email login approved'
     );
-    authLoginSuccessResponse($db, $user); // sets HttpOnly cookie
-    $origin = syncpediaAuthPublicOrigin();
-    $dest = ($origin !== '' ? $origin : '') . '/super_admin?email_ok=1';
-    if ($origin === '') {
-        $dest = '/super_admin?email_ok=1';
-    }
-    header('Location: ' . $dest, true, 302);
-    exit;
+    $updated->execute([(string) $row['id']]);
+    syncpediaSuperAdminEmailLoginHtml(
+        'Login approved',
+        'Go back to the browser or device where you clicked Login. That screen will open the Super Admin app.',
+        true
+    );
 }
 
 if ($method === 'POST') {
@@ -426,15 +450,17 @@ if ($method === 'POST') {
         )->execute([(string) $user['id']]);
         $rawToken = bin2hex(random_bytes(32));
         $tokenHash = hash('sha256', $rawToken);
+        $rawPoll = bin2hex(random_bytes(32));
+        $pollHash = hash('sha256', $rawPoll);
         $aid = generateUUID();
         $exp = gmdate('Y-m-d H:i:s', time() + 900);
         $ip = function_exists('syncpediaClientIp') ? syncpediaClientIp() : (string) ($_SERVER['REMOTE_ADDR'] ?? '');
         $ua = substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 512);
         $db->prepare(
             'INSERT INTO super_admin_login_approvals
-             (id, user_id, email, token_hash, ip, user_agent, status, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?, \'pending\', ?)'
-        )->execute([$aid, $user['id'], $email, $tokenHash, $ip !== '' ? $ip : null, $ua !== '' ? $ua : null, $exp]);
+             (id, user_id, email, token_hash, poll_token_hash, ip, user_agent, status, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, \'pending\', ?)'
+        )->execute([$aid, $user['id'], $email, $tokenHash, $pollHash, $ip !== '' ? $ip : null, $ua !== '' ? $ua : null, $exp]);
 
         $origin = syncpediaAuthPublicOrigin();
         $approveUrl = ($origin !== '' ? $origin : '') . '/api/auth.php?action=approve_super_admin_login&token=' . rawurlencode($rawToken);
@@ -445,7 +471,7 @@ if ($method === 'POST') {
         $html = '<div style="font-family:system-ui,sans-serif;max-width:32rem;margin:0 auto;color:#0f172a;">'
             . '<h2 style="font-size:1.25rem;">Super Admin login request</h2>'
             . '<p>Hi ' . $safeName . ',</p>'
-            . '<p>Someone requested access to the Syncpedia Super Admin portal with this email.</p>'
+            . '<p>Someone requested access to the Syncpedia Super Admin portal with this email. Approving this signs in the browser where Login was clicked, even if you open this email on another device.</p>'
             . '<p style="font-size:0.875rem;color:#64748b;">IP: ' . $safeIp . '<br>Link expires in 15 minutes.</p>'
             . '<p style="margin:1.5rem 0;"><a href="' . $safeUrl . '" style="display:inline-block;background:#d97706;color:#fff;text-decoration:none;padding:0.75rem 1.25rem;border-radius:0.5rem;font-weight:600;">Yes, log me in</a></p>'
             . '<p style="font-size:0.8rem;color:#64748b;">If you did not request this, ignore this email.</p>'
@@ -462,7 +488,87 @@ if ($method === 'POST') {
                 'error' => 'Could not send the login email. ' . (string) ($mail['error'] ?? 'SMTP failed'),
             ], 503);
         }
+        $generic['poll_token'] = $rawPoll;
         respond($generic);
+    }
+
+    if ($action === 'super_admin_email_login_status') {
+        ensureSuperAdminEmailLoginTables($db);
+        $rawPoll = trim((string) ($input['poll_token'] ?? ''));
+        if ($rawPoll === '' || !preg_match('/^[a-f0-9]{64}$/', $rawPoll)) {
+            respond(['status' => 'invalid']);
+        }
+        $pollHash = hash('sha256', $rawPoll);
+        $st = $db->prepare(
+            'SELECT id, user_id, email, status, expires_at FROM super_admin_login_approvals WHERE poll_token_hash = ? LIMIT 1'
+        );
+        $st->execute([$pollHash]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            respond(['status' => 'invalid']);
+        }
+        $exp = strtotime((string) ($row['expires_at'] ?? '') . ' UTC');
+        if ($exp === false || $exp < time()) {
+            $db->prepare("UPDATE super_admin_login_approvals SET status = 'expired' WHERE id = ? AND status IN ('pending', 'approved')")
+                ->execute([(string) $row['id']]);
+            respond(['status' => 'expired']);
+        }
+        $approvalStatus = (string) ($row['status'] ?? '');
+        if ($approvalStatus === 'pending') {
+            respond(['status' => 'pending']);
+        }
+        if ($approvalStatus !== 'approved') {
+            respond(['status' => $approvalStatus === 'used' ? 'used' : 'expired']);
+        }
+        $requestEmail = strtolower(trim((string) ($row['email'] ?? '')));
+        $ust = $db->prepare(
+            'SELECT id, email, password_hash, full_name, phone, avatar_url, role, referral_code, org_id, is_active
+             FROM users WHERE id = ? LIMIT 1'
+        );
+        $ust->execute([(string) $row['user_id']]);
+        $user = $ust->fetch(PDO::FETCH_ASSOC);
+        if (
+            $requestEmail === ''
+            || !syncpediaIsSuperAdminAllowedEmail($db, $requestEmail)
+            || !$user
+            || !(int) ($user['is_active'] ?? 0)
+            || normalizeRoleForPortal((string) ($user['role'] ?? '')) !== 'super_admin'
+        ) {
+            $db->prepare("UPDATE super_admin_login_approvals SET status = 'expired' WHERE id = ? AND status = 'approved'")
+                ->execute([(string) $row['id']]);
+            respond(['status' => 'expired']);
+        }
+        $db->beginTransaction();
+        try {
+            $lock = $db->prepare(
+                'SELECT status FROM super_admin_login_approvals WHERE id = ? FOR UPDATE'
+            );
+            $lock->execute([(string) $row['id']]);
+            $lockedStatus = (string) ($lock->fetchColumn() ?: '');
+            if ($lockedStatus !== 'approved') {
+                $db->commit();
+                respond(['status' => $lockedStatus === 'used' ? 'used' : 'expired']);
+            }
+            $db->prepare(
+                "UPDATE super_admin_login_approvals SET status = 'used' WHERE id = ? AND status = 'approved'"
+            )->execute([(string) $row['id']]);
+            $db->commit();
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            respond(['status' => 'pending']);
+        }
+        syncpediaAuditLog(
+            $db,
+            ['user_id' => $user['id'], 'org_id' => $user['org_id'] ?? null],
+            'logged_in',
+            'auth',
+            (string) $user['id'],
+            'Super admin email login completed on the waiting browser'
+        );
+        $session = authLoginSuccessResponse($db, $user);
+        respond(array_merge(['status' => 'signed_in'], $session));
     }
 
     if ($action === 'list_super_admin_login_emails') {
@@ -860,7 +966,7 @@ if ($method === 'POST') {
 
  // Only upgrade legacy/unknown roles to marketing for portal routing.
  // Never override a role that is already a recognized CRM role.
- $knownCrmRoles = ['super_admin', 'org', 'manager', 'operational_manager', 'sales_representative', 'hr', 'marketing'];
+ $knownCrmRoles = ['super_admin', 'org', 'manager', 'operational_manager', 'sales_representative', 'hr', 'marketing', 'assessment_viewer'];
  $normalizedRole = normalizeRoleForPortal($user['role'] ?? '');
  if (!in_array($normalizedRole, $knownCrmRoles, true)) {
  $mstmt = $db->prepare("SELECT id FROM marketing_members WHERE user_id = ? OR email = ? LIMIT 1");
@@ -880,6 +986,7 @@ if ($method === 'POST') {
             $user['page_access_json'] = null;
         }
         userAttachPageAccess($user);
+        authAttachResultAssessment($db, $user);
 
         // JWT org context: super_admin uses switch_org token only; others fall back to users.org_id
         $effectiveOrgId = trim((string) ($tokenData['org_id'] ?? ''));

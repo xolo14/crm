@@ -326,22 +326,51 @@ if ($method === 'GET') {
     if ($action === 'templates') {
         requireRole($tokenData, offerLettersMutatorRoles());
         $org = offerLetterTemplateOrgFilter($tokenData, 't');
-        $stmt = $db->prepare("SELECT t.* FROM offer_letter_templates t WHERE {$org['where']} ORDER BY t.created_at DESC");
+        // Do not select html_content: letterheads as data-URIs make the Offer Letters
+        // page load multi‑MB JSON. Full HTML is fetched via action=template&id=.
+        $stmt = $db->prepare("
+            SELECT t.id, t.template_name, t.role_title, t.status, t.created_by, t.org_id,
+                   t.created_at, t.updated_at, t.mail_json
+            FROM offer_letter_templates t
+            WHERE {$org['where']}
+            ORDER BY t.created_at DESC
+            LIMIT 500
+        ");
         $stmt->execute($org['params']);
-        respond(['data' => $stmt->fetchAll()]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        foreach ($rows as &$row) {
+            $row['html_content'] = '';
+        }
+        unset($row);
+        respond(['data' => $rows]);
     }
 
     if ($action === 'sent') {
         $org = orgFilter($tokenData, 'ols');
-        $stmt = $db->prepare("
-            SELECT ols.*, olt.template_name 
-            FROM offer_letters_sent ols 
-            LEFT JOIN offer_letter_templates olt ON ols.template_id = olt.id 
-            WHERE {$org['where']}
-            ORDER BY ols.sent_at DESC LIMIT 500
-        ");
-        $stmt->execute($org['params']);
-        respond(['data' => $stmt->fetchAll()]);
+        try {
+            // Do not select html_content: letterheads as data-URIs make 500 rows
+            // exceed PHP memory / produce truncated JSON ("Invalid JSON response").
+            $stmt = $db->prepare("
+                SELECT ols.id, ols.template_id, ols.recipient_name, ols.recipient_email,
+                       ols.role_title, ols.pdf_url, ols.status, ols.sent_by, ols.sent_at,
+                       olt.template_name
+                FROM offer_letters_sent ols
+                LEFT JOIN offer_letter_templates olt ON ols.template_id = olt.id
+                WHERE {$org['where']}
+                ORDER BY ols.sent_at DESC
+                LIMIT 500
+            ");
+            $stmt->execute($org['params']);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            foreach ($rows as &$row) {
+                $row['html_content'] = '';
+            }
+            unset($row);
+            respond(['data' => $rows]);
+        } catch (Throwable $e) {
+            error_log('offer_letters list sent: ' . $e->getMessage());
+            respond(['error' => 'Could not load sent offer letters'], 500);
+        }
     }
 
     if ($action === 'template' && !empty($_GET['id'])) {
@@ -420,6 +449,12 @@ if ($method === 'POST') {
             }
         }
         $html = (string)($input['html_content'] ?? '');
+        // Keep the sent-row HTML small so list/insert cannot blow MySQL max_allowed_packet.
+        // The issued PDF (GCS / local) is the document of record.
+        $htmlForDb = $html;
+        if (strlen($htmlForDb) > 180000) {
+            $htmlForDb = '';
+        }
         $recipientEmail = trim((string)($input['recipient_email'] ?? ''));
         if ($recipientEmail === '' || !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
             respond(['error' => 'Valid recipient email is required'], 400);
@@ -536,7 +571,7 @@ if ($method === 'POST') {
                 $input['recipient_name'],
                 $input['recipient_email'],
                 $input['role_title'] ?? '',
-                $html,
+                $htmlForDb,
                 $pdfUrl,
                 $input['status'] ?? 'sent',
                 $userId,
@@ -555,7 +590,7 @@ if ($method === 'POST') {
                         $input['recipient_name'],
                         $input['recipient_email'],
                         $input['role_title'] ?? '',
-                        $html,
+                        $htmlForDb,
                         $pdfUrl,
                         $input['status'] ?? 'sent',
                         $userId,

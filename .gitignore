@@ -32,6 +32,12 @@ dist-ssr
 *.tsbuildinfo
 syncpedia-crm-deploy.zip
 leads-fix-patch.zip
+crm-vps-deploy.zip
+dist-vps-safe/
+_pack_vps_zip.tmp.ps1
+
+# One-off VPS scripts that embed live keys
+_fix_vps_config_lms.sh
 
 # Runtime rate-limit cache (created by PHP on server)
 php-backend/storage/rate_limits/

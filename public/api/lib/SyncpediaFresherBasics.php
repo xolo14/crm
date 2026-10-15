@@ -1,4 +1,6 @@
 <?php
+// Direct HTTP access blocked (nginx may ignore .htaccess)
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 /**
  * Syncpedia Basics — 30 MCQs in 20 minutes: 10 quantitative aptitude + 20 from the chosen domain.
  * Each domain bank is 40 medium / 30 hard / 15 expert / 15 scenario; aptitude is 40/30/30.
@@ -193,7 +195,12 @@ function syncpediaResolveDomainLabel(?string $key): string
     if (isset($catalog[$key])) {
         return $catalog[$key];
     }
-    if (function_exists('peaklyyDomainCatalog')) {
+    if (function_exists('peaklyyDomainLabel')) {
+        $labeled = peaklyyDomainLabel($key);
+        if ($labeled !== '' && $labeled !== $key) {
+            return $labeled;
+        }
+    } elseif (function_exists('peaklyyDomainCatalog')) {
         $peak = peaklyyDomainCatalog();
         if (isset($peak[$key])) {
             return $peak[$key];

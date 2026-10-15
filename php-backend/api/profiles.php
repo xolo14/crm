@@ -37,6 +37,12 @@ if ($method === 'GET') {
             $leadScope = tenantLeadsScopeSql($db, $tokenData, '');
             $where = '1=1' . $leadScope['sql'];
             $params = $leadScope['params'];
+            // Dashboard only: managers see their own team, not every org lead.
+            if ($normRole === 'manager') {
+                $downline = hierarchyLeadDownlineScopeSql($managerVisibleIds, '', $db);
+                $where .= $downline['sql'];
+                $params = array_merge($params, $downline['params']);
+            }
 
             $countStmt = $db->prepare("SELECT COUNT(*) FROM leads WHERE $where");
             $countStmt->execute($params);
@@ -60,7 +66,7 @@ if ($method === 'GET') {
         // Students — keep queries simple (no l2 alias; that broke manager KPI loads)
         try {
             $students = ['total' => 0, 'active' => 0];
-            if (($normRole === 'manager' || $useOrg) && $useOrg) {
+            if ($useOrg && $normRole !== 'manager') {
                 $stmt = $db->prepare("
                     SELECT COUNT(*) as total,
                         SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) as active
@@ -129,7 +135,7 @@ if ($method === 'GET') {
 
         try {
             $payments = ['paid' => 0, 'pending' => 0];
-            if ($useOrg) {
+            if ($useOrg && $normRole !== 'manager') {
                 $stmt = $db->prepare("SELECT COALESCE(SUM(CASE WHEN status='paid' THEN amount ELSE 0 END),0) as paid, COALESCE(SUM(CASE WHEN status='pending' THEN amount ELSE 0 END),0) as pending FROM payments WHERE org_id = ?");
                 $stmt->execute([$orgId]);
                 $payments = $stmt->fetch(PDO::FETCH_ASSOC) ?: $payments;
@@ -166,7 +172,7 @@ if ($method === 'GET') {
             $deletedSql = (function_exists('syncpediaColumnExists') && syncpediaColumnExists($db, 'payment_links', 'deleted_at'))
                 ? ' AND deleted_at IS NULL'
                 : '';
-            if ($useOrg) {
+            if ($useOrg && $normRole !== 'manager') {
                 $stmt = $db->prepare("
                     SELECT
                         COALESCE(SUM(amount_paid), 0) AS paid_paise,
@@ -218,7 +224,7 @@ if ($method === 'GET') {
 
         // Include approved manual payments in org revenue.
         try {
-            if ($useOrg) {
+            if ($useOrg && $normRole !== 'manager') {
                 $stmt = $db->prepare("
                     SELECT COALESCE(SUM(amount), 0) AS manual_paid
                     FROM manual_payments
@@ -250,7 +256,7 @@ if ($method === 'GET') {
         }
 
         try {
-            if ($useOrg) {
+            if ($useOrg && $normRole !== 'manager') {
                 $stmt = $db->prepare("SELECT id as user_id, full_name, referral_code FROM users WHERE org_id = ?");
                 $stmt->execute([$orgId]);
                 $result['profiles'] = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];

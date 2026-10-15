@@ -1,4 +1,6 @@
 <?php
+// Direct HTTP access blocked (nginx may ignore .htaccess)
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 /**
  * Per-rep payment candidates (pitch price + installments). Org-scoped; never match across users.
  */
@@ -1295,34 +1297,231 @@ function paymentCandidatesFindForStudent(PDO $db, string $orgId, array $student)
 
 /**
  * Attach payment candidate paid/pitch summary to student list rows.
+ * Batched: avoids N×(find + totals) queries that hung Students on large orgs.
  *
  * @param list<array<string, mixed>> $rows
  */
 function studentsAttachPaymentSummaries(PDO $db, array &$rows): void
 {
-    foreach ($rows as &$row) {
+    if ($rows === []) {
+        return;
+    }
+    paymentCandidatesEnsureSchema($db);
+
+    $byOrg = [];
+    foreach ($rows as $idx => $row) {
         if (!is_array($row)) {
             continue;
         }
         $orgId = trim((string) ($row['org_id'] ?? ''));
         if ($orgId === '') {
-            $row['payment_summary'] = null;
+            $rows[$idx]['payment_summary'] = null;
             continue;
         }
-        $candidate = paymentCandidatesFindForStudent($db, $orgId, $row);
-        if (!$candidate) {
-            $row['payment_summary'] = null;
-            continue;
-        }
-        $totals = paymentCandidatesTotalsForRow($db, $candidate);
-        $row['payment_summary'] = [
-            'candidate_id' => (string) ($candidate['id'] ?? ''),
-            'pitch_price' => (float) ($totals['pitch_price'] ?? 0),
-            'total_paid' => (float) ($totals['total_paid'] ?? 0),
-            'remaining' => (float) ($totals['remaining'] ?? 0),
-        ];
+        $byOrg[$orgId][] = $idx;
     }
-    unset($row);
+
+    foreach ($byOrg as $orgId => $indexes) {
+        $leadIds = [];
+        $emails = [];
+        $phones = [];
+        $names = [];
+        foreach ($indexes as $idx) {
+            $row = $rows[$idx];
+            $leadId = trim((string) ($row['lead_id'] ?? $row['source_lead_id'] ?? ''));
+            if ($leadId !== '') {
+                $leadIds[$leadId] = true;
+            }
+            $em = paymentCandidatesNormEmail((string) ($row['email'] ?? $row['lead_email'] ?? ''));
+            if ($em !== '') {
+                $emails[$em] = true;
+            }
+            $ph = paymentCandidatesNormPhone((string) ($row['phone'] ?? $row['lead_phone'] ?? ''));
+            if ($ph !== '') {
+                $phones[$ph] = true;
+            }
+            $nm = strtolower(trim((string) ($row['name'] ?? $row['lead_contact_name'] ?? '')));
+            if ($nm !== '') {
+                $names[$nm] = true;
+            }
+        }
+
+        $candidates = [];
+        $parts = ['org_id = ?'];
+        $params = [$orgId];
+        $or = [];
+        $leadList = array_keys($leadIds);
+        if ($leadList !== []) {
+            $ph = implode(',', array_fill(0, count($leadList), '?'));
+            $or[] = "lead_id IN ($ph)";
+            $params = array_merge($params, $leadList);
+        }
+        $emailList = array_keys($emails);
+        if ($emailList !== []) {
+            $ph = implode(',', array_fill(0, count($emailList), '?'));
+            $or[] = "email_norm IN ($ph)";
+            $params = array_merge($params, $emailList);
+        }
+        $phoneList = array_keys($phones);
+        if ($phoneList !== []) {
+            $ph = implode(',', array_fill(0, count($phoneList), '?'));
+            $or[] = "phone_norm IN ($ph)";
+            $params = array_merge($params, $phoneList);
+        }
+        $nameList = array_keys($names);
+        if ($nameList !== []) {
+            $ph = implode(',', array_fill(0, count($nameList), '?'));
+            $or[] = "LOWER(TRIM(customer_name)) IN ($ph)";
+            $params = array_merge($params, $nameList);
+        }
+        if ($or === []) {
+            foreach ($indexes as $idx) {
+                $rows[$idx]['payment_summary'] = null;
+            }
+            continue;
+        }
+        $sql = 'SELECT id, org_id, lead_id, email_norm, phone_norm, customer_name, pitch_price, updated_at
+                FROM payment_candidates
+                WHERE ' . $parts[0] . ' AND (' . implode(' OR ', $or) . ')
+                ORDER BY updated_at DESC
+                LIMIT 2000';
+        try {
+            $st = $db->prepare($sql);
+            $st->execute($params);
+            $candidates = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } catch (Throwable $e) {
+            error_log('[studentsAttachPaymentSummaries] ' . $e->getMessage());
+            foreach ($indexes as $idx) {
+                $rows[$idx]['payment_summary'] = null;
+            }
+            continue;
+        }
+
+        $byLead = [];
+        $byEmail = [];
+        $byPhone = [];
+        $byName = [];
+        foreach ($candidates as $c) {
+            $cid = (string) ($c['id'] ?? '');
+            if ($cid === '') {
+                continue;
+            }
+            $lid = trim((string) ($c['lead_id'] ?? ''));
+            if ($lid !== '' && !isset($byLead[$lid])) {
+                $byLead[$lid] = $c;
+            }
+            $em = trim((string) ($c['email_norm'] ?? ''));
+            if ($em !== '' && !isset($byEmail[$em])) {
+                $byEmail[$em] = $c;
+            }
+            $phn = trim((string) ($c['phone_norm'] ?? ''));
+            if ($phn !== '' && !isset($byPhone[$phn])) {
+                $byPhone[$phn] = $c;
+            }
+            $nm = strtolower(trim((string) ($c['customer_name'] ?? '')));
+            if ($nm !== '' && !isset($byName[$nm])) {
+                $byName[$nm] = $c;
+            }
+        }
+
+        $matched = [];
+        foreach ($indexes as $idx) {
+            $row = $rows[$idx];
+            $cand = null;
+            $leadId = trim((string) ($row['lead_id'] ?? $row['source_lead_id'] ?? ''));
+            if ($leadId !== '' && isset($byLead[$leadId])) {
+                $cand = $byLead[$leadId];
+            }
+            if (!$cand) {
+                $em = paymentCandidatesNormEmail((string) ($row['email'] ?? $row['lead_email'] ?? ''));
+                if ($em !== '' && isset($byEmail[$em])) {
+                    $cand = $byEmail[$em];
+                }
+            }
+            if (!$cand) {
+                $phn = paymentCandidatesNormPhone((string) ($row['phone'] ?? $row['lead_phone'] ?? ''));
+                if ($phn !== '' && isset($byPhone[$phn])) {
+                    $cand = $byPhone[$phn];
+                }
+            }
+            if (!$cand) {
+                $nm = strtolower(trim((string) ($row['name'] ?? $row['lead_contact_name'] ?? '')));
+                if ($nm !== '' && isset($byName[$nm])) {
+                    $cand = $byName[$nm];
+                }
+            }
+            if (!$cand) {
+                $rows[$idx]['payment_summary'] = null;
+                continue;
+            }
+            $matched[$idx] = $cand;
+        }
+
+        $candIds = [];
+        foreach ($matched as $cand) {
+            $cid = (string) ($cand['id'] ?? '');
+            if ($cid !== '') {
+                $candIds[$cid] = true;
+            }
+        }
+        $idList = array_keys($candIds);
+        $paidById = [];
+        if ($idList !== []) {
+            $ph = implode(',', array_fill(0, count($idList), '?'));
+            try {
+                $st = $db->prepare(
+                    "SELECT candidate_id,
+                            COALESCE(SUM(CASE WHEN status = 'approved' THEN amount ELSE 0 END), 0) AS paid
+                     FROM manual_payments WHERE candidate_id IN ($ph) GROUP BY candidate_id"
+                );
+                $st->execute($idList);
+                foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $mr) {
+                    $paidById[(string) ($mr['candidate_id'] ?? '')] =
+                        ($paidById[(string) ($mr['candidate_id'] ?? '')] ?? 0) + (float) ($mr['paid'] ?? 0);
+                }
+            } catch (Throwable $e) {
+                // ignore
+            }
+            try {
+                $st = $db->prepare(
+                    "SELECT candidate_id, COALESCE(SUM(amount_paise), 0) AS paid_paise
+                     FROM payment_candidate_link_payments
+                     WHERE candidate_id IN ($ph)
+                       AND (
+                         razorpay_payment_id NOT LIKE 'delta:%'
+                         OR NOT EXISTS (
+                           SELECT 1 FROM payment_candidate_link_payments x
+                           WHERE x.candidate_id = payment_candidate_link_payments.candidate_id
+                             AND x.razorpay_payment_link_id = payment_candidate_link_payments.razorpay_payment_link_id
+                             AND x.razorpay_payment_id NOT LIKE 'delta:%'
+                         )
+                       )
+                     GROUP BY candidate_id"
+                );
+                $st->execute($idList);
+                foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $lr) {
+                    $cid = (string) ($lr['candidate_id'] ?? '');
+                    $paidById[$cid] = ($paidById[$cid] ?? 0) + round(((float) ($lr['paid_paise'] ?? 0)) / 100, 2);
+                }
+            } catch (Throwable $e) {
+                // ignore
+            }
+        }
+
+        foreach ($matched as $idx => $cand) {
+            $cid = (string) ($cand['id'] ?? '');
+            // Use stored pitch on list (skip per-row link-sum queries).
+            $pitch = round((float) ($cand['pitch_price'] ?? 0), 2);
+            $paid = round((float) ($paidById[$cid] ?? 0), 2);
+            $remaining = $pitch > 0 ? max(0, round($pitch - $paid, 2)) : 0.0;
+            $rows[$idx]['payment_summary'] = [
+                'candidate_id' => $cid,
+                'pitch_price' => $pitch,
+                'total_paid' => $paid,
+                'remaining' => $remaining,
+            ];
+        }
+    }
 }
 
 function paymentCandidatesFetchInstallments(PDO $db, string $candidateId): array

@@ -11,6 +11,9 @@ RewriteEngine On
   </IfModule>
 </FilesMatch>
 
+# Deny direct HTTP access to library helpers (included by endpoints only)
+RewriteRule ^lib/ - [F,L,NC]
+
 # Let PHP handle OPTIONS preflight (cors() in helpers.php sets headers).
 # Do NOT return 200 here without CORS headers — that breaks cross-origin API calls.
 

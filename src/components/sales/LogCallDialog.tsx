@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -10,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { searchAccessibleLeads } from "@/lib/searchAccessibleLeads";
 import { formatCallDuration } from "@/lib/callDuration";
 import { useAddCallLog, useUpdateCallLog } from "@/hooks/useCallLogs";
 import { useToast } from "@/hooks/use-toast";
@@ -87,6 +87,31 @@ function secondsToMinSec(total: number) {
   return { m, s };
 }
 
+type CallPickLead = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  status: string;
+};
+
+function toCallPickLead(row: Record<string, unknown> | null | undefined): CallPickLead | null {
+  const id = String(row?.id ?? "").trim();
+  if (!id) return null;
+  return {
+    id,
+    name: String(row?.name || "Unnamed lead"),
+    email: String(row?.email || ""),
+    phone: String(row?.phone || ""),
+    status: String(row?.status || ""),
+  };
+}
+
+function callPickLabel(lead: CallPickLead | null): string {
+  if (!lead) return "";
+  return lead.name || lead.email || lead.phone;
+}
+
 export default function LogCallDialog({
   open,
   onOpenChange,
@@ -121,59 +146,32 @@ export default function LogCallDialog({
     },
   });
 
-  const { data: leadsRes } = useQuery({
-    queryKey: ["leads", "pick-call-log", editLog?.lead_id || initialLeadId || ""],
-    queryFn: async () => {
-      const linkedId = String(editLog?.lead_id || initialLeadId || "").trim();
-      const [page, one] = await Promise.all([
-        api.leads.list({ all: false, limit: 200, lite: true }),
-        linkedId
-          ? api.leads.list({ all: false, limit: 1, lite: true, id: linkedId })
-          : Promise.resolve(null),
-      ]);
-      const pageRows = Array.isArray(page) ? page : (page as { data?: unknown[] })?.data || [];
-      const oneRows = one
-        ? (Array.isArray(one) ? one : (one as { data?: unknown[] })?.data || [])
-        : [];
-      const byId = new Map<string, unknown>();
-      for (const row of [...pageRows, ...oneRows] as Array<{ id?: string }>) {
-        const id = String(row?.id || "").trim();
-        if (id) byId.set(id, row);
-      }
-      return { data: [...byId.values()] };
-    },
-    enabled: open,
-  });
-  const leads = Array.isArray(leadsRes) ? leadsRes : (leadsRes as any)?.data || [];
+  const [leadQuery, setLeadQuery] = useState("");
+  const [leadHits, setLeadHits] = useState<CallPickLead[]>([]);
+  const [leadHitsTruncated, setLeadHitsTruncated] = useState(false);
+  const [leadHitsOpen, setLeadHitsOpen] = useState(false);
+  const [leadHitsLoading, setLeadHitsLoading] = useState(false);
+  const [pickedLead, setPickedLead] = useState<CallPickLead | null>(null);
 
   const watchedLeadId = form.watch("lead_id")?.trim() || "";
-  const selectedLead = useMemo(
-    () => (watchedLeadId ? leads.find((l: { id: string }) => l.id === watchedLeadId) : null),
-    [leads, watchedLeadId],
-  );
+  const selectedLead = pickedLead && pickedLead.id === watchedLeadId ? pickedLead : null;
   const prevLinkedLeadRef = useRef<string>("");
 
   useEffect(() => {
     if (!open) {
       prevLinkedLeadRef.current = "";
+      setLeadQuery("");
+      setLeadHits([]);
+      setLeadHitsOpen(false);
+      setPickedLead(null);
+      return;
     }
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
     setRecordingFile(null);
+    const linkedId = String(editLog?.lead_id || initialLeadId || "").trim();
     if (editLog) {
       const { m, s } = secondsToMinSec(Number(editLog.duration_seconds || 0));
       let timeVal = editLog.call_time || "";
       if (timeVal.length >= 8) timeVal = timeVal.slice(0, 5);
-      const linkedLead = editLog.lead_id ? leads.find((l: { id: string }) => l.id === editLog.lead_id) : null;
-      const rawSt = linkedLead?.status ? String(linkedLead.status) : "";
-      const pipeStatus =
-        rawSt === "converted"
-          ? "enrolled"
-          : rawSt && PIPELINE_SET.has(rawSt)
-            ? rawSt
-            : "";
       form.reset({
         call_type: editLog.call_type,
         call_status: editLog.call_status,
@@ -183,14 +181,9 @@ export default function LogCallDialog({
         duration_sec: s,
         notes: editLog.notes || "",
         lead_id: editLog.lead_id || "",
-        lead_pipeline_status: pipeStatus,
+        lead_pipeline_status: "",
       });
     } else {
-      const preLead = String(initialLeadId || "").trim();
-      const L = preLead ? leads.find((l: { id: string }) => l.id === preLead) : null;
-      const st = L?.status ? String(L.status) : "";
-      const pipeStatus =
-        st === "converted" ? "enrolled" : st && PIPELINE_SET.has(st) ? st : preLead ? "new" : "";
       form.reset({
         call_type: "outgoing",
         call_status: "connected",
@@ -199,30 +192,87 @@ export default function LogCallDialog({
         duration_min: 0,
         duration_sec: 0,
         notes: "",
-        lead_id: preLead,
-        lead_pipeline_status: pipeStatus,
+        lead_id: linkedId,
+        lead_pipeline_status: linkedId ? "new" : "",
       });
     }
-  }, [open, editLog, form, leads, initialLeadId]);
+    if (!linkedId) {
+      setPickedLead(null);
+      setLeadQuery("");
+      return;
+    }
+    let cancelled = false;
+    void api.leads
+      .list({ id: linkedId, all: false, limit: 1, lite: true })
+      .then((res) => {
+        const rows = (Array.isArray(res) ? res : (res as { data?: unknown[] })?.data || []) as Array<
+          Record<string, unknown>
+        >;
+        const lead = toCallPickLead(rows[0]);
+        if (cancelled || !lead) return;
+        setPickedLead(lead);
+        setLeadQuery(callPickLabel(lead));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, editLog, form, initialLeadId]);
 
   useEffect(() => {
     if (!open) return;
-    if (!watchedLeadId) {
-      prevLinkedLeadRef.current = "";
-      form.setValue("lead_pipeline_status", "");
+    if (!watchedLeadId || !pickedLead || pickedLead.id !== watchedLeadId) {
+      if (!watchedLeadId) {
+        prevLinkedLeadRef.current = "";
+        form.setValue("lead_pipeline_status", "");
+      }
       return;
     }
-    const L = leads.find((l: { id: string }) => l.id === watchedLeadId);
-    const st = L?.status ? String(L.status) : "";
-    const nextPipe =
-      st === "converted" ? "enrolled" : st && PIPELINE_SET.has(st) ? st : "new";
+    const st = pickedLead.status || "";
+    const nextPipe = st === "converted" ? "enrolled" : st && PIPELINE_SET.has(st) ? st : "new";
     const leadChanged = prevLinkedLeadRef.current !== watchedLeadId;
     prevLinkedLeadRef.current = watchedLeadId;
     const cur = form.getValues("lead_pipeline_status")?.trim();
     if (leadChanged || !cur) {
       form.setValue("lead_pipeline_status", nextPipe);
     }
-  }, [open, watchedLeadId, leads, form]);
+  }, [open, watchedLeadId, pickedLead, form]);
+
+  useEffect(() => {
+    if (!open) return;
+    const q = leadQuery.trim();
+    const label = callPickLabel(pickedLead);
+    if (!q || (pickedLead && pickedLead.id === watchedLeadId && q === label)) {
+      setLeadHits([]);
+      setLeadHitsTruncated(false);
+      setLeadHitsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLeadHitsLoading(true);
+      void searchAccessibleLeads(q)
+        .then(({ leads, truncated }) => {
+          if (!cancelled) {
+            setLeadHits(leads);
+            setLeadHitsTruncated(truncated);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setLeadHits([]);
+            setLeadHitsTruncated(false);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLeadHitsLoading(false);
+        });
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, leadQuery, pickedLead, watchedLeadId]);
 
   const submit = form.handleSubmit(async (vals) => {
     const duration_seconds = vals.duration_min * 60 + vals.duration_sec;
@@ -326,28 +376,68 @@ export default function LogCallDialog({
             </div>
             <div>
               <Label>Link to Lead</Label>
-              <Select
-                value={form.watch("lead_id") || "__none__"}
-                onValueChange={(v) => form.setValue("lead_id", v === "__none__" ? "" : v)}
-              >
-                <SelectTrigger className="mt-1 w-full">
-                  <SelectValue placeholder="Optional" />
-                </SelectTrigger>
-                <SelectContent
-                  container={dialogContentEl}
-                  side="bottom"
-                  sideOffset={4}
-                  align="start"
-                  className="max-h-[min(20rem,45vh)] w-[var(--radix-select-trigger-width)]"
-                >
-                  <SelectItem value="__none__">None</SelectItem>
-                  {leads.map((l: { id: string; name?: string; email?: string; phone?: string }) => (
-                    <SelectItem key={l.id} value={l.id}>
-                      {l.name || l.email || l.phone || l.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="relative mt-1">
+                <Input
+                  value={leadQuery}
+                  autoComplete="off"
+                  placeholder="Type a name, email, or phone"
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setLeadQuery(value);
+                    setLeadHitsOpen(true);
+                    const label = callPickLabel(pickedLead);
+                    if (!value.trim()) {
+                      form.setValue("lead_id", "");
+                      setPickedLead(null);
+                    } else if (pickedLead && value.trim() !== label) {
+                      form.setValue("lead_id", "");
+                    }
+                  }}
+                  onFocus={() => {
+                    if (leadQuery.trim()) setLeadHitsOpen(true);
+                  }}
+                  onBlur={() => {
+                    window.setTimeout(() => setLeadHitsOpen(false), 150);
+                  }}
+                />
+                {leadHitsOpen && (leadHitsLoading || leadHits.length > 0 || leadHitsTruncated) ? (
+                  <div className="absolute z-20 left-0 right-0 mt-1 max-h-52 overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md py-1">
+                    {leadHitsLoading ? (
+                      <p className="px-3 py-2 text-xs text-muted-foreground">Searching your leads…</p>
+                    ) : (
+                      <>
+                        {leadHits.map((lead) => (
+                          <button
+                            key={lead.id}
+                            type="button"
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-muted/80"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              form.setValue("lead_id", lead.id);
+                              setPickedLead(lead);
+                              setLeadQuery(callPickLabel(lead));
+                              setLeadHitsOpen(false);
+                            }}
+                          >
+                            <span className="font-medium block truncate">{lead.name}</span>
+                            <span className="text-[11px] text-muted-foreground truncate block">
+                              {[lead.email, lead.phone].filter(Boolean).join(" · ") || "Lead"}
+                            </span>
+                          </button>
+                        ))}
+                        {leadHitsTruncated ? (
+                          <p className="px-3 py-2 text-[11px] text-muted-foreground">
+                            Showing latest matches. Type more of the name.
+                          </p>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Type to search every lead you can access.
+              </p>
               {selectedLead ? (
                 <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
                   <span className="font-medium text-foreground/80">From lead:</span>{" "}

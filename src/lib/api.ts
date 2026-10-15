@@ -272,6 +272,18 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ email }),
       }),
+    pollSuperAdminEmailLogin: async (pollToken: string) => {
+      const data = await request('/auth.php?action=super_admin_email_login_status', {
+        method: 'POST',
+        body: JSON.stringify({ poll_token: pollToken }),
+      });
+      if (data?.status === 'signed_in' && data.user) {
+        setToken(data.token || '');
+        setStoredUser(data.user);
+        if (data.organization) setStoredOrg(data.organization);
+      }
+      return data;
+    },
     listSuperAdminLoginEmails: () =>
       request('/auth.php?action=list_super_admin_login_emails', { method: 'POST', body: '{}' }),
     saveSuperAdminLoginEmails: (emails: string[]) =>
@@ -402,6 +414,10 @@ export const api = {
       offset?: number;
       /** When true (default), follow truncated pages until all visible leads are loaded. */
       all?: boolean;
+      /** Super admin / org admin: keep paging until the server has no more rows. */
+      uncapped?: boolean;
+      /** Stop client-side paging after this many rows (role caps / picker search). */
+      maxRows?: number;
     }) => {
       const buildQs = (limit: number, offset: number) => {
         const q = new URLSearchParams();
@@ -419,8 +435,16 @@ export const api = {
         return q.toString();
       };
 
-      const pageSize = Math.min(100000, Math.max(1, params?.limit ?? 100000));
+      // Callers may request up to 100k (manager leads). Super admin / org admin pass uncapped.
+      // fetchAll still pages up to the soft cap below, unless uncapped.
+      const uncapped = params?.uncapped === true;
+      const pageSize = Math.min(uncapped ? 1000000 : 100000, Math.max(1, params?.limit ?? (uncapped ? 10000 : 5000)));
       const fetchAll = params?.all !== false && params?.offset == null;
+      const softCap = uncapped
+        ? Number.POSITIVE_INFINITY
+        : params?.maxRows != null
+          ? Math.max(1, params.maxRows)
+          : Math.max(50000, pageSize);
 
       if (!fetchAll) {
         const offset = Math.max(0, params?.offset ?? 0);
@@ -430,33 +454,36 @@ export const api = {
       const allRows: any[] = [];
       let offset = 0;
       let total = 0;
-      // Safety: at most 100k leads client-side (1×100k or chunked pages).
-      const maxPages = Math.max(1, Math.ceil(100000 / pageSize));
+      const maxPages = uncapped ? 10000 : Math.max(1, Math.ceil(softCap / pageSize));
       for (let page = 0; page < maxPages; page++) {
         const data = await request(`/leads.php?${buildQs(pageSize, offset)}`);
         const rows = Array.isArray(data?.data) ? data.data : [];
         total = typeof data?.total === 'number' ? data.total : allRows.length + rows.length;
         allRows.push(...rows);
-        offset += rows.length;
-        if (!data?.truncated || rows.length === 0 || offset >= total || allRows.length >= 100000) {
+        const previousOffset = offset;
+        const nextOffset = Number(data?.next_offset);
+        offset = Number.isFinite(nextOffset) ? nextOffset : offset + rows.length;
+        const stalled = rows.length === 0 && offset <= previousOffset;
+        if (!data?.truncated || stalled || allRows.length >= softCap) {
+          const incomplete = Boolean(data?.truncated) && (allRows.length >= softCap || stalled);
           return {
             ...data,
-            data: allRows.slice(0, 100000),
-            count: Math.min(allRows.length, 100000),
-            total,
-            truncated: false,
+            data: allRows.slice(0, softCap),
+            count: Math.min(allRows.length, softCap),
+            total: incomplete ? total : Math.min(allRows.length, softCap),
+            truncated: incomplete,
             offset: 0,
-            limit: Math.min(allRows.length, 100000),
+            limit: Math.min(allRows.length, softCap),
           };
         }
       }
       return {
-        data: allRows.slice(0, 100000),
-        count: Math.min(allRows.length, 100000),
+        data: allRows.slice(0, softCap),
+        count: Math.min(allRows.length, softCap),
         total,
-        truncated: offset < total,
+        truncated: true,
         offset: 0,
-        limit: Math.min(allRows.length, 100000),
+        limit: Math.min(allRows.length, softCap),
       };
     },
     create: (data: any) => request('/leads.php', { method: 'POST', body: JSON.stringify(data) }),
@@ -592,6 +619,63 @@ export const api = {
  }),
   },
 
+  /** LMS Classes match/diff + Access Users (Syncpedia server proxy). */
+  lmsSync: {
+    match: (resource: 'courses' | 'batches') =>
+      request(`/lms-sync.php?action=match&resource=${encodeURIComponent(resource)}`),
+    apply: (body: { resource: 'courses' | 'batches'; add: string[]; delete: string[] }) =>
+      request('/lms-sync.php?action=apply', { method: 'POST', body: JSON.stringify(body) }),
+    lmsCourses: () => request('/lms-sync.php?action=lms_courses'),
+    lmsBatches: (lmsCourseId?: string) => {
+      const q = lmsCourseId ? `&lms_course_id=${encodeURIComponent(lmsCourseId)}` : '';
+      return request(`/lms-sync.php?action=lms_batches${q}`);
+    },
+    lmsStudents: () => request('/lms-sync.php?action=lms_students'),
+    addLmsStudent: (data: {
+      name: string;
+      email: string;
+      phone: string;
+      lms_course_id: string;
+      lms_batch_id: string;
+    }) =>
+      request('/lms-sync.php?action=add_lms_student', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    lmsLiveClasses: () => request('/lms-sync.php?action=lms_live_classes'),
+    lmsLiveClass: (id: string) =>
+      request(`/lms-sync.php?action=lms_live_class&id=${encodeURIComponent(id)}`),
+    createLmsLiveClass: (data: {
+      title: string;
+      lms_course_id: string;
+      mentor_id: string;
+      scheduled_at: string;
+      lms_batch_id?: string;
+      meeting_link?: string;
+      duration_minutes?: number;
+      status?: string;
+    }) =>
+      request('/lms-sync.php?action=create_lms_live_class', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    updateLmsLiveClass: (data: {
+      lms_id: string;
+      title?: string;
+      lms_course_id?: string;
+      mentor_id?: string;
+      scheduled_at?: string;
+      lms_batch_id?: string | null;
+      meeting_link?: string;
+      duration_minutes?: number;
+      status?: string;
+    }) =>
+      request('/lms-sync.php?action=update_lms_live_class', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+  },
+
   // Manual payment submissions (Payment Records → Payments / Approvals)
   manualPayments: {
     list: (status: 'approved' | 'pending' | 'rejected' | 'all' = 'approved') =>
@@ -691,6 +775,7 @@ export const api = {
     clearRazorpaySetup: () =>
       request('/razorpay-settings.php?action=clear', { method: 'POST', body: '{}' }),
   },
+
 
   // Meta Ads (org admin — OAuth + campaign insights)
   metaAds: {
@@ -923,6 +1008,13 @@ export const api = {
     createEmailDraft: (data: any) => request('/marketing.php?action=email_drafts', { method: 'POST', body: JSON.stringify(data) }),
     updateEmailDraft: (id: string, data: any) => request(`/marketing.php?action=email_drafts&id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     deleteEmailDraft: (id: string) => request(`/marketing.php?action=email_drafts&id=${id}`, { method: 'DELETE' }),
+    uploadEmailDraftAttachment: (id: string, file: File) => {
+      const body = new FormData();
+      body.append('file', file);
+      return request(`/marketing.php?action=email_draft_attachment&id=${encodeURIComponent(id)}`, { method: 'POST', body });
+    },
+    deleteEmailDraftAttachment: (id: string) =>
+      request(`/marketing.php?action=email_draft_attachment&id=${encodeURIComponent(id)}`, { method: 'DELETE' }),
     emailCampaigns: (params?: { mine?: boolean }) =>
       request(`/marketing.php?action=email_campaigns${params?.mine ? '&mine=1' : ''}`),
     createEmailCampaign: (data: any) => request('/marketing.php?action=email_campaigns', { method: 'POST', body: JSON.stringify(data) }),
@@ -933,6 +1025,11 @@ export const api = {
     },
     createEmailSends: (campaignId: string, recipients: Array<string | { recipient_email?: string; email?: string; status?: string }>) =>
       request('/marketing.php?action=email_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
+    retryEmailCampaign: (campaignId: string) =>
+      request('/marketing.php?action=retry_email_campaign', {
+        method: 'POST',
+        body: JSON.stringify({ campaign_id: campaignId }),
+      }),
     dispatchEmailCampaign: (data: {
       draft_id: string;
       smtp_account_id?: string;
@@ -1142,11 +1239,21 @@ export const api = {
       if (formId) q.set('form_id', formId);
       return request<{
         data: {
-          offer_letters: Array<{ id: string; name?: string; template_name?: string; status?: string }>;
-          certificates: Array<{ id: string; name?: string; status?: string }>;
+          offer_letters: Array<{ id: string; name?: string; template_name?: string; status?: string; placeholders?: unknown }>;
+          certificates: Array<{ id: string; name?: string; status?: string; placeholders?: unknown }>;
           org_id?: string | null;
         };
       }>(`/forms.php?${q.toString()}`);
+    },
+    /** Lazy-load placeholders for one automation template (avoids multi‑MB list payloads). */
+    automationTemplatePlaceholders: (kind: 'offer' | 'certificate', id: string, formId?: string | null) => {
+      const q = new URLSearchParams({
+        action: 'automation_template_placeholders',
+        kind,
+        id,
+      });
+      if (formId) q.set('form_id', formId);
+      return request<{ data: { id: string; kind: string; placeholders: unknown[] } }>(`/forms.php?${q.toString()}`);
     },
     sendCampaign: (body: {
       form_id: string;

@@ -35,7 +35,7 @@ export default function MyLeads() {
   const [editingLead, setEditingLead] = useState<HRLead | null>(null);
   const [search, setSearch] = useState("");
   const [statusTab, setStatusTab] = useState("all");
-  const { data, isLoading } = useMyLeads({ status: statusTab, search, page: 1, limit: 200 });
+  const { data, isLoading } = useMyLeads({ status: statusTab, search, page: 1, limit: 10000 });
   const deleteMutation = useDeleteLead();
   const leads = data?.data ?? data?.leads ?? [];
   const total = Number(data?.total ?? leads.length);

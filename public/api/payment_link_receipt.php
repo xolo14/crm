@@ -28,11 +28,16 @@ function paymentLinkReceiptRenderHtmlToPdf(string $html, string $destAbsPath): b
             @mkdir($fontDir, 0775, true);
         }
         $options = new \Dompdf\Options();
-        $options->set('isRemoteEnabled', false);
+        // Allow data: URI org logos embedded in the HTML (not arbitrary remote fetch).
+        $options->set('isRemoteEnabled', true);
         $options->set('isHtml5ParserEnabled', true);
         $options->set('tempDir', $tmpDir);
         $options->set('fontDir', $fontDir);
         $options->set('fontCache', $tmpDir . DIRECTORY_SEPARATOR . 'font_cache');
+        $root = syncpediaDocumentStorageBackendRoot();
+        if (is_dir($root) && method_exists($options, 'setChroot')) {
+            $options->setChroot($root);
+        }
         $dompdf = new \Dompdf\Dompdf($options);
         $wrapped = $html;
         if (stripos($html, '<html') === false) {
@@ -47,11 +52,225 @@ function paymentLinkReceiptRenderHtmlToPdf(string $html, string $destAbsPath): b
         if ($out === false || $out === '') {
             return false;
         }
+        $dir = dirname($destAbsPath);
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
         return @file_put_contents($destAbsPath, $out) !== false;
     } catch (Throwable $e) {
         error_log('[payment_receipt] dompdf: ' . $e->getMessage());
         return false;
     }
+}
+
+/**
+ * Resolve organization branding for invoices (name + logo as data URI when possible).
+ *
+ * @return array{org_name: string, logo_data_uri: string}
+ */
+function paymentLinkReceiptOrgBranding(?string $orgId): array
+{
+    $fallbackName = function_exists('syncpediaMailLegalEntityName')
+        ? syncpediaMailLegalEntityName()
+        : 'Syncpedia';
+    $out = ['org_name' => $fallbackName, 'logo_data_uri' => ''];
+    $orgId = trim((string) $orgId);
+    if ($orgId === '') {
+        return $out;
+    }
+    try {
+        $db = paymentLinksDb();
+        $st = $db->prepare('SELECT name, logo_url FROM organizations WHERE id = ? LIMIT 1');
+        $st->execute([$orgId]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            return $out;
+        }
+        $name = trim((string) ($row['name'] ?? ''));
+        if ($name !== '') {
+            $out['org_name'] = $name;
+        }
+        $logoUrl = trim((string) ($row['logo_url'] ?? ''));
+        if ($logoUrl !== '') {
+            $out['logo_data_uri'] = paymentLinkReceiptResolveLogoDataUri($logoUrl);
+        }
+    } catch (Throwable $e) {
+        error_log('[payment_receipt] org branding: ' . $e->getMessage());
+    }
+    return $out;
+}
+
+/** Load org logo from disk as a data URI (safe for Dompdf). */
+function paymentLinkReceiptResolveLogoDataUri(string $logo): string
+{
+    $logo = trim($logo);
+    if ($logo === '') {
+        return '';
+    }
+    $path = $logo;
+    if (preg_match('#^https?://#i', $logo)) {
+        $parts = parse_url($logo);
+        $path = is_array($parts) ? (string) ($parts['path'] ?? '') : '';
+    }
+    $uploadsIdx = strpos($path, '/uploads/');
+    if ($uploadsIdx === false) {
+        return '';
+    }
+    $rawPath = substr($path, $uploadsIdx);
+    if (strpos($rawPath, '..') !== false || !str_starts_with($rawPath, '/uploads/org_logos/')) {
+        return '';
+    }
+
+    $relUploads = str_replace('/', DIRECTORY_SEPARATOR, $rawPath);
+    $siteRoot = dirname(__DIR__); // php-backend/api → php-backend, or public/api → public
+    $apiDir = __DIR__;
+    $candidates = [
+        $siteRoot . $relUploads,
+        $siteRoot . DIRECTORY_SEPARATOR . 'public' . $relUploads,
+        dirname($siteRoot) . DIRECTORY_SEPARATOR . 'public' . $relUploads,
+        $apiDir . DIRECTORY_SEPARATOR . 'uploads' . str_replace('/', DIRECTORY_SEPARATOR, substr($rawPath, strlen('/uploads'))),
+        syncpediaDocumentStorageBackendRoot() . $relUploads,
+    ];
+    $abs = null;
+    foreach ($candidates as $candidate) {
+        $resolved = @realpath($candidate);
+        if ($resolved !== false && is_file($resolved)) {
+            $norm = str_replace('\\', '/', $resolved);
+            if (strpos($norm, '/uploads/org_logos/') !== false) {
+                $abs = $resolved;
+                break;
+            }
+        }
+    }
+    if ($abs === null) {
+        return '';
+    }
+    $bin = @file_get_contents($abs);
+    if ($bin === false || $bin === '' || strlen($bin) > 500 * 1024) {
+        return '';
+    }
+    $mime = 'image/png';
+    if (function_exists('mime_content_type')) {
+        $detected = @mime_content_type($abs);
+        if (is_string($detected) && str_starts_with($detected, 'image/')) {
+            $mime = $detected;
+        }
+    } else {
+        $ext = strtolower(pathinfo($abs, PATHINFO_EXTENSION));
+        $byExt = [
+            'jpg' => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'gif' => 'image/gif',
+        ];
+        if (isset($byExt[$ext])) {
+            $mime = $byExt[$ext];
+        }
+    }
+    // Dompdf often struggles with SVG — skip and show org name only.
+    if ($mime === 'image/svg+xml') {
+        return '';
+    }
+    return 'data:' . $mime . ';base64,' . base64_encode($bin);
+}
+
+function paymentLinkReceiptPdfEscape(string $text): string
+{
+    $text = preg_replace('/[^\x20-\x7E]/', '?', $text) ?? $text;
+    return str_replace(['\\', '(', ')'], ['\\\\', '\\(', '\\)'], $text);
+}
+
+/** Pure-PHP A4 invoice PDF when Dompdf is unavailable (text + org name; no HTML). */
+function paymentLinkReceiptBuildSimpleInvoicePdf(
+    string $orgName,
+    string $invoiceNumber,
+    string $customerName,
+    string $customerEmail,
+    string $customerPhone,
+    string $description,
+    string $plinkId,
+    string $paymentId,
+    float $amountThisPaymentRupees,
+    float $totalRupees,
+    float $cumulativePaidRupees,
+    bool $isPartial,
+): string {
+    $statusLabel = $isPartial ? 'Partial payment' : 'Paid in full';
+    $balance = max(0, $totalRupees - $cumulativePaidRupees);
+    $lines = [
+        ['TAX INVOICE / PAYMENT RECEIPT', 14, 48, true],
+        [$orgName !== '' ? $orgName : 'Syncpedia', 16, 78, true],
+        ['INVOICE  ' . $invoiceNumber, 12, 110, true],
+        ['Date: ' . date('d M Y, h:i A'), 10, 132, false],
+        ['Bill to:', 11, 165, false],
+        [$customerName !== '' ? $customerName : 'Customer', 12, 182, false],
+        [$customerEmail, 10, 198, false],
+        [$customerPhone, 10, 212, false],
+        ['Description: ' . ($description !== '' ? $description : 'Payment'), 10, 240, false],
+        ['Payment link: ' . $plinkId, 9, 258, false],
+    ];
+    if ($paymentId !== '') {
+        $lines[] = ['Razorpay payment: ' . $paymentId, 9, 274, false];
+    }
+    $y = 310;
+    $lines[] = ['Item                                              Amount (INR)', 10, $y, false];
+    $y += 18;
+    $lines[] = [$statusLabel . '                               ' . number_format($amountThisPaymentRupees, 2), 11, $y, false];
+    $y += 16;
+    $lines[] = ['Total payment link amount                  ' . number_format($totalRupees, 2), 10, $y, false];
+    $y += 16;
+    $lines[] = ['Paid cumulative                            ' . number_format($cumulativePaidRupees, 2), 10, $y, false];
+    if ($isPartial && $balance > 0.009) {
+        $y += 16;
+        $lines[] = ['Balance due                                ' . number_format($balance, 2), 10, $y, false];
+    }
+    $y += 36;
+    $lines[] = ['This receipt is issued for your Razorpay payment via Syncpedia CRM.', 9, $y, false];
+
+    $w = 595;
+    $h = 842;
+    $content = "0.11 0.62 0.46 RG\n2 w\n36 36 " . ($w - 72) . " " . ($h - 72) . " re S\n";
+    $content .= "0.05 0.08 0.12 rg\n";
+    foreach ($lines as $row) {
+        $text = trim((string) ($row[0] ?? ''));
+        $size = (float) ($row[1] ?? 12);
+        $yFromTop = (float) ($row[2] ?? 72);
+        $center = !empty($row[3]);
+        if ($text === '') {
+            continue;
+        }
+        if (strlen($text) > 95) {
+            $text = substr($text, 0, 92) . '...';
+        }
+        $yPdf = $h - $yFromTop;
+        $esc = paymentLinkReceiptPdfEscape($text);
+        $approxWidth = strlen($text) * $size * 0.5;
+        $x = $center ? max(48, ($w - $approxWidth) / 2) : 56;
+        $content .= "BT /F1 {$size} Tf {$x} {$yPdf} Td ({$esc}) Tj ET\n";
+    }
+    $len = strlen($content);
+    $objects = [
+        "1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n",
+        "2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n",
+        "3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {$w} {$h}] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>endobj\n",
+        "4 0 obj<< /Length {$len} >>stream\n{$content}endstream endobj\n",
+        "5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n",
+    ];
+    $pdf = "%PDF-1.4\n";
+    $offsets = [0];
+    foreach ($objects as $obj) {
+        $offsets[] = strlen($pdf);
+        $pdf .= $obj;
+    }
+    $xrefPos = strlen($pdf);
+    $count = count($objects) + 1;
+    $pdf .= "xref\n0 {$count}\n0000000000 65535 f \n";
+    for ($i = 1; $i < $count; $i++) {
+        $pdf .= sprintf("%010d 00000 n \n", $offsets[$i]);
+    }
+    $pdf .= "trailer<< /Size {$count} /Root 1 0 R >>\nstartxref\n{$xrefPos}\n%%EOF";
+    return $pdf;
 }
 
 function paymentLinkReceiptDownloadUrl(string $url): ?string
@@ -128,16 +347,23 @@ function paymentLinkReceiptBuildInvoiceHtml(
     $h = static function (string $s): string {
         return htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
     };
-    $legal = $h(syncpediaMailLegalEntityName());
+    $branding = paymentLinkReceiptOrgBranding(isset($row['org_id']) ? (string) $row['org_id'] : null);
+    $orgName = $h($branding['org_name']);
+    $logoUri = trim((string) ($branding['logo_data_uri'] ?? ''));
+    $logoBlock = $logoUri !== ''
+        ? '<img src="' . $h($logoUri) . '" alt="' . $orgName . '" style="max-height:56px;max-width:180px;object-fit:contain;margin-bottom:6px;display:block;"/>'
+        : '';
     $totalRupees = ((int) ($row['amount'] ?? 0)) / 100;
     $balance = max(0, $totalRupees - $cumulativePaidRupees);
     $statusLabel = $isPartial ? 'Partial payment' : 'Paid in full';
 
     return '<div style="padding:24px;">'
-        . '<table width="100%"><tr>'
-        . '<td><strong style="font-size:18px;color:#0f2318;">' . $legal . '</strong><br/>'
+        . '<table width="100%" style="border:none;"><tr>'
+        . '<td style="border:none;vertical-align:top;">'
+        . $logoBlock
+        . '<strong style="font-size:18px;color:#0f2318;">' . $orgName . '</strong><br/>'
         . '<span style="font-size:11px;color:#64748b;">Tax Invoice / Payment Receipt</span></td>'
-        . '<td align="right"><span style="font-size:14px;font-weight:bold;">INVOICE</span><br/>'
+        . '<td style="border:none;vertical-align:top;" align="right"><span style="font-size:14px;font-weight:bold;">INVOICE</span><br/>'
         . '<span style="font-family:monospace;">' . $h($invoiceNumber) . '</span></td>'
         . '</tr></table>'
         . '<hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;"/>'
@@ -156,8 +382,8 @@ function paymentLinkReceiptBuildInvoiceHtml(
             ? '<tr><td>Balance due</td><td align="right">' . $h(number_format($balance, 2)) . '</td></tr>'
             : '')
         . '</table>'
-        . '<p style="margin-top:24px;font-size:11px;color:#64748b;">This receipt is issued by Syncpedia for your Razorpay payment. '
-        . 'For official GST invoice from Razorpay (if enabled on your account), refer to the attached PDF when available.</p>'
+        . '<p style="margin-top:24px;font-size:11px;color:#64748b;">This receipt is issued by ' . $orgName
+        . ' for your Razorpay payment via Syncpedia CRM.</p>'
         . '</div>';
 }
 
@@ -196,9 +422,158 @@ function paymentLinkReceiptGenerateInvoicePdf(
         return syncpediaDocumentStorageRelativePath($abs);
     }
 
-    error_log('[payment_receipt] dompdf unavailable — saving HTML invoice for ' . $filename);
-    $htmlPath = syncpediaDocumentStorageSaveHtml('payment_invoices', $filename, $html);
-    return $htmlPath;
+    // Never fall back to HTML downloads — emit a simple PDF instead.
+    error_log('[payment_receipt] dompdf unavailable — using simple PDF fallback for ' . $filename);
+    $branding = paymentLinkReceiptOrgBranding(isset($row['org_id']) ? (string) $row['org_id'] : null);
+    $totalRupees = ((int) ($row['amount'] ?? 0)) / 100;
+    $simplePdf = paymentLinkReceiptBuildSimpleInvoicePdf(
+        (string) ($branding['org_name'] ?? 'Syncpedia'),
+        $invoiceNumber,
+        trim((string) ($row['customer_name'] ?? '')),
+        trim((string) ($row['customer_email'] ?? '')),
+        trim((string) ($row['customer_phone'] ?? '')),
+        trim((string) ($row['description'] ?? 'Payment')),
+        trim((string) ($row['razorpay_payment_link_id'] ?? '')),
+        $paymentId,
+        $amountThisPaymentRupees,
+        $totalRupees,
+        $cumulativePaidRupees,
+        $isPartial,
+    );
+    return syncpediaDocumentStorageSavePdf('payment_invoices', $filename, $simplePdf);
+}
+
+/** Safe filename segment from candidate / customer name. */
+function paymentLinkReceiptSafeCandidateSlug(string $name): string
+{
+    $name = trim($name);
+    if ($name === '') {
+        return 'candidate';
+    }
+    $name = preg_replace('/\s+/', '_', $name) ?? $name;
+    $name = preg_replace('/[^A-Za-z0-9_-]/', '', $name) ?? '';
+    $name = trim($name, '_-');
+    if ($name === '') {
+        return 'candidate';
+    }
+    return substr($name, 0, 60);
+}
+
+/** Download filename: Invoice-{CandidateName}-{InvoiceNo}.pdf */
+function paymentLinkReceiptDownloadFilename(array $row): string
+{
+    $candidate = paymentLinkReceiptSafeCandidateSlug((string) ($row['customer_name'] ?? ''));
+    $inv = trim((string) ($row['invoice_number'] ?? ''));
+    if ($inv === '') {
+        $inv = 'invoice';
+    }
+    $inv = preg_replace('/[^A-Za-z0-9_-]/', '_', $inv) ?? 'invoice';
+    return 'Invoice-' . $candidate . '-' . $inv . '.pdf';
+}
+
+/**
+ * Rebuild invoice PDF with latest template (org logo + branding).
+ * Used for new receipts and to upgrade existing/legacy invoices on download.
+ *
+ * @return array{path: string, ok: bool, filename: string}
+ */
+function paymentLinkReceiptRegenerateLatestPdf(array $row): array
+{
+    $invoiceNumber = trim((string) ($row['invoice_number'] ?? ''));
+    if ($invoiceNumber === '') {
+        $invoiceNumber = paymentLinkReceiptMakeInvoiceNumber($row, '');
+    }
+    $amountPaidPaise = (int) ($row['amount_paid'] ?? 0);
+    $totalPaise = (int) ($row['amount'] ?? 0);
+    $amountPaid = $amountPaidPaise / 100;
+    $total = $totalPaise / 100;
+    if ($amountPaid <= 0 && $total > 0) {
+        // Link marked paid in Razorpay but amount_paid not synced — use full amount.
+        $status = strtolower(trim((string) ($row['status'] ?? '')));
+        if (in_array($status, ['paid', 'partially_paid'], true)) {
+            $amountPaid = $total;
+        }
+    }
+    $isPartial = $amountPaid > 0 && $amountPaid + 0.009 < $total;
+    $amountThis = $amountPaid > 0 ? $amountPaid : $total;
+
+    $html = paymentLinkReceiptBuildInvoiceHtml(
+        $row,
+        [],
+        $amountThis,
+        $amountPaid > 0 ? $amountPaid : $amountThis,
+        $invoiceNumber,
+        '',
+        $isPartial,
+    );
+
+    $filename = 'invoice_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $invoiceNumber) . '.pdf';
+    $dir = syncpediaDocumentStorageDir('payment_invoices');
+    $abs = $dir . DIRECTORY_SEPARATOR . syncpediaDocumentSafeFilename($filename);
+    $newPath = null;
+    if (paymentLinkReceiptRenderHtmlToPdf($html, $abs)) {
+        $newPath = syncpediaDocumentStorageRelativePath($abs);
+    } else {
+        $branding = paymentLinkReceiptOrgBranding(isset($row['org_id']) ? (string) $row['org_id'] : null);
+        $simplePdf = paymentLinkReceiptBuildSimpleInvoicePdf(
+            (string) ($branding['org_name'] ?? 'Syncpedia'),
+            $invoiceNumber,
+            trim((string) ($row['customer_name'] ?? '')),
+            trim((string) ($row['customer_email'] ?? '')),
+            trim((string) ($row['customer_phone'] ?? '')),
+            trim((string) ($row['description'] ?? 'Payment')),
+            trim((string) ($row['razorpay_payment_link_id'] ?? '')),
+            '',
+            $amountThis,
+            $total,
+            $amountPaid > 0 ? $amountPaid : $amountThis,
+            $isPartial,
+        );
+        $newPath = syncpediaDocumentStorageSavePdf('payment_invoices', $filename, $simplePdf);
+    }
+
+    $downloadName = paymentLinkReceiptDownloadFilename(array_merge($row, [
+        'invoice_number' => $invoiceNumber,
+    ]));
+
+    if ($newPath === null || $newPath === '') {
+        $stored = trim((string) ($row['invoice_pdf_path'] ?? ''));
+        return ['path' => $stored, 'ok' => false, 'filename' => $downloadName];
+    }
+
+    try {
+        $plinkId = trim((string) ($row['razorpay_payment_link_id'] ?? ''));
+        if ($plinkId !== '') {
+            paymentLinksDb()->prepare(
+                'UPDATE payment_links SET invoice_pdf_path = ?, invoice_number = COALESCE(NULLIF(invoice_number, ""), ?), updated_at = CURRENT_TIMESTAMP
+                 WHERE razorpay_payment_link_id = ?'
+            )->execute([$newPath, $invoiceNumber, $plinkId]);
+        }
+    } catch (Throwable $e) {
+        try {
+            $plinkId = trim((string) ($row['razorpay_payment_link_id'] ?? ''));
+            if ($plinkId !== '') {
+                paymentLinksDb()->prepare(
+                    'UPDATE payment_links SET invoice_pdf_path = ?, updated_at = CURRENT_TIMESTAMP WHERE razorpay_payment_link_id = ?'
+                )->execute([$newPath, $plinkId]);
+            }
+        } catch (Throwable $e2) {
+            error_log('[payment_receipt] update pdf path after regenerate: ' . $e2->getMessage());
+        }
+    }
+
+    return ['path' => $newPath, 'ok' => true, 'filename' => $downloadName];
+}
+
+/**
+ * Ensure a stored invoice path is a PDF (legacy HTML → latest template).
+ *
+ * @return array{path: string, ok: bool, filename?: string}
+ */
+function paymentLinkReceiptEnsurePdfPath(array $row): array
+{
+    // Always rebuild with latest branding/logo so old invoices match current design.
+    return paymentLinkReceiptRegenerateLatestPdf($row);
 }
 
 function paymentLinkReceiptMakeInvoiceNumber(array $row, string $paymentId): string

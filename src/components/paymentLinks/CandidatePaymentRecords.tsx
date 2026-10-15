@@ -13,7 +13,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { canEditPaymentCandidatePitch, canSubmitManualPayment } from "@/lib/orgAccess";
+import { canEditPaymentCandidatePitch, canExportPaymentExcel, canSubmitManualPayment } from "@/lib/orgAccess";
+import { downloadExcelSheet, excelFileStamp } from "@/lib/downloadExcel";
+import ExportExcelButton from "@/components/paymentLinks/ExportExcelButton";
 import ManualPaymentDialog from "@/components/paymentLinks/ManualPaymentDialog";
 import {
   PAYMENT_LINK_PERIODS,
@@ -133,6 +135,7 @@ export default function CandidatePaymentRecords({
   const { user } = useAuth();
   const { toast } = useToast();
   const canUpdate = canSubmitManualPayment(user?.role ?? null);
+  const canExport = canExportPaymentExcel(user?.role ?? null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -250,6 +253,43 @@ export default function CandidatePaymentRecords({
     if (ownerName) return `${ownerName} — candidates`;
     return "Candidates";
   }, [selectedId, detail, ownerName]);
+
+  function candidateStatusLabel(status: string): string {
+    if (status === "cleared") return "Cleared";
+    if (status === "in_progress") return "In progress";
+    return "No pitch";
+  }
+
+  async function exportExcel() {
+    if (filteredRows.length === 0) {
+      toast({ variant: "destructive", title: "Nothing to export" });
+      return;
+    }
+    try {
+      await downloadExcelSheet(
+        `payment-records-${excelFileStamp()}.xlsx`,
+        "Payment Records",
+        filteredRows.map((row) => ({
+          Candidate: row.customer_name || "",
+          Email: row.customer_email || "",
+          Phone: row.customer_phone || "",
+          ...(showOwnerColumn ? { Rep: row.owner_name || "" } : {}),
+          "Pitch (INR)": Number(row.pitch_price || 0),
+          "Collected (INR)": Number(row.total_paid || 0),
+          "Remaining (INR)": Number(row.remaining || 0),
+          Installments: Number(row.installment_count || 0),
+          Status: candidateStatusLabel(String(row.status || "")),
+        })),
+      );
+      toast({ title: "Excel downloaded", description: `${filteredRows.length} candidate(s)` });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Could not create the Excel file",
+      });
+    }
+  }
 
   async function handleRefresh() {
     if (selectedId) {
@@ -601,6 +641,14 @@ export default function CandidatePaymentRecords({
               }}
               className={inputCls}
               title="To date"
+            />
+          </div>
+        ) : null}
+        {canExport ? (
+          <div className="flex justify-end">
+            <ExportExcelButton
+              onClick={() => void exportExcel()}
+              disabled={loading || filteredRows.length === 0}
             />
           </div>
         ) : null}

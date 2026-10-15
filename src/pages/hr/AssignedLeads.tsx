@@ -16,7 +16,7 @@ export default function AssignedLeads() {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
-  const { data, isLoading } = useAssignedLeads({ status, search, page: 1, limit: 200 });
+  const { data, isLoading } = useAssignedLeads({ status, search, page: 1, limit: 10000 });
   const mutation = useUpdateLead();
   const leads = useMemo(() => data?.data || [], [data]) as HRLead[];
   const statuses = ["new", "contacted", "interested", "not_interested", "converted", "lost"];

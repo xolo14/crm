@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
+import { searchAccessibleLeads } from '@/lib/searchAccessibleLeads';
 import { phpList } from '@/lib/phpList';
 import { communicationsApi } from '@/services/communications';
 import { Card, CardContent } from '@/components/ui/card';
@@ -29,6 +30,7 @@ import {
 import { FormLeadsCampaignTab } from '@/components/marketing/FormLeadsCampaignTab';
 import { useCampaignFormLeads } from '@/lib/campaignFormLeads';
 import { WhatsAppCampaignSetupPanel } from '@/components/marketing/WhatsAppCampaignSetupPanel';
+import WhatsAppAnalytics from '@/pages/WhatsAppAnalytics';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import { fillTemplatePreview, templateVarCount } from '@/components/WhatsApp/waUtils';
 
@@ -42,7 +44,11 @@ export default function WhatsAppPortal() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const leadSearchTimer = useRef<number | null>(null);
 
-  const [activeTab, setActiveTab] = useState('form_leads');
+  const marketingTabs = ['form_leads', 'drafts', 'campaigns', 'history', 'analytics'] as const;
+  const [activeTab, setActiveTab] = useState(() => {
+    const t = searchParams.get('tab') || '';
+    return marketingTabs.includes(t as (typeof marketingTabs)[number]) ? t : 'form_leads';
+  });
   const [loading, setLoading] = useState(true);
   const [campaignLeads, setCampaignLeads] = useState<any[]>([]);
   const {
@@ -253,6 +259,20 @@ export default function WhatsAppPortal() {
     setSearchParams(next, { replace: true });
   }, [loading, searchParams, setSearchParams]);
 
+  useEffect(() => {
+    const t = searchParams.get('tab') || '';
+    const next = marketingTabs.includes(t as (typeof marketingTabs)[number]) ? t : 'form_leads';
+    if (next !== activeTab) setActiveTab(next);
+  }, [searchParams]);
+
+  const changeTab = (value: string) => {
+    setActiveTab(value);
+    const next = new URLSearchParams(searchParams);
+    if (value === 'form_leads') next.delete('tab');
+    else next.set('tab', value);
+    setSearchParams(next, { replace: true });
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -392,17 +412,15 @@ export default function WhatsAppPortal() {
   const onLeadSearch = useCallback((q: string) => {
     if (leadSearchTimer.current) window.clearTimeout(leadSearchTimer.current);
     const query = q.trim();
-    if (query.length < 2) return;
+    if (query.length < 1) return;
     leadSearchTimer.current = window.setTimeout(() => {
-      void api.leads.list({ search: query, all: false, limit: 300, lite: true })
-        .then((res) => {
-          const extra = phpList(res);
-          if (!extra.length) return;
+      void searchAccessibleLeads(query)
+        .then(({ leads }) => {
+          if (!leads.length) return;
           setCampaignLeads((prev) => {
             const byId = new Map(prev.map((l) => [String(l.id), l]));
-            for (const row of extra) {
-              const id = String(row?.id || '');
-              if (id) byId.set(id, row);
+            for (const row of leads) {
+              if (row.id) byId.set(row.id, row);
             }
             return Array.from(byId.values());
           });
@@ -421,7 +439,7 @@ export default function WhatsAppPortal() {
     return true;
   });
 
-  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
+  if (loading && activeTab !== 'analytics') return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -434,9 +452,6 @@ export default function WhatsAppPortal() {
           <p className="text-xs md:text-sm text-muted-foreground">Compose, preview & send WhatsApp campaigns</p>
         </div>
         <div className="flex gap-2">
-          <Button size="sm" variant="ghost" className="gap-1.5" onClick={() => navigate('/marketing/whatsapp-analytics')}>
-            <BarChart3 className="h-3.5 w-3.5" />Analytics
-          </Button>
           <Button size="sm" variant="outline" className="gap-1.5" onClick={() => openEditor()}>
             <Plus className="h-3.5 w-3.5" />New Draft
           </Button>
@@ -446,6 +461,8 @@ export default function WhatsAppPortal() {
         </div>
       </div>
 
+      {activeTab !== 'analytics' ? (
+      <>
       <WhatsAppCampaignSetupPanel
         status={{
           connected: waConnected,
@@ -491,14 +508,17 @@ export default function WhatsAppPortal() {
           </CardContent>
         </Card>
       </div>
+      </>
+      ) : null}
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <Tabs value={activeTab} onValueChange={changeTab}>
         <TabsList className="w-full md:w-auto">
           <TabsTrigger value="form_leads" className="text-xs gap-1"><Users className="h-3 w-3" />Form Leads</TabsTrigger>
           <TabsTrigger value="drafts" className="text-xs gap-1"><FileText className="h-3 w-3" />Drafts</TabsTrigger>
           <TabsTrigger value="campaigns" className="text-xs gap-1"><Send className="h-3 w-3" />Campaigns</TabsTrigger>
           <TabsTrigger value="history" className="text-xs gap-1"><MessageSquare className="h-3 w-3" />Message History</TabsTrigger>
+          <TabsTrigger value="analytics" className="text-xs gap-1"><BarChart3 className="h-3 w-3" />Analytics</TabsTrigger>
         </TabsList>
 
         {/* Form Leads */}
@@ -652,6 +672,10 @@ export default function WhatsAppPortal() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="analytics">
+          <WhatsAppAnalytics embedded />
         </TabsContent>
       </Tabs>
 

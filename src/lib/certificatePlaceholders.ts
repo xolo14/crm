@@ -8,7 +8,9 @@ import { applyPlaceholders, extractPlaceholderKeys } from "@/modules/docForms/ty
 export const CERT_AUTO_PLACEHOLDER_KEYS = new Set([
   "certID",
   "cert_id",
-  "date", // typed date layer uses issue_date when issuing
+  "sync_id",
+  "date", // <<Date>> / {{date}} — issue form has its own date control
+  "issue_date",
 ]);
 
 /** Typed layer → bulk/sheet column key. */
@@ -68,21 +70,48 @@ export function canonicalCertPlaceholderKey(raw: string): string {
     sync_id: "cert_id",
     email: "recipient_email",
     recipient_email: "recipient_email",
-    start: "start",
-    start_date: "start",
-    from: "start",
-    end: "end",
-    end_date: "end",
-    to: "end",
+    date: "issue_date",
   };
   return aliases[lower] || lower || compact;
+}
+
+/** True when sample text is certificate wording with merge tokens, not a real course/domain value. */
+export function certSampleTextHasPlaceholderTokens(text: string): boolean {
+  return layerHasCertPlaceholderTokens(String(text || ""));
+}
+
+function isAutoCertIssueKey(key: string): boolean {
+  const canon = canonicalCertPlaceholderKey(key);
+  if (CERT_AUTO_PLACEHOLDER_KEYS.has(canon)) return true;
+  if (canon === "cert_id" || canon === "sync_id") return true;
+  return false;
+}
+
+function addCanonicalIssuePlaceholderKey(found: Set<string>, rawKey: string): void {
+  const canon = canonicalCertPlaceholderKey(rawKey);
+  if (!canon || isAutoCertIssueKey(canon)) return;
+  if (canon === "recipient_name") found.add("recipient_name");
+  else if (canon === "recipient_email") found.add("recipient_email");
+  else if (canon === "domain_name") found.add("domain_name");
+  else if (canon === "company_name") found.add("company_name");
+  else found.add(canon);
 }
 
 export function lookupCertPlaceholderValue(raw: string, values: Record<string, string>): string | undefined {
   const token = String(raw || "").trim();
   if (!token) return undefined;
   const canonical = canonicalCertPlaceholderKey(token);
-  const keysToTry = [token, canonical, token.replace(/\s+/g, "_"), token.toLowerCase()];
+  const direct = values[canonical];
+  if (direct != null && String(direct).trim() !== "") return String(direct);
+  const keysToTry = new Set<string>([
+    token,
+    canonical,
+    token.replace(/\s+/g, "_"),
+    token.toLowerCase(),
+  ]);
+  for (const k of Object.keys(values)) {
+    if (canonicalCertPlaceholderKey(k) === canonical) keysToTry.add(k);
+  }
   for (const k of keysToTry) {
     if (!k || !Object.prototype.hasOwnProperty.call(values, k)) continue;
     const v = values[k];
@@ -137,10 +166,9 @@ type CertLike = {
 /**
  * Placeholders used by a certificate template:
  * - typed layers present on the canvas (name/domain/date/company)
- * - {{...}} and <<...>> tokens in layer/field text
- * - mail subject/body/filename if stored on style
- * Always includes recipient_email so certificates can be emailed.
- * Excludes auto cert ID.
+ * - {{...}} and <<...>> tokens in layer/field text (canvas + fields only; not email body)
+ * Email is collected on the Email step / bulk send, not as a canvas-required field.
+ * Excludes auto cert ID / sync id / issue date tokens.
  */
 export function getCertificateTemplatePlaceholderKeys(template: CertLike | null | undefined): string[] {
   if (!template) return [];
@@ -154,46 +182,34 @@ export function getCertificateTemplatePlaceholderKeys(template: CertLike | null 
     const t = String(layer?.type || "");
     if (t === "certID" || t === "qr" || t === "logo" || t === "signature" || t === "image") continue;
     const col = CERT_LAYER_TO_COLUMN[t];
-    if (col) found.add(col);
+    if (col && !isAutoCertIssueKey(col)) found.add(col);
   }
 
   const tokenChunks = [
     ...layers.map((l) => String(l?.content || "")),
     String(fields.title || ""),
     String(fields.bodyText || ""),
-    String(style.mail_subject || ""),
-    String(style.mail_body || ""),
     String(style.pdf_filename_pattern || ""),
   ];
   const fromTokens = [
     ...extractPlaceholderKeys(...tokenChunks),
-    ...extractAnglePlaceholderLabels(...tokenChunks).map((label) => canonicalCertPlaceholderKey(label)),
+    ...extractAnglePlaceholderLabels(...tokenChunks),
   ];
 
   for (const key of fromTokens) {
-    if (CERT_AUTO_PLACEHOLDER_KEYS.has(key)) continue;
-    if (key === "name") found.add("recipient_name");
-    else if (key === "domain" || key === "course_name") found.add("domain_name");
-    else if (key === "company") found.add("company_name");
-    else if (key === "email") found.add("recipient_email");
-    else found.add(key);
+    addCanonicalIssuePlaceholderKey(found, key);
   }
 
-  // Needed to send the certificate email
-  found.add("recipient_email");
-
-  // Prefer canonical names
-  if (found.has("candidate_name")) {
-    found.add("recipient_name");
-    found.delete("candidate_name");
-  }
+  // Email is collected on the Email step / bulk send — not as a canvas-required field.
+  found.delete("candidate_name");
 
   const order = [
     "recipient_name",
     "recipient_email",
     "domain_name",
-    "issue_date",
     "company_name",
+    "start",
+    "end",
   ];
   const ordered: string[] = [];
   for (const k of order) {
@@ -203,6 +219,54 @@ export function getCertificateTemplatePlaceholderKeys(template: CertLike | null 
     }
   }
   return [...ordered, ...[...found].sort()];
+}
+
+/** Sample values for template builder / saved preview (not issue-time). */
+export function buildCertTemplatePreviewPlaceholderValues(
+  template: CertLike | null | undefined,
+  opts?: {
+    recipientName?: string;
+    domainName?: string;
+    companyName?: string;
+    issueDate?: string;
+    certId?: string;
+    start?: string;
+    end?: string;
+  },
+): Record<string, string> {
+  const fields = template?.fields || {};
+  const domainSample = String(opts?.domainName ?? fields.domainName ?? "").trim();
+  const coursePreview = certSampleTextHasPlaceholderTokens(domainSample) ? "Sample Course" : domainSample;
+  const issueDate = opts?.issueDate ?? new Date().toISOString().slice(0, 10);
+  const certId = opts?.certId ?? "OR-CC-XXXXXX";
+  const recipient = String(opts?.recipientName ?? fields.recipientName ?? "Recipient Name").trim();
+  const company = String(opts?.companyName ?? fields.companyName ?? "Organization").trim();
+  const start = String(opts?.start ?? "01 Jan 2026").trim();
+  const end = String(opts?.end ?? "28 Sep 2026").trim();
+
+  return {
+    recipient_name: recipient,
+    name: recipient,
+    recipient_email: "recipient@example.com",
+    email: "recipient@example.com",
+    domain_name: coursePreview,
+    domain: coursePreview,
+    course: coursePreview,
+    course_name: coursePreview,
+    Course: coursePreview,
+    company_name: company,
+    company: company,
+    issue_date: issueDate,
+    date: issueDate,
+    start,
+    Start: start,
+    end,
+    End: end,
+    cert_id: certId,
+    certID: certId,
+    CertID: certId,
+    sync_id: certId,
+  };
 }
 
 /** Keys the user fills per recipient (exclude shared issue_date / company if you split them). */

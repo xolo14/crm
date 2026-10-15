@@ -115,6 +115,10 @@
   z-index: 1;
 }
 
+.pk-brand h1.pk-brand-title-name {
+  max-width: 12em;
+}
+
 .pk-brand p {
   color: var(--pk-muted);
   font-size: 0.92rem;
@@ -147,6 +151,10 @@
   color: var(--pk-muted);
   font-size: 0.85rem;
   line-height: 1.45;
+}
+
+.pk-feature + .pk-feature {
+  margin-top: 0;
 }
 
 .pk-main {

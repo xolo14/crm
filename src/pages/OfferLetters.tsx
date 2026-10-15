@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
+import { searchAccessibleLeads } from '@/lib/searchAccessibleLeads';
 import { notifyOrgAdminsBulkAction } from '@/lib/notifications';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -32,7 +33,6 @@ import {
 } from '@/components/templates/CanvasTextBoxFrame';
 import { PlaceholderPalette } from '@/components/templates/PlaceholderPalette';
 import { DocFormsWorkspace, DocIssuedPanel } from '@/modules/docForms/DocFormsHub';
-import { applyPlaceholders } from '@/modules/docForms/types';
 import {
   downloadPlaceholderExcelTemplate,
   mapSheetRowsToPlaceholders,
@@ -41,6 +41,8 @@ import {
 import {
   applyMappedValuesToBulkRow,
   applyMappedValuesToSendState,
+  applyOfferPlaceholders,
+  canonicalOfferPlaceholderKey,
   findMissingOfferPlaceholders,
   getOfferPlaceholderValue,
   getOfferRequiredPlaceholderKeys,
@@ -127,10 +129,22 @@ function parseOfferMailConfig(template: OfferTemplate | null | undefined): Offer
 }
 
 function withOfferFallbackValues(values: Record<string, string>): Record<string, string> {
+  const candidate = values.candidate_name || values.recipient_name || values.name || '';
+  const start = values.start_date || values.start || values.from || '';
+  const end = values.end || values.end_date || values.to || '';
   return {
     ...values,
     date: values.date || format(new Date(), 'MMMM dd, yyyy'),
-    recipient_name: values.recipient_name || values.candidate_name || '',
+    candidate_name: candidate,
+    recipient_name: candidate,
+    name: candidate,
+    start_date: start,
+    start: start,
+    Start: start,
+    end,
+    End: end,
+    company_name: values.company_name || values.company || '',
+    company: values.company_name || values.company || '',
   };
 }
 
@@ -603,6 +617,9 @@ export default function OfferLetters() {
   const [sending, setSending] = useState(false);
   const [sendExtraValues, setSendExtraValues] = useState<Record<string, string>>({});
   const [offerLeads, setOfferLeads] = useState<any[]>([]);
+  const [offerLeadsTruncated, setOfferLeadsTruncated] = useState(false);
+  const [bulkLeadHits, setBulkLeadHits] = useState<any[]>([]);
+  const [bulkLeadHitsTruncated, setBulkLeadHitsTruncated] = useState(false);
   const [leadSuggestQuery, setLeadSuggestQuery] = useState('');
   const [leadSuggestOpen, setLeadSuggestOpen] = useState(false);
   const [bulkLeadSuggestRowId, setBulkLeadSuggestRowId] = useState<string | null>(null);
@@ -642,9 +659,23 @@ export default function OfferLetters() {
   const fetchData = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
-      const [tRes, sRes] = await Promise.all([api.offerLetters.templates(), api.offerLetters.sent()]);
-      setTemplates(((tRes as any).data || []) as OfferTemplate[]);
-      setSentLetters(((sRes as any).data || []) as SentLetter[]);
+      const [tSettled, sSettled] = await Promise.allSettled([
+        api.offerLetters.templates(),
+        api.offerLetters.sent(),
+      ]);
+      if (tSettled.status === 'fulfilled') {
+        setTemplates(((tSettled.value as any).data || []) as OfferTemplate[]);
+      }
+      if (sSettled.status === 'fulfilled') {
+        setSentLetters(((sSettled.value as any).data || []) as SentLetter[]);
+      }
+      const firstErr =
+        (tSettled.status === 'rejected' ? tSettled.reason : null)
+        || (sSettled.status === 'rejected' ? sSettled.reason : null);
+      if (firstErr && !opts?.silent) {
+        const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+        toast({ variant: 'destructive', title: 'Error loading data', description: msg });
+      }
     } catch (err: any) {
       toast({ variant: 'destructive', title: 'Error loading data', description: err.message });
     } finally {
@@ -704,19 +735,20 @@ export default function OfferLetters() {
     setShowEditor(true);
   };
 
-  const openEditTemplate = (t: OfferTemplate) => {
-    setEditingTemplate(t);
+  const openEditTemplate = async (t: OfferTemplate) => {
+    const full = await loadFullTemplate(t);
+    setEditingTemplate(full);
     let mail: any = {};
-    if (typeof t.mail_json === 'string') {
-      try { mail = JSON.parse(t.mail_json); } catch { mail = {}; }
-    } else if (t.mail_json && typeof t.mail_json === 'object') {
-      mail = t.mail_json;
+    if (typeof full.mail_json === 'string') {
+      try { mail = JSON.parse(full.mail_json); } catch { mail = {}; }
+    } else if (full.mail_json && typeof full.mail_json === 'object') {
+      mail = full.mail_json;
     }
-    const pgs = splitPages(t.html_content);
+    const pgs = splitPages(full.html_content);
     const { normalized, bodies, boxes } = normalizeOfferPages(pgs);
     setTemplateForm({
-      template_name: t.template_name,
-      role_title: t.role_title,
+      template_name: full.template_name,
+      role_title: full.role_title,
       html_content: joinPages(normalized),
       mail_subject: mail.mail_subject || 'Offer Letter — {{candidate_name}}',
       mail_body: mail.mail_body || '<p>Dear {{candidate_name}},</p><p>Please find your offer letter attached.</p>',
@@ -925,7 +957,13 @@ export default function OfferLetters() {
     }
   };
 
-  const openPreview = (html: string) => {
+  const openPreview = async (t: OfferTemplate) => {
+    const full = await loadFullTemplate(t);
+    const html = String(full.html_content || '');
+    if (!html.trim()) {
+      toast({ variant: 'destructive', title: 'Preview unavailable', description: 'Could not load template HTML.' });
+      return;
+    }
     const { normalized } = normalizeOfferPages(splitPages(html));
     setPreviewHtml(joinPages(normalized));
     setShowPreview(true);
@@ -959,29 +997,42 @@ export default function OfferLetters() {
   };
 
   const loadOfferLeads = useCallback(async (search?: string) => {
+    const q = String(search || '').trim();
+    if (q.length < 1) {
+      setOfferLeads([]);
+      setOfferLeadsTruncated(false);
+      return;
+    }
     try {
-      const q = String(search || '').trim();
-      const res = await api.leads.list({
-        all: false,
-        lite: true,
-        limit: q.length >= 2 ? 40 : 80,
-        ...(q.length >= 2 ? { search: q } : {}),
-      });
-      const list = Array.isArray(res) ? res : (res as any)?.data || (res as any)?.leads || [];
-      setOfferLeads(Array.isArray(list) ? list : []);
+      const { leads, truncated } = await searchAccessibleLeads(q);
+      setOfferLeads(leads);
+      setOfferLeadsTruncated(truncated);
     } catch {
       setOfferLeads([]);
+      setOfferLeadsTruncated(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!showSend && !showBulk) return;
+    if (!showSend) return;
     const q = leadSuggestQuery.trim();
     const handle = window.setTimeout(() => {
       void loadOfferLeads(q);
-    }, q.length >= 2 ? 250 : 0);
+    }, 250);
     return () => window.clearTimeout(handle);
-  }, [showSend, showBulk, leadSuggestQuery, loadOfferLeads]);
+  }, [showSend, leadSuggestQuery, loadOfferLeads]);
+
+  const loadFullTemplate = useCallback(async (t: OfferTemplate): Promise<OfferTemplate> => {
+    if (String(t.html_content || '').trim()) return t;
+    try {
+      const res = await api.offerLetters.template(t.id);
+      const row = (res as { data?: OfferTemplate })?.data;
+      if (row && typeof row === 'object') return { ...t, ...row };
+    } catch {
+      /* fall through */
+    }
+    return t;
+  }, []);
 
   const openSendDialog = async (t: OfferTemplate) => {
     // Always load fresh template so compose uses the latest saved mail_json body/subject
@@ -1035,7 +1086,7 @@ export default function OfferLetters() {
     });
 
   const renderOfferPlaceholders = (text: string, values: Record<string, string>): string =>
-    applyPlaceholders(text, withOfferFallbackValues(values));
+    applyOfferPlaceholders(text, withOfferFallbackValues(values));
 
   const replacePlaceholders = (html: string) => renderOfferPlaceholders(html, offerSendValues());
 
@@ -1051,20 +1102,57 @@ export default function OfferLetters() {
   );
 
   const leadNameSuggestions = useMemo(() => {
-    const q = leadSuggestQuery.trim().toLowerCase();
-    if (q.length < 2) return [] as any[];
-    return offerLeads
-      .filter((l) => String(l?.name || '').toLowerCase().includes(q))
-      .slice(0, 8);
+    if (leadSuggestQuery.trim().length < 1) return [] as any[];
+    return offerLeads;
   }, [offerLeads, leadSuggestQuery]);
 
+  const bulkSuggestName = useMemo(() => {
+    if (!bulkLeadSuggestRowId) return '';
+    const row = bulkCandidates.find((c) => c.id === bulkLeadSuggestRowId);
+    return String(row?.candidate_name || '').trim();
+  }, [bulkLeadSuggestRowId, bulkCandidates]);
+
+  useEffect(() => {
+    if (!showBulk) {
+      setBulkLeadHits([]);
+      setBulkLeadHitsTruncated(false);
+      return;
+    }
+    const q = bulkSuggestName.trim();
+    if (q.length < 1) {
+      setBulkLeadHits([]);
+      setBulkLeadHitsTruncated(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void searchAccessibleLeads(q)
+        .then(({ leads, truncated }) => {
+          if (!cancelled) {
+            setBulkLeadHits(leads);
+            setBulkLeadHitsTruncated(truncated);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setBulkLeadHits([]);
+            setBulkLeadHitsTruncated(false);
+          }
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [showBulk, bulkSuggestName]);
+
   const setSendPlaceholderValue = (key: string, value: string) => {
-    const formKey = OFFER_SEND_FORM_KEY_MAP[key];
+    const formKey = OFFER_SEND_FORM_KEY_MAP[canonicalOfferPlaceholderKey(key)] || OFFER_SEND_FORM_KEY_MAP[key];
     if (formKey) {
       setSendForm((f) => ({ ...f, [formKey]: value }));
       if (key === 'candidate_name' || key === 'recipient_name' || formKey === 'recipient_name') {
         setLeadSuggestQuery(value);
-        setLeadSuggestOpen(value.trim().length >= 2);
+        setLeadSuggestOpen(value.trim().length >= 1);
       }
       return;
     }
@@ -1265,14 +1353,15 @@ export default function OfferLetters() {
     return { top: 55, right: 28, bottom: 25, left: 28 };
   };
 
-  const duplicateTemplate = (t: OfferTemplate) => {
+  const duplicateTemplate = async (t: OfferTemplate) => {
+    const full = await loadFullTemplate(t);
     setEditingTemplate(null);
-    const pgs = splitPages(t.html_content);
+    const pgs = splitPages(full.html_content);
     const { normalized, bodies, boxes } = normalizeOfferPages(pgs);
-    const mail = parseOfferMailConfig(t);
+    const mail = parseOfferMailConfig(full);
     setTemplateForm({
-      template_name: `${t.template_name} (Copy)`,
-      role_title: t.role_title,
+      template_name: `${full.template_name} (Copy)`,
+      role_title: full.role_title,
       html_content: joinPages(normalized),
       mail_subject: mail.mail_subject,
       mail_body: mail.mail_body,
@@ -1858,16 +1947,7 @@ export default function OfferLetters() {
 
     const suggestRow = bulkCandidates.find((c) => c.id === bulkLeadSuggestRowId) || null;
     const suggestQuery = String(suggestRow?.candidate_name || '').trim().toLowerCase();
-    const bulkLeadMatches = suggestQuery.length < 2
-      ? []
-      : offerLeads
-          .filter((l) =>
-            [l?.name, l?.email, l?.phone, l?.college, l?.company]
-              .join(' ')
-              .toLowerCase()
-              .includes(suggestQuery),
-          )
-          .slice(0, 8);
+    const bulkLeadMatches = suggestQuery.length < 1 ? [] : bulkLeadHits;
 
     const bulkRowComplete = (c: typeof bulkCandidates[0]) => {
       for (const f of BULK_FIELDS) {
@@ -2017,13 +2097,13 @@ export default function OfferLetters() {
                               else updateBulkCandidate(c.id, f.key, v);
                               if (f.key === 'candidate_name') {
                                 setLeadSuggestQuery(v);
-                                setBulkLeadSuggestRowId(v.trim().length >= 2 ? c.id : null);
-                                if (v.trim().length >= 2) placeBulkSuggest(e.currentTarget);
+                                setBulkLeadSuggestRowId(v.trim().length >= 1 ? c.id : null);
+                                if (v.trim().length >= 1) placeBulkSuggest(e.currentTarget);
                                 else setBulkSuggestPos(null);
                               }
                             }}
                             onFocus={(e) => {
-                              if (f.key === 'candidate_name' && c.candidate_name.trim().length >= 2) {
+                              if (f.key === 'candidate_name' && c.candidate_name.trim().length >= 1) {
                                 setLeadSuggestQuery(c.candidate_name);
                                 setBulkLeadSuggestRowId(c.id);
                                 placeBulkSuggest(e.currentTarget);
@@ -2053,7 +2133,7 @@ export default function OfferLetters() {
             </div>
           </CardContent>
         </Card>
-        {suggestRow && bulkSuggestPos && suggestQuery.length >= 2 ? (
+        {suggestRow && bulkSuggestPos && suggestQuery.length >= 1 ? (
           <div
             className="fixed z-50 max-h-48 overflow-y-auto rounded-md border bg-popover shadow-md py-1"
             style={{ top: bulkSuggestPos.top, left: bulkSuggestPos.left, width: bulkSuggestPos.width }}
@@ -2076,6 +2156,11 @@ export default function OfferLetters() {
                 </button>
               ))
             )}
+            {bulkLeadHitsTruncated ? (
+              <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                Showing latest matches. Type more of the name.
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -2135,9 +2220,9 @@ export default function OfferLetters() {
                   <CardContent>
                     <p className="text-xs text-muted-foreground mb-3">Updated {format(new Date(t.updated_at), 'MMM dd, yyyy')}</p>
                     <div className="flex flex-wrap gap-1.5">
-                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => openPreview(t.html_content)}><Eye className="h-3 w-3" />Preview</Button>
-                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => openEditTemplate(t)}><Edit className="h-3 w-3" />Edit</Button>
-                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => duplicateTemplate(t)}><Copy className="h-3 w-3" />Duplicate</Button>
+                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openPreview(t)}><Eye className="h-3 w-3" />Preview</Button>
+                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openEditTemplate(t)}><Edit className="h-3 w-3" />Edit</Button>
+                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void duplicateTemplate(t)}><Copy className="h-3 w-3" />Duplicate</Button>
                       <Button size="sm" className="h-7 text-xs gap-1" onClick={() => void openSendDialog(t)}><Send className="h-3 w-3" />Send</Button>
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openBulkGenerate(t)}><Users className="h-3 w-3" />Bulk</Button>
                       {canDeleteLetters && (
@@ -2184,7 +2269,7 @@ export default function OfferLetters() {
                           <TableCell className="text-xs text-muted-foreground">{format(new Date(s.sent_at), 'MMM dd, yyyy')}</TableCell>
                           <TableCell>
                             <div className="flex gap-1">
-                              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => openPreview(s.html_content)}><Eye className="h-3 w-3" /></Button>
+                              <Button variant="ghost" size="sm" className="h-7 text-xs" title="Preview PDF" onClick={() => void openSentLetterPdf(s)}><Eye className="h-3 w-3" /></Button>
                               <Button
                                 variant="ghost"
                                 size="sm"
@@ -2290,7 +2375,7 @@ export default function OfferLetters() {
                               value={isName ? (leadSuggestQuery || value) : value}
                               onChange={(e) => setSendPlaceholderValue(key, e.target.value)}
                               onFocus={() => {
-                                if (isName && (leadSuggestQuery || value).trim().length >= 2) {
+                                if (isName && (leadSuggestQuery || value).trim().length >= 1) {
                                   setLeadSuggestOpen(true);
                                 }
                               }}
@@ -2300,7 +2385,7 @@ export default function OfferLetters() {
                               placeholder={offerPlaceholderLabel(key)}
                               autoComplete="off"
                             />
-                            {isName && leadSuggestOpen && leadNameSuggestions.length > 0 ? (
+                            {isName && leadSuggestOpen && (leadNameSuggestions.length > 0 || offerLeadsTruncated) ? (
                               <div className="absolute z-20 left-0 right-0 mt-1 max-h-52 overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md py-1">
                                 {leadNameSuggestions.map((lead) => (
                                   <button
@@ -2316,6 +2401,11 @@ export default function OfferLetters() {
                                     </span>
                                   </button>
                                 ))}
+                                {offerLeadsTruncated ? (
+                                  <p className="px-3 py-2 text-[11px] text-muted-foreground">
+                                    Showing latest matches. Type more of the name.
+                                  </p>
+                                ) : null}
                               </div>
                             ) : null}
                           </div>

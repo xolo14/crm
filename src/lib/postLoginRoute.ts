@@ -18,6 +18,7 @@ export function getPostLoginPath(role?: string | null, pageAccess?: PageAccess |
 	if (n === "super_admin") return "/";
 	if (n === "marketing") return "/marketing/dashboard";
 	if (n === "hr") return firstAllowedHrPath(pageAccess);
+	if (n === "assessment_viewer") return "/assessment-results";
 	return "/";
 }
 
@@ -47,6 +48,7 @@ export async function resolveMarketingLoginUser(
 		"sales_representative",
 		"hr",
 		"marketing",
+		"assessment_viewer",
 	]);
 	if (known.has(n)) return storedUser;
 

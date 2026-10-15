@@ -5,6 +5,7 @@ export const Leads = lazyWithRetry(() => import("@/pages/Leads"));
 export const Students = lazyWithRetry(() => import("@/pages/Students"));
 export const Courses = lazyWithRetry(() => import("@/pages/Courses"));
 export const Batches = lazyWithRetry(() => import("@/pages/Batches"));
+export const LiveClasses = lazyWithRetry(() => import("@/pages/LiveClasses"));
 export const Timetables = lazyWithRetry(() => import("@/pages/Timetables"));
 export const PaymentLinksPage = lazyWithRetry(() => import("@/pages/payment-links/PaymentLinksPage"));
 export const PaymentLinksRecordsPage = lazyWithRetry(() => import("@/pages/payment-links/PaymentLinksRecordsPage"));
@@ -65,6 +66,7 @@ export const TemplateLibraryPage = lazyWithRetry(() => import("@/pages/communica
 export const FresherSalaryTrackerPage = lazyWithRetry(() => import("@/pages/FresherSalaryTrackerPage"));
 export const CallLogPage = lazyWithRetry(() => import("@/pages/sales/CallLogPage"));
 export const AssessmentsAdminPage = lazyWithRetry(() => import("@/pages/AssessmentsAdminPage"));
+export const AssessmentResultsPage = lazyWithRetry(() => import("@/pages/AssessmentResultsPage"));
 export const SyncpediaFresherAssessmentPage = lazyWithRetry(() => import("@/pages/SyncpediaFresherAssessmentPage"));
 export const PublicAssessmentPage = lazyWithRetry(() => import("@/pages/PublicAssessmentPage"));
 

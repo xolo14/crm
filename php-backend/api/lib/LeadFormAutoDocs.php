@@ -1,4 +1,6 @@
 <?php
+// Direct HTTP access blocked (nginx may ignore .htaccess)
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 /**
  * Auto-generate & email offer letters / certificates for lead-form submissions.
  * Called from public-lead / payment sync (no HTTP auth).
@@ -363,7 +365,27 @@ function leadFormAutoDocsSendOffer(PDO $db, array $formRow, array $lead, array $
     if (trim((string) ($vars['role_title'] ?? '')) === '') {
         $vars['role_title'] = $roleTitle;
     }
-    $html = leadFormAutoDocsApplyPlaceholders((string) ($tpl['html_content'] ?? ''), $vars);
+    $htmlSrc = (string) ($tpl['html_content'] ?? '');
+    if (trim((string) ($vars['letterhead_url'] ?? '')) === '') {
+        $lh = '';
+        if (preg_match('/class="letterhead-bg"[^>]*src="([^"]+)"/i', $htmlSrc, $m)
+            || preg_match('/src="(https?:[^"]+)"/i', $htmlSrc, $m)) {
+            $cand = trim((string) ($m[1] ?? ''));
+            if ($cand !== '' && stripos($cand, 'letterhead_url') === false) {
+                $lh = $cand;
+            }
+        }
+        if ($lh !== '') {
+            $vars['letterhead_url'] = $lh;
+        }
+    }
+    if (trim((string) ($vars['ref_number'] ?? '')) === '') {
+        $vars['ref_number'] = 'OL-' . date('Y') . '-' . (string) random_int(1000, 9999);
+    }
+    if (trim((string) ($vars['date'] ?? '')) === '') {
+        $vars['date'] = date('d M Y');
+    }
+    $html = leadFormAutoDocsApplyPlaceholders($htmlSrc, $vars);
     $subject = leadFormAutoDocsApplyPlaceholders(
         (string) ($mail['mail_subject'] ?? ('Offer Letter — ' . $roleTitle)),
         $vars

@@ -91,23 +91,42 @@ if ($method === 'GET') {
         $params[] = $_GET['to'];
     }
 
+    // Slim list: omit lead_updates JSON (unused by UI; can be multi‑KB per row × 2000).
     $stmt = $db->prepare("
-        SELECT dr.*, u.full_name as user_name, u.email as user_email
+        SELECT dr.id, dr.user_id, dr.org_id, dr.report_date,
+               dr.total_calls, dr.total_followups, dr.total_demos, dr.total_conversions,
+               dr.new_leads_contacted, dr.total_lost, dr.summary, dr.challenges,
+               dr.created_at, dr.updated_at,
+               u.full_name as user_name, u.email as user_email
         FROM daily_reports dr
         INNER JOIN users u ON u.id = dr.user_id
         WHERE $where
         ORDER BY dr.report_date DESC, dr.created_at DESC
         LIMIT 2000
     ");
-    $stmt->execute($params);
-    $reports = $stmt->fetchAll();
+    try {
+        $stmt->execute($params);
+        $reports = $stmt->fetchAll();
+    } catch (Throwable $e) {
+        // Older schemas may lack total_lost / updated_at — fall back without those cols.
+        error_log('daily-reports list slim: ' . $e->getMessage());
+        $stmt = $db->prepare("
+            SELECT dr.id, dr.user_id, dr.report_date,
+                   dr.total_calls, dr.total_followups, dr.total_demos, dr.total_conversions,
+                   dr.new_leads_contacted, dr.summary, dr.challenges, dr.created_at,
+                   u.full_name as user_name, u.email as user_email
+            FROM daily_reports dr
+            INNER JOIN users u ON u.id = dr.user_id
+            WHERE $where
+            ORDER BY dr.report_date DESC, dr.created_at DESC
+            LIMIT 2000
+        ");
+        $stmt->execute($params);
+        $reports = $stmt->fetchAll();
+    }
 
-    // Parse JSON fields
     foreach ($reports as &$r) {
-        $r['lead_updates'] = json_decode($r['lead_updates'] ?? '[]', true);
-        if (!is_array($r['lead_updates'])) {
-            $r['lead_updates'] = [];
-        }
+        $r['lead_updates'] = [];
     }
     unset($r);
 

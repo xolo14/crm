@@ -744,35 +744,43 @@ if ($method === 'GET' && $action === 'get_stats') {
     $baseParams = array_merge($scopeParams, [$df, $dt]);
     $whereFull = "$scopeSql AND $dateSql";
 
-    $totalCalls = 0;
-    $st = $db->prepare("SELECT COUNT(*) AS c FROM call_logs cl WHERE $whereFull");
-    $st->execute($baseParams);
-    $totalCalls = (int) ($st->fetch()['c'] ?? 0);
+    // One aggregate pass instead of ~10 COUNT/SUM round-trips (Call Log page lag).
+    $aggSql = "SELECT
+        COUNT(*) AS total_calls,
+        COALESCE(SUM(cl.duration_seconds), 0) AS sum_dur,
+        COALESCE(SUM(CASE WHEN cl.call_type = 'incoming' THEN cl.duration_seconds ELSE 0 END), 0) AS inc_dur,
+        COALESCE(SUM(CASE WHEN cl.call_type = 'outgoing' THEN cl.duration_seconds ELSE 0 END), 0) AS out_dur,
+        SUM(CASE WHEN cl.call_type = 'incoming' THEN 1 ELSE 0 END) AS incoming,
+        SUM(CASE WHEN cl.call_type = 'outgoing' THEN 1 ELSE 0 END) AS outgoing,
+        SUM(CASE WHEN cl.call_type = 'missed' THEN 1 ELSE 0 END) AS missed,
+        SUM(CASE WHEN cl.call_type = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+        SUM(CASE WHEN cl.call_status = 'never_attended' THEN 1 ELSE 0 END) AS never_attended,
+        SUM(CASE WHEN cl.call_status = 'not_pickup_by_client' THEN 1 ELSE 0 END) AS not_pickup,
+        SUM(CASE WHEN cl.call_status = 'connected' THEN 1 ELSE 0 END) AS connected,
+        COUNT(DISTINCT NULLIF(TRIM(cl.client_phone), '')) AS unique_clients,
+        COALESCE(SUM(CASE
+            WHEN cl.call_status = 'connected' AND COALESCE(cl.duration_seconds, 0) > 0
+            THEN cl.duration_seconds ELSE 0 END), 0) AS wh_sec
+      FROM call_logs cl
+      WHERE $whereFull";
+    $aggSt = $db->prepare($aggSql);
+    $aggSt->execute($baseParams);
+    $agg = $aggSt->fetch(PDO::FETCH_ASSOC) ?: [];
 
-    $sumDur = callLogsSumDuration($db, $whereFull, $baseParams);
-    $incDur = callLogsSumDuration($db, $whereFull, $baseParams, "AND cl.call_type = 'incoming'");
-    $outDur = callLogsSumDuration($db, $whereFull, $baseParams, "AND cl.call_type = 'outgoing'");
-
-    $counts = static function (PDO $db, string $where, array $p, string $extra) {
-        $sql = "SELECT COUNT(*) AS c FROM call_logs cl WHERE $where $extra";
-        $s = $db->prepare($sql);
-        $s->execute($p);
-        return (int) ($s->fetch()['c'] ?? 0);
-    };
-
-    $incoming = $counts($db, $whereFull, $baseParams, "AND cl.call_type = 'incoming'");
-    $outgoing = $counts($db, $whereFull, $baseParams, "AND cl.call_type = 'outgoing'");
-    $missed = $counts($db, $whereFull, $baseParams, "AND cl.call_type = 'missed'");
-    $rejected = $counts($db, $whereFull, $baseParams, "AND cl.call_type = 'rejected'");
-    $neverAttended = $counts($db, $whereFull, $baseParams, "AND cl.call_status = 'never_attended'");
-    $notPickup = $counts($db, $whereFull, $baseParams, "AND cl.call_status = 'not_pickup_by_client'");
-    $connected = $counts($db, $whereFull, $baseParams, "AND cl.call_status = 'connected'");
-
-    $uq = $db->prepare("SELECT COUNT(DISTINCT NULLIF(TRIM(cl.client_phone), '')) AS c FROM call_logs cl WHERE $whereFull AND cl.client_phone IS NOT NULL AND TRIM(cl.client_phone) <> ''");
-    $uq->execute($baseParams);
-    $uniqueClients = (int) ($uq->fetch()['c'] ?? 0);
-
-    $whSec = callLogsWorkingHoursSeconds($db, $whereFull, $baseParams);
+    $totalCalls = (int) ($agg['total_calls'] ?? 0);
+    $sumDur = (int) ($agg['sum_dur'] ?? 0);
+    $incDur = (int) ($agg['inc_dur'] ?? 0);
+    $outDur = (int) ($agg['out_dur'] ?? 0);
+    $incoming = (int) ($agg['incoming'] ?? 0);
+    $outgoing = (int) ($agg['outgoing'] ?? 0);
+    $missed = (int) ($agg['missed'] ?? 0);
+    $rejected = (int) ($agg['rejected'] ?? 0);
+    $neverAttended = (int) ($agg['never_attended'] ?? 0);
+    $notPickup = (int) ($agg['not_pickup'] ?? 0);
+    $connected = (int) ($agg['connected'] ?? 0);
+    $uniqueClients = (int) ($agg['unique_clients'] ?? 0);
+    $whRaw = (int) ($agg['wh_sec'] ?? 0);
+    $whSec = $whRaw > 0 ? $whRaw : null;
 
     respond([
         'success' => true,
@@ -825,12 +833,40 @@ if ($method === 'GET' && $action === 'get_logs') {
     $cst->execute($params);
     $total = (int) ($cst->fetch()['c'] ?? 0);
 
-    $lst = $db->prepare("SELECT cl.*, u.full_name AS sales_rep_name, l.name AS lead_name, l.status AS lead_status FROM call_logs cl LEFT JOIN users u ON u.id = cl.sales_rep_id LEFT JOIN leads l ON l.id = cl.lead_id WHERE $whereFull ORDER BY cl.call_date DESC, cl.id DESC LIMIT $limit OFFSET $offset");
-    $lst->execute($params);
+    // Explicit columns — avoid SELECT cl.* if schema later gains large blobs.
+    $lst = $db->prepare(
+        "SELECT cl.id, cl.sales_rep_id, cl.org_id, cl.lead_id, cl.call_type, cl.call_status,
+                cl.duration_seconds, cl.client_phone, cl.client_name, cl.notes, cl.attachment_path,
+                cl.call_date, cl.call_time, cl.created_at, cl.updated_at,
+                u.full_name AS sales_rep_name, l.name AS lead_name, l.status AS lead_status
+         FROM call_logs cl
+         LEFT JOIN users u ON u.id = cl.sales_rep_id
+         LEFT JOIN leads l ON l.id = cl.lead_id
+         WHERE $whereFull
+         ORDER BY cl.call_date DESC, cl.id DESC
+         LIMIT $limit OFFSET $offset"
+    );
+    try {
+        $lst->execute($params);
+        $logs = $lst->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log('call_logs get_logs slim: ' . $e->getMessage());
+        $lst = $db->prepare(
+            "SELECT cl.*, u.full_name AS sales_rep_name, l.name AS lead_name, l.status AS lead_status
+             FROM call_logs cl
+             LEFT JOIN users u ON u.id = cl.sales_rep_id
+             LEFT JOIN leads l ON l.id = cl.lead_id
+             WHERE $whereFull
+             ORDER BY cl.call_date DESC, cl.id DESC
+             LIMIT $limit OFFSET $offset"
+        );
+        $lst->execute($params);
+        $logs = $lst->fetchAll(PDO::FETCH_ASSOC);
+    }
 
     respond([
         'success' => true,
-        'logs' => $lst->fetchAll(PDO::FETCH_ASSOC),
+        'logs' => $logs,
         'total' => $total,
         'page' => $page,
         'limit' => $limit,

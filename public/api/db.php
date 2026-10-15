@@ -172,6 +172,15 @@ function syncpediaUpsertClause(
 /** Best-effort index create (MySQL + PostgreSQL). */
 function syncpediaEnsureIndex(PDO $db, string $indexName, string $table, string $columnsSql): void
 {
+    // Process-local cache: hot GET handlers (leads, coupons, …) call this every request;
+    // repeated information_schema hits add latency under parallel page loads.
+    static $checked = [];
+    $cacheKey = $table . "\0" . $indexName;
+    if (isset($checked[$cacheKey])) {
+        return;
+    }
+    $checked[$cacheKey] = true;
+
     try {
         if (syncpediaDbIsMysql($db)) {
             $st = $db->prepare(

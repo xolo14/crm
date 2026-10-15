@@ -24,7 +24,7 @@ import {
 
 const STATUS_COLORS: Record<string, string> = { sent: '#10b981', failed: '#ef4444', pending: '#f59e0b', sending: '#3b82f6', completed: '#10b981' };
 
-export default function WhatsAppAnalytics() {
+export default function WhatsAppAnalytics({ embedded = false }: { embedded?: boolean }) {
   const { user, role } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -145,6 +145,7 @@ export default function WhatsAppAnalytics() {
 
   return (
     <div className="space-y-4 md:space-y-6">
+      {!embedded ? (
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => navigate(isPortalMarketer ? '/marketing/whatsapp' : '/marketing-admin')}>
@@ -158,6 +159,7 @@ export default function WhatsAppAnalytics() {
           </div>
         </div>
       </div>
+      ) : null}
 
       <Card>
         <CardContent className="py-3 px-4">

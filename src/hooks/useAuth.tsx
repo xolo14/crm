@@ -12,6 +12,7 @@ interface AuthUser {
   avatar_url?: string | null;
   referral_code?: string | null;
   org_id?: string | null;
+  result_assessment_id?: string | null;
   page_access?: { payments?: boolean; offer_letters?: boolean; pages?: Record<string, boolean> } | null;
 }
 

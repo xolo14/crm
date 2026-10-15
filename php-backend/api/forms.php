@@ -613,36 +613,33 @@ if ($method === 'GET') {
             $scopeOrgId = trim((string) (resolveCreatorOrgId($db, $tokenData) ?? getOrgId($tokenData) ?? ''));
         }
 
+        // Do NOT select html_content / layers_json here — letterheads & cert images as
+        // data-URIs make Forms Manager hang (same class of bug as offer-letters list).
+        // Placeholders are loaded per-template via action=automation_template_placeholders.
         $offerLetters = [];
         $certificates = [];
         try {
             if ($scopeOrgId !== '') {
                 $st = $db->prepare(
-                    'SELECT id, template_name, role_title, status, org_id, created_at, html_content, mail_json
+                    'SELECT id, template_name, role_title, status, org_id, created_at, mail_json
                      FROM offer_letter_templates
                      WHERE org_id = ? OR org_id IS NULL OR TRIM(COALESCE(org_id, \'\')) = \'\'
                      ORDER BY created_at DESC
-                     LIMIT 500'
+                     LIMIT 100'
                 );
                 $st->execute([$scopeOrgId]);
             } elseif (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
                 $st = $db->query(
-                    'SELECT id, template_name, role_title, status, org_id, created_at, html_content, mail_json
+                    'SELECT id, template_name, role_title, status, org_id, created_at, mail_json
                      FROM offer_letter_templates
                      ORDER BY created_at DESC
-                     LIMIT 500'
+                     LIMIT 100'
                 );
             } else {
                 $st = null;
             }
             if ($st) {
-                foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                    $placeholders = [];
-                    try {
-                        $placeholders = formTplExtractOfferPlaceholders($row);
-                    } catch (Throwable $e) {
-                        $placeholders = [];
-                    }
+                while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
                     $offerLetters[] = [
                         'id' => (string) ($row['id'] ?? ''),
                         'name' => (string) ($row['template_name'] ?? 'Untitled'),
@@ -650,7 +647,7 @@ if ($method === 'GET') {
                         'role_title' => (string) ($row['role_title'] ?? ''),
                         'status' => (string) ($row['status'] ?? ''),
                         'org_id' => $row['org_id'] ?? null,
-                        'placeholders' => $placeholders,
+                        'placeholders' => [],
                     ];
                 }
             }
@@ -661,38 +658,32 @@ if ($method === 'GET') {
         try {
             if ($scopeOrgId !== '') {
                 $st = $db->prepare(
-                    'SELECT id, name, status, cert_type, org_id, created_at, layers_json, fields_json, style_json
+                    'SELECT id, name, status, cert_type, org_id, created_at
                      FROM certificate_templates
                      WHERE org_id = ? OR org_id IS NULL OR TRIM(COALESCE(org_id, \'\')) = \'\'
                      ORDER BY created_at DESC
-                     LIMIT 500'
+                     LIMIT 100'
                 );
                 $st->execute([$scopeOrgId]);
             } elseif (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
                 $st = $db->query(
-                    'SELECT id, name, status, cert_type, org_id, created_at, layers_json, fields_json, style_json
+                    'SELECT id, name, status, cert_type, org_id, created_at
                      FROM certificate_templates
                      ORDER BY created_at DESC
-                     LIMIT 500'
+                     LIMIT 100'
                 );
             } else {
                 $st = null;
             }
             if ($st) {
-                foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                    $placeholders = [];
-                    try {
-                        $placeholders = formTplExtractCertificatePlaceholders($row);
-                    } catch (Throwable $e) {
-                        $placeholders = [];
-                    }
+                while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
                     $certificates[] = [
                         'id' => (string) ($row['id'] ?? ''),
                         'name' => (string) ($row['name'] ?? 'Untitled'),
                         'status' => (string) ($row['status'] ?? ''),
                         'cert_type' => (string) ($row['cert_type'] ?? ''),
                         'org_id' => $row['org_id'] ?? null,
-                        'placeholders' => $placeholders,
+                        'placeholders' => [],
                     ];
                 }
             }
@@ -709,26 +700,185 @@ if ($method === 'GET') {
         ]);
     }
 
+    // Single-template placeholder extract (avoids pulling every letterhead into list JSON).
+    if ($action === 'automation_template_placeholders') {
+        formsRequireCallerAccess($db, $tokenData);
+        $kind = strtolower(trim((string) ($_GET['kind'] ?? '')));
+        $tplId = trim((string) ($_GET['id'] ?? ''));
+        if ($tplId === '' || !in_array($kind, ['offer', 'offer_letter', 'certificate', 'cert'], true)) {
+            respond(['error' => 'kind (offer|certificate) and id are required'], 400);
+        }
+        $formId = trim((string) ($_GET['form_id'] ?? ''));
+        $scopeOrgId = '';
+        if ($formId !== '') {
+            $formRow = formsGetScopedForm($db, $formId, $tokenData);
+            if (!$formRow) {
+                respond(['error' => 'Form not found'], 404);
+            }
+            $scopeOrgId = trim((string) ($formRow['org_id'] ?? ''));
+        }
+        if ($scopeOrgId === '') {
+            $scopeOrgId = trim((string) (resolveCreatorOrgId($db, $tokenData) ?? getOrgId($tokenData) ?? ''));
+        }
+        $isSuper = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin';
+        $placeholders = [];
+        try {
+            if (in_array($kind, ['offer', 'offer_letter'], true)) {
+                if ($scopeOrgId !== '') {
+                    $st = $db->prepare(
+                        'SELECT id, template_name, role_title, html_content, mail_json, org_id
+                         FROM offer_letter_templates
+                         WHERE id = ? AND (org_id = ? OR org_id IS NULL OR TRIM(COALESCE(org_id, \'\')) = \'\')
+                         LIMIT 1'
+                    );
+                    $st->execute([$tplId, $scopeOrgId]);
+                } elseif ($isSuper) {
+                    $st = $db->prepare(
+                        'SELECT id, template_name, role_title, html_content, mail_json, org_id
+                         FROM offer_letter_templates WHERE id = ? LIMIT 1'
+                    );
+                    $st->execute([$tplId]);
+                } else {
+                    $st = null;
+                }
+                $row = $st ? $st->fetch(PDO::FETCH_ASSOC) : false;
+                if (is_array($row)) {
+                    $placeholders = formTplExtractOfferPlaceholders($row);
+                }
+            } else {
+                if ($scopeOrgId !== '') {
+                    $st = $db->prepare(
+                        'SELECT id, name, layers_json, fields_json, style_json, org_id
+                         FROM certificate_templates
+                         WHERE id = ? AND (org_id = ? OR org_id IS NULL OR TRIM(COALESCE(org_id, \'\')) = \'\')
+                         LIMIT 1'
+                    );
+                    $st->execute([$tplId, $scopeOrgId]);
+                } elseif ($isSuper) {
+                    $st = $db->prepare(
+                        'SELECT id, name, layers_json, fields_json, style_json, org_id
+                         FROM certificate_templates WHERE id = ? LIMIT 1'
+                    );
+                    $st->execute([$tplId]);
+                } else {
+                    $st = null;
+                }
+                $row = $st ? $st->fetch(PDO::FETCH_ASSOC) : false;
+                if (is_array($row)) {
+                    $placeholders = formTplExtractCertificatePlaceholders($row);
+                }
+            }
+        } catch (Throwable $e) {
+            error_log('[forms automation_template_placeholders] ' . $e->getMessage());
+            respond(['error' => 'Could not load placeholders'], 500);
+        }
+        respond(['data' => ['id' => $tplId, 'kind' => $kind, 'placeholders' => $placeholders]]);
+    }
+
     $scope = formsBuildListScope($db, $tokenData);
     $params = $scope['params'];
     $where = $scope['where'];
 
+    // List without per-row COUNT(*) over leads/hr_leads (can scan huge tables per form).
+    // submission_count is filled cheaply below; detail endpoint still uses the correlated SQL.
     $stmt = $db->prepare('
-        SELECT lf.*,
+        SELECT lf.id, lf.name, lf.slug, lf.org_id, lf.created_by, lf.created_at, lf.updated_at,
+               lf.is_active, lf.meta_json, lf.fields_json,
                o.name AS org_name,
                COALESCE(NULLIF(TRIM(p.full_name), \'\'), NULLIF(TRIM(p.email), \'\'), NULL) AS created_by_name,
                (SELECT COUNT(*) FROM lead_form_assignments lfa WHERE lfa.form_id = lf.id) AS assigned_count,
-               ' . formsSubmissionCountSelectSql() . ' AS submission_count
+               0 AS submission_count
         FROM lead_forms lf
         LEFT JOIN organizations o ON o.id = lf.org_id
         LEFT JOIN profiles p ON p.id = lf.created_by
         WHERE ' . $where . '
         ORDER BY lf.created_at DESC
+        LIMIT 500
     ');
-    $stmt->execute($params);
-    $rows = $stmt->fetchAll();
+    try {
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll();
+    } catch (Throwable $e) {
+        // Older schemas may lack is_active / updated_at.
+        error_log('forms list slim: ' . $e->getMessage());
+        $stmt = $db->prepare('
+            SELECT lf.id, lf.name, lf.slug, lf.org_id, lf.created_by, lf.created_at,
+                   lf.meta_json, lf.fields_json,
+                   o.name AS org_name,
+                   COALESCE(NULLIF(TRIM(p.full_name), \'\'), NULLIF(TRIM(p.email), \'\'), NULL) AS created_by_name,
+                   (SELECT COUNT(*) FROM lead_form_assignments lfa WHERE lfa.form_id = lf.id) AS assigned_count,
+                   0 AS submission_count
+            FROM lead_forms lf
+            LEFT JOIN organizations o ON o.id = lf.org_id
+            LEFT JOIN profiles p ON p.id = lf.created_by
+            WHERE ' . $where . '
+            ORDER BY lf.created_at DESC
+            LIMIT 500
+        ');
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll();
+    }
     foreach ($rows as &$row) {
         formsNormalizeFormRow($row);
+    }
+    unset($row);
+    // Batched GROUP BY counts (1–2 queries) instead of N correlated COUNT(*) on leads.
+    try {
+        $leadSources = [];
+        $hrSources = [];
+        foreach ($rows as $row) {
+            $slug = trim((string) ($row['slug'] ?? ''));
+            if ($slug === '') {
+                continue;
+            }
+            $source = 'form_' . $slug;
+            $dest = strtolower(trim((string) (publicFormLeadDestination($row) ?? 'form_leads')));
+            if ($dest === 'hr_leads') {
+                $hrSources[$source] = true;
+            } else {
+                $leadSources[$source] = true;
+            }
+        }
+        $counts = [];
+        $leadSourceList = array_keys($leadSources);
+        if ($leadSourceList !== []) {
+            $ph = implode(',', array_fill(0, count($leadSourceList), '?'));
+            $cst = $db->prepare(
+                "SELECT source, COALESCE(org_id, '') AS org_id, COUNT(*) AS c
+                 FROM leads WHERE source IN ($ph) GROUP BY source, COALESCE(org_id, '')"
+            );
+            $cst->execute($leadSourceList);
+            foreach ($cst->fetchAll(PDO::FETCH_ASSOC) ?: [] as $cr) {
+                $counts['l:' . (string) ($cr['source'] ?? '') . "\0" . trim((string) ($cr['org_id'] ?? ''))] = (int) ($cr['c'] ?? 0);
+            }
+        }
+        $hrSourceList = array_keys($hrSources);
+        if ($hrSourceList !== []) {
+            $ph = implode(',', array_fill(0, count($hrSourceList), '?'));
+            $cst = $db->prepare(
+                "SELECT source, COALESCE(org_id, '') AS org_id, COUNT(*) AS c
+                 FROM hr_leads WHERE source IN ($ph) AND (deleted_at IS NULL)
+                 GROUP BY source, COALESCE(org_id, '')"
+            );
+            $cst->execute($hrSourceList);
+            foreach ($cst->fetchAll(PDO::FETCH_ASSOC) ?: [] as $cr) {
+                $counts['hr:' . (string) ($cr['source'] ?? '') . "\0" . trim((string) ($cr['org_id'] ?? ''))] = (int) ($cr['c'] ?? 0);
+            }
+        }
+        foreach ($rows as &$row) {
+            $slug = trim((string) ($row['slug'] ?? ''));
+            if ($slug === '') {
+                continue;
+            }
+            $source = 'form_' . $slug;
+            $dest = strtolower(trim((string) (publicFormLeadDestination($row) ?? 'form_leads')));
+            $prefix = $dest === 'hr_leads' ? 'hr:' : 'l:';
+            $key = $prefix . $source . "\0" . trim((string) ($row['org_id'] ?? ''));
+            $row['submission_count'] = $counts[$key] ?? 0;
+        }
+        unset($row);
+    } catch (Throwable $e) {
+        error_log('forms list submission counts: ' . $e->getMessage());
     }
     respond(['data' => $rows]);
 }
@@ -785,11 +935,14 @@ if ($method === 'POST') {
         if (!empty($meta['payment_enabled'])) {
             $isPaid = false;
             try {
-                if (function_exists('paymentLinkLeadIsPaid') && paymentLinkLeadIsPaid($db, $leadId)) {
+                if (!function_exists('paymentLinkLeadIsPaid')) {
+                    require_once __DIR__ . '/payment_link_store.php';
+                }
+                if (paymentLinkLeadIsPaid($db, $leadId)) {
                     $isPaid = true;
                 }
             } catch (Throwable $e) {
-                /* ignore */
+                error_log('[retry_auto_documents] payment check: ' . $e->getMessage());
             }
             // Certificate/offer Payment toggle off → still allow.
             $needPayCert = !empty($meta['auto_certificate']) && !empty($meta['certificate_require_payment']);

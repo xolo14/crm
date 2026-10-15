@@ -398,6 +398,7 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
     if ($source !== 'marketing') {
         return ['ok' => false, 'error' => 'Email templates are available from Marketing drafts only'];
     }
+    marketingEnsureEmailDispatchSchema($db);
     $draft = formCampaignLoadEmailDraft($db, $tokenData, $formRow, $templateId);
     if (!$draft) {
         return ['ok' => false, 'error' => 'Email template not found or not accessible for this form'];
@@ -430,7 +431,7 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
             $orgId !== '' ? $orgId : null,
         ]);
 
-    $sendStmt = $db->prepare('INSERT INTO email_sends (id, campaign_id, recipient_email, status, error_message) VALUES (?,?,?,?,?)');
+    $sendStmt = $db->prepare('INSERT INTO email_sends (id, campaign_id, recipient_email, status, error_message, sent_at) VALUES (?,?,?,?,?,?)');
     $sent = 0;
     $failed = 0;
     $firstError = null;
@@ -447,7 +448,19 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
         $email = trim((string) $lead['email']);
         $body = formCampaignPersonalize($html, $lead);
         $subj = formCampaignPersonalize($subject, $lead);
-        $res = syncpediaSendHtmlEmailViaSmtp($email, $subj, $body, $fromAddr, $fromName);
+        $attachments = marketingEmailDraftAttachments($draft);
+        $missingPdf = false;
+        foreach ($attachments as $file) {
+            if (!empty($file['missing'])) {
+                $missingPdf = true;
+                break;
+            }
+        }
+        if ($missingPdf) {
+            $res = ['ok' => false, 'error' => 'The PDF attached to this draft is missing, so this message was not sent.'];
+        } else {
+            $res = syncpediaSendHtmlEmailViaSmtpWithOptions($email, $subj, $body, $fromAddr, $fromName, '', '', $attachments);
+        }
         $status = $res['ok'] ? 'sent' : 'failed';
         if ($res['ok']) {
             $sent++;
@@ -457,12 +470,19 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
                 $firstError = trim((string) ($res['error'] ?? 'SMTP send failed'));
             }
         }
-        $sendStmt->execute([generateUUID(), $campaignId, $email, $status, $res['error'] ?? null]);
+        $sendStmt->execute([
+            generateUUID(),
+            $campaignId,
+            $email,
+            $status,
+            $res['ok'] ? null : (trim((string) ($res['error'] ?? '')) ?: 'Send failed. The mail server did not accept this message.'),
+            $res['ok'] ? date('Y-m-d H:i:s') : null,
+        ]);
     }
 
     $pending = max(0, count($valid) - $sent - $failed);
     $db->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
-        ->execute([$sent, $failed, $pending, $failed > 0 && $sent === 0 ? 'failed' : 'completed', $campaignId]);
+        ->execute([$sent, $failed, $pending, $failed > 0 && $sent === 0 ? 'failed' : ($failed > 0 ? 'partial' : 'completed'), $campaignId]);
 
     $webhook = formCampaignN8nWebhook('email');
     if ($webhook !== null) {

@@ -25,9 +25,9 @@ if ($method === 'GET') {
     $params = [];
 
     if (!empty($_GET['search'])) {
-        $where .= ' AND (s.name LIKE ? OR s.email LIKE ? OR s.phone LIKE ? OR l.college LIKE ? OR l.course_interest LIKE ? OR o.name LIKE ? OR l.name LIKE ? OR l2.college LIKE ? OR l2.course_interest LIKE ? OR l2.name LIKE ? OR c.name LIKE ? OR b.name LIKE ? OR eu.full_name LIKE ? OR au.full_name LIKE ? OR au2.full_name LIKE ?)';
+        $where .= ' AND (s.name LIKE ? OR s.email LIKE ? OR s.phone LIKE ? OR l.college LIKE ? OR l.course_interest LIKE ? OR o.name LIKE ? OR l.name LIKE ? OR c.name LIKE ? OR b.name LIKE ? OR au.full_name LIKE ?)';
         $s = '%' . $_GET['search'] . '%';
-        $params = array_merge($params, array_fill(0, 15, $s));
+        $params = array_merge($params, array_fill(0, 10, $s));
     }
 
     if (!empty($_GET['status']) && $_GET['status'] !== 'all') {
@@ -42,52 +42,82 @@ if ($method === 'GET') {
 
     $orgId = tenantListOrgId($db, $tokenData);
 
+    // Slim list: no correlated email→lead subquery (O(n) dependent lookups hang large orgs).
+    // lead_id join only; payment summaries are batched in studentsAttachPaymentSummaries.
     $stmt = $db->prepare("
-        SELECT s.*,
+        SELECT s.id, s.name, s.email, s.phone, s.college, s.year_of_study, s.course_id, s.batch_id,
+            s.org_id, s.status, s.enrollment_date, s.lead_id, s.enrolled_by, s.created_at, s.updated_at,
             c.name AS course_name,
             b.name AS batch_name,
-            COALESCE(l.id, l2.id) AS source_lead_id,
-            COALESCE(l.name, l2.name) AS lead_contact_name,
-            COALESCE(l.source, l2.source) AS lead_source,
-            COALESCE(l.course_interest, l2.course_interest) AS lead_course_interest,
-            COALESCE(l.company, l2.company) AS lead_company,
-            COALESCE(l.notes, l2.notes) AS lead_notes,
-            COALESCE(l.status, l2.status) AS lead_status,
-            COALESCE(l.tags, l2.tags) AS lead_tags,
-            COALESCE(l.referred_by, l2.referred_by) AS lead_referred_by,
-            COALESCE(l.phone, l2.phone) AS lead_phone,
-            COALESCE(l.college, l2.college) AS lead_college,
-            COALESCE(l.email, l2.email) AS lead_email,
-            COALESCE(l.assigned_to, l2.assigned_to) AS lead_assigned_to,
-            COALESCE(s.enrolled_by, l.assigned_to, l2.assigned_to) AS enrolled_by_id,
-            COALESCE(NULLIF(TRIM(eu.full_name), ''), NULLIF(TRIM(au.full_name), ''), NULLIF(TRIM(au2.full_name), '')) AS enrolled_by_name,
+            l.id AS source_lead_id,
+            l.name AS lead_contact_name,
+            l.source AS lead_source,
+            l.course_interest AS lead_course_interest,
+            l.company AS lead_company,
+            LEFT(COALESCE(l.notes, ''), 2000) AS lead_notes,
+            l.status AS lead_status,
+            l.tags AS lead_tags,
+            l.referred_by AS lead_referred_by,
+            l.phone AS lead_phone,
+            l.college AS lead_college,
+            l.email AS lead_email,
+            l.assigned_to AS lead_assigned_to,
+            COALESCE(s.enrolled_by, l.assigned_to) AS enrolled_by_id,
+            COALESCE(NULLIF(TRIM(eu.full_name), ''), NULLIF(TRIM(au.full_name), '')) AS enrolled_by_name,
             o.name AS organization_name,
             o.slug AS organization_slug
         FROM students s
         LEFT JOIN leads l ON l.id = s.lead_id
-        LEFT JOIN leads l2 ON (
-            (s.lead_id IS NULL OR l.id IS NULL)
-            AND s.email IS NOT NULL AND TRIM(s.email) <> ''
-            AND l2.id = (
-                SELECT le.id FROM leads le
-                WHERE le.email = s.email AND TRIM(le.email) <> ''
-                AND (s.org_id IS NULL OR TRIM(s.org_id) = '' OR le.org_id = s.org_id)
-                ORDER BY le.created_at DESC
-                LIMIT 1
-            )
-        )
         LEFT JOIN users eu ON eu.id = s.enrolled_by
         LEFT JOIN users au ON au.id = l.assigned_to
-        LEFT JOIN users au2 ON au2.id = l2.assigned_to
-        LEFT JOIN organizations o ON o.id = COALESCE(s.org_id, l.org_id, l2.org_id)
+        LEFT JOIN organizations o ON o.id = COALESCE(s.org_id, l.org_id)
         LEFT JOIN courses c ON s.course_id = c.id
         LEFT JOIN batches b ON s.batch_id = b.id
         WHERE $where
         ORDER BY s.created_at DESC
         LIMIT 500
     ");
-    $stmt->execute($params);
-    $rows = $stmt->fetchAll();
+    try {
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll();
+    } catch (Throwable $e) {
+        // Older schemas may lack enrolled_by / updated_at.
+        error_log('students list slim: ' . $e->getMessage());
+        $stmt = $db->prepare("
+            SELECT s.id, s.name, s.email, s.phone, s.college, s.year_of_study, s.course_id, s.batch_id,
+                s.org_id, s.status, s.enrollment_date, s.lead_id, s.created_at,
+                c.name AS course_name,
+                b.name AS batch_name,
+                l.id AS source_lead_id,
+                l.name AS lead_contact_name,
+                l.source AS lead_source,
+                l.course_interest AS lead_course_interest,
+                l.company AS lead_company,
+                LEFT(COALESCE(l.notes, ''), 2000) AS lead_notes,
+                l.status AS lead_status,
+                l.tags AS lead_tags,
+                l.referred_by AS lead_referred_by,
+                l.phone AS lead_phone,
+                l.college AS lead_college,
+                l.email AS lead_email,
+                l.assigned_to AS lead_assigned_to,
+                l.assigned_to AS enrolled_by_id,
+                NULLIF(TRIM(au.full_name), '') AS enrolled_by_name,
+                o.name AS organization_name,
+                o.slug AS organization_slug
+            FROM students s
+            LEFT JOIN leads l ON l.id = s.lead_id
+            LEFT JOIN users au ON au.id = l.assigned_to
+            LEFT JOIN organizations o ON o.id = COALESCE(s.org_id, l.org_id)
+            LEFT JOIN courses c ON s.course_id = c.id
+            LEFT JOIN batches b ON s.batch_id = b.id
+            WHERE $where
+            ORDER BY s.created_at DESC
+            LIMIT 500
+        ");
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll();
+    }
     $tenantOrgLabel = '';
     if ($orgId) {
         $on = $db->prepare('SELECT name FROM organizations WHERE id = ? LIMIT 1');

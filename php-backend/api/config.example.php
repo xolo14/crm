@@ -1,4 +1,6 @@
 <?php
+// Direct HTTP access blocked (nginx may ignore .htaccess)
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 // Copy this file to config.php on Hostinger and fill in values from hPanel → Databases.
 
 // ── MySQL (Hostinger shared hosting) ───────────────────────────────────────
@@ -102,3 +104,11 @@ define('GCS_ENABLED', false);
 define('GCS_BUCKET', ''); // e.g. syncpedia-crm-docs
 // Absolute path on Hostinger, e.g. '/home/u123456789/private/gcs-sa.json' (chmod 600)
 define('GCS_SA_JSON_PATH', '');
+
+// ── LMS Classes (Syncpedia only — Match LMS / Access Users) ─────────────────
+// Set the live key on VPS api/config.php only — never commit the real key.
+// Enable get_course_list + get_batch_schedule (and student list/create if available)
+// on the key in lmsclasses.com. Courses can fall back to /api/public/courses.
+define('LMS_CLASSES_API_KEY', ''); // REQUIRED on VPS: paste live key in config.php only (never commit)
+define('LMS_CLASSES_BASE_URL', 'https://lmsclasses.com');
+// On lmsclasses.com → API keys: enable get_course_list + get_batch_schedule (and student scopes if used).

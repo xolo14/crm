@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-import { getImportSetTag, IMPORT_SET_PREFIX } from '@/lib/leadSources';
+import { getImportSetTag, IMPORT_SET_PREFIX, parseLeadTags } from '@/lib/leadSources';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';

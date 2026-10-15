@@ -160,6 +160,33 @@ function normalizeMappings(raw: unknown): PlaceholderMapping[] {
   return out;
 }
 
+export const FORM_AUTO_PLACEHOLDER_KEYS = new Set([
+  "date",
+  "issue_date",
+  "cert_id",
+  "ref_number",
+  "letterhead_url",
+]);
+
+/** Placeholders that Auto issue cannot fill (no form field and no prefill). */
+export function incompleteAutoDocumentMappings(
+  placeholders: TemplatePlaceholder[],
+  map: PlaceholderMapState,
+): string[] {
+  const missing: string[] = [];
+  for (const p of placeholders) {
+    if (p.auto || FORM_AUTO_PLACEHOLDER_KEYS.has(p.key) || placeholderGroup(p.key) === "date" || placeholderGroup(p.key) === "cert_id") {
+      continue;
+    }
+    const m = (map.mappings || []).find((row) => row.key === p.key || placeholderGroup(row.key) === p.key);
+    const field = String(m?.field_key || "").trim();
+    const mapped = field !== "" && field !== KEEP_TEMPLATE_PREFILL;
+    const prefill = String(m?.prefill || p.prefill || "").trim();
+    if (!mapped && !prefill) missing.push(p.label || p.key);
+  }
+  return missing;
+}
+
 export function placeholderMapsEqual(a: PlaceholderMapping[], b: PlaceholderMapping[]): boolean {
   if (a.length !== b.length) return false;
   return a.every(

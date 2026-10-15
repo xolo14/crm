@@ -53,6 +53,9 @@ export const assessmentsApi = {
       title: string;
       source_mode?: PeaklyySourceMode;
       questions?: PeaklyyCustomQuestionInput[];
+      need_results?: boolean;
+      result_email?: string;
+      result_password?: string;
     },
   ) =>
     req<{
@@ -64,6 +67,7 @@ export const assessmentsApi = {
       duration_minutes: number;
       question_count: number;
       source_mode?: PeaklyySourceMode;
+      result_login_email?: string | null;
     }>("?action=create", {
       method: "POST",
       body: JSON.stringify(body),
@@ -72,6 +76,11 @@ export const assessmentsApi = {
     req<{ id: string; result_api_key: string; open_url: string }>("?action=regenerate_api_key", {
       method: "POST",
       body: JSON.stringify({ id }),
+    }),
+  saveResultLogin: (id: string, email: string, password: string) =>
+    req<{ id: string; result_login_email: string; message: string }>("?action=result_login", {
+      method: "POST",
+      body: JSON.stringify({ id, result_email: email, result_password: password }),
     }),
   update: (body: Partial<PeaklyyAssessment> & { id: string }) =>
     req<{ message: string }>("?action=update", { method: "POST", body: JSON.stringify(body) }),
@@ -92,7 +101,9 @@ export const assessmentsApi = {
   myAssignments: () =>
     req<{ data: PeaklyyAssessment[] }>("?action=my_assignments"),
   attempts: (assessmentId: string) =>
-    req<{ data: PeaklyyAttemptRow[] }>(`?action=attempts&assessment_id=${encodeURIComponent(assessmentId)}`),
+    req<{ data: PeaklyyAttemptRow[]; assessment?: { id: string; title: string } }>(
+      `?action=attempts&assessment_id=${encodeURIComponent(assessmentId)}`,
+    ),
   deleteAttempt: (attemptId: string) =>
     req<{ message: string; attempt_id: string }>("?action=delete_attempt", {
       method: "POST",
@@ -272,6 +283,7 @@ export interface PeaklyyAssessment {
   anti_cheat: number | boolean;
   result_webhook_url?: string | null;
   result_api_key?: string | null;
+  result_login_email?: string | null;
   open_url?: string | null;
   is_active: number | boolean;
   created_at?: string;
@@ -279,6 +291,12 @@ export interface PeaklyyAssessment {
   interest_options?: string[];
   require_post_interests?: boolean;
   assigned_user_ids?: string[];
+  /** Hiring / two-part papers */
+  two_part?: boolean;
+  mcq_count?: number;
+  task_count?: number;
+  mcq_duration_minutes?: number;
+  task_duration_minutes?: number;
 }
 
 export type PeaklyyAssessmentPublic = Omit<PeaklyyAssessment, "result_api_key">;
@@ -296,6 +314,7 @@ export interface PeaklyyAttemptRow {
   email: string;
   phone: string;
   domain_key: string;
+  domain_label?: string;
   degree_branch?: string | null;
   college_name?: string | null;
   graduation_year?: string | null;

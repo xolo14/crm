@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Loader2, Upload, X } from "lucide-react";
 import {
   Dialog,
@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
+import { searchAccessibleLeads } from "@/lib/searchAccessibleLeads";
 import { useToast } from "@/hooks/use-toast";
 
 const ACCEPT =
@@ -67,6 +68,7 @@ export default function ManualPaymentDialog({
   const [leadId, setLeadId] = useState("");
   const [leads, setLeads] = useState<LeadOption[]>([]);
   const [loadingLeads, setLoadingLeads] = useState(false);
+  const [leadSearchTruncated, setLeadSearchTruncated] = useState(false);
   const [leadPickerOpen, setLeadPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [pitchPrice, setPitchPrice] = useState("");
@@ -116,41 +118,43 @@ export default function ManualPaymentDialog({
       setLeadPickerOpen(false);
       return;
     }
+    setLeads([]);
+    setLeadSearchTruncated(false);
+  }, [open, presetCandidate]);
+
+  useEffect(() => {
+    if (!open || presetCandidate?.id) return;
+    const q = customerName.trim();
+    if (!q) {
+      setLeads([]);
+      setLeadSearchTruncated(false);
+      setLoadingLeads(false);
+      return;
+    }
     let cancelled = false;
-    const load = async () => {
-      setLoadingLeads(true);
-      try {
-        const leadRes = await api.leads.list({ all: false, limit: 250, lite: true });
-        if (cancelled) return;
-        const leadList = (
-          Array.isArray(leadRes)
-            ? leadRes
-            : (leadRes as { data?: unknown; leads?: unknown })?.data ||
-              (leadRes as { leads?: unknown })?.leads ||
-              []
-        ) as Array<Record<string, unknown>>;
-        setLeads(
-          leadList
-            .map((l) => ({
-              id: String(l.id ?? ""),
-              name: String(l.name || "Unnamed lead"),
-              email: String(l.email || ""),
-              phone: String(l.phone || ""),
-            }))
-            .filter((l) => l.id)
-            .sort((a, b) => a.name.localeCompare(b.name)),
-        );
-      } catch {
-        if (!cancelled) setLeads([]);
-      } finally {
-        if (!cancelled) setLoadingLeads(false);
-      }
-    };
-    void load();
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setLoadingLeads(true);
+        try {
+          const result = await searchAccessibleLeads(q);
+          if (cancelled) return;
+          setLeads(result.leads);
+          setLeadSearchTruncated(result.truncated);
+        } catch {
+          if (!cancelled) {
+            setLeads([]);
+            setLeadSearchTruncated(false);
+          }
+        } finally {
+          if (!cancelled) setLoadingLeads(false);
+        }
+      })();
+    }, 300);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [open, presetCandidate]);
+  }, [open, presetCandidate, customerName]);
 
   useEffect(() => {
     if (!leadPickerOpen) return;
@@ -165,19 +169,6 @@ export default function ManualPaymentDialog({
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [leadPickerOpen]);
-
-  const filteredLeads = useMemo(() => {
-    const q = customerName.trim().toLowerCase();
-    const list = !q
-      ? leads
-      : leads.filter(
-          (l) =>
-            l.name.toLowerCase().includes(q) ||
-            l.email.toLowerCase().includes(q) ||
-            l.phone.replace(/\D/g, "").includes(q.replace(/\D/g, "")),
-        );
-    return list.slice(0, 40);
-  }, [leads, customerName]);
 
   function handleNameChange(value: string) {
     setCustomerName(value);
@@ -373,7 +364,6 @@ export default function ManualPaymentDialog({
                     aria-expanded={leadPickerOpen}
                     aria-autocomplete="list"
                     aria-controls="mp-lead-listbox"
-                    disabled={loadingLeads}
                     value={customerName}
                     onChange={(e) => handleNameChange(e.target.value)}
                     onFocus={() => setLeadPickerOpen(true)}
@@ -387,7 +377,7 @@ export default function ManualPaymentDialog({
                     type="button"
                     tabIndex={-1}
                     aria-label="Show leads"
-                    disabled={loadingLeads || leads.length === 0}
+                    disabled={!customerName.trim()}
                     onClick={() => setLeadPickerOpen((o) => !o)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-gray-400 hover:text-gray-600 disabled:opacity-30"
                   >
@@ -399,50 +389,57 @@ export default function ManualPaymentDialog({
                     />
                   </button>
 
-                  {leadPickerOpen && leads.length > 0 ? (
+                  {leadPickerOpen && customerName.trim() ? (
                     <ul
                       id="mp-lead-listbox"
                       role="listbox"
                       className="absolute z-20 left-0 right-0 mt-1 max-h-52 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg py-1"
                     >
-                      {filteredLeads.length === 0 ? (
+                      {loadingLeads ? (
+                        <li className="px-3 py-2 text-xs text-gray-500">Searching your leads…</li>
+                      ) : leads.length === 0 ? (
                         <li className="px-3 py-2 text-xs text-gray-500">
                           No leads match — enter details manually
                         </li>
                       ) : (
-                        filteredLeads.map((l) => (
-                          <li
-                            key={l.id}
-                            role="option"
-                            aria-selected={leadId === l.id}
-                          >
-                            <button
-                              type="button"
-                              onMouseDown={(e) => e.preventDefault()}
-                              onClick={() => selectLead(l)}
-                              className={`w-full text-left px-3 py-2 text-sm hover:bg-[#e6faf0] ${
-                                leadId === l.id ? "bg-[#e6faf0]/80" : ""
-                              }`}
+                        <>
+                          {leads.map((l) => (
+                            <li
+                              key={l.id}
+                              role="option"
+                              aria-selected={leadId === l.id}
                             >
-                              <span className="font-medium text-[#0f2318] block truncate">
-                                {l.name}
-                              </span>
-                              {(l.email || l.phone) && (
-                                <span className="text-[11px] text-gray-500 block truncate">
-                                  {[l.email, l.phone].filter(Boolean).join(" · ")}
+                              <button
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => selectLead(l)}
+                                className={`w-full text-left px-3 py-2 text-sm hover:bg-[#e6faf0] ${
+                                  leadId === l.id ? "bg-[#e6faf0]/80" : ""
+                                }`}
+                              >
+                                <span className="font-medium text-[#0f2318] block truncate">
+                                  {l.name}
                                 </span>
-                              )}
-                            </button>
-                          </li>
-                        ))
+                                {(l.email || l.phone) && (
+                                  <span className="text-[11px] text-gray-500 block truncate">
+                                    {[l.email, l.phone].filter(Boolean).join(" · ")}
+                                  </span>
+                                )}
+                              </button>
+                            </li>
+                          ))}
+                          {leadSearchTruncated ? (
+                            <li className="px-3 py-2 text-[11px] text-gray-500">
+                              Showing the latest matches. Type more of the name.
+                            </li>
+                          ) : null}
+                        </>
                       )}
                     </ul>
                   ) : null}
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  {leads.length === 0 && !loadingLeads
-                    ? "No leads found — enter the customer manually"
-                    : "Pick a lead to auto-fill email and phone, or type a new name"}
+                  Type a name to search every lead you can access, or enter a new customer
                 </p>
               </div>
 

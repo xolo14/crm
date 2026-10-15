@@ -241,43 +241,152 @@ if ($method === 'GET') {
         respond(['debug' => $debugMeta]);
     }
 
-    // Soft cap per request — clients may page with offset until truncated=false.
-    $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 100000;
+    // Super admin and org admin have no row cap. Managers (L2) may load up to 100k.
+    // L1 (sales, HR, marketing) is capped at 10k. Everyone else stays at 10k / 5k default.
+    $roleKey = syncpediaNormalizeRoleKey((string) $role);
+    $isUncappedLeadRole = in_array($roleKey, ['super_admin', 'org'], true);
+    $isManagerLeadRole = in_array($roleKey, ['manager', 'operational_manager'], true);
+    $isL1LeadRole = in_array($roleKey, ['sales_representative', 'marketing', 'hr'], true);
+    $maxLimit = $isUncappedLeadRole ? 0 : ($isManagerLeadRole ? 100000 : 10000);
+    $defaultLimit = $isManagerLeadRole ? 100000 : (($isL1LeadRole || $isUncappedLeadRole) ? 10000 : 5000);
+    $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : $defaultLimit;
     if ($limit < 1) {
-        $limit = 100000;
+        $limit = $defaultLimit;
     }
-    if ($limit > 100000) {
-        $limit = 100000;
+    if ($maxLimit > 0 && $limit > $maxLimit) {
+        $limit = $maxLimit;
     }
     $offset = isset($_GET['offset']) ? (int) $_GET['offset'] : 0;
     if ($offset < 0) {
         $offset = 0;
     }
 
-    $countStmt = $db->prepare("SELECT COUNT(*) FROM leads WHERE $where");
-    $countStmt->execute($params);
-    $total = (int) $countStmt->fetchColumn();
-
-    $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $limit . " OFFSET " . $offset);
-    $stmt->execute($params);
-    $rows = $stmt->fetchAll();
-
     $lite = isset($_GET['lite']) && $_GET['lite'] !== '0' && strtolower((string) $_GET['lite']) !== 'false';
 
-    if (!$lite && is_array($rows) && $rows !== []) {
+    // lite hub loads: skip full-table COUNT(*) (often slower than the row fetch on large orgs)
+    // and return a slim column list so /leads is not stuck on a spinner for minutes.
+    $total = null;
+    if (!$lite) {
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM leads WHERE $where");
+        $countStmt->execute($params);
+        $total = (int) $countStmt->fetchColumn();
+    }
+
+    $selectCols = '*';
+    if ($lite) {
+        $selectCols = 'id, name, email, phone, company, college, year_of_study, course_interest, referred_by, source, status, assigned_to, tags, org_id, created_by, created_at, updated_at';
+    }
+
+    $fetchLeadChunk = function (int $chunkLimit, int $chunkOffset) use ($db, $selectCols, $where, $params, $lite): array {
+        $chunkLimit = max(1, $chunkLimit);
+        $chunkOffset = max(0, $chunkOffset);
+        try {
+            $stmt = $db->prepare("SELECT $selectCols FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $chunkLimit . " OFFSET " . $chunkOffset);
+            $stmt->execute($params);
+            $chunk = $stmt->fetchAll();
+            return is_array($chunk) ? $chunk : [];
+        } catch (Throwable $liteSelectErr) {
+            if (!$lite) {
+                throw $liteSelectErr;
+            }
+            error_log('leads.php GET lite select fallback: ' . $liteSelectErr->getMessage());
+            $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $chunkLimit . " OFFSET " . $chunkOffset);
+            $stmt->execute($params);
+            $chunk = $stmt->fetchAll();
+            return is_array($chunk) ? $chunk : [];
+        }
+    };
+
+    $managerCardFilter = in_array(syncpediaNormalizeRoleKey((string) $role), ['manager', 'operational_manager'], true)
+        && function_exists('syncpediaFilterLeadsForManagerCardAccess');
+    $rows = [];
+    $fetched = 0;
+    $nextOffset = $offset;
+    $hasMore = false;
+
+    if ($managerCardFilter) {
+        // Card access is applied after SQL, so keep scanning until this page is full of visible leads.
+        // next_offset is the SQL cursor, not the count of rows returned.
+        $visible = [];
+        $cursor = $offset;
+        $scanned = 0;
+        $maxScan = 300000;
+        $chunkSize = 2000;
+        $chunkCount = 0;
+        $take = 0;
+        while (count($visible) < $limit && $scanned < $maxScan) {
+            $take = $scanned === 0
+                ? min($limit, $maxScan - $scanned)
+                : min($chunkSize, $maxScan - $scanned);
+            $chunk = $fetchLeadChunk($take, $cursor);
+            if ($chunk === []) {
+                break;
+            }
+            $filtered = syncpediaFilterLeadsForManagerCardAccess($db, $tokenData, $chunk);
+            $keep = [];
+            foreach ($filtered as $fr) {
+                if (!is_array($fr)) {
+                    continue;
+                }
+                $fid = trim((string) ($fr['id'] ?? ''));
+                if ($fid !== '') {
+                    $keep[$fid] = $fr;
+                }
+            }
+            $chunkCount = count($chunk);
+            $consumed = 0;
+            foreach ($chunk as $raw) {
+                $consumed++;
+                if (!is_array($raw)) {
+                    continue;
+                }
+                $id = trim((string) ($raw['id'] ?? ''));
+                if ($id !== '' && isset($keep[$id])) {
+                    $visible[] = $keep[$id];
+                    if (count($visible) >= $limit) {
+                        break;
+                    }
+                }
+            }
+            $cursor += $consumed;
+            $scanned += $consumed;
+            if (count($visible) >= $limit || $chunkCount < $take) {
+                break;
+            }
+        }
+        $rows = $visible;
+        $fetched = count($rows);
+        $nextOffset = $cursor;
+        // Page is full, scan budget hit, or we stopped mid-chunk after filling — peek for more SQL rows.
+        if ($fetched >= $limit || $scanned >= $maxScan) {
+            $hasMore = $fetchLeadChunk(1, $cursor) !== [];
+        } elseif ($fetched > 0 && $chunkCount >= $take) {
+            // Defensive: loop exited unexpectedly with a full last chunk — do not claim EOF.
+            $hasMore = $fetchLeadChunk(1, $cursor) !== [];
+        }
+        $total = $fetched + ($hasMore ? 1 : 0);
+    } else {
+        $fetchLimit = $lite ? ($limit + 1) : $limit;
+        $rows = $fetchLeadChunk($fetchLimit, $offset);
+        if ($lite) {
+            $hasMore = count($rows) > $limit;
+            if ($hasMore) {
+                $rows = array_slice($rows, 0, $limit);
+            }
+            $fetched = count($rows);
+            $total = $offset + $fetched + ($hasMore ? 1 : 0);
+        } else {
+            $fetched = count($rows);
+            $hasMore = is_int($total) && ($offset + $fetched) < $total;
+        }
+        $nextOffset = $offset + $fetched;
+    }
+
+    if (!$lite && $rows !== []) {
         if (!function_exists('leadsAttachFormPaymentFields')) {
             require_once __DIR__ . '/payment_link_store.php';
         }
         leadsAttachFormPaymentFields($db, $rows);
-    }
-
-    // Managers: form + assessment cards hidden unless granted / assigned / self-created.
-    if (in_array(syncpediaNormalizeRoleKey((string) $role), ['manager', 'operational_manager'], true) && function_exists('syncpediaFilterLeadsForManagerCardAccess')) {
-        $rows = syncpediaFilterLeadsForManagerCardAccess($db, $tokenData, is_array($rows) ? $rows : []);
-        $fetched = count($rows);
-        $total = $fetched;
-    } else {
-        $fetched = count($rows);
     }
 
     // Resolve creator display names for "Created by" (Added leads card, managers).
@@ -332,7 +441,8 @@ if ($method === 'GET') {
         'total' => $total,
         'limit' => $limit,
         'offset' => $offset,
-        'truncated' => ($offset + $fetched) < $total,
+        'next_offset' => $nextOffset,
+        'truncated' => $hasMore,
     ]);
     } catch (Throwable $e) {
         error_log('leads.php GET: ' . $e->getMessage());

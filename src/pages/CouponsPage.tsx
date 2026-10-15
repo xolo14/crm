@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Copy, KeyRound, Loader2, Lock, Plus, Sparkles, Tag, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
+import { searchAccessibleLeads } from "@/lib/searchAccessibleLeads";
 import { phpList } from "@/lib/phpList";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -149,6 +150,7 @@ export default function CouponsPage() {
   const [minAmountLoading, setMinAmountLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [leads, setLeads] = useState<LeadOption[]>([]);
+  const [leadsTruncated, setLeadsTruncated] = useState(false);
   const [leadPickerOpen, setLeadPickerOpen] = useState(false);
   const [leadsLoading, setLeadsLoading] = useState(false);
   const leadPickerRef = useRef<HTMLDivElement>(null);
@@ -202,6 +204,7 @@ export default function CouponsPage() {
     setCreateOrgId("");
     setErrors({});
     setLeads([]);
+    setLeadsTruncated(false);
     setLeadPickerOpen(false);
   }
 
@@ -315,6 +318,7 @@ export default function CouponsPage() {
     setCreateOrgId(orgId);
     setLeadId("");
     setLeads([]);
+    setLeadsTruncated(false);
     setErrors((er) => ({ ...er, org_id: "" }));
     setSmtpAccountId("");
     await loadMinAmount(orgId);
@@ -326,28 +330,28 @@ export default function CouponsPage() {
     const query = q.trim();
     if (query.length < 1) {
       setLeads([]);
+      setLeadsTruncated(false);
       return;
     }
     searchTimer.current = window.setTimeout(() => {
       void (async () => {
         setLeadsLoading(true);
         try {
-          const res = await api.leads.list({
-            search: query,
-            limit: 40,
-            all: false,
-            lite: true,
-            org_id: isSuperAdmin ? createOrgId || undefined : undefined,
+          const { leads: matches, truncated } = await searchAccessibleLeads(query, {
+            orgId: isSuperAdmin ? createOrgId || undefined : undefined,
           });
-          const list = phpList<LeadOption>(res).map((l) => ({
-            id: String(l.id),
-            name: (l as { name?: string }).name || "Unnamed lead",
-            email: (l as { email?: string }).email || "",
-            phone: (l as { phone?: string }).phone || "",
-          }));
-          setLeads(list);
+          setLeads(
+            matches.map((l) => ({
+              id: l.id,
+              name: l.name || "Unnamed lead",
+              email: l.email || "",
+              phone: l.phone || "",
+            })),
+          );
+          setLeadsTruncated(truncated);
         } catch {
           setLeads([]);
+          setLeadsTruncated(false);
         } finally {
           setLeadsLoading(false);
         }
@@ -794,23 +798,30 @@ export default function CouponsPage() {
                       No leads match — name will be used as entered
                     </li>
                   ) : (
-                    leads.map((lead) => (
-                      <li key={lead.id}>
-                        <button
-                          type="button"
-                          className="w-full px-3 py-2 text-left text-sm hover:bg-muted"
-                          onClick={() => selectLead(lead)}
-                        >
-                          <span className="block font-medium">{lead.name}</span>
-                          {lead.email ? (
-                            <span className="block text-xs text-muted-foreground">{lead.email}</span>
-                          ) : null}
-                          {lead.phone ? (
-                            <span className="block text-xs text-muted-foreground">{lead.phone}</span>
-                          ) : null}
-                        </button>
-                      </li>
-                    ))
+                    <>
+                      {leads.map((lead) => (
+                        <li key={lead.id}>
+                          <button
+                            type="button"
+                            className="w-full px-3 py-2 text-left text-sm hover:bg-muted"
+                            onClick={() => selectLead(lead)}
+                          >
+                            <span className="block font-medium">{lead.name}</span>
+                            {lead.email ? (
+                              <span className="block text-xs text-muted-foreground">{lead.email}</span>
+                            ) : null}
+                            {lead.phone ? (
+                              <span className="block text-xs text-muted-foreground">{lead.phone}</span>
+                            ) : null}
+                          </button>
+                        </li>
+                      ))}
+                      {leadsTruncated ? (
+                        <li className="px-3 py-2 text-[11px] text-muted-foreground">
+                          Showing latest matches. Type more of the name.
+                        </li>
+                      ) : null}
+                    </>
                   )}
                 </ul>
               )}

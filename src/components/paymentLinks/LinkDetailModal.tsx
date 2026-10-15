@@ -281,7 +281,9 @@ export default function LinkDetailModal({
               disabled={downloadingInvoice}
               onClick={() => {
                 setDownloadingInvoice(true);
-                void downloadPaymentLinkInvoice(link.id)
+                void downloadPaymentLinkInvoice(link.id, {
+                  customerName: link.customer?.name || null,
+                })
                   .catch((err) =>
                     toast({
                       variant: "destructive",

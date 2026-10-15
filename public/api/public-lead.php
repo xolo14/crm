@@ -516,8 +516,14 @@ $publicLeadStartPayment = static function (string $leadId) use (
         'coupon' => $couponApplied ? $submittedCoupon : '',
     ]);
     $plinkId = trim((string) ($pay['id'] ?? ''));
+    $tagStatus = 'created';
+    if (!empty($pay['already_paid'])) {
+        $tagStatus = 'paid';
+    } elseif (!empty($pay['partially_paid'])) {
+        $tagStatus = 'partially_paid';
+    }
     if ($plinkId !== '') {
-        $tagPatch(!empty($pay['already_paid']) ? 'paid' : 'created', $amount, $plinkId, false);
+        $tagPatch($tagStatus, $amount, $plinkId, false);
     }
     if (!empty($pay['already_paid'])) {
         return ['payment_already_paid' => true, 'payment_amount' => $amount];
@@ -643,14 +649,25 @@ if ($routesToHr) {
 }
 
 $dupOrgId = ($orgId !== null && $orgId !== '') ? $orgId : null;
+$publicLeadAutoDocsPaid = static function (array $payExtra): bool {
+    // A still-open checkout (including a partial Razorpay balance) must not issue documents.
+    if (!empty($payExtra['payment_url']) || !empty($payExtra['payment_error']) || !empty($payExtra['payment_partial'])) {
+        return false;
+    }
+    if (!empty($payExtra['payment_free']) || !empty($payExtra['payment_already_paid'])) {
+        return true;
+    }
+    // Payment is not enabled on this form.
+    return !array_key_exists('payment_url', $payExtra)
+        && !array_key_exists('payment_error', $payExtra)
+        && !array_key_exists('payment_free', $payExtra)
+        && !array_key_exists('payment_already_paid', $payExtra);
+};
 $dup = leadsFindDuplicateInOrg($db, $dupOrgId, (string) ($email ?? ''), (string) ($phone ?? ''));
 if (is_array($dup)) {
     $publicLeadSendReceipt();
     $payExtra = $publicLeadStartPayment((string) $dup['id']);
-    $isPaid = !empty($payExtra['payment_free']) || !empty($payExtra['payment_already_paid']);
-    if (!array_key_exists('payment_url', $payExtra) && !array_key_exists('payment_error', $payExtra) && !array_key_exists('payment_free', $payExtra) && !array_key_exists('payment_already_paid', $payExtra)) {
-        $isPaid = true;
-    }
+    $isPaid = $publicLeadAutoDocsPaid($payExtra);
     if (is_array($formRow)) {
         require_once __DIR__ . '/form_campaigns.php';
         try {
@@ -726,11 +743,7 @@ try {
 
     $publicLeadSendReceipt();
     $payExtra = $publicLeadStartPayment($id);
-    $isPaid = !empty($payExtra['payment_free']) || !empty($payExtra['payment_already_paid']);
-    if (!array_key_exists('payment_url', $payExtra) && !array_key_exists('payment_error', $payExtra) && !array_key_exists('payment_free', $payExtra) && !array_key_exists('payment_already_paid', $payExtra)) {
-        // Payment not enabled on form — treat as no payment gate.
-        $isPaid = true;
-    }
+    $isPaid = $publicLeadAutoDocsPaid($payExtra);
     if (is_array($formRow)) {
         try {
             leadFormQueueAutoDocuments($db, $formRow, $id, $isPaid);

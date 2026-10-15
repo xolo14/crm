@@ -1,4 +1,6 @@
 <?php
+// Direct HTTP access blocked (nginx may ignore .htaccess)
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 /**
  * Match certificate / offer-letter placeholders to lead-form fields.
  * Unmatched tokens keep template text (or a saved prefill) instead of being wiped.
@@ -194,8 +196,6 @@ function formTplExtractCertificatePlaceholders(array $row): array
     $chunks = [
         (string) ($fields['title'] ?? ''),
         (string) ($fields['bodyText'] ?? ''),
-        (string) ($style['mail_subject'] ?? ''),
-        (string) ($style['mail_body'] ?? ''),
         (string) ($style['pdf_filename_pattern'] ?? ''),
     ];
     if (is_array($layers)) {
@@ -233,10 +233,6 @@ function formTplExtractCertificatePlaceholders(array $row): array
     foreach ($chunks as $chunk) {
         formTplCollectTokensFromText($chunk, $found, 'angle');
     }
-    $company = trim((string) ($fields['companyName'] ?? $style['company_name'] ?? ''));
-    if ($company !== '') {
-        formTplPushPlaceholder($found, 'company', '<<Company>>', 'Company', false, $company);
-    }
     return array_values($found);
 }
 
@@ -249,15 +245,20 @@ function formTplExtractOfferPlaceholders(array $row): array
     $found = [];
     $mail = formTplDecodeJson($row['mail_json'] ?? null);
     formTplCollectTokensFromText((string) ($row['html_content'] ?? ''), $found, 'mustache');
-    formTplCollectTokensFromText((string) ($mail['mail_subject'] ?? ''), $found, 'mustache');
-    formTplCollectTokensFromText((string) ($mail['mail_body'] ?? ''), $found, 'mustache');
-    formTplCollectTokensFromText((string) ($mail['pdf_filename_pattern'] ?? ''), $found, 'mustache');
+    $emailKey = trim((string) ($mail['recipient_email_placeholder'] ?? 'recipient_email'));
+    if ($emailKey !== '') {
+        formTplPushPlaceholder($found, $emailKey, '{{recipient_email}}', 'Recipient email', false, '');
+    }
+    $present = [];
+    foreach ($found as $item) {
+        $present[(string) ($item['key'] ?? '')] = true;
+    }
     $role = trim((string) ($row['role_title'] ?? ''));
-    if ($role !== '') {
+    if ($role !== '' && !empty($present['role_title'])) {
         formTplPushPlaceholder($found, 'role_title', '{{role_title}}', 'Role / title', false, $role);
     }
     $company = trim((string) ($mail['company_name'] ?? ''));
-    if ($company !== '') {
+    if ($company !== '' && !empty($present['company'])) {
         formTplPushPlaceholder($found, 'company', '{{company_name}}', 'Company', false, $company);
     }
     return array_values($found);

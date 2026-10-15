@@ -50,6 +50,7 @@ import { buildPublicApplyUrl } from "@/lib/applyFormUrl";
 import { PlaceholderMatchDialog } from "@/components/forms/TemplatePlaceholderMap";
 import {
   EMPTY_PLACEHOLDER_MAP,
+  incompleteAutoDocumentMappings,
   coerceTemplatePlaceholders,
   countMatchedPlaceholders,
   formFieldsFromQuestions,
@@ -1079,6 +1080,84 @@ export default function FormsManagerPage() {
         setSaveStatus("idle");
         return null;
       }
+      if (current.autoOfferLetter) {
+        if (loadingDocTemplates) {
+          if (!quiet) {
+            toast({
+              title: "Still loading templates",
+              description: "Wait for offer letter templates to load, then save again.",
+            });
+          }
+          setSaveStatus("idle");
+          return null;
+        }
+        const tpl = offerTemplates.find((t) => t.id === current.offerLetterTemplateId);
+        if (!tpl) {
+          if (!quiet) {
+            toast({
+              variant: "destructive",
+              title: "Offer letter template missing",
+              description: "Pick a template under Automations, or turn Auto offer letter off.",
+            });
+          }
+          setSaveStatus("idle");
+          return null;
+        }
+        const missing = incompleteAutoDocumentMappings(
+          coerceTemplatePlaceholders(tpl.placeholders),
+          current.offerLetterPlaceholderMap,
+        );
+        if (missing.length) {
+          if (!quiet) {
+            toast({
+              variant: "destructive",
+              title: "Map offer letter fields",
+              description: `Auto issue needs a form field or prefill for: ${missing.join(", ")}. Open Match fields, or turn Auto off.`,
+            });
+          }
+          setSaveStatus("idle");
+          return null;
+        }
+      }
+      if (current.autoCertificate) {
+        if (loadingDocTemplates) {
+          if (!quiet) {
+            toast({
+              title: "Still loading templates",
+              description: "Wait for certificate templates to load, then save again.",
+            });
+          }
+          setSaveStatus("idle");
+          return null;
+        }
+        const tpl = certTemplates.find((t) => t.id === current.certificateTemplateId);
+        if (!tpl) {
+          if (!quiet) {
+            toast({
+              variant: "destructive",
+              title: "Certificate template missing",
+              description: "Pick a template under Automations, or turn Auto certificate off.",
+            });
+          }
+          setSaveStatus("idle");
+          return null;
+        }
+        const missing = incompleteAutoDocumentMappings(
+          coerceTemplatePlaceholders(tpl.placeholders),
+          current.certificatePlaceholderMap,
+        );
+        if (missing.length) {
+          if (!quiet) {
+            toast({
+              variant: "destructive",
+              title: "Map certificate fields",
+              description: `Auto issue needs a form field or prefill for: ${missing.join(", ")}. Open Match fields, or turn Auto off.`,
+            });
+          }
+          setSaveStatus("idle");
+          return null;
+        }
+      }
       if (savingRef.current) return currentEditing?.id ?? null;
       savingRef.current = true;
       setFormNameError("");
@@ -1235,7 +1314,7 @@ export default function FormsManagerPage() {
         setSaving(false);
       }
     },
-    [isSuperAdmin, resolveSuperAdminFormOrgId, user?.id],
+    [isSuperAdmin, resolveSuperAdminFormOrgId, user?.id, offerTemplates, certTemplates, loadingDocTemplates, toast],
   );
 
   useEffect(() => {
@@ -1252,7 +1331,7 @@ export default function FormsManagerPage() {
   }, [builder, builderOpen, saveForm]);
 
   useEffect(() => {
-    if (!builderOpen || builderTab !== "settings") return;
+    if (!builderOpen) return;
     let cancelled = false;
     setLoadingDocTemplates(true);
     void (async () => {
@@ -1301,7 +1380,65 @@ export default function FormsManagerPage() {
     return () => {
       cancelled = true;
     };
-  }, [builderOpen, builderTab, editing?.id, toast]);
+  }, [builderOpen, editing?.id, toast]);
+
+  // Lazy-load placeholders for the selected templates only (list no longer embeds html_content).
+  useEffect(() => {
+    if (!builderOpen) return;
+    const offerId = builder.offerLetterTemplateId.trim();
+    const certId = builder.certificateTemplateId.trim();
+    let cancelled = false;
+
+    const offerRow = offerId ? offerTemplates.find((t) => t.id === offerId) : undefined;
+    const certRow = certId ? certTemplates.find((t) => t.id === certId) : undefined;
+    const needOffer =
+      !!offerRow && coerceTemplatePlaceholders(offerRow.placeholders).length === 0;
+    const needCert =
+      !!certRow && coerceTemplatePlaceholders(certRow.placeholders).length === 0;
+    if (!needOffer && !needCert) return;
+
+    void (async () => {
+      if (needOffer && offerId) {
+        try {
+          const res = await api.forms.automationTemplatePlaceholders("offer", offerId, editing?.id ?? null);
+          if (cancelled) return;
+          const placeholders = (res as { data?: { placeholders?: unknown } })?.data?.placeholders ?? [];
+          setOfferTemplates((prev) =>
+            prev.map((t) => (t.id === offerId ? { ...t, placeholders } : t)),
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+      if (needCert && certId) {
+        try {
+          const res = await api.forms.automationTemplatePlaceholders(
+            "certificate",
+            certId,
+            editing?.id ?? null,
+          );
+          if (cancelled) return;
+          const placeholders = (res as { data?: { placeholders?: unknown } })?.data?.placeholders ?? [];
+          setCertTemplates((prev) =>
+            prev.map((t) => (t.id === certId ? { ...t, placeholders } : t)),
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    builderOpen,
+    builder.offerLetterTemplateId,
+    builder.certificateTemplateId,
+    editing?.id,
+    offerTemplates,
+    certTemplates,
+  ]);
 
   useEffect(() => {
     if (!builderOpen || builderTab !== "settings" || !editing?.id) {

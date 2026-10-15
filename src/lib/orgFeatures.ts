@@ -117,7 +117,7 @@ export function featureKeyForPath(pathname: string): string | null {
   if (p.startsWith("/form-management") || p.startsWith("/form-api-integrations") || p.startsWith("/hr/form-management")) {
     return FEATURE_FORM_MANAGEMENT;
   }
-  if (p.startsWith("/students")) return "students";
+  if (p.startsWith("/students") || p.startsWith("/access-users")) return "students"; // /access-users redirects to Students
   if (p.startsWith("/courses")) return "courses";
   if (p.startsWith("/batches")) return "batches";
   if (p.startsWith("/timetables")) return FEATURE_TIMETABLES;

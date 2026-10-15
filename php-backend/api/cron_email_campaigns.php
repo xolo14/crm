@@ -26,8 +26,9 @@ if (!$cli) {
     }
 }
 
+@set_time_limit(0);
 $db = (new Database())->getConnection();
-$out = array_merge(['ok' => true], marketingProcessDueEmailSends($db));
+$out = array_merge(['ok' => true], marketingDrainDueEmailCampaigns($db));
 
 if ($cli) {
     echo json_encode($out) . PHP_EOL;

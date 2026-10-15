@@ -260,6 +260,7 @@ if ($action === 'org_mailboxes') {
 
 // ---- Email Drafts ----
 if ($action === 'email_drafts') {
+    marketingEnsureEmailDispatchSchema($db);
     if ($method === 'GET') {
         requireRole($tokenData, marketingGateRoles());
         [$w, $params] = marketingOrgScope($db, $tokenData, 'ed');
@@ -306,7 +307,8 @@ if ($action === 'email_drafts') {
         requireRole($tokenData, marketingGateRoles());
         $id = $_GET['id'] ?? '';
         if (!$id) respond(['error' => 'ID required'], 400);
-        marketingAssertRowInScope($db, 'email_drafts', $id, $tokenData);
+        $draftRow = marketingAssertRowInScope($db, 'email_drafts', $id, $tokenData);
+        marketingRemoveEmailDraftAttachmentFile((string) ($draftRow['attachment_path'] ?? ''));
         $nm = '';
         $orgForN = null;
         try {
@@ -322,6 +324,45 @@ if ($action === 'email_drafts') {
         syncpediaNotifyMarketingTemplateChange($db, (string) $userId, $orgForN, $nm, 'email', 'deleted');
         respond(['message' => 'Draft deleted']);
     }
+}
+
+if ($action === 'email_draft_attachment') {
+    requireRole($tokenData, marketingGateRoles());
+    marketingEnsureEmailDispatchSchema($db);
+    $id = trim((string) ($_GET['id'] ?? ''));
+    if ($id === '') {
+        respond(['error' => 'ID required'], 400);
+    }
+    $draft = marketingAssertRowInScope($db, 'email_drafts', $id, $tokenData);
+    if ($method === 'DELETE') {
+        marketingRemoveEmailDraftAttachmentFile((string) ($draft['attachment_path'] ?? ''));
+        $db->prepare('UPDATE email_drafts SET attachment_path = NULL, attachment_name = NULL WHERE id = ?')->execute([$id]);
+        respond(['message' => 'Attachment removed']);
+    }
+    if ($method !== 'POST') {
+        respond(['error' => 'Method not allowed'], 405);
+    }
+    $ct = (string) ($_SERVER['CONTENT_TYPE'] ?? '');
+    if (stripos($ct, 'multipart/form-data') === false) {
+        respond(['error' => 'Expected multipart/form-data'], 400);
+    }
+    if (empty($_FILES['file']) || !is_array($_FILES['file'])) {
+        respond(['error' => 'Choose a PDF to attach.'], 400);
+    }
+    $saved = marketingSaveEmailDraftPdf($_FILES['file'], $id);
+    if (empty($saved['ok'])) {
+        respond(['error' => (string) ($saved['error'] ?? 'PDF upload failed.')], 400);
+    }
+    $oldPath = trim((string) ($draft['attachment_path'] ?? ''));
+    if ($oldPath !== '' && $oldPath !== (string) ($saved['path'] ?? '')) {
+        marketingRemoveEmailDraftAttachmentFile($oldPath);
+    }
+    $db->prepare('UPDATE email_drafts SET attachment_path = ?, attachment_name = ? WHERE id = ?')
+        ->execute([(string) $saved['path'], (string) $saved['name'], $id]);
+    respond([
+        'message' => 'Attachment saved',
+        'attachment_name' => (string) $saved['name'],
+    ]);
 }
 
 // ---- Email Campaigns ----
@@ -340,7 +381,9 @@ if ($action === 'email_campaigns') {
             ORDER BY ec.created_at DESC
         ");
         $stmt->execute($params);
-        respond(['data' => $stmt->fetchAll()]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        marketingApplyEmailCampaignLogStatus($db, $rows);
+        respond(['data' => $rows]);
     }
     if ($method === 'POST') {
         requireRole($tokenData, marketingGateRoles());
@@ -518,7 +561,7 @@ if ($action === 'email_sends') {
             INNER JOIN email_campaigns ec ON ec.id = es.campaign_id
             WHERE es.campaign_id IN ($placeholders) AND ($w)
             ORDER BY es.created_at DESC
-            LIMIT 1000
+            LIMIT 5000
         ");
         $stmt->execute(array_merge($idList, $scopeParams));
         respond(['data' => $stmt->fetchAll()]);
@@ -541,8 +584,7 @@ if ($action === 'email_sends') {
             if ($email === '') {
                 continue;
             }
-            $status = is_array($row) ? (string) ($row['status'] ?? 'pending') : 'pending';
-            $stmt->execute([generateUUID(), $campaignId, $email, $status]);
+            $stmt->execute([generateUUID(), $campaignId, $email, 'pending']);
             $count++;
         }
         respond(['message' => 'Sends recorded', 'count' => $count], 201);
@@ -680,7 +722,60 @@ if ($action === 'dispatch_email_campaign' && $method === 'POST') {
     $ok = !empty($result['ok']);
     $sent = (int) ($result['sent'] ?? 0);
     $pending = (int) ($result['pending'] ?? 0);
+    $queuedNow = (int) ($result['queued_now'] ?? 0);
+    if ($ok && $queuedNow > 0) {
+        marketingEchoJsonAndContinue($result, 200);
+        if (!marketingKickEmailCampaignWorker()) {
+            marketingDrainDueEmailCampaigns($db);
+        }
+        exit;
+    }
     respond($result, $ok ? 200 : (($sent === 0 && $pending === 0) ? 400 : 502));
+}
+
+if ($action === 'pump_email_queue' && $method === 'POST') {
+    requireRole($tokenData, marketingGateRoles());
+    $out = marketingProcessDueEmailSends($db, 5);
+    $remaining = 0;
+    try {
+        $q = $db->query(
+            "SELECT COUNT(*) FROM email_sends
+             WHERE status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= NOW())"
+        );
+        if ($q) {
+            $remaining = (int) $q->fetchColumn();
+            $q->closeCursor();
+        }
+    } catch (Throwable $e) {
+        error_log('[pump_email_queue] ' . $e->getMessage());
+    }
+    respond([
+        'ok' => true,
+        'sent' => (int) ($out['sent'] ?? 0),
+        'failed' => (int) ($out['failed'] ?? 0),
+        'remaining' => $remaining,
+    ]);
+}
+
+if ($action === 'retry_email_campaign' && $method === 'POST') {
+    requireRole($tokenData, marketingGateRoles());
+    $input = getInput();
+    $campaignId = trim((string) ($input['campaign_id'] ?? ''));
+    if ($campaignId === '') {
+        respond(['error' => 'campaign_id required'], 400);
+    }
+    marketingAssertRowInScope($db, 'email_campaigns', $campaignId, $tokenData);
+    $result = marketingRetryFailedEmailCampaign($db, $campaignId);
+    $ok = !empty($result['ok']);
+    $queued = (int) ($result['queued'] ?? 0);
+    if ($ok && $queued > 0) {
+        marketingEchoJsonAndContinue($result, 200);
+        if (!marketingKickEmailCampaignWorker()) {
+            marketingDrainDueEmailCampaigns($db);
+        }
+        exit;
+    }
+    respond($result, $ok ? 200 : 400);
 }
 
 // ---- Dispatch WhatsApp campaign via Meta (templates) or session text (drafts) ----

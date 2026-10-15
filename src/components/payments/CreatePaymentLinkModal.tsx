@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
+import { searchAccessibleLeads } from "@/lib/searchAccessibleLeads";
 import { useCreatePaymentLink } from "@/hooks/useCreatePaymentLink";
 import type { RazorpayPaymentLink } from "@/types/paymentLinks";
 import {
@@ -133,6 +134,8 @@ export default function CreatePaymentLinkModal({
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [optionsError, setOptionsError] = useState<string | null>(null);
   const [leadPickerOpen, setLeadPickerOpen] = useState(false);
+  const [leadSearchLoading, setLeadSearchLoading] = useState(false);
+  const [leadSearchTruncated, setLeadSearchTruncated] = useState(false);
   const leadPickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -147,10 +150,7 @@ export default function CreatePaymentLinkModal({
     const load = async () => {
       setLoadingOptions(true);
       try {
-        const [batchRes, leadRes] = await Promise.all([
-          api.batches.list(),
-          api.leads.list({ all: false, limit: 250, lite: true }),
-        ]);
+        const batchRes = await api.batches.list();
         if (cancelled) return;
 
         const batchList = (
@@ -172,24 +172,11 @@ export default function CreatePaymentLinkModal({
             return (a.name || "").localeCompare(b.name || "");
           });
 
-        const leadList = (
-          Array.isArray(leadRes) ? leadRes : leadRes.data || leadRes.leads || []
-        ) as LeadOption[];
-
         setBatches(openBatches);
-        setLeads(
-          leadList
-            .map((l) => ({
-              id: String(l.id),
-              name: l.name || "Unnamed lead",
-              email: l.email || "",
-              phone: l.phone || "",
-            }))
-            .sort((a, b) => a.name.localeCompare(b.name)),
-        );
+        setLeads([]);
       } catch {
         if (!cancelled) {
-          setOptionsError("Could not load batches or leads. Try again.");
+          setOptionsError("Could not load batches. Try again.");
         }
       } finally {
         if (!cancelled) setLoadingOptions(false);
@@ -201,6 +188,40 @@ export default function CreatePaymentLinkModal({
       cancelled = true;
     };
   }, [open, memberReferral]);
+
+  useEffect(() => {
+    if (!open) return;
+    const q = form.full_name.trim();
+    if (!q) {
+      setLeads([]);
+      setLeadSearchTruncated(false);
+      setLeadSearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        setLeadSearchLoading(true);
+        try {
+          const result = await searchAccessibleLeads(q);
+          if (cancelled) return;
+          setLeads(result.leads);
+          setLeadSearchTruncated(result.truncated);
+        } catch {
+          if (!cancelled) {
+            setLeads([]);
+            setLeadSearchTruncated(false);
+          }
+        } finally {
+          if (!cancelled) setLeadSearchLoading(false);
+        }
+      })();
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, form.full_name]);
 
   useEffect(() => {
     if (!leadPickerOpen) return;
@@ -215,19 +236,6 @@ export default function CreatePaymentLinkModal({
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [leadPickerOpen]);
-
-  const filteredLeads = useMemo(() => {
-    const q = form.full_name.trim().toLowerCase();
-    const list = !q
-      ? leads
-      : leads.filter(
-          (l) =>
-            l.name.toLowerCase().includes(q) ||
-            (l.email || "").toLowerCase().includes(q) ||
-            (l.phone || "").replace(/\D/g, "").includes(q.replace(/\D/g, "")),
-        );
-    return list.slice(0, 40);
-  }, [leads, form.full_name]);
 
   const selectedLead = useMemo(
     () => (form.leadId ? leads.find((l) => l.id === form.leadId) : undefined),
@@ -474,7 +482,6 @@ export default function CreatePaymentLinkModal({
                 aria-expanded={leadPickerOpen}
                 aria-autocomplete="list"
                 aria-controls="pl-lead-listbox"
-                disabled={loadingOptions}
                 value={form.full_name}
                 onChange={(e) => handleFullNameChange(e.target.value)}
                 onFocus={() => setLeadPickerOpen(true)}
@@ -488,7 +495,7 @@ export default function CreatePaymentLinkModal({
                 type="button"
                 tabIndex={-1}
                 aria-label="Show leads"
-                disabled={loadingOptions || leads.length === 0}
+                disabled={!form.full_name.trim()}
                 onClick={() => setLeadPickerOpen((o) => !o)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-gray-400 hover:text-gray-600 disabled:opacity-30"
               >
@@ -498,47 +505,54 @@ export default function CreatePaymentLinkModal({
                 />
               </button>
 
-              {leadPickerOpen && leads.length > 0 && (
+              {leadPickerOpen && form.full_name.trim() && (
                 <ul
                   id="pl-lead-listbox"
                   role="listbox"
                   className="absolute z-20 left-0 right-0 mt-1 max-h-52 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg py-1"
                 >
-                  {filteredLeads.length === 0 ? (
+                  {leadSearchLoading ? (
+                    <li className="px-3 py-2 text-xs text-gray-500">Searching your leads…</li>
+                  ) : leads.length === 0 ? (
                     <li className="px-3 py-2 text-xs text-gray-500">
                       No leads match — name will be used as entered
                     </li>
                   ) : (
-                    filteredLeads.map((l) => (
-                      <li key={l.id} role="option" aria-selected={form.leadId === l.id}>
-                        <button
-                          type="button"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => selectLead(l)}
-                          className={`w-full text-left px-3 py-2 text-sm hover:bg-[#e6faf0] ${
-                            form.leadId === l.id ? "bg-[#e6faf0]/80" : ""
-                          }`}
-                        >
-                          <span className="font-medium text-[#0f2318] block truncate">
-                            {l.name}
-                          </span>
-                          {(l.email || l.phone) && (
-                            <span className="text-[11px] text-gray-500 block truncate">
-                              {[l.email, l.phone].filter(Boolean).join(" · ")}
+                    <>
+                      {leads.map((l) => (
+                        <li key={l.id} role="option" aria-selected={form.leadId === l.id}>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => selectLead(l)}
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-[#e6faf0] ${
+                              form.leadId === l.id ? "bg-[#e6faf0]/80" : ""
+                            }`}
+                          >
+                            <span className="font-medium text-[#0f2318] block truncate">
+                              {l.name}
                             </span>
-                          )}
-                        </button>
-                      </li>
-                    ))
+                            {(l.email || l.phone) && (
+                              <span className="text-[11px] text-gray-500 block truncate">
+                                {[l.email, l.phone].filter(Boolean).join(" · ")}
+                              </span>
+                            )}
+                          </button>
+                        </li>
+                      ))}
+                      {leadSearchTruncated && (
+                        <li className="px-3 py-2 text-[11px] text-gray-500">
+                          Showing the latest matches. Type more of the name.
+                        </li>
+                      )}
+                    </>
                   )}
                 </ul>
               )}
             </div>
             {errors.full_name && <p className={errCls}>{errors.full_name}</p>}
             <p className={hintCls}>
-              {leads.length === 0 && !loadingOptions
-                ? "No leads in CRM — enter the customer name manually"
-                : "Type a new name or pick a lead to auto-fill email and phone"}
+              Type a name to search every lead you can access, or enter a new customer
             </p>
           </div>
 

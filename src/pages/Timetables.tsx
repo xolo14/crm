@@ -88,6 +88,7 @@ type TimetableRow = {
 };
 
 type BatchRow = { id: string; name?: string; course_id?: string; course_name?: string };
+type CourseRow = { id: string; name?: string };
 type TimetableRecipient = {
   email: string;
   name?: string;

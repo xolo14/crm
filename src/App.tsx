@@ -28,10 +28,10 @@ import {
   CommunicationsHubPage,
   WhatsAppInboxPage,
   Courses,
+  LiveClasses,
   DailyReports,
   DailyReportsAnalytics,
   Dashboard,
-  EmailAnalytics,
   FormApiIntegrationsPage,
   FormLeadHistory,
   FormLeads,
@@ -80,11 +80,11 @@ import {
   VideoIntrosPage,
   VideoIntroDetailPage,
   PublicVideoIntroPage,
-  WhatsAppAnalytics,
   WhatsAppPortal,
   PrivacyPolicyPage,
   TermsOfServicePage,
   AssessmentsAdminPage,
+  AssessmentResultsPage,
   SyncpediaFresherAssessmentPage,
   PublicAssessmentPage,
 } from "@/routes/lazyPages";
@@ -107,6 +107,16 @@ function normalizePlatformRole(user: { role?: string } | null): string | null {
   return r;
 }
 
+/** Results logins stay on the one results page, including public and login URLs. */
+function AssessmentViewerLock() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+  if (loading || !user) return null;
+  if (normalizeAppRole(user.role) !== "assessment_viewer") return null;
+  if (location.pathname === "/assessment-results") return null;
+  return <Navigate to="/assessment-results" replace />;
+}
+
 function AuthLoading() {
   // Auth session check: short delay so a fast login check does not flash, but users are not left on a blank screen for 2s.
   return <DelayedPageLoader fullScreen delayMs={400} label="Loading…" />;
@@ -123,6 +133,9 @@ function MainLayoutRoute() {
   // HR must stay in the HR portal shell — never the main CRM sidebar.
   if (normalizeAppRole(user.role) === "hr") {
     return <Navigate to={firstAllowedHrPath(user.page_access)} replace />;
+  }
+  if (normalizeAppRole(user.role) === "assessment_viewer" && location.pathname !== "/assessment-results") {
+    return <Navigate to="/assessment-results" replace />;
   }
   return (
     <Suspense fallback={<AuthLoading />}>
@@ -148,6 +161,9 @@ function RootHome() {
   }
   if (role === "hr") {
     return <Navigate to={firstAllowedHrPath(user.page_access)} replace />;
+  }
+  if (role === "assessment_viewer") {
+    return <Navigate to="/assessment-results" replace />;
   }
   return (
     <Suspense fallback={<AuthLoading />}>
@@ -378,6 +394,20 @@ function MarketingGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function EmailAnalyticsRedirect() {
+  const { user } = useAuth();
+  const role = normalizeAppRole(user?.role);
+  const to = role === 'super_admin' || role === 'org' ? '/marketing-email?tab=analytics' : '/marketing/portal?tab=analytics';
+  return <Navigate to={to} replace />;
+}
+
+function WhatsAppAnalyticsRedirect() {
+  const { user } = useAuth();
+  const role = normalizeAppRole(user?.role);
+  const to = role === 'super_admin' || role === 'org' ? '/marketing-whatsapp?tab=analytics' : '/marketing/whatsapp?tab=analytics';
+  return <Navigate to={to} replace />;
+}
+
 function HRProtectedRoute() {
   const { user, loading } = useAuth();
   if (loading) return <AuthLoading />;
@@ -437,6 +467,7 @@ const App = () => (
       <BrowserRouter>
         <AuthProvider>
           <RouteSeo />
+          <AssessmentViewerLock />
           <Suspense fallback={<DelayedPageLoader fullScreen label="Loading…" />}>
           <Routes>
             <Route path="/apply" element={<Apply />} />
@@ -499,8 +530,10 @@ const App = () => (
               />
               <Route path="/notifications" element={<Notifications />} />
               <Route path="/students" element={<Students />} />
+              <Route path="/access-users" element={<Navigate to="/students" replace />} />
               <Route path="/courses" element={<Courses />} />
               <Route path="/batches" element={<Batches />} />
+              <Route path="/live-classes" element={<LiveClasses />} />
               <Route path="/timetables" element={<TimetableGate><Timetables /></TimetableGate>} />
               <Route path="/payments" element={<PaymentsPageGate><PaymentLinksPage /></PaymentsPageGate>} />
               <Route path="/payments/records" element={<PaymentRecordsGate><PaymentLinksRecordsPage /></PaymentRecordsGate>} />
@@ -515,9 +548,9 @@ const App = () => (
               <Route path="/settings" element={<SettingsGate><SettingsPage /></SettingsGate>} />
               <Route path="/marketing/dashboard" element={<MarketingGate><MarketingPortalDashboard /></MarketingGate>} />
               <Route path="/marketing/portal" element={<MarketingGate><MarketingPortal /></MarketingGate>} />
-              <Route path="/marketing/analytics" element={<MarketingGate><EmailAnalytics /></MarketingGate>} />
+              <Route path="/marketing/analytics" element={<MarketingGate><EmailAnalyticsRedirect /></MarketingGate>} />
               <Route path="/marketing/whatsapp" element={<MarketingGate><WhatsAppPortal /></MarketingGate>} />
-              <Route path="/marketing/whatsapp-analytics" element={<MarketingGate><WhatsAppAnalytics /></MarketingGate>} />
+              <Route path="/marketing/whatsapp-analytics" element={<MarketingGate><WhatsAppAnalyticsRedirect /></MarketingGate>} />
               <Route path="/marketing/meta-ads" element={<MarketingGate><MarketingMetaAdsPage /></MarketingGate>} />
               <Route path="/holidays" element={<Holidays />} />
               <Route
@@ -536,6 +569,7 @@ const App = () => (
                   </RoleGate>
                 }
               />
+              <Route path="/assessment-results" element={<AssessmentResultsPage />} />
               <Route path="/assignments" element={<Navigate to="/assessments" replace />} />
               <Route path="/trash" element={<TrashGate><Trash /></TrashGate>} />
               <Route path="/offer-letters" element={<OfferLettersGate><OfferLetters /></OfferLettersGate>} />

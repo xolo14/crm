@@ -473,8 +473,11 @@ function syncpediaDocumentStorageFileExists(?string $storedPath): bool
 }
 
 /** Stream PDF to browser and exit. */
-function syncpediaDocumentStorageStreamPdf(string $storedPath, string $downloadName = 'document.pdf'): void
-{
+function syncpediaDocumentStorageStreamPdf(
+    string $storedPath,
+    string $downloadName = 'document.pdf',
+    bool $asAttachment = false,
+): void {
     $absPath = syncpediaDocumentStorageResolvePath($storedPath);
     if (!is_string($absPath) || !is_file($absPath)) {
         respond(['error' => 'PDF not found on server'], 404);
@@ -487,8 +490,13 @@ function syncpediaDocumentStorageStreamPdf(string $storedPath, string $downloadN
     }
     $name = syncpediaDocumentSafeFilename($downloadName);
     $mime = syncpediaDocumentStorageMimeType($storedPath);
+    // Prefer PDF download naming even if a caller passed .html by mistake.
+    if ($mime === 'application/pdf' && !preg_match('/\.pdf$/i', $name)) {
+        $name = preg_replace('/\.html?$/i', '', $name) . '.pdf';
+    }
     header('Content-Type: ' . $mime);
-    header('Content-Disposition: inline; filename="' . $name . '"');
+    $disposition = $asAttachment ? 'attachment' : 'inline';
+    header('Content-Disposition: ' . $disposition . '; filename="' . $name . '"');
     header('Content-Length: ' . (string) filesize($absPath));
     readfile($absPath);
     exit;

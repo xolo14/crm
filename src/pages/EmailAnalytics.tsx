@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { phpList, inDateRange } from '@/lib/phpList';
+import { campaignCanRetry, emailSendOutcome, type CampaignSendStatus } from '@/lib/emailSendStatus';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -33,7 +34,7 @@ const STATUS_COLORS: Record<string, string> = {
   completed: '#10b981',
 };
 
-export default function EmailAnalytics() {
+export default function EmailAnalytics({ embedded = false }: { embedded?: boolean }) {
   const { user, role } = useAuth();
   const { toast } = useToast();
   const isMobile = useIsMobile();
@@ -51,6 +52,7 @@ export default function EmailAnalytics() {
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [activeTab, setActiveTab] = useState('overview');
+  const [retryingCampaignId, setRetryingCampaignId] = useState('');
 
   const isSuperAdmin = role === 'super_admin' || role === 'org';
   // Portal roles see own campaigns only (not org-wide admin list).
@@ -71,8 +73,9 @@ export default function EmailAnalytics() {
     }
   };
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) setLoading(true);
     try {
       const { from, to } = getDateRange();
       let membersData: any[] = [];
@@ -113,9 +116,40 @@ export default function EmailAnalytics() {
         setSends([]);
       }
     } catch (err: any) {
-      toast({ variant: 'destructive', title: 'Error', description: err.message });
+      if (!silent) toast({ variant: 'destructive', title: 'Error', description: err.message });
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
+    }
+  };
+
+  const anyCampaignSending = campaigns.some((c) => String(c.status || '') === 'sending');
+  const fetchDataRef = useRef(fetchData);
+  fetchDataRef.current = fetchData;
+  useEffect(() => {
+    if (!anyCampaignSending) return;
+    const timer = window.setInterval(() => {
+      void fetchDataRef.current({ silent: true });
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [anyCampaignSending]);
+
+  const retryCampaign = async (campaignId: string) => {
+    if (!campaignId || retryingCampaignId) return;
+    setRetryingCampaignId(campaignId);
+    try {
+      const res = await api.marketing.retryEmailCampaign(campaignId);
+      const queued = Number(res?.queued ?? 0);
+      if (queued <= 0) {
+        throw new Error(res?.error || res?.message || 'No failed emails to retry');
+      }
+      toast({
+        title: res?.message || `Sending ${queued}. You can leave this page; they go out about every 3 seconds.`,
+      });
+      await fetchData({ silent: true });
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Retry failed', description: err.message });
+    } finally {
+      setRetryingCampaignId('');
     }
   };
 
@@ -154,7 +188,10 @@ export default function EmailAnalytics() {
 
   // Filtered sends for log
   const filteredSends = sends.filter(s => {
-    if (statusFilter !== 'all' && s.status !== statusFilter) return false;
+    const outcome = emailSendOutcome(s);
+    if (statusFilter === 'sent' && outcome.tone !== 'sent') return false;
+    if (statusFilter === 'failed' && outcome.tone !== 'failed') return false;
+    if (statusFilter === 'pending' && outcome.tone !== 'pending') return false;
     if (searchQuery && !s.recipient_email?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     return true;
   });
@@ -177,7 +214,7 @@ export default function EmailAnalytics() {
 
   return (
     <div className="space-y-4 md:space-y-6">
-      {/* Header */}
+      {!embedded ? (
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => navigate(isPortalMarketer ? '/marketing/portal' : '/marketing-admin')}>
@@ -192,6 +229,7 @@ export default function EmailAnalytics() {
           </div>
         </div>
       </div>
+      ) : null}
 
       {/* Filters */}
       <Card>
@@ -359,12 +397,34 @@ export default function EmailAnalytics() {
                         <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{c.failed_count}</Badge></TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-xs">{c.pending_count}</Badge></TableCell>
                         <TableCell>
-                          <Badge variant="outline" className={
-                            c.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            c.status === 'sending' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                            c.status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-amber-50 text-amber-700 border-amber-200'
-                          }>{c.status}</Badge>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className={
+                              c.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                              c.status === 'sending' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                              c.status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
+                              'bg-amber-50 text-amber-700 border-amber-200'
+                            }>{c.status}</Badge>
+                            {campaignCanRetry({
+                              status: (['completed', 'partial', 'failed', 'scheduled', 'sending'].includes(String(c.status))
+                                ? String(c.status)
+                                : 'failed') as CampaignSendStatus,
+                              label: '',
+                              sent: Number(c.sent_count || 0),
+                              failed: Number(c.failed_count || 0),
+                              pending: Number(c.pending_count || 0),
+                              total: Number(c.recipient_count || 0),
+                            }) ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs"
+                                disabled={retryingCampaignId === String(c.id)}
+                                onClick={() => { void retryCampaign(String(c.id)); }}
+                              >
+                                {retryingCampaignId === String(c.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Retry'}
+                              </Button>
+                            ) : null}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -390,7 +450,7 @@ export default function EmailAnalytics() {
                     <SelectItem value="all">All Status</SelectItem>
                     <SelectItem value="sent">Sent</SelectItem>
                     <SelectItem value="failed">Failed</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="pending">Scheduled</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -409,20 +469,23 @@ export default function EmailAnalytics() {
                   <TableBody>
                     {filteredSends.length === 0 ? (
                       <TableRow><TableCell colSpan={4} className="text-center text-sm text-muted-foreground py-8">No emails found</TableCell></TableRow>
-                    ) : filteredSends.slice(0, 100).map(s => (
+                    ) : filteredSends.map(s => {
+                      const outcome = emailSendOutcome(s);
+                      return (
                       <TableRow key={s.id}>
                         <TableCell className="text-sm">{s.recipient_email}</TableCell>
                         <TableCell>
                           <Badge variant="outline" className={
-                            s.status === 'sent' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            s.status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
+                            outcome.tone === 'sent' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                            outcome.tone === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
                             'bg-amber-50 text-amber-700 border-amber-200'
-                          }>{s.status}</Badge>
+                          }>{outcome.label}</Badge>
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
-                        <TableCell className="text-xs text-red-500 max-w-[200px] truncate">{s.error_message || '—'}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{outcome.tone === 'sent' && s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
+                        <TableCell className="text-xs text-red-600 max-w-[360px] whitespace-normal">{outcome.reason || '—'}</TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>

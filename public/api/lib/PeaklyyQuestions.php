@@ -1,14 +1,34 @@
 <?php
+// Direct HTTP access blocked (nginx may ignore .htaccess)
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 /**
- * Peaklyy beginner-friendly student assessment bank.
- * 11 domains × (15 MCQs + 1 very basic practical task).
- * Source: Peaklyy_Beginner_Friendly_Student_Assessment.docx
- * Bank version: beginner_11x15_task_v1
- * Per attempt: all 15 domain MCQs + 1 domain task (untimed).
+ * Peaklyy assessment bank.
+ * Beginner domains (Peaklyy Domain Screening): 15 MCQs + 1 practical task.
+ * Hiring tracks live on a separate assignment (peaklyy-hiring):
+ * Part 1 — 30 MCQs (15 minutes), then Part 2 — 4 notepad written questions.
+ * Sources: Peaklyy_Beginner_Friendly_Student_Assessment.docx
+ * and Web_Developer_Data_Analyst_Hiring_Assessment.docx
+ * Bank version: beginner_11x15_v1
  */
 function peaklyyQuestionBankVersion(): string
 {
-    return 'beginner_11x15_task_v1';
+    return 'beginner_11x15_v1';
+}
+
+function peaklyyHiringAssessmentSlug(): string
+{
+    return 'peaklyy-hiring';
+}
+
+function peaklyyIsHiringAssessmentSlug(string $slug): bool
+{
+    return $slug === peaklyyHiringAssessmentSlug();
+}
+
+/** Hiring tracks serve the full paper (30 MCQs and every practical), not the 15+1 sample. */
+function peaklyyDomainServesFullPaper(string $domain): bool
+{
+    return in_array($domain, ['hiring_web', 'hiring_data'], true);
 }
 
 function peaklyyDomainMcqCount(): int
@@ -41,6 +61,64 @@ function peaklyyDomainCatalog(): array
         'video_animation' => 'Video & Animation',
         'photography' => 'Photography',
     ];
+}
+
+function peaklyyHiringDomainCatalog(): array
+{
+    return [
+        'hiring_web' => 'Web Developer',
+        'hiring_data' => 'Data Analyst',
+    ];
+}
+
+/** @return list<string> */
+function peaklyyHiringDomainKeys(): array
+{
+    return array_keys(peaklyyHiringDomainCatalog());
+}
+
+function peaklyyHiringMcqCount(): int
+{
+    return 30;
+}
+
+function peaklyyHiringTaskCount(): int
+{
+    return 4;
+}
+
+/** Part 1 (MCQ) time limit in minutes. */
+function peaklyyHiringMcqDurationMinutes(): int
+{
+    return 15;
+}
+
+/** Part 2 (written notepad) time limit in minutes. */
+function peaklyyHiringTaskDurationMinutes(): int
+{
+    return 20;
+}
+
+function peaklyyHiringQuestionCount(): int
+{
+    return peaklyyHiringMcqCount() + peaklyyHiringTaskCount();
+}
+
+function peaklyyDomainLabel(string $domain): string
+{
+    $domain = trim($domain);
+    if ($domain === '') {
+        return '';
+    }
+    $catalog = peaklyyDomainCatalog();
+    if (isset($catalog[$domain])) {
+        return $catalog[$domain];
+    }
+    $hiring = peaklyyHiringDomainCatalog();
+    if (isset($hiring[$domain])) {
+        return $hiring[$domain];
+    }
+    return $domain;
 }
 
 function peaklyyDegreeOptions(): array
@@ -264,6 +342,119 @@ function peaklyyQuestionDefinitions(): array
     $q[] = $task('data_analytics', 'Given the numbers 10, 20, 30, calculate the average and write the answer.');
     $q[] = $task('video_animation', 'Create a simple 3-shot plan for a 10-second video introducing Peaklyy. Write one line describing each shot.');
     $q[] = $task('photography', 'Take or select one photo of a simple object and write one sentence explaining why you chose that framing.');
+
+    $out = [];
+    $i = 0;
+    foreach ($q as $row) {
+        $i++;
+        $out[] = [
+            'domain_key' => $row[0],
+            'level_key' => $row[1],
+            'q_type' => $row[2],
+            'prompt' => $row[3],
+            'options' => $row[4],
+            'correct_option' => $row[5],
+            'task_schema' => $row[6],
+            'points' => $row[7],
+            'sort_order' => $i,
+        ];
+    }
+    return $out;
+}
+
+/** Hiring paper for the separate Peaklyy Hiring assignment. Not part of the beginner bank. */
+function peaklyyHiringQuestionDefinitions(): array
+{
+    $q = [];
+    // Part 2: blank notepad only (no file upload / compiler for now).
+    $taskSchema = [
+        'allow_notepad' => true,
+        'allow_upload' => false,
+        'mode' => 'notepad',
+    ];
+    $task = static function (string $domain, string $prompt) use ($taskSchema) {
+        return [$domain, 'task', 'task', $prompt, null, null, $taskSchema, 0];
+    };
+
+    // ── Hiring — Web Developer (30 MCQ). Answer key from the hiring paper. ──
+    $web = static function (string $prompt, array $opts, string $correct) {
+        return ['hiring_web', 'easy', 'mcq', $prompt, $opts, $correct, null, 1];
+    };
+    $q[] = $web('Which HTML element is most appropriate for the main navigation of a website?', ['a' => '<section>', 'b' => '<nav>', 'c' => '<div>', 'd' => '<header>'], 'b');
+    $q[] = $web('Which CSS property is used to create space inside an element\'s border?', ['a' => 'margin', 'b' => 'padding', 'c' => 'spacing', 'd' => 'border-spacing'], 'b');
+    $q[] = $web('Which CSS layout system is primarily designed for two-dimensional layouts?', ['a' => 'Flexbox', 'b' => 'Grid', 'c' => 'Float', 'd' => 'Inline-block'], 'b');
+    $q[] = $web('Which selector has the highest specificity?', ['a' => '.button', 'b' => '#button', 'c' => 'button', 'd' => '*'], 'b');
+    $q[] = $web('What does box-sizing: border-box do?', ['a' => 'Removes the border', 'b' => 'Includes padding and border within the element\'s specified width/height', 'c' => 'Adds a border automatically', 'd' => 'Makes the element responsive'], 'b');
+    $q[] = $web('What is the output of: let x = 10; let y = "10"; console.log(x === y);', ['a' => 'true', 'b' => 'false', 'c' => 'undefined', 'd' => 'error'], 'b');
+    $q[] = $web('Which keyword creates a block-scoped variable that cannot be reassigned?', ['a' => 'var', 'b' => 'let', 'c' => 'const', 'd' => 'static'], 'c');
+    $q[] = $web('What does Array.map() return?', ['a' => 'The original array only', 'b' => 'A new array', 'c' => 'A boolean', 'd' => 'An object'], 'b');
+    $q[] = $web('What is a Promise primarily used for?', ['a' => 'Styling UI', 'b' => 'Handling asynchronous operations', 'c' => 'Creating database tables', 'd' => 'Defining classes'], 'b');
+    $q[] = $web('Which method converts a JSON string into a JavaScript object?', ['a' => 'JSON.parse()', 'b' => 'JSON.stringify()', 'c' => 'JSON.object()', 'd' => 'JSON.convert()'], 'a');
+    $q[] = $web('What will typeof null return in JavaScript?', ['a' => '"null"', 'b' => '"undefined"', 'c' => '"object"', 'd' => '"empty"'], 'c');
+    $q[] = $web('What is the purpose of async/await?', ['a' => 'To make CSS asynchronous', 'b' => 'To simplify working with Promises', 'c' => 'To create multiple threads', 'd' => 'To improve database indexing'], 'b');
+    $q[] = $web('What does this return: const numbers = [1,2,3]; numbers.filter(n => n > 1);', ['a' => '[1]', 'b' => '[2, 3]', 'c' => '[1, 2]', 'd' => '3'], 'b');
+    $q[] = $web('Which event occurs when a user clicks an HTML element?', ['a' => 'onchange', 'b' => 'onhover', 'c' => 'onclick', 'd' => 'onload'], 'c');
+    $q[] = $web('What is the main purpose of a JavaScript closure?', ['a' => 'To stop execution', 'b' => 'To allow a function to retain access to its lexical scope', 'c' => 'To create HTML', 'd' => 'To prevent API calls'], 'b');
+    $q[] = $web('What is the primary purpose of React state?', ['a' => 'Store data that can change and trigger re-rendering', 'b' => 'Define CSS', 'c' => 'Create database tables', 'd' => 'Configure a server'], 'a');
+    $q[] = $web('Which React hook is commonly used to manage component state?', ['a' => 'useFetch', 'b' => 'useState', 'c' => 'useData', 'd' => 'useComponent'], 'b');
+    $q[] = $web('What are props in React?', ['a' => 'Internal database records', 'b' => 'Data passed from a parent component to a child', 'c' => 'CSS variables', 'd' => 'API endpoints'], 'b');
+    $q[] = $web('Why is a key prop used when rendering a list in React?', ['a' => 'For authentication', 'b' => 'To help React identify list elements efficiently', 'c' => 'To encrypt data', 'd' => 'To sort the list'], 'b');
+    $q[] = $web('Which hook is commonly used for side effects such as API calls?', ['a' => 'useEffect', 'b' => 'useStyle', 'c' => 'useAPI', 'd' => 'useRequest'], 'a');
+    $q[] = $web('Which HTTP method is normally used to create a resource?', ['a' => 'GET', 'b' => 'POST', 'c' => 'DELETE', 'd' => 'PATCH'], 'b');
+    $q[] = $web('What does HTTP status code 404 mean?', ['a' => 'Server error', 'b' => 'Unauthorized', 'c' => 'Resource not found', 'd' => 'Request successful'], 'c');
+    $q[] = $web('What does HTTP status code 500 indicate?', ['a' => 'Client-side validation error', 'b' => 'Server-side error', 'c' => 'Resource created', 'd' => 'Unauthorized access'], 'b');
+    $q[] = $web('Which HTTP method is generally used to partially update an existing resource?', ['a' => 'GET', 'b' => 'POST', 'c' => 'PATCH', 'd' => 'OPTIONS'], 'c');
+    $q[] = $web('What is the primary purpose of middleware in Express.js?', ['a' => 'To style webpages', 'b' => 'To process requests/responses during the request lifecycle', 'c' => 'To create MongoDB collections', 'd' => 'To compile React'], 'b');
+    $q[] = $web('What is the primary purpose of a database index?', ['a' => 'Increase storage usage', 'b' => 'Speed up data retrieval', 'c' => 'Encrypt database records', 'd' => 'Delete duplicate records'], 'b');
+    $q[] = $web('Which SQL command is used to retrieve data?', ['a' => 'GET', 'b' => 'SELECT', 'c' => 'FETCH', 'd' => 'READ'], 'b');
+    $q[] = $web('What is SQL injection?', ['a' => 'A database backup technique', 'b' => 'An attack where malicious SQL is inserted into queries', 'c' => 'A database indexing method', 'd' => 'A type of API'], 'b');
+    $q[] = $web('Which practice is best for storing user passwords?', ['a' => 'Plain text', 'b' => 'Base64 encoding', 'c' => 'Secure password hashing', 'd' => 'Encrypting with a fixed public key'], 'c');
+    $q[] = $web('A frontend application should store which of the following in the backend rather than exposing it to users?', ['a' => 'Public API URL', 'b' => 'API secret key', 'c' => 'CSS', 'd' => 'HTML'], 'b');
+
+    $q[] = $task('hiring_web', "Easy — 15 marks. Array search and filter.\nGiven:\nconst products = [\n  { name: \"Laptop\", category: \"Electronics\", price: 60000 },\n  { name: \"Mouse\", category: \"Electronics\", price: 1000 },\n  { name: \"Chair\", category: \"Furniture\", price: 5000 },\n  { name: \"Desk\", category: \"Furniture\", price: 10000 }\n];\nWrite a function that accepts a category and a maximum price and returns products matching both conditions.\nTests: arrays, objects, filtering, and functions.");
+    $q[] = $task('hiring_web', "Easy — 15 marks. Form validation.\nCreate a registration form with Name, Email, Password, and Confirm Password.\nValidate: all fields are required; valid email format; password minimum 8 characters; passwords must match; display useful error messages.\nTests: HTML/CSS/JavaScript, DOM manipulation, and validation.");
+    $q[] = $task('hiring_web', "Medium — 30 marks. Product dashboard.\nBuild a small React product dashboard.\nRequirements: display products; search by name; filter by category; sort by price; add a product; delete a product; loading state; error state.\nMock JSON data or a mock API may be used.\nTests: React, state, components, forms, filtering, data/API handling, and UI.");
+    $q[] = $task('hiring_web', "Hard — 40 marks. Inventory management application.\nREST endpoints: GET /products, POST /products, PUT /products/:id, DELETE /products/:id.\nFrontend: product listing, search, category filter, pagination, add/edit/delete, form validation, loading states, API error handling.\nBackend: REST API, input validation, proper HTTP status codes, database persistence, error handling.\nBonus: handle 50,000+ products with server-side pagination, indexing, and efficient search/filtering.");
+
+    // ── Hiring — Data Analyst (30 MCQ). ──
+    $data = static function (string $prompt, array $opts, string $correct) {
+        return ['hiring_data', 'easy', 'mcq', $prompt, $opts, $correct, null, 1];
+    };
+    $q[] = $data('Which SQL command is used to retrieve records from a table?', ['a' => 'INSERT', 'b' => 'SELECT', 'c' => 'UPDATE', 'd' => 'CREATE'], 'b');
+    $q[] = $data('Which clause is used to filter rows before grouping?', ['a' => 'HAVING', 'b' => 'WHERE', 'c' => 'GROUP BY', 'd' => 'ORDER BY'], 'b');
+    $q[] = $data('Which clause is used to filter aggregated results?', ['a' => 'WHERE', 'b' => 'FILTER', 'c' => 'HAVING', 'd' => 'GROUP'], 'c');
+    $q[] = $data('Which JOIN returns matching records from both tables?', ['a' => 'INNER JOIN', 'b' => 'LEFT JOIN', 'c' => 'RIGHT JOIN', 'd' => 'CROSS JOIN'], 'a');
+    $q[] = $data('What does COUNT(*) return?', ['a' => 'Number of columns', 'b' => 'Number of rows', 'c' => 'Sum of values', 'd' => 'Number of unique values'], 'b');
+    $q[] = $data('Which function calculates the average?', ['a' => 'SUM()', 'b' => 'AVG()', 'c' => 'MEAN()', 'd' => 'AVERAGE()'], 'b');
+    $q[] = $data('What does GROUP BY do?', ['a' => 'Sorts records', 'b' => 'Groups rows based on one or more columns', 'c' => 'Deletes duplicates', 'd' => 'Joins tables'], 'b');
+    $q[] = $data('Which operator is commonly used to search for a pattern?', ['a' => 'MATCH', 'b' => 'LIKE', 'c' => 'SEARCH', 'd' => 'FIND'], 'b');
+    $q[] = $data('Which function can replace NULL values in many SQL databases?', ['a' => 'COALESCE', 'b' => 'REPLACE_NULL', 'c' => 'NULLIFY', 'd' => 'EMPTY'], 'a');
+    $q[] = $data('What is a window function primarily used for?', ['a' => 'Creating database windows', 'b' => 'Performing calculations across related rows without collapsing them', 'c' => 'Opening database connections', 'd' => 'Creating tables'], 'b');
+    $q[] = $data('Which function can be used to look up a value in another table?', ['a' => 'SUM', 'b' => 'XLOOKUP', 'c' => 'COUNT', 'd' => 'ROUND'], 'b');
+    $q[] = $data('What is a Pivot Table primarily used for?', ['a' => 'Writing code', 'b' => 'Summarizing and analyzing data', 'c' => 'Encrypting data', 'd' => 'Removing Excel'], 'b');
+    $q[] = $data('Which function counts cells that satisfy multiple conditions?', ['a' => 'COUNT', 'b' => 'COUNTIF', 'c' => 'COUNTIFS', 'd' => 'COUNTA'], 'c');
+    $q[] = $data('Which function calculates the sum based on multiple conditions?', ['a' => 'SUMIFS', 'b' => 'SUMMULTI', 'c' => 'TOTALIFS', 'd' => 'ADDS'], 'a');
+    $q[] = $data('What is the best first step when a dataset contains duplicate rows?', ['a' => 'Ignore them', 'b' => 'Identify and investigate the duplicates', 'c' => 'Delete everything', 'd' => 'Convert everything to text'], 'b');
+    $q[] = $data('Which measure represents the middle value when data is sorted?', ['a' => 'Mean', 'b' => 'Median', 'c' => 'Mode', 'd' => 'Range'], 'b');
+    $q[] = $data('Which measure is most affected by extreme outliers?', ['a' => 'Median', 'b' => 'Mean', 'c' => 'Mode', 'd' => 'Quartile'], 'b');
+    $q[] = $data('Standard deviation measures:', ['a' => 'Central tendency', 'b' => 'Data dispersion', 'c' => 'Correlation', 'd' => 'Probability only'], 'b');
+    $q[] = $data('A correlation coefficient close to +1 generally indicates:', ['a' => 'Strong positive relationship', 'b' => 'Strong negative relationship', 'c' => 'No relationship', 'd' => 'Random data'], 'a');
+    $q[] = $data('If the mean is significantly higher than the median, the data may be:', ['a' => 'Left-skewed', 'b' => 'Right-skewed', 'c' => 'Uniform', 'd' => 'Normally distributed'], 'b');
+    $q[] = $data('Which Python library is commonly used for data analysis?', ['a' => 'Flask', 'b' => 'Pandas', 'c' => 'Django', 'd' => 'Requests'], 'b');
+    $q[] = $data('What is a Pandas DataFrame?', ['a' => 'A database server', 'b' => 'A two-dimensional labeled data structure', 'c' => 'A visualization', 'd' => 'A Python function'], 'b');
+    $q[] = $data('Which function can be used to read a CSV file with Pandas?', ['a' => 'pd.read_csv()', 'b' => 'pd.open_csv()', 'c' => 'pd.load_csv()', 'd' => 'pd.csv()'], 'a');
+    $q[] = $data('Which operation is commonly used to aggregate data by categories in Pandas?', ['a' => 'groupby()', 'b' => 'aggregateBy()', 'c' => 'category()', 'd' => 'splitby()'], 'a');
+    $q[] = $data('Which method is commonly used to identify missing values in Pandas?', ['a' => 'isnull()', 'b' => 'missing()', 'c' => 'findnull()', 'd' => 'empty()'], 'a');
+    $q[] = $data('Which KPI measures the percentage of users who complete a desired action?', ['a' => 'Bounce rate', 'b' => 'Conversion rate', 'c' => 'Retention rate', 'd' => 'Churn rate'], 'b');
+    $q[] = $data('Which chart is generally most appropriate for showing a trend over time?', ['a' => 'Pie chart', 'b' => 'Line chart', 'c' => 'Scatter plot', 'd' => 'Histogram'], 'b');
+    $q[] = $data('A company\'s website traffic increased 50%, but revenue increased only 2%. What should an analyst investigate first?', ['a' => 'Website colors', 'b' => 'Conversion funnel', 'c' => 'Employee attendance', 'd' => 'Office expenses'], 'b');
+    $q[] = $data('Which metric measures the percentage of customers who stop using a service?', ['a' => 'Retention', 'b' => 'Conversion', 'c' => 'Churn', 'd' => 'Growth'], 'c');
+    $q[] = $data('What is the most important characteristic of a business dashboard?', ['a' => 'Maximum number of charts', 'b' => 'Clear and actionable information', 'c' => 'Complex animations', 'd' => 'Lots of colors'], 'b');
+
+    $q[] = $task('hiring_data', "Easy — 15 marks. Basic SQL analysis.\nUse a sales dataset with columns Order_ID, Order_Date, Customer_ID, Product, Category, Region, Quantity, Sales, Cost, Discount.\nWrite SQL to find: 1) total number of orders, 2) total revenue, 3) total quantity sold, 4) top 5 products by revenue, 5) revenue by region.");
+    $q[] = $task('hiring_data', "Easy — 15 marks. Data cleaning.\nUsing Python/Pandas or Excel: 1) identify missing values, 2) identify duplicate records, 3) find invalid or negative sales values, 4) check incorrect date formats, 5) produce a cleaned dataset.\nBriefly explain what you changed and why.");
+    $q[] = $task('hiring_data', "Medium — 30 marks. Sales performance analysis.\nAnswer: 1) which month generated the highest revenue, 2) which region generated the highest profit, 3) which product category has the highest sales, 4) which products have declining sales, 5) calculate monthly revenue growth.\nProvide SQL and/or Python code, tables, at least two visualizations, and a short explanation of findings.");
+    $q[] = $task('hiring_data', "Hard — 40 marks. Business intelligence case study.\nManagement says revenue decreased significantly last quarter. Find out why and recommend what the company should do.\nAnalyze revenue trend, product performance, category performance, regional performance, customer behavior, discounts, quantity, and profit margins.\nSubmit: top 3 reasons for the decline; a dashboard with Revenue, Profit, Orders, AOV, monthly trend, category performance, and regional performance; three actionable recommendations; a short presentation of findings.");
 
     $out = [];
     $i = 0;

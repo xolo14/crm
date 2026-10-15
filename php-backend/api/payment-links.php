@@ -725,14 +725,39 @@ try {
             $db = paymentLinksDb();
             paymentLinksAssertItemAllowed($db, $tokenData, $plinkId);
             $row = paymentLinkFindByRazorpayId($plinkId);
-            if (!is_array($row) || empty($row['invoice_pdf_path'])
-                || !syncpediaDocumentStorageFileExists((string) $row['invoice_pdf_path'])) {
+            $hasStored = is_array($row) && !empty($row['invoice_pdf_path'])
+                && syncpediaDocumentStorageFileExists((string) $row['invoice_pdf_path']);
+            $paidEnough = is_array($row) && (
+                (int) ($row['amount_paid'] ?? 0) > 0
+                || in_array(strtolower((string) ($row['status'] ?? '')), ['paid', 'partially_paid'], true)
+            );
+            if (!is_array($row) || (!$hasStored && !$paidEnough)) {
                 paymentLinksError('Invoice not found for this payment link', 404);
             }
-            $name = trim((string) ($row['invoice_number'] ?? 'invoice'));
-            $resolved = syncpediaDocumentStorageResolvePath((string) $row['invoice_pdf_path']);
-            $ext = is_string($resolved) && preg_match('/\.html?$/i', $resolved) ? '.html' : '.pdf';
-            syncpediaDocumentStorageStreamPdf((string) $row['invoice_pdf_path'], $name . $ext);
+            // Rebuild every download with latest template (org logo) + candidate-named file.
+            $downloadName = 'invoice.pdf';
+            if (function_exists('paymentLinkReceiptRegenerateLatestPdf')) {
+                $ensured = paymentLinkReceiptRegenerateLatestPdf($row);
+                if (!empty($ensured['path'])) {
+                    $row['invoice_pdf_path'] = $ensured['path'];
+                }
+                if (!empty($ensured['filename'])) {
+                    $downloadName = (string) $ensured['filename'];
+                }
+            } elseif (function_exists('paymentLinkReceiptEnsurePdfPath')) {
+                $ensured = paymentLinkReceiptEnsurePdfPath($row);
+                if (!empty($ensured['path'])) {
+                    $row['invoice_pdf_path'] = $ensured['path'];
+                }
+            }
+            if (empty($row['invoice_pdf_path'])
+                || !syncpediaDocumentStorageFileExists((string) $row['invoice_pdf_path'])) {
+                paymentLinksError('Invoice PDF could not be generated', 500);
+            }
+            if ($downloadName === 'invoice.pdf' && function_exists('paymentLinkReceiptDownloadFilename')) {
+                $downloadName = paymentLinkReceiptDownloadFilename($row);
+            }
+            syncpediaDocumentStorageStreamPdf((string) $row['invoice_pdf_path'], $downloadName, true);
             break;
 
         case 'fetch':

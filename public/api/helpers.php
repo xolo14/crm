@@ -360,6 +360,7 @@ function verifyToken() {
         }
         syncpediaSetMailContext($mailOrgId !== '' ? $mailOrgId : null, 'default');
     }
+    peaklyyGuardAssessmentViewerApi($data);
     return $data;
 }
 
@@ -666,7 +667,7 @@ function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): ar
     $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     if (tenantIsMasterView($tokenData)) {
         if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
-            return hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
+            return hierarchyL1OwnLeadsScopeSql($tokenData, $alias, $db);
         }
         if (hierarchyRoleUsesDownlineScope($tokenData) && !in_array($effRole, ['manager', 'operational_manager'], true)) {
             return hierarchyLeadDownlineScopeSql(hierarchyGetVisibleUserIds($db, $tokenData), $alias, $db);
@@ -679,7 +680,7 @@ function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): ar
     $params = $tenant['params'];
 
     if (hierarchyRoleUsesL1OwnLeadsScope($tokenData)) {
-        $l1 = hierarchyL1OwnLeadsScopeSql($tokenData, $alias);
+        $l1 = hierarchyL1OwnLeadsScopeSql($tokenData, $alias, $db);
         return ['sql' => $sql . $l1['sql'], 'params' => array_merge($params, $l1['params'])];
     }
     // Managers see all leads in their org (same as admin/org), not downline-only.
@@ -1454,11 +1455,41 @@ function hierarchyRoleUsesL1OwnLeadsScope(array $tokenData): bool
 }
 
 /**
+ * Source keys peaklyy:{assessmentId} for assessments assigned to this user.
+ *
+ * @return list<string>
+ */
+function syncpediaAssignedPeaklyySourceKeys(PDO $db, string $userId): array
+{
+    $userId = trim($userId);
+    if ($userId === '') {
+        return [];
+    }
+    try {
+        $st = $db->prepare(
+            'SELECT assessment_id FROM peaklyy_assessment_assignments WHERE TRIM(user_id) = TRIM(?)'
+        );
+        $st->execute([$userId]);
+        $keys = [];
+        while ($id = $st->fetchColumn()) {
+            $id = trim((string) $id);
+            if ($id !== '') {
+                $keys['peaklyy:' . $id] = true;
+            }
+        }
+        return array_keys($keys);
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+/**
  * Self-scope for L1 lead list endpoints.
+ * Assessments assigned to the user are OR'd in so that card's leads are included.
  *
  * @return array{sql: string, params: array}
  */
-function hierarchyL1OwnLeadsScopeSql(array $tokenData, string $alias = ''): array
+function hierarchyL1OwnLeadsScopeSql(array $tokenData, string $alias = '', ?PDO $db = null): array
 {
     $userId = $tokenData['user_id'] ?? null;
     if (empty($userId) || !is_string($userId)) {
@@ -1466,10 +1497,21 @@ function hierarchyL1OwnLeadsScopeSql(array $tokenData, string $alias = ''): arra
     }
     $col = $alias !== '' ? "{$alias}." : '';
     $idCol = $alias !== '' ? "{$alias}.id" : 'id';
-    return [
-        'sql' => " AND ({$col}assigned_to = ? OR {$col}referred_by = (SELECT referral_code FROM users WHERE id = ?) OR {$col}created_by = ? OR EXISTS (SELECT 1 FROM lead_assignments la WHERE la.lead_id = {$idCol} AND la.user_id = ?))",
-        'params' => [$userId, $userId, $userId, $userId],
-    ];
+    $sql = " AND ({$col}assigned_to = ? OR {$col}referred_by = (SELECT referral_code FROM users WHERE id = ?) OR {$col}created_by = ? OR EXISTS (SELECT 1 FROM lead_assignments la WHERE la.lead_id = {$idCol} AND la.user_id = ?)";
+    $params = [$userId, $userId, $userId, $userId];
+    if ($db instanceof PDO) {
+        foreach (syncpediaAssignedPeaklyySourceKeys($db, $userId) as $key) {
+            $assessmentId = substr($key, strlen('peaklyy:'));
+            if ($assessmentId === '') {
+                continue;
+            }
+            $sql .= " OR {$col}source = ? OR {$col}tags LIKE ?";
+            $params[] = $key;
+            $params[] = '%peaklyy_id:' . $assessmentId . '%';
+        }
+    }
+    $sql .= ')';
+    return ['sql' => $sql, 'params' => $params];
 }
 
 /**
@@ -3319,6 +3361,78 @@ function ensureUsersPageAccessColumn(PDO $db): void {
     } catch (Throwable $ignored) {
     }
     $done = true;
+}
+
+/** users.result_assessment_id — one results-only login per assignment. */
+function ensureUsersResultAssessmentColumn(PDO $db): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+    try {
+        $col = $db->query("SHOW COLUMNS FROM users LIKE 'role'");
+        $meta = $col ? $col->fetch(PDO::FETCH_ASSOC) : null;
+        $type = strtolower((string) (is_array($meta) ? ($meta['Type'] ?? '') : ''));
+        if ($type !== '' && str_starts_with($type, 'enum(') && !str_contains($type, "'assessment_viewer'")) {
+            $db->exec("ALTER TABLE users MODIFY role VARCHAR(64) NOT NULL DEFAULT 'sales_representative'");
+        }
+    } catch (Throwable $ignored) {
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'users', 'result_assessment_id')) {
+            $db->exec('ALTER TABLE users ADD COLUMN result_assessment_id VARCHAR(64) DEFAULT NULL');
+        } else {
+            $idCol = $db->query("SHOW COLUMNS FROM users LIKE 'result_assessment_id'");
+            $idMeta = $idCol ? $idCol->fetch(PDO::FETCH_ASSOC) : null;
+            $idType = strtolower((string) (is_array($idMeta) ? ($idMeta['Type'] ?? '') : ''));
+            if ($idType !== '' && str_starts_with($idType, 'char(')) {
+                $db->exec('ALTER TABLE users MODIFY result_assessment_id VARCHAR(64) DEFAULT NULL');
+            }
+        }
+    } catch (Throwable $ignored) {
+    }
+    $roleReady = true;
+    try {
+        $check = $db->query("SHOW COLUMNS FROM users LIKE 'role'");
+        $checkMeta = $check ? $check->fetch(PDO::FETCH_ASSOC) : null;
+        $checkType = strtolower((string) (is_array($checkMeta) ? ($checkMeta['Type'] ?? '') : ''));
+        if ($checkType !== '' && str_starts_with($checkType, 'enum(') && !str_contains($checkType, "'assessment_viewer'")) {
+            $roleReady = false;
+        }
+    } catch (Throwable $ignored) {
+        $roleReady = false;
+    }
+    $done = $roleReady && syncpediaColumnExists($db, 'users', 'result_assessment_id');
+}
+
+/**
+ * A results login may open attempt lists, attempt detail, task files, and logout.
+ * Every other API stays closed.
+ */
+function peaklyyGuardAssessmentViewerApi(array $token): void {
+    if (syncpediaNormalizeRoleKey((string) ($token['role'] ?? '')) !== 'assessment_viewer') {
+        return;
+    }
+    $script = basename((string) ($_SERVER['SCRIPT_NAME'] ?? ''));
+    $action = trim((string) ($_GET['action'] ?? ''));
+    $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+    $allowed = false;
+    if ($script === 'auth.php' && in_array($action, ['me', 'logout'], true)) {
+        $allowed = true;
+    }
+    if (
+        $script === 'assessments.php'
+        && $method === 'GET'
+        && in_array($action, ['attempts', 'attempt_detail', 'download_tasks_zip'], true)
+    ) {
+        $allowed = true;
+    }
+    if ($script === 'files.php' && $method === 'GET') {
+        $allowed = true;
+    }
+    if (!$allowed) {
+        respond(['error' => 'This account can only open assignment results'], 403);
+    }
 }
 
 /**
@@ -7673,6 +7787,11 @@ function syncpediaFilterLeadsForManagerCardAccess(PDO $db, array $tokenData, arr
                 }
             }
         } catch (Throwable $e) {
+        }
+    }
+    if ($userId !== '') {
+        foreach (syncpediaAssignedPeaklyySourceKeys($db, $userId) as $key) {
+            $granted[$key] = true;
         }
     }
 

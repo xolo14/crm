@@ -28,7 +28,7 @@ import { LeadEnrollDialog } from '@/components/leads/LeadEnrollDialog';
 import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails';
 import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
 import * as perms from '@/lib/permissions';
-import { isL2Role, isMarketingFamilyRole, isSalesRepRole } from '@/lib/roleUtils';
+import { isL1OperationalRole, isL2Role, isMarketingFamilyRole, isSalesRepRole } from '@/lib/roleUtils';
 import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import {
   downloadLeadImportTemplate,
@@ -41,14 +41,18 @@ import {
   ADDED_LEAD_TAG,
   buildSourceSummaries,
   filterLeadsBySourceBucket,
+  formatFormSourceLabel,
   getFormSourceKey,
   getLeadSourceBucket,
+  getPeaklyyAssessmentTitle,
   isFormLead as isFormLeadRow,
   isFormSourceBucket,
   isMetaAdSourceBucket,
   isMetaAdsFolderName,
   isPeaklyySourceBucket,
+  parseLeadTags,
   resolveFormAssigneesForSourceKey,
+  SOURCE_BUCKET_LABELS,
   type LeadSourceBucket,
 } from '@/lib/leadSources';
 import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
@@ -65,6 +69,47 @@ const formatLeadStatus = (s?: string | null) => {
   if (s === 'messaged') return 'Messaged';
   return s.replace(/_/g, ' ');
 };
+
+/** Text from the columns already loaded for this user. Search matches this string only. */
+function leadColumnSearchText(lead: any, extra: string[]): string {
+  const tags = parseLeadTags(lead?.tags)
+    .map((tag) => tag.replace(/^[a-z0-9_]+:/i, ' '))
+    .join(' ');
+  let created = '';
+  if (lead?.created_at) {
+    const d = new Date(lead.created_at);
+    if (!Number.isNaN(d.getTime())) {
+      created = [
+        d.toLocaleDateString(),
+        d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        d.toISOString().slice(0, 10),
+      ].join(' ');
+    }
+  }
+  return [
+    lead?.name,
+    lead?.email,
+    lead?.phone,
+    String(lead?.phone || '').replace(/\D/g, ''),
+    lead?.company,
+    lead?.college,
+    lead?.year_of_study,
+    lead?.course_interest,
+    lead?.referred_by,
+    lead?.source,
+    String(lead?.source || '').replace(/_/g, ' '),
+    lead?.status,
+    formatLeadStatus(lead?.status),
+    lead?.notes,
+    lead?.created_by_name,
+    tags,
+    created,
+    ...extra,
+  ]
+    .filter((value) => value != null && String(value).trim() !== '')
+    .join(' ')
+    .toLowerCase();
+}
 
 /** Canonical Select value — empty/truncated ENUM values show as New. */
 const leadStatusSelectValue = (s?: string | null) => {
@@ -168,7 +213,7 @@ export default function Leads() {
   const [statusChangedPeriod, setStatusChangedPeriod] = useState<
     '' | 'yesterday' | 'last_7_days' | 'this_month'
   >('');
-  const showSourceCards = useSourceCards && !statusChangedPeriod;
+  const showSourceCards = useSourceCards && !statusChangedPeriod && !search.trim();
   /** Lead source-card folders (org-scoped). '' = All sources. */
   const [leadFolders, setLeadFolders] = useState<
     Array<{
@@ -200,6 +245,7 @@ export default function Leads() {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingLead, setEditingLead] = useState<any>(null);
   const [leads, setLeads] = useState<any[]>([]);
+  const [leadsTruncated, setLeadsTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
    const [assignOpen, setAssignOpen] = useState(false);
@@ -308,8 +354,22 @@ export default function Leads() {
     const gen = ++fetchLeadsGen.current;
     setLoading(true);
     try {
+      const isUncappedAdmin =
+        normalizedLeadRole === 'super_admin' || normalizedLeadRole === 'org';
+      const leadListLimit = isUncappedAdmin
+        ? undefined
+        : isL2Role(normalizedLeadRole)
+          ? 100000
+          : isL1OperationalRole(normalizedLeadRole)
+            ? 10000
+            : undefined;
       const data = await api.leads.list({
         lite: !isFormLeadsPage,
+        ...(isUncappedAdmin ? { uncapped: true, limit: 10000 } : {}),
+        // Page with next_offset so manager card-filtering and large orgs do not stop early.
+        ...(leadListLimit
+          ? { limit: Math.min(5000, leadListLimit), all: true, maxRows: leadListLimit }
+          : {}),
         ...(statusChangedPeriod ? { status_changed: statusChangedPeriod } : {}),
         ...(isSuperAdmin && viewOrgId ? { org_id: viewOrgId } : {}),
         ...(isFormLeadsPage ? { form_leads: true } : {}),
@@ -319,6 +379,7 @@ export default function Leads() {
       });
       if (gen !== fetchLeadsGen.current) return;
       const allLeads = data.data || [];
+      setLeadsTruncated(Boolean((data as { truncated?: boolean })?.truncated));
 
       if (isFormLeadsPage) {
         setLeads(allLeads.filter((l: any) => isFormLeadRow(l)));
@@ -337,6 +398,7 @@ export default function Leads() {
     } catch (err) {
       if (gen !== fetchLeadsGen.current) return;
       console.error('Failed to load leads:', err);
+      setLeadsTruncated(false);
     } finally {
       if (gen === fetchLeadsGen.current) setLoading(false);
     }
@@ -347,6 +409,7 @@ export default function Leads() {
     isFormLeadsPage,
     isSalesRepMyLeadsPage,
     profile?.referral_code,
+    normalizedLeadRole,
   ]);
 
   const loadLeadForms = useCallback(async () => {
@@ -666,14 +729,29 @@ export default function Leads() {
   };
 
   // Stagger API calls — Leads page used to fire 8+ parallel requests and hit Hostinger MySQL limits.
+  // Critical path: fetchLeads first (drives the page spinner). Folders/grants/roster after.
+  // Super-admin: never query leads until viewOrgId is set — unscoped master-view hits the full
+  // leads table (up to 100k rows) and was the main "stuck on spinner" cause at /leads.
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
+      if (isSuperAdmin && !viewOrgId) {
+        setLeads([]);
+        setLoading(false);
+        if (canUseLeadFolders) {
+          await fetchLeadFolders();
+        }
+        return;
+      }
+
+      await fetchLeads();
+      if (cancelled) return;
+
       if (canUseLeadFolders) {
         await fetchLeadFolders();
         if (cancelled) return;
-        if (canGrantCardAccess && !(isSuperAdmin && !viewOrgId)) {
+        if (canGrantCardAccess) {
           await fetchCardManagerGrants();
         }
       } else {
@@ -681,9 +759,6 @@ export default function Leads() {
         setActiveFolderId('');
         setCardManagerGrants({});
       }
-      if (cancelled) return;
-
-      await fetchLeads();
       if (cancelled) return;
 
       if (needsAssignmentRoster) {
@@ -700,6 +775,9 @@ export default function Leads() {
 
     return () => {
       cancelled = true;
+      // Invalidate in-flight fetchLeads so a stale response cannot call setLoading(false)
+      // after a newer fetch already began. Successor effect always calls fetchLeads()
+      // or the viewOrgId gate's setLoading(false).
       fetchLeadsGen.current += 1;
     };
   }, [
@@ -878,8 +956,58 @@ export default function Leads() {
   };
 
   const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const qDigits = q.replace(/\D/g, '');
+    const nameById: Record<string, string> = {};
+    for (const member of teamMembers) {
+      const id = String(member?.id || '').trim();
+      const name = String(member?.full_name || '').trim();
+      if (id && name) nameById[id] = name;
+    }
+    for (const profile of profiles) {
+      const id = String(profile?.user_id || '').trim();
+      const name = String(profile?.full_name || '').trim();
+      if (id && name && !nameById[id]) nameById[id] = name;
+    }
+    for (const rows of Object.values(formAssignmentsByFormId)) {
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows) {
+        const id = String(row?.member_id || '').trim();
+        const name = String(row?.full_name || '').trim();
+        if (id && name && !nameById[id]) nameById[id] = name;
+      }
+    }
+    const formLabels: Record<string, string> = {};
+    for (const form of leadForms) {
+      formLabels[form.slug] = form.name;
+      formLabels[`form_${form.slug}`] = form.name;
+    }
+
     return leads.filter((lead) => {
-      const matchSearch = !search || lead.name?.toLowerCase().includes(search.toLowerCase()) || lead.email?.toLowerCase().includes(search.toLowerCase()) || lead.phone?.includes(search);
+      let matchSearch = true;
+      if (q) {
+        const bucket = getLeadSourceBucket(lead);
+        const assigneeIds = leadAssignments[lead.id] || (lead.assigned_to ? [lead.assigned_to] : []);
+        const assigneeNames = assigneeIds
+          .map((id: string) => nameById[String(id)] || '')
+          .filter(Boolean);
+        const assignedLabel = assigneeNames.length
+          ? assigneeNames.join(' ')
+          : lead.assigned_to
+            ? 'Assigned'
+            : 'Unassigned';
+        const createdById = String(lead.created_by || '').trim();
+        const haystack = leadColumnSearchText(lead, [
+          SOURCE_LABELS[String(lead.source || '')] || '',
+          SOURCE_BUCKET_LABELS[bucket as LeadSourceBucket] || '',
+          isFormSourceBucket(bucket) ? formatFormSourceLabel(bucket, formLabels) : '',
+          bucket.startsWith('peaklyy') ? getPeaklyyAssessmentTitle(lead) : '',
+          assignedLabel,
+          nameById[createdById] || '',
+        ]);
+        const phoneDigits = String(lead.phone || '').replace(/\D/g, '');
+        matchSearch = haystack.includes(q) || (qDigits.length >= 3 && phoneDigits.includes(qDigits));
+      }
       const matchStatus =
         statusFilter === 'all'
           ? true
@@ -890,7 +1018,7 @@ export default function Leads() {
       const matchUnassigned = !unassignedOnly || !lead.assigned_to;
       return matchSearch && matchStatus && matchSource && matchUnassigned;
     });
-  }, [leads, search, statusFilter, sourceFilter, unassignedOnly]);
+  }, [leads, search, statusFilter, sourceFilter, unassignedOnly, teamMembers, profiles, formAssignmentsByFormId, leadForms, leadAssignments]);
   const formAssigneeNameById = useMemo(() => {
     const map: Record<string, string> = {};
     Object.values(formAssignmentsByFormId).forEach((rows) => {
@@ -1676,6 +1804,11 @@ export default function Leads() {
           {!isFormLeadsPage && (
             <p className="text-[11px] text-muted-foreground mt-0.5">{scopeLabel}</p>
           )}
+          {leadsTruncated && (
+            <p className="text-[11px] text-amber-700 mt-1">
+              List is capped for your role — older leads may be missing. Narrow with search or filters.
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
           {hasImport && (
@@ -1836,6 +1969,27 @@ export default function Leads() {
             </CardContent>
           </Card>
         ))}
+      </div>
+
+      <div className="relative mb-4 max-w-xl">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search name, phone, email, company, source, status, assignee…"
+          className="pl-9 pr-9 h-11 md:h-10"
+          aria-label="Search leads"
+        />
+        {search ? (
+          <button
+            type="button"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            onClick={() => setSearch('')}
+            aria-label="Clear search"
+          >
+            <XCircle className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
 
       {showSourceCards ? (
@@ -2085,10 +2239,6 @@ export default function Leads() {
       <>
       {/* Filters Row */}
       <div className="flex flex-col gap-2 mb-4 md:flex-row md:items-center">
-        <div className="relative flex-1 min-w-0 md:max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input placeholder="Search by name, email, phone..." value={search} onChange={(e: any) => setSearch(e.target.value)} className="pl-9 h-11 md:h-9" />
-        </div>
         <div className="grid grid-cols-2 gap-2 md:flex md:w-auto">
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-full min-w-0 h-11 md:h-9 md:w-[160px]"><Filter className="h-3.5 w-3.5 mr-1.5 shrink-0" /><SelectValue placeholder="Status" /></SelectTrigger>

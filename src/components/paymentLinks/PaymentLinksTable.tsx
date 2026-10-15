@@ -9,6 +9,11 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/hooks/use-toast";
+import { canExportPaymentExcel } from "@/lib/orgAccess";
+import { downloadExcelSheet, excelFileStamp } from "@/lib/downloadExcel";
+import ExportExcelButton from "@/components/paymentLinks/ExportExcelButton";
 import type {
   PaymentLinkStatus,
   RazorpayPaymentLink,
@@ -122,6 +127,9 @@ export default function PaymentLinksTable({
   onCreate,
   emptyTitle = "No payment links yet",
 }: Props) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const canExport = canExportPaymentExcel(user?.role ?? null);
   const [page, setPage] = useState(1);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -187,10 +195,51 @@ export default function PaymentLinksTable({
     setPage(1);
   }
 
+  async function exportExcel() {
+    if (filtered.length === 0) {
+      toast({ variant: "destructive", title: "Nothing to export" });
+      return;
+    }
+    const statusLabel = (status: PaymentLinkStatus) => STATUS_BADGE[status]?.label ?? status;
+    try {
+      await downloadExcelSheet(
+        `payment-links-${excelFileStamp()}.xlsx`,
+        "Payment Links",
+        filtered.map((l) => ({
+          "Link ID": l.id,
+          "Invoice / Ref": paymentLinkInvoiceLabel(l),
+          Customer: l.customer?.name || "",
+          Phone: l.customer?.contact || "",
+          Email: l.customer?.email || "",
+          "Amount (INR)": Math.round(l.amount) / 100,
+          "Paid (INR)": Math.round(l.amount_paid) / 100,
+          Description: l.description || "",
+          "Staff ID": paymentLinkReferralCode(l),
+          Status: statusLabel(l.status),
+          Created: fmtDateTime(l.created_at),
+          Expires: fmtDateTime(l.expire_by),
+          "Payment URL": l.short_url || "",
+        })),
+      );
+      toast({ title: "Excel downloaded", description: `${filtered.length} payment link(s)` });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Could not create the Excel file",
+      });
+    }
+  }
+
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-        <h2 className="text-base font-semibold text-gray-900">Payment Links</h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <h2 className="text-base font-semibold text-gray-900">Payment Links</h2>
+          {canExport ? (
+            <ExportExcelButton onClick={() => void exportExcel()} disabled={loading || filtered.length === 0} />
+          ) : null}
+        </div>
         <PaymentLinksPeriodTabs value={period} onChange={onPeriodChange} />
       </div>
 
