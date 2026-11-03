@@ -366,7 +366,7 @@ function builderPreviewSubmitLabel(state: FormBuilderState): string {
     payment_gst_enabled: state.paymentGstEnabled,
     payment_handling_enabled: state.paymentHandlingEnabled,
   });
-  const amountLabel = formatInrAmount(breakdown?.total ?? Number(state.paymentAmount) || 0);
+    const amountLabel = formatInrAmount(breakdown?.total ?? (Number(state.paymentAmount) || 0));
   return resolveFormSubmitButtonLabel({
     paymentEnabled: paymentOn,
     needsPayBreakdownPopup: paymentOn && (state.paymentGstEnabled || state.paymentHandlingEnabled),
