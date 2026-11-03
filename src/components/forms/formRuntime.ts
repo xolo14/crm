@@ -20,7 +20,35 @@ export type FormCloseMeta = {
   confirmation_message?: unknown;
   collect_email?: unknown;
   is_quiz?: unknown;
+  submit_button_label?: unknown;
+  pay_button_label?: unknown;
+  submit_button_text_color?: unknown;
 };
+
+function trimLabel(raw: unknown): string {
+  return String(raw ?? "").trim();
+}
+
+/** Last-step public submit/pay copy. Empty custom labels keep current defaults. */
+export function resolveFormSubmitButtonLabel(opts: {
+  paymentEnabled: boolean;
+  needsPayBreakdownPopup?: boolean;
+  amountLabel: string;
+  submitLabel?: unknown;
+  payLabel?: unknown;
+  isCustomForm?: boolean;
+}): string {
+  if (opts.paymentEnabled) {
+    const custom = trimLabel(opts.payLabel);
+    if (custom) {
+      return custom.replace(/\{amount\}/gi, opts.amountLabel);
+    }
+    return opts.needsPayBreakdownPopup ? "Pay" : `Pay ${opts.amountLabel}`;
+  }
+  const custom = trimLabel(opts.submitLabel);
+  if (custom) return custom;
+  return opts.isCustomForm === false ? "Submit Application" : "Submit";
+}
 
 /** Stable shuffle so the respondent doesn't see the order jump while filling. */
 export function seededShuffle<T>(items: T[], seed: string): T[] {

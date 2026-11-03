@@ -5,6 +5,7 @@ import {
   sanitizeFormDescriptionHtml,
 } from "@/components/forms/formDescriptionHtml";
 import {
+  DEFAULT_PUBLIC_FORM_BRAND,
   publicFormBrandToStyle,
   resolveFormCompanyName,
   type PublicFormBrand,
@@ -484,7 +485,7 @@ export function PublicFormShell({
           width: 100%;
           margin-top: 16px;
           background: var(--sp-accent);
-          color: #000;
+          color: var(--sp-submit-text, #000);
           font-weight: 800;
           text-transform: uppercase;
           letter-spacing: 0.04em;
@@ -606,6 +607,7 @@ export function builderBrandFromState(state: {
   sectionBorderWidth: number;
   descriptionColor: string;
   companyNameFontSize: number;
+  submitButtonTextColor?: string;
 }): PublicFormBrand {
   return {
     companyName: resolveFormCompanyName(state.companyName),
@@ -621,5 +623,6 @@ export function builderBrandFromState(state: {
     sectionBorderWidth: state.sectionBorderWidth,
     descriptionColor: state.descriptionColor,
     companyNameFontSize: state.companyNameFontSize,
+    submitButtonTextColor: state.submitButtonTextColor || DEFAULT_PUBLIC_FORM_BRAND.submitButtonTextColor,
   };
 }

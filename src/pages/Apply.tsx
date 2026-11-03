@@ -19,6 +19,7 @@ import {
   hasLocalOneResponse,
   markLocalOneResponse,
   quizScore,
+  resolveFormSubmitButtonLabel,
   seededShuffle,
 } from '@/components/forms/formRuntime';
 import { resolveNextSection, splitIntoSections } from '@/components/forms/sectionFlow';
@@ -499,12 +500,14 @@ export default function Apply() {
   const needsPayBreakdownPopup =
     paymentEnabled &&
     (!!formMeta.payment_gst_enabled || !!formMeta.payment_handling_enabled);
-  // Fee line items only appear in the Pay popup; button shows Pay / total only.
-  const payLabel = paymentEnabled
-    ? needsPayBreakdownPopup
-      ? "Pay"
-      : `Pay ${formatInrAmount(paymentBreakdown?.total ?? payAmount)}`
-    : "";
+  const submitButtonLabel = resolveFormSubmitButtonLabel({
+    paymentEnabled,
+    needsPayBreakdownPopup,
+    amountLabel: formatInrAmount(paymentBreakdown?.total ?? payAmount),
+    submitLabel: formMeta.submit_button_label,
+    payLabel: formMeta.pay_button_label,
+    isCustomForm,
+  });
   const oneResponseBlocked = formMeta.allow_multiple_responses === false && !!loadedFormId && hasLocalOneResponse(loadedFormId);
 
   const applyCoupon = () => {
@@ -1205,7 +1208,7 @@ export default function Apply() {
                         : "Submitting..."
                       : isCustomForm && displaySections.length > 1 && sectionIdx < displaySections.length - 1
                         ? "Next"
-                        : payLabel || (isCustomForm ? "Submit" : "Submit Application")}
+                        : submitButtonLabel}
                   </button>
                 </div>
               </form>

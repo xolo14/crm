@@ -20,6 +20,8 @@ export type PublicFormBrand = {
   descriptionColor: string;
   /** Company name font size in px (brand bar). */
   companyNameFontSize: number;
+  /** Submit / Pay button text color. */
+  submitButtonTextColor: string;
 };
 
 export const DEFAULT_PUBLIC_FORM_BRAND: PublicFormBrand = {
@@ -36,6 +38,7 @@ export const DEFAULT_PUBLIC_FORM_BRAND: PublicFormBrand = {
   sectionBorderWidth: 2,
   descriptionColor: "#6b7280",
   companyNameFontSize: 17,
+  submitButtonTextColor: "#000000",
 };
 
 function clampBorderWidth(value: unknown, fallback = 1): number {
@@ -126,6 +129,10 @@ export function publicFormBrandFromMeta(
     sectionBorderWidth: clampBorderWidth(m.section_border_width, DEFAULT_PUBLIC_FORM_BRAND.sectionBorderWidth),
     descriptionColor: normalizeFormColor(m.description_color, DEFAULT_PUBLIC_FORM_BRAND.descriptionColor),
     companyNameFontSize: clampFontSize(m.company_name_font_size, DEFAULT_PUBLIC_FORM_BRAND.companyNameFontSize),
+    submitButtonTextColor: normalizeFormColor(
+      m.submit_button_text_color,
+      DEFAULT_PUBLIC_FORM_BRAND.submitButtonTextColor,
+    ),
   };
 }
 
@@ -142,6 +149,7 @@ export function publicFormBrandToCssVars(brand: PublicFormBrand): Record<string,
     "--sp-section-border-width": `${brand.sectionBorderWidth}px`,
     "--sp-description-color": brand.descriptionColor,
     "--sp-company-name-size": `${brand.companyNameFontSize}px`,
+    "--sp-submit-text": brand.submitButtonTextColor,
   };
 }
 

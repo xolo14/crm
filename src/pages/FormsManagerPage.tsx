@@ -33,6 +33,8 @@ import type { GoToTarget } from "@/components/forms/sectionFlow";
 import { goToChoices, splitIntoSections } from "@/components/forms/sectionFlow";
 import { Image as ImageIcon, Video, Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, MoreHorizontal, Pencil, Power, Share2, Mail, MessageSquare, QrCode } from "lucide-react";
 import { normalizeFormColor, parseFormMetaJson } from "@/components/forms/publicFormTypes";
+import { resolveFormSubmitButtonLabel } from "@/components/forms/formRuntime";
+import { computeLeadFormPaymentBreakdown, formatInrAmount } from "@/lib/leadFormPayment";
 import { cn } from "@/lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -225,6 +227,9 @@ interface FormBuilderState {
   responseLimit: string;
   sendReceipt: boolean;
   allowAnotherResponse: boolean;
+  submitButtonLabel: string;
+  payButtonLabel: string;
+  submitButtonTextColor: string;
 }
 
 const PRIMARY_GREEN = "#1D9E75";
@@ -345,7 +350,32 @@ const INITIAL_BUILDER: FormBuilderState = {
   responseLimit: "",
   sendReceipt: false,
   allowAnotherResponse: true,
+  submitButtonLabel: "",
+  payButtonLabel: "",
+  submitButtonTextColor: "#000000",
 };
+
+function builderPreviewSubmitLabel(state: FormBuilderState): string {
+  const paymentOn =
+    state.paymentEnabled &&
+    state.leadDestination !== "hr_leads" &&
+    Number(state.paymentAmount) > 0;
+  const breakdown = computeLeadFormPaymentBreakdown({
+    payment_enabled: paymentOn,
+    payment_amount: Number(state.paymentAmount),
+    payment_gst_enabled: state.paymentGstEnabled,
+    payment_handling_enabled: state.paymentHandlingEnabled,
+  });
+  const amountLabel = formatInrAmount(breakdown?.total ?? Number(state.paymentAmount) || 0);
+  return resolveFormSubmitButtonLabel({
+    paymentEnabled: paymentOn,
+    needsPayBreakdownPopup: paymentOn && (state.paymentGstEnabled || state.paymentHandlingEnabled),
+    amountLabel,
+    submitLabel: state.submitButtonLabel,
+    payLabel: state.payButtonLabel,
+    isCustomForm: true,
+  });
+}
 
 type BuilderAction =
   | { type: "set"; patch: Partial<FormBuilderState> }
@@ -1006,6 +1036,9 @@ export default function FormsManagerPage() {
       responseLimit: meta.response_limit ? String(meta.response_limit) : "",
       sendReceipt: !!meta.send_receipt,
       allowAnotherResponse: meta.allow_another_response !== false,
+      submitButtonLabel: String(meta.submit_button_label || ""),
+      payButtonLabel: String(meta.pay_button_label || ""),
+      submitButtonTextColor: normalizeFormColor(meta.submit_button_text_color, "#000000"),
     };
     allowAutosaveRef.current = false;
     setSaveStatus("idle");
@@ -1199,6 +1232,9 @@ export default function FormsManagerPage() {
           response_limit: current.responseLimit ? Number(current.responseLimit) : "",
           send_receipt: current.sendReceipt,
           allow_another_response: current.allowAnotherResponse,
+          submit_button_label: current.submitButtonLabel.trim(),
+          pay_button_label: current.payButtonLabel.trim(),
+          submit_button_text_color: current.submitButtonTextColor,
           payment_enabled: current.paymentEnabled && current.leadDestination !== "hr_leads",
           payment_amount: current.paymentEnabled ? Number(current.paymentAmount) : "",
           payment_gst_enabled: current.paymentEnabled && current.paymentGstEnabled,
@@ -2201,6 +2237,48 @@ export default function FormsManagerPage() {
                     </p>
                   </CardContent>
                 </Card>
+                <Card>
+                  <CardHeader><CardTitle className="text-base">Submit button</CardTitle></CardHeader>
+                  <CardContent className="space-y-3">
+                    <div>
+                      <Label>Submit label</Label>
+                      <Input
+                        className="mt-1"
+                        placeholder="Submit"
+                        value={builder.submitButtonLabel}
+                        onChange={(e) => dispatchBuilder({ type: "set", patch: { submitButtonLabel: e.target.value } })}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">Shown when payment is off. Leave blank for Submit.</p>
+                    </div>
+                    <div>
+                      <Label>Pay label</Label>
+                      <Input
+                        className="mt-1"
+                        placeholder="Pay {amount}"
+                        value={builder.payButtonLabel}
+                        onChange={(e) => dispatchBuilder({ type: "set", patch: { payButtonLabel: e.target.value } })}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Shown when payment is on. Use {"{amount}"} for the total (e.g. Pay {"{amount}"} → Pay ₹99).
+                      </p>
+                    </div>
+                    <div>
+                      <Label>Button text color</Label>
+                      <div className="mt-1 flex items-center gap-2">
+                        <Input
+                          type="color"
+                          className="h-10 w-16 p-1"
+                          value={normalizeFormColor(builder.submitButtonTextColor, "#000000")}
+                          onChange={(e) => dispatchBuilder({ type: "set", patch: { submitButtonTextColor: e.target.value } })}
+                        />
+                        <Input
+                          value={builder.submitButtonTextColor}
+                          onChange={(e) => dispatchBuilder({ type: "set", patch: { submitButtonTextColor: e.target.value } })}
+                        />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
                 <Card><CardHeader><CardTitle className="text-base">Presentation</CardTitle></CardHeader><CardContent className="space-y-3">
                   <div className="rounded-lg overflow-hidden border">
                     <p className="text-xs text-muted-foreground px-3 py-2 border-b bg-muted/30">Live preview — updates as you change colors</p>
@@ -2216,7 +2294,9 @@ export default function FormsManagerPage() {
                           <input className="sp-form-input" readOnly placeholder="Your answer" />
                         </div>
                       </section>
-                      <button type="button" className="sp-form-submit" disabled>Submit</button>
+                      <button type="button" className="sp-form-submit" disabled>
+                        {builderPreviewSubmitLabel(builder)}
+                      </button>
                     </PublicFormShell>
                   </div>
                   <div>
@@ -2338,7 +2418,7 @@ export default function FormsManagerPage() {
                     disabled
                   />
                   <button type="button" className="sp-form-submit" disabled>
-                    Submit
+                    {builderPreviewSubmitLabel(builder)}
                   </button>
                 </PublicFormShell>
               </div>
