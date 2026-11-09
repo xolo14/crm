@@ -100,10 +100,14 @@ export function CanvasTextBoxFrame({
         const fn = onMoveRef.current;
         if (!fn) return;
         if (centerOrigin) {
+          // Center-origin geometry: x/y is the box's center, so the valid
+          // range for the center is [half-size, 100 - half-size] — clamping
+          // to [0, 100] directly (as before) let half the box hang off the
+          // page edge. An oversized box (half-size >= 50) can only be centered.
           fn({
             ...d.orig,
-            x: clamp(d.orig.x + dxPct, 0, 100),
-            y: clamp(d.orig.y + dyPct, 0, 100),
+            x: clampCenter(d.orig.x + dxPct, d.orig.width),
+            y: clampCenter(d.orig.y + dyPct, d.orig.height),
           });
         } else {
           fn({
@@ -125,8 +129,12 @@ export function CanvasTextBoxFrame({
         if (d.mode === 'sw' || d.mode === 'nw') width = Math.max(min, d.orig.width - dxPct);
         if (d.mode === 'se' || d.mode === 'sw') height = Math.max(min, d.orig.height + dyPct);
         if (d.mode === 'ne' || d.mode === 'nw') height = Math.max(min, d.orig.height - dyPct);
-        width = Math.min(width, 100);
-        height = Math.min(height, 100);
+        // Resize keeps the center (x, y) fixed, so the box can grow at most
+        // to the nearest page edge on either side of that fixed center.
+        const maxWidth = Math.max(min, 2 * Math.min(x, 100 - x));
+        const maxHeight = Math.max(min, 2 * Math.min(y, 100 - y));
+        width = Math.min(width, maxWidth, 100);
+        height = Math.min(height, maxHeight, 100);
         fn({ x, y, width, height });
         return;
       }
@@ -294,6 +302,17 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+/**
+ * Clamp a center-origin coordinate so the full box (of `size`% along that
+ * axis) stays within the [0, 100] page. When the box is too big to fit
+ * (size >= 100), the only valid center is 50 (page middle).
+ */
+export function clampCenter(center: number, size: number): number {
+  const half = size / 2;
+  if (half >= 50) return 50;
+  return clamp(center, half, 100 - half);
+}
+
 export type OfferTextBox = {
   id: string;
   /** text (default) or image (content = data URL / src) */
@@ -404,6 +423,50 @@ export function injectOfferBodyBox(pageHtml: string, box: OfferBodyBox): string 
   return `${html}\n${marker}`;
 }
 
+/** Find the end index of the matching closing </div> for a div that opened at openEnd. */
+function findMatchingDivClose(html: string, openEnd: number): number {
+  const lower = html.toLowerCase();
+  let depth = 1;
+  let i = openEnd;
+  while (i < html.length && depth > 0) {
+    const nextOpen = lower.indexOf('<div', i);
+    const nextClose = lower.indexOf('</div>', i);
+    if (nextClose < 0) return -1;
+    if (nextOpen >= 0 && nextOpen < nextClose) {
+      depth += 1;
+      i = nextOpen + 4;
+    } else {
+      depth -= 1;
+      if (depth === 0) return nextClose;
+      i = nextClose + 6;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Remove every `<div class="sync-text-boxes">...</div>` overlay wrapper, including
+ * all nested per-box divs inside it. A lazy regex (`[\s\S]*?<\/div>`) stops at the
+ * first nested closing tag and leaves sibling box markup behind whenever a template
+ * has more than one floating text/image box — this walks matching tag depth instead.
+ */
+export function removeSyncTextBoxesOverlays(html: string): string {
+  let out = html;
+  const openRe = /<div\s+class="sync-text-boxes"[^>]*>/i;
+  for (;;) {
+    const openMatch = openRe.exec(out);
+    if (!openMatch || openMatch.index == null) break;
+    const openEnd = openMatch.index + openMatch[0].length;
+    const closeAt = findMatchingDivClose(out, openEnd);
+    if (closeAt < 0) {
+      out = out.slice(0, openMatch.index);
+      break;
+    }
+    out = out.slice(0, openMatch.index) + out.slice(closeAt + '</div>'.length);
+  }
+  return out;
+}
+
 const BOX_MARKER_RE = /<!--\s*SYNC_TEXT_BOXES:([\s\S]*?)-->/i;
 
 export function extractOfferTextBoxes(pageHtml: string): OfferTextBox[] {
@@ -438,7 +501,7 @@ export function extractOfferTextBoxes(pageHtml: string): OfferTextBox[] {
 export function injectOfferTextBoxesMarker(pageHtml: string, boxes: OfferTextBox[]): string {
   const marker = `<!--SYNC_TEXT_BOXES:${JSON.stringify(boxes)}-->`;
   let without = pageHtml.replace(BOX_MARKER_RE, '');
-  without = without.replace(/<div\s+class="sync-text-boxes"[^>]*>[\s\S]*?<\/div>/i, '');
+  without = removeSyncTextBoxesOverlays(without);
   const rendered = boxes.length
     ? `\n<div class="sync-text-boxes" style="position:absolute;inset:0;pointer-events:none;z-index:5;">${boxes
         .map((b) => {

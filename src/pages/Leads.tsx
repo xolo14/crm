@@ -41,6 +41,7 @@ import {
   ADDED_LEAD_TAG,
   buildSourceSummaries,
   filterLeadsBySourceBucket,
+  type SourceSummary,
   formatFormSourceLabel,
   getFormSourceKey,
   getLeadSourceBucket,
@@ -269,6 +270,7 @@ export default function Leads() {
   formAssignmentsByFormIdRef.current = formAssignmentsByFormId;
   const formAssignLoadingRef = useRef<Set<string>>(new Set());
   const fetchLeadsGen = useRef(0);
+  const hasServerCardsRef = useRef(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importOrgId, setImportOrgId] = useState('');
   const [importOrgs, setImportOrgs] = useState<{ id: string; name: string }[]>([]);
@@ -276,6 +278,18 @@ export default function Leads() {
   const [sourceDialogKey, setSourceDialogKey] = useState<string | null>(null);
   const [sourceDialogLabel, setSourceDialogLabel] = useState<string>('');
   const [sourceDialogStatus, setSourceDialogStatus] = useState<string>('all');
+  const [serverCards, setServerCards] = useState<SourceSummary[] | null>(null);
+  const [leadKpi, setLeadKpi] = useState<{
+    total: number;
+    new: number;
+    pipeline: number;
+    enrolled: number;
+    lost: number;
+    unassigned: number;
+  } | null>(null);
+  const [dialogLeads, setDialogLeads] = useState<any[]>([]);
+  const [dialogLeadsLoading, setDialogLeadsLoading] = useState(false);
+  const [dialogReload, setDialogReload] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const hasCreate = perms.canCreate(role);
@@ -285,7 +299,7 @@ export default function Leads() {
   const hasImport = perms.canImport(role);
   const leadUserId = String(user?.id || '').trim();
   const isManager =
-    role === 'org' || role === 'super_admin' || role === 'manager';
+    role === 'org' || role === 'super_admin' || role === 'manager' || role === 'operational_manager';
   const normalizedLeadRole = String(role || '')
     .trim()
     .toLowerCase()
@@ -350,10 +364,32 @@ export default function Leads() {
     })();
   }, [isSuperAdmin, organization?.id]);
 
+  const leadScope = useMemo(
+    () => ({
+      ...(isSuperAdmin && viewOrgId ? { org_id: viewOrgId } : {}),
+      ...(isFormLeadsPage ? { form_leads: true as const } : {}),
+      ...(isSalesRepMyLeadsPage && profile?.referral_code
+        ? { referred_by: String(profile.referral_code).trim() }
+        : {}),
+    }),
+    [isSuperAdmin, viewOrgId, isFormLeadsPage, isSalesRepMyLeadsPage, profile?.referral_code],
+  );
+
   const fetchLeads = useCallback(async () => {
     const gen = ++fetchLeadsGen.current;
-    setLoading(true);
+    if (!hasServerCardsRef.current || statusChangedPeriod) setLoading(true);
     try {
+      if (!statusChangedPeriod) {
+        const data = await api.leads.sourceCards(leadScope);
+        if (gen !== fetchLeadsGen.current) return;
+        const cards = Array.isArray(data?.cards) ? data.cards : [];
+        hasServerCardsRef.current = true;
+        setServerCards(cards);
+        setLeadKpi(data?.kpi ?? null);
+        setLeadsTruncated(false);
+        setDialogReload((n) => n + 1);
+        return;
+      }
       const isUncappedAdmin =
         normalizedLeadRole === 'super_admin' || normalizedLeadRole === 'org';
       const leadListLimit = isUncappedAdmin
@@ -364,37 +400,22 @@ export default function Leads() {
             ? 10000
             : undefined;
       const data = await api.leads.list({
-        lite: !isFormLeadsPage,
-        ...(isUncappedAdmin ? { uncapped: true, limit: 10000 } : {}),
-        // Page with next_offset so manager card-filtering and large orgs do not stop early.
+        lite: true,
+        ...leadScope,
+        status_changed: statusChangedPeriod,
+        ...(isUncappedAdmin ? { uncapped: true, limit: 2000 } : {}),
         ...(leadListLimit
-          ? { limit: Math.min(5000, leadListLimit), all: true, maxRows: leadListLimit }
-          : {}),
-        ...(statusChangedPeriod ? { status_changed: statusChangedPeriod } : {}),
-        ...(isSuperAdmin && viewOrgId ? { org_id: viewOrgId } : {}),
-        ...(isFormLeadsPage ? { form_leads: true } : {}),
-        ...(isSalesRepMyLeadsPage && profile?.referral_code
-          ? { referred_by: String(profile.referral_code).trim() }
-          : {}),
+          ? { limit: Math.min(2000, leadListLimit), all: true, maxRows: leadListLimit }
+          : { limit: 2000, all: true }),
+        onPage: (page) => {
+          if (gen !== fetchLeadsGen.current) return;
+          setLeads(page.data || []);
+          setLoading(false);
+        },
       });
       if (gen !== fetchLeadsGen.current) return;
-      const allLeads = data.data || [];
+      setLeads(data.data || []);
       setLeadsTruncated(Boolean((data as { truncated?: boolean })?.truncated));
-
-      if (isFormLeadsPage) {
-        setLeads(allLeads.filter((l: any) => isFormLeadRow(l)));
-      } else if (isSalesRepMyLeadsPage) {
-        const code = String(profile?.referral_code ?? '').trim();
-        setLeads(
-          allLeads.filter((l: any) => {
-            if (!l?.referred_by) return false;
-            if (code) return String(l.referred_by).trim() === code;
-            return true;
-          }),
-        );
-      } else {
-        setLeads(allLeads);
-      }
     } catch (err) {
       if (gen !== fetchLeadsGen.current) return;
       console.error('Failed to load leads:', err);
@@ -404,11 +425,7 @@ export default function Leads() {
     }
   }, [
     statusChangedPeriod,
-    isSuperAdmin,
-    viewOrgId,
-    isFormLeadsPage,
-    isSalesRepMyLeadsPage,
-    profile?.referral_code,
+    leadScope,
     normalizedLeadRole,
   ]);
 
@@ -800,6 +817,62 @@ export default function Leads() {
   }, [sourceDialogKey, ensureFormAssignmentsLoaded]);
 
   useEffect(() => {
+    const q = search.trim();
+    if (!q || statusChangedPeriod) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const data = await api.leads.list({
+            ...leadScope,
+            search: q,
+            lite: true,
+            limit: 300,
+            all: false,
+          });
+          if (!cancelled) setLeads(data?.data || []);
+        } catch {
+          if (!cancelled) setLeads([]);
+        }
+      })();
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [search, statusChangedPeriod, leadScope]);
+
+  useEffect(() => {
+    if (!sourceDialogKey || statusChangedPeriod) {
+      setDialogLeads([]);
+      setDialogLeadsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDialogLeadsLoading(true);
+    void api.leads
+      .list({
+        ...leadScope,
+        source_bucket: sourceDialogKey,
+        lite: false,
+        limit: 1500,
+        all: true,
+        maxRows: 50000,
+        onPage: (page) => {
+          if (cancelled) return;
+          setDialogLeads(page.data || []);
+          setDialogLeadsLoading(false);
+        },
+      })
+      .catch(() => {
+        if (!cancelled) setDialogLeadsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceDialogKey, dialogReload, statusChangedPeriod, leadScope, isFormLeadsPage]);
+
+  useEffect(() => {
     if (!assignLeadId) return;
     const lead = leads.find((l) => l.id === assignLeadId);
     if (!lead) return;
@@ -843,7 +916,7 @@ export default function Leads() {
         if (fromApi) return fromApi;
         const id = String(lead?.created_by || '').trim();
         if (!id) return '';
-        return getAssignedName(id) || profiles.find((p) => p.user_id === id)?.full_name || '';
+        return getAssignedName(id) || profiles.find((p) => p.user_id === id)?.full_name || recordLabelByUserId[id] || '';
       },
     });
     if (result.ok) {
@@ -856,14 +929,32 @@ export default function Leads() {
     setExportCardsOpen(true);
   };
 
-  const handleExportSelectedCards = () => {
+  const handleExportSelectedCards = async () => {
     if (exportCardKeys.size === 0) {
       toast({ variant: 'destructive', title: 'Select at least one card' });
       return;
     }
-    const rows = leads.filter((l) => exportCardKeys.has(getLeadSourceBucket(l)));
-    downloadLeadsCsv(rows, `leads-${exportCardKeys.size}-cards`);
     setExportCardsOpen(false);
+    toast({ title: 'Preparing export', description: 'Downloading the selected source cards.' });
+    try {
+      const keys = Array.from(exportCardKeys);
+      const chunks = await Promise.all(
+        keys.map((key) =>
+          api.leads.list({
+            ...leadScope,
+            source_bucket: key,
+            lite: false,
+            limit: 2000,
+            all: true,
+            maxRows: 50000,
+          }),
+        ),
+      );
+      const rows = chunks.flatMap((chunk) => (Array.isArray(chunk?.data) ? chunk.data : []));
+      downloadLeadsCsv(rows, `leads-${keys.length}-cards`);
+    } catch (err: any) {
+      toast({ variant: 'destructive', title: 'Export failed', description: err?.message || 'Could not load those cards.' });
+    }
   };
 
   const importTargetOrgName = useMemo(() => {
@@ -1077,12 +1168,12 @@ export default function Leads() {
     return filtered.slice(start, start + pageSize);
   }, [filtered, currentPage, pageSize]);
 
-  const totalLeads = leads.length;
-  const newLeads = leads.filter(l => l.status === 'new').length;
-  const inPipeline = leads.filter(l => ['qualified', 'interested', 'demo_scheduled', 'demo_attended', 'considering'].includes(l.status)).length;
-  const enrollLeads = leads.filter(l => l.status === 'enrolled' || l.status === 'converted').length;
-  const lostLeads = leads.filter(l => l.status === 'lost' || l.status === 'not_interested').length;
-  const unassignedCount = leads.filter(l => !l.assigned_to).length;
+  const totalLeads = leadKpi?.total ?? leads.length;
+  const newLeads = leadKpi?.new ?? leads.filter(l => l.status === 'new').length;
+  const inPipeline = leadKpi?.pipeline ?? leads.filter(l => ['qualified', 'interested', 'demo_scheduled', 'demo_attended', 'considering'].includes(l.status)).length;
+  const enrollLeads = leadKpi?.enrolled ?? leads.filter(l => l.status === 'enrolled' || l.status === 'converted').length;
+  const lostLeads = leadKpi?.lost ?? leads.filter(l => l.status === 'lost' || l.status === 'not_interested').length;
+  const unassignedCount = leadKpi?.unassigned ?? leads.filter(l => !l.assigned_to).length;
   const convRate = totalLeads > 0 ? Math.round((enrollLeads / totalLeads) * 100) : 0;
 
   const normalizeLeadStatusForApi = (status: string) => {
@@ -1402,18 +1493,35 @@ export default function Leads() {
   const allSelected = filtered.length > 0 && selectedIds.size === filtered.length;
   const someSelected = selectedIds.size > 0 && selectedIds.size < filtered.length;
 
+  const recordLabelByUserId = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const lead of leads) {
+      const assignedId = String(lead?.assigned_to || '').trim();
+      const assignedLabel = String(lead?.assigned_to_name || '').trim();
+      if (assignedId && assignedLabel) map[assignedId] = assignedLabel;
+      const createdId = String(lead?.created_by || '').trim();
+      const createdLabel = String(lead?.created_by_name || '').trim();
+      if (createdId && createdLabel) map[createdId] = createdLabel;
+    }
+    return map;
+  }, [leads]);
+
   const getAssignedName = (id: string) => {
     if (user?.id && String(id) === String(user.id)) return 'Assigned to self';
     const member = teamMembers.find(m => m.id === id);
     if (member) return member.full_name;
     if (formAssigneeNameById[id]) return formAssigneeNameById[id];
     const prof = profiles.find(p => p.user_id === id);
-    return prof?.full_name || '';
+    if (prof?.full_name) return prof.full_name;
+    return recordLabelByUserId[id] || '';
   };
 
   const getLeadAssignedNames = (lead: any) => {
     const assignedUserIds = leadAssignments[lead.id] || (lead.assigned_to ? [lead.assigned_to] : []);
-    return assignedUserIds.map((id: string) => getAssignedName(id)).filter(Boolean);
+    const names = assignedUserIds.map((id: string) => getAssignedName(id)).filter(Boolean);
+    if (names.length > 0) return names;
+    const primary = String(lead?.assigned_to_name || '').trim();
+    return primary ? [primary] : [];
   };
 
   /** True when CRM has an assignee, even if this manager cannot resolve the name. */
@@ -1423,11 +1531,11 @@ export default function Leads() {
     return Array.isArray(ids) && ids.length > 0;
   };
 
-  /** Assigned column: show names when known; otherwise "Assigned" (not "Unassigned"). */
+  /** Assigned column: live name, else Staff ID after the member was deleted. */
   const formatAssignedColumn = (lead: any) => {
     const names = getLeadAssignedNames(lead);
     if (names.length > 0) return { label: names.join(', '), isAssigned: true };
-    if (isLeadAssigned(lead)) return { label: 'Assigned', isAssigned: true };
+    if (isLeadAssigned(lead)) return { label: String(lead?.assigned_to_name || '').trim() || 'Assigned', isAssigned: true };
     return { label: 'Unassigned', isAssigned: false };
   };
 
@@ -1506,10 +1614,16 @@ export default function Leads() {
     return labels;
   }, [leadForms]);
 
-  const sourceSummaries = useMemo(
-    () => buildSourceSummaries(leads, { formLabels }),
-    [leads, formLabels],
-  );
+  const sourceSummaries = useMemo(() => {
+    if (serverCards && !statusChangedPeriod) {
+      return serverCards.map((card) => {
+        if (!(card.isForm || isFormSourceBucket(card.key))) return card;
+        const label = formatFormSourceLabel(card.key, formLabels);
+        return label && label !== card.label ? { ...card, label } : card;
+      });
+    }
+    return buildSourceSummaries(leads, { formLabels });
+  }, [serverCards, statusChangedPeriod, leads, formLabels]);
 
   const metaAdSourceCount = useMemo(
     () => sourceSummaries.filter((s) => s.isMetaAd || isMetaAdSourceBucket(s.key)).length,
@@ -1622,8 +1736,9 @@ export default function Leads() {
 
   const sourceDialogLeads = useMemo(() => {
     if (!sourceDialogKey) return [];
+    if (!statusChangedPeriod) return dialogLeads;
     return filterLeadsBySourceBucket(leads, sourceDialogKey);
-  }, [leads, sourceDialogKey]);
+  }, [statusChangedPeriod, dialogLeads, leads, sourceDialogKey]);
 
   const openSourceDialog = (key: string, label: string, status: string = 'all') => {
     setSourceDialogKey(key);
@@ -1631,7 +1746,7 @@ export default function Leads() {
     setSourceDialogStatus(status);
   };
 
-  if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
+  if (loading && leads.length === 0 && (statusChangedPeriod || !serverCards)) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
   const sourceCardDetailPanel =
     sourceDialogKey && detailLead ? (
@@ -1727,7 +1842,7 @@ export default function Leads() {
         <FormSubmissionDetails notes={detailLead.notes} resumePath={detailLead.resume_path} />
         <LeadActivityTimeline
           leadId={detailLead.id}
-          getProfileName={(uid) => getAssignedName(uid) || profiles.find((p) => p.user_id === uid)?.full_name || 'Unknown'}
+          getProfileName={(uid) => getAssignedName(uid) || profiles.find((p) => p.user_id === uid)?.full_name || recordLabelByUserId[uid] || 'Unknown'}
         />
         <div className="border-t border-border pt-4 flex gap-2">
           {canEditLead(detailLead) && (
@@ -1754,6 +1869,7 @@ export default function Leads() {
           title={sourceDialogLabel}
           initialStatus={sourceDialogStatus}
           leads={sourceDialogLeads}
+          leadsLoading={dialogLeadsLoading && sourceDialogLeads.length === 0}
           teamMembers={sourceDialogAssignMembers}
           isManager={isManager}
           canBulkAssign={isManager || hasBulkDelete}
@@ -1781,7 +1897,7 @@ export default function Leads() {
             if (fromApi) return fromApi;
             const id = String(lead?.created_by || '').trim();
             if (!id) return '';
-            return getAssignedName(id) || profiles.find((p) => p.user_id === id)?.full_name || '';
+            return getAssignedName(id) || profiles.find((p) => p.user_id === id)?.full_name || recordLabelByUserId[id] || '';
           }}
           canExport={canExportLeads}
           onExport={(rows) => downloadLeadsCsv(rows, sourceDialogLabel || String(sourceDialogKey || 'leads'))}
@@ -2661,7 +2777,7 @@ export default function Leads() {
                 {/* Activity History */}
                 <LeadActivityTimeline
                   leadId={detailLead.id}
-                  getProfileName={(uid) => getAssignedName(uid) || profiles.find(p => p.user_id === uid)?.full_name || 'Unknown'}
+                  getProfileName={(uid) => getAssignedName(uid) || profiles.find(p => p.user_id === uid)?.full_name || recordLabelByUserId[uid] || 'Unknown'}
                 />
 
                 {/* Action Buttons */}

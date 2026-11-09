@@ -1367,6 +1367,16 @@ function leadFormSyncLeadPaymentFromNotes(array $notes, string $status, int $amo
             $formRow = $formSt->fetch(PDO::FETCH_ASSOC);
             if (is_array($formRow)) {
                 leadFormQueueAutoDocuments($db, $formRow, $leadId, true);
+                try {
+                    $leadSt = $db->prepare('SELECT id, name, email, phone FROM leads WHERE id = ? LIMIT 1');
+                    $leadSt->execute([$leadId]);
+                    $paidLead = $leadSt->fetch(PDO::FETCH_ASSOC);
+                    if (is_array($paidLead)) {
+                        formCampaignAutoSendForNewLead($db, $formRow, $paidLead, true);
+                    }
+                } catch (Throwable $e) {
+                    error_log('[lead_form] campaign after pay: ' . $e->getMessage());
+                }
             }
         }
     } catch (Throwable $e) {
@@ -1461,9 +1471,87 @@ function paymentLinkLeadIsPaid(PDO $db, string $leadId): bool
 }
 
 /**
- * Create a Razorpay payment link for a public lead-form submission (unauthenticated).
+ * Hosted Checkout payload so the apply form skips the Payment Link details page.
  *
- * @return array{url?: string, id?: string, error?: string}
+ * @param array<string, mixed> $opts
+ * @return array<string, mixed>
+ */
+function paymentLinkLeadFormCheckoutPayload(array $opts, string $orderId, int $amountPaise): array
+{
+    $name = trim((string) ($opts['customer_name'] ?? ''));
+    $email = trim((string) ($opts['customer_email'] ?? ''));
+    $phone = preg_replace('/\D+/', '', (string) ($opts['customer_phone'] ?? '')) ?? '';
+    if (strlen($phone) > 10) {
+        $phone = substr($phone, -10);
+    }
+    $formName = trim((string) ($opts['form_name'] ?? 'Form payment'));
+    $prefill = ['name' => $name];
+    if ($email !== '') {
+        $prefill['email'] = $email;
+    }
+    if (strlen($phone) === 10) {
+        $prefill['contact'] = $phone;
+    }
+    return [
+        'key' => razorpayPublicKeyId(),
+        'order_id' => $orderId,
+        'amount' => $amountPaise,
+        'currency' => 'INR',
+        'name' => $formName !== '' ? $formName : 'Payment',
+        'description' => $formName,
+        'prefill' => $prefill,
+        'theme' => ['color' => '#1D9E75'],
+    ];
+}
+
+/**
+ * Mark a lead-form Checkout order paid and run the same fulfillment as payment links.
+ *
+ * @param array<string, mixed> $paymentEntity
+ * @return array<string, mixed>
+ */
+function paymentLinkProcessLeadFormOrderPaid(string $orderId, array $paymentEntity): array
+{
+    $orderId = trim($orderId);
+    if ($orderId === '' || !str_starts_with($orderId, 'order_')) {
+        return [];
+    }
+    $row = paymentLinkFindByRazorpayId($orderId);
+    if (!is_array($row)) {
+        error_log('[lead_form checkout] unknown order ' . $orderId);
+        return [];
+    }
+    $amount = (int) ($row['amount'] ?? 0);
+    $paid = (int) ($paymentEntity['amount'] ?? $amount);
+    $fakeLink = [
+        'id' => $orderId,
+        'amount' => $amount > 0 ? $amount : $paid,
+        'amount_paid' => $paid > 0 ? $paid : $amount,
+        'status' => 'paid',
+        'currency' => (string) ($row['currency'] ?? 'INR'),
+        'description' => (string) ($row['description'] ?? ''),
+        'notes' => [],
+        'customer' => [
+            'name' => (string) ($row['customer_name'] ?? ''),
+            'email' => (string) ($row['customer_email'] ?? ''),
+            'contact' => (string) ($row['customer_phone'] ?? ''),
+        ],
+        'short_url' => (string) ($row['razorpay_short_url'] ?? ''),
+    ];
+    $updated = paymentLinkUpsertFromRazorpay($fakeLink, $paymentEntity);
+    if (!is_array($updated)) {
+        throw new RuntimeException('Failed to persist checkout order ' . $orderId);
+    }
+    if (!function_exists('paymentLinkProcessPaymentSideEffects')) {
+        require_once __DIR__ . '/payment_link_fulfillment.php';
+    }
+    return paymentLinkProcessPaymentSideEffects($updated, $fakeLink, $paymentEntity, 'order.paid');
+}
+
+/**
+ * Create a Razorpay Order + Checkout session for a public lead-form submission.
+ *
+ * @return array{url?: string, id?: string, checkout?: array, error?: string}
  */
 function paymentLinkCreateForLeadForm(array $opts): array
 {
@@ -1499,36 +1587,45 @@ function paymentLinkCreateForLeadForm(array $opts): array
         return ['error' => 'This payment form must be opened with a staff ID link'];
     }
 
-    $existing = $leadId !== '' ? paymentLinkFindByLeadId($leadId) : null;
-    if (is_array($existing)) {
-        $st = strtolower(trim((string) ($existing['status'] ?? '')));
-        $url = trim((string) ($existing['razorpay_short_url'] ?? ''));
-        $existingAmt = (int) ($existing['amount'] ?? 0);
-        $existingPaid = (int) ($existing['amount_paid'] ?? 0);
-        // Fully settled only. A partial balance must stay open so automations wait.
-        if (paymentLinkIsFullyPaid($st, $existingAmt, $existingPaid)) {
-            return ['url' => '', 'id' => (string) ($existing['razorpay_payment_link_id'] ?? ''), 'already_paid' => true];
-        }
-        // Open, unpaid, or partial link with the same amount → reopen the same Razorpay URL.
-        if (
-            $url !== ''
-            && $existingAmt === $amountPaise
-            && !in_array($st, ['cancelled', 'expired'], true)
-        ) {
-            $out = ['url' => $url, 'id' => (string) ($existing['razorpay_payment_link_id'] ?? '')];
-            if ($st === 'partially_paid' || ($existingAmt > 0 && $existingPaid > 0 && $existingPaid < $existingAmt)) {
-                $out['partially_paid'] = true;
-            }
-            return $out;
-        }
-        // Cancelled / expired / amount changed → create a fresh link below.
-    }
-
     if ($orgId !== '') {
         razorpayUseOrgOrPlatform($db, $orgId);
     }
     if (!razorpayKeysConfigured()) {
         return ['error' => 'Razorpay is not set up for this organisation. Ask your admin to add keys in Settings.'];
+    }
+
+    $existing = $leadId !== '' ? paymentLinkFindByLeadId($leadId) : null;
+    if (is_array($existing)) {
+        $st = strtolower(trim((string) ($existing['status'] ?? '')));
+        $existingId = trim((string) ($existing['razorpay_payment_link_id'] ?? ''));
+        $url = trim((string) ($existing['razorpay_short_url'] ?? ''));
+        $existingAmt = (int) ($existing['amount'] ?? 0);
+        $existingPaid = (int) ($existing['amount_paid'] ?? 0);
+        if (paymentLinkIsFullyPaid($st, $existingAmt, $existingPaid)) {
+            return ['url' => '', 'id' => $existingId, 'already_paid' => true];
+        }
+        if (
+            $existingAmt === $amountPaise
+            && !in_array($st, ['cancelled', 'expired'], true)
+            && str_starts_with($existingId, 'order_')
+        ) {
+            $out = [
+                'url' => '',
+                'id' => $existingId,
+                'checkout' => paymentLinkLeadFormCheckoutPayload($opts, $existingId, $amountPaise),
+            ];
+            if ($st === 'partially_paid' || ($existingAmt > 0 && $existingPaid > 0 && $existingPaid < $existingAmt)) {
+                $out['partially_paid'] = true;
+            }
+            return $out;
+        }
+        if (str_starts_with($existingId, 'plink_') && !in_array($st, ['cancelled', 'expired', 'paid'], true)) {
+            try {
+                razorpayCancelPaymentLink($existingId);
+            } catch (Throwable $e) {
+                error_log('[lead_form payment] cancel old link: ' . $e->getMessage());
+            }
+        }
     }
 
     $notes = [
@@ -1550,12 +1647,6 @@ function paymentLinkCreateForLeadForm(array $opts): array
         $notes['coupon'] = $coupon;
     }
 
-    $callbackBase = razorpayCallbackBase();
-    $callback = $callbackBase . '/payments?status=paid';
-    if ($formSlug !== '') {
-        $callback = $callbackBase . '/apply?form=' . rawurlencode($formSlug) . '&paid=1';
-    }
-
     try {
         $customer = ['name' => $name];
         if ($email !== '') {
@@ -1564,37 +1655,48 @@ function paymentLinkCreateForLeadForm(array $opts): array
         if ($phone !== '') {
             $customer['contact'] = '+91' . $phone;
         }
-        $payload = [
+        $receipt = substr('form_' . preg_replace('/[^a-zA-Z0-9_]/', '', $formSlug) . '_' . substr($leadId, 0, 8), 0, 40);
+        $order = razorpayCreateOrder([
             'amount' => $amountPaise,
             'currency' => 'INR',
-            'description' => $formName,
-            'customer' => $customer,
-            'notify' => ['sms' => $phone !== '', 'email' => $email !== ''],
-            'reminder_enable' => false,
+            'receipt' => $receipt,
             'notes' => $notes,
-            'reference_id' => substr('form_' . preg_replace('/[^a-zA-Z0-9_]/', '', $formSlug) . '_' . substr($leadId, 0, 8), 0, 40),
-            'callback_url' => $callback,
-        ];
-        $link = razorpayCreateStandardPaymentLink($payload);
+        ]);
+        $orderId = trim((string) ($order['id'] ?? ''));
+        if ($orderId === '') {
+            return ['error' => 'Razorpay did not return an order'];
+        }
         $tokenData = [
             'user_id' => $salespersonId,
             'org_id' => $orgId !== '' ? $orgId : null,
             'role' => 'sales_representative',
         ];
+        $persistLink = [
+            'id' => $orderId,
+            'amount' => $amountPaise,
+            'amount_paid' => 0,
+            'status' => 'created',
+            'currency' => 'INR',
+            'description' => $formName,
+            'reference_id' => $receipt,
+            'notes' => $notes,
+            'customer' => $customer,
+            'short_url' => '',
+        ];
         $body = [
             'notes' => $notes,
             'customer' => $customer,
             'description' => $formName,
-            'notify' => $payload['notify'],
+            'notify' => ['sms' => false, 'email' => false],
             'reminder_enable' => false,
+            'reference_id' => $receipt,
         ];
-        paymentLinkPersistOnCreate(is_array($link) ? $link : [], $body, $tokenData);
-        $url = trim((string) ($link['short_url'] ?? ''));
-        $id = trim((string) ($link['id'] ?? ''));
-        if ($url === '') {
-            return ['error' => 'Razorpay did not return a payment URL'];
-        }
-        return ['url' => $url, 'id' => $id];
+        paymentLinkPersistOnCreate($persistLink, $body, $tokenData);
+        return [
+            'url' => '',
+            'id' => $orderId,
+            'checkout' => paymentLinkLeadFormCheckoutPayload($opts, $orderId, $amountPaise),
+        ];
     } catch (Throwable $e) {
         error_log('[lead_form payment] ' . $e->getMessage());
         return ['error' => 'Could not start payment. Please try again.'];

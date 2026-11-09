@@ -93,7 +93,7 @@ const getHolidayReason = (name: string, type: string): string => {
 export default function Holidays() {
   const { role, user } = useAuth();
   const canManageHolidays = role === 'super_admin' || role === 'org';
-  const isManager = role === 'manager';
+  const isManager = role === 'manager' || role === 'operational_manager';
   const canAddHoliday = canManageHolidays || isManager;
   const canViewAllHolidays = canManageHolidays || isManager;
   const [holidays, setHolidays] = useState<Holiday[]>([]);

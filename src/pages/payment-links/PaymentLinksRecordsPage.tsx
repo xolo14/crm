@@ -28,6 +28,7 @@ import ManualPaymentDialog from "@/components/paymentLinks/ManualPaymentDialog";
 import ManualPaymentApprovalsTab from "@/components/paymentLinks/ManualPaymentApprovalsTab";
 import PaymentBankDetailsChip from "@/components/paymentLinks/PaymentBankDetailsChip";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const initialFilters: RecordsTableFilters = {
   from: "",
@@ -70,6 +71,10 @@ export default function PaymentLinksRecordsPage() {
   const showPaymentsBtn = canSubmitManualPayment(role);
   const showApprovals = canApproveManualPayments(role);
   const canDeleteApproved = role === "org" || role === "super_admin";
+  const isSuperAdmin = role === "super_admin";
+  const [orgOptions, setOrgOptions] = useState<{ id: string; name: string }[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState("all");
+  const orgQuery = isSuperAdmin && selectedOrgId !== "all" ? selectedOrgId : undefined;
 
   const [team, setTeam] = useState<TeamMemberLookup[]>([]);
   const [candidates, setCandidates] = useState<PaymentCandidateSummaryInput[]>([]);
@@ -107,7 +112,7 @@ export default function PaymentLinksRecordsPage() {
         return;
       }
 
-      const teamRes = await api.team.list().catch(() => ({ data: [] }));
+      const teamRes = await api.team.list(orgQuery).catch(() => ({ data: [] }));
       setTeam(parseTeamList(teamRes));
 
       const customRange =
@@ -115,7 +120,8 @@ export default function PaymentLinksRecordsPage() {
           ? { from: filters.from || undefined, to: filters.to || undefined }
           : undefined;
       const unixRange = paymentLinkPeriodUnixRange(period, customRange);
-      const candidateQuery: { from?: number; to?: number } = {};
+      const candidateQuery: { from?: number; to?: number; org_id?: string } = {};
+      if (orgQuery) candidateQuery.org_id = orgQuery;
       if (period !== "all") {
         if (unixRange.from !== undefined) candidateQuery.from = unixRange.from;
         if (unixRange.to !== undefined) candidateQuery.to = unixRange.to;
@@ -131,20 +137,37 @@ export default function PaymentLinksRecordsPage() {
     } finally {
       setLoading(false);
     }
-  }, [period, teamView, teamSummaryMode, filters.from, filters.to]);
+  }, [period, teamView, teamSummaryMode, filters.from, filters.to, orgQuery]);
 
   const loadApprovals = useCallback(async () => {
     if (!showApprovals) return;
     setApprovalsLoading(true);
     try {
-      const res = await api.manualPayments.approvals();
+      const res = await api.manualPayments.approvals(orgQuery);
       setPending(parseManualList(res));
     } catch {
       setPending([]);
     } finally {
       setApprovalsLoading(false);
     }
-  }, [showApprovals]);
+  }, [showApprovals, orgQuery]);
+
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    void api.organizations.list()
+      .then((res) => {
+        const rows = Array.isArray((res as { data?: unknown })?.data)
+          ? (res as { data: Array<{ id?: string; name?: string }> }).data
+          : [];
+        setOrgOptions(
+          rows
+            .map((o) => ({ id: String(o.id || "").trim(), name: String(o.name || "Unnamed org").trim() }))
+            .filter((o) => o.id !== "")
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        );
+      })
+      .catch(() => setOrgOptions([]));
+  }, [isSuperAdmin]);
 
   useEffect(() => {
     void loadData();
@@ -154,13 +177,13 @@ export default function PaymentLinksRecordsPage() {
   useEffect(() => {
     if (!teamView) return;
     void api.paymentCandidates
-      .list()
+      .list(orgQuery ? { org_id: orgQuery } : undefined)
       .then((res) => {
         const raw = res as { data?: PaymentCandidateSummaryInput[] };
         setCandidatesAllTime(Array.isArray(raw?.data) ? raw.data : []);
       })
       .catch(() => {});
-  }, [teamView]);
+  }, [teamView, orgQuery]);
 
   useEffect(() => {
     void loadApprovals();
@@ -206,6 +229,19 @@ export default function PaymentLinksRecordsPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
+          {isSuperAdmin ? (
+            <Select value={selectedOrgId} onValueChange={setSelectedOrgId}>
+              <SelectTrigger className="w-[220px] bg-white">
+                <SelectValue placeholder="Organisation" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All organisations</SelectItem>
+                {orgOptions.map((o) => (
+                  <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
           <PaymentBankDetailsChip />
           {showPaymentsBtn ? (
             <Button
@@ -327,6 +363,7 @@ export default function PaymentLinksRecordsPage() {
         <CandidatePaymentRecords
           ownerUserId={drillMember?.id}
           ownerName={drillMember?.name}
+          orgId={orgQuery}
           showOwnerColumn={teamView || orgCandidatesView}
           onBack={
             drillMember

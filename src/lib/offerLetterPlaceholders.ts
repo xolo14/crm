@@ -95,6 +95,98 @@ export function applyOfferPlaceholders(text: string, values: Record<string, stri
   });
 }
 
+/** Escape a value for insertion into HTML text/content context. */
+export function escapeOfferHtmlText(value: string): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** Escape a value for insertion into a quoted HTML attribute value. */
+export function escapeOfferHtmlAttr(value: string): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Only these URL schemes (plus relative/fragment URLs) are allowed for URL-bearing placeholders. */
+const OFFER_SAFE_URL_SCHEME_RE =
+  /^(?:https?:\/\/|mailto:|tel:|data:image\/(?:png|jpe?g|gif|webp|svg\+xml);base64,)/i;
+
+/**
+ * Validate/neutralize a value destined for a URL-bearing attribute (src, href, …).
+ * Relative paths and fragment links pass through; disallowed schemes (javascript:, vbscript:,
+ * data:text/html, etc.) are dropped to an empty string rather than rendered.
+ */
+export function sanitizeOfferUrlValue(raw: string): string {
+  const v = String(raw ?? '').trim();
+  if (!v) return '';
+  // eslint-disable-next-line no-control-regex -- intentionally matching control chars to reject them
+  if (/[\x00-\x1f]/.test(v)) return '';
+  if (/^(?:\/|\.\.?\/|#)/.test(v)) return v;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(v)) {
+    return OFFER_SAFE_URL_SCHEME_RE.test(v) ? v : '';
+  }
+  return v;
+}
+
+const OFFER_URL_ATTR_NAME_RE = /\b(?:src|href|action|formaction|poster|background)$/i;
+
+/**
+ * HTML-safe placeholder substitution for contexts that render as real HTML
+ * (letter body, mail body, preview, PDF, print). Candidate/lead values are
+ * escaped for the context they land in — HTML text, a quoted attribute, or a
+ * URL-bearing attribute — so they can never break out of the template markup
+ * or introduce executable content. The trusted template HTML itself (tags,
+ * attributes, scripts an HR admin authored) is left untouched.
+ */
+export function applyOfferPlaceholdersHtml(text: string, values: Record<string, string>): string {
+  let out = String(text || '');
+
+  // Pass 1: an attribute value that is *only* a placeholder, on a URL-bearing
+  // attribute (src="{{letterhead_url}}") — validate the scheme, then attr-escape.
+  out = out.replace(
+    /((?:\bsrc|\bhref|\baction|\bformaction|\bposter|\bbackground)\s*=\s*)(["'])\s*\{\{\s*([a-zA-Z0-9_]+)\s*\}\}\s*\2/gi,
+    (full: string, prefix: string, quote: string, key: string) => {
+      const v = lookupOfferPlaceholderValue(key, values);
+      if (v === undefined) return full;
+      const safeUrl = sanitizeOfferUrlValue(v);
+      return `${prefix}${quote}${escapeOfferHtmlAttr(safeUrl)}${quote}`;
+    },
+  );
+
+  // Pass 2: any placeholder still sitting inside a quoted attribute value
+  // (mixed content, or a non-URL attribute) — attribute-escape so it can
+  // never close the quote / inject a new attribute or event handler.
+  out = out.replace(
+    /(=\s*)(["'])((?:(?!\2)[\s\S])*?)\2/g,
+    (full: string, eq: string, quote: string, inner: string, offset: number, whole: string) => {
+      if (!inner.includes('{{')) return full;
+      const attrNameMatch = /([a-zA-Z0-9-:]+)\s*$/.exec(whole.slice(0, offset));
+      const attrName = attrNameMatch ? attrNameMatch[1] : '';
+      const isUrlAttr = OFFER_URL_ATTR_NAME_RE.test(attrName);
+      const replaced = inner.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (m: string, key: string) => {
+        const v = lookupOfferPlaceholderValue(key, values);
+        if (v === undefined) return m;
+        return escapeOfferHtmlAttr(isUrlAttr ? sanitizeOfferUrlValue(v) : v);
+      });
+      return `${eq}${quote}${replaced}${quote}`;
+    },
+  );
+
+  // Pass 3: remaining placeholders are in HTML text/content context — entity-escape.
+  out = out.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (full: string, key: string) => {
+    const v = lookupOfferPlaceholderValue(key, values);
+    return v !== undefined ? escapeOfferHtmlText(v) : full;
+  });
+
+  return out;
+}
+
 /** Bulk candidate row field keys (not extras). */
 export const OFFER_BULK_CANDIDATE_KEYS = new Set([
   'candidate_name',

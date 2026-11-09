@@ -5,6 +5,89 @@ if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((strin
  * Per-rep payment candidates (pitch price + installments). Org-scoped; never match across users.
  */
 
+/**
+ * Acquire a MySQL named lock serializing concurrent paymentCandidatesResolveForPayment() calls
+ * (+ the manual_payments insert that follows) for the SAME customer identity, so two concurrent
+ * manual-payment submissions can never both find-no-candidate and create two rows for one
+ * person, and can never both compute the same next installment_number.
+ *
+ * Scope matches paymentCandidatesFindExisting()'s own lookup exactly: (org_id, owner_user_id,
+ * normalized email/phone) — two different reps ARE allowed separate candidate rows for the same
+ * customer by design, so owner_user_id is part of the key, not just org_id.
+ *
+ * When $candidateId is supplied (caller picked an existing candidate explicitly, possibly with
+ * blank email/phone fields), lock by that id instead — otherwise a submission with blank contact
+ * fields would compute an empty key and acquire no lock at all.
+ *
+ * Never reconnects the PDO connection — acquisition, the resolve/insert work, and release must
+ * all happen on the exact same connection, since MySQL named locks are session-scoped.
+ *
+ * @return list<string>|null Acquired lock names, or null if any needed lock could not be
+ *                            acquired in time — caller MUST NOT proceed unlocked in that case.
+ */
+function paymentCandidatesAcquireLock(
+    PDO $db,
+    string $orgId,
+    string $ownerUserId,
+    string $email,
+    string $phone,
+    ?string $candidateId,
+    int $timeoutSeconds = 5,
+): ?array {
+    $orgId = trim($orgId);
+    $wanted = [];
+    if ($candidateId !== null && trim($candidateId) !== '') {
+        $wanted[] = 'payment_candidate_id:' . substr(sha1($orgId . '|' . trim($candidateId)), 0, 40);
+    } else {
+        $ownerUserId = trim($ownerUserId);
+        $emailNorm = paymentCandidatesNormEmail($email);
+        $phoneNorm = paymentCandidatesNormPhone($phone);
+        if ($emailNorm !== '') {
+            $wanted[] = 'payment_candidate_email:' . substr(sha1($orgId . '|' . $ownerUserId . '|' . $emailNorm), 0, 40);
+        }
+        if ($phoneNorm !== '') {
+            $wanted[] = 'payment_candidate_phone:' . substr(sha1($orgId . '|' . $ownerUserId . '|' . $phoneNorm), 0, 40);
+        }
+    }
+    if ($wanted === []) {
+        return [];
+    }
+    sort($wanted); // fixed global order — avoids lock-ordering deadlocks
+
+    $acquired = [];
+    foreach ($wanted as $lockName) {
+        try {
+            $st = $db->prepare('SELECT GET_LOCK(?, ?)');
+            $st->execute([$lockName, $timeoutSeconds]);
+            $got = (int) $st->fetchColumn();
+            $st->closeCursor();
+        } catch (Throwable $e) {
+            error_log('[paymentCandidatesAcquireLock] ' . $e->getMessage());
+            $got = 0;
+        }
+        if ($got !== 1) {
+            paymentCandidatesReleaseLock($db, $acquired);
+            return null;
+        }
+        $acquired[] = $lockName;
+    }
+    return $acquired;
+}
+
+/** @param list<string> $lockNames */
+function paymentCandidatesReleaseLock(PDO $db, array $lockNames): void
+{
+    foreach (array_reverse($lockNames) as $lockName) {
+        try {
+            $st = $db->prepare('SELECT RELEASE_LOCK(?)');
+            $st->execute([$lockName]);
+            $st->closeCursor();
+        } catch (Throwable $e) {
+            error_log('[paymentCandidatesReleaseLock] ' . $e->getMessage());
+        }
+    }
+}
+
 function paymentCandidatesEnsureSchema(PDO $db): void
 {
     static $done = false;
@@ -924,6 +1007,13 @@ function paymentCandidatesListScope(PDO $db, array $tokenData): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    if ($role === 'super_admin') {
+        $qOrg = trim((string) ($_GET['org_id'] ?? ''));
+        if ($qOrg !== '') {
+            return ['sql' => 'pc.org_id = ?', 'params' => [$qOrg], 'owner_only' => false];
+        }
+        return ['sql' => '1=1', 'params' => [], 'owner_only' => false];
+    }
     $orgId = resolveCreatorOrgId($db, $tokenData);
 
     if ($role === 'super_admin' && ($orgId === null || $orgId === '')) {

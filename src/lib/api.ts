@@ -116,7 +116,10 @@ async function request(endpoint: string, options: RequestInit = {}) {
     } catch {
       /* ignore */
     }
-    const isLogin = endpoint.includes('auth.php') && endpoint.includes('action=login');
+    const isLogin =
+      endpoint.includes('auth.php') &&
+      (endpoint.includes('action=google_login') ||
+        (endpoint.includes('action=login') && !endpoint.includes('google_')));
     if (isLogin) {
       throw new Error(data401.error || 'Invalid email or password');
     }
@@ -168,8 +171,10 @@ async function request(endpoint: string, options: RequestInit = {}) {
     if (isHtml) {
       throw new Error(
         res.status === 404
-          ? 'API not found. Upload the full dist/ folder to Hostinger (must include api/ and root .htaccess).'
-          : `Server returned HTML instead of JSON (HTTP ${res.status}). Edit api/config.php with MySQL credentials from Hostinger → Databases, then open /api/ping.php to verify.`,
+          ? 'API not found. Upload the full dist/ folder (it must include api/ and the root .htaccess).'
+          : res.status === 504 || res.status === 502
+            ? 'The mail server did not answer before the gateway timed out. Try Send Email again. If it keeps failing, open Settings → Email Setup and send a test from the certificates mailbox.'
+            : `Server returned HTML instead of JSON (HTTP ${res.status}). Open /api/ping.php to verify PHP and the database.`,
       );
     }
     throw new Error(
@@ -190,7 +195,20 @@ async function request(endpoint: string, options: RequestInit = {}) {
     const hint = typeof data.hint === 'string' ? data.hint.trim() : '';
     const det = typeof data.detail === 'string' ? data.detail.trim() : '';
     const emailErr = typeof data.email_error === 'string' ? data.email_error.trim() : '';
-    let msg = [errMsg, message, det, hint, emailErr].filter(Boolean).join(' — ');
+    const nestedErr = Array.isArray(data.errors)
+      ? data.errors
+          .map((row: unknown) => {
+            if (typeof row === 'string') return row.trim();
+            if (row && typeof row === 'object' && 'error' in row) {
+              return String((row as { error?: unknown }).error || '').trim();
+            }
+            return '';
+          })
+          .filter(Boolean)
+          .slice(0, 3)
+          .join('; ')
+      : '';
+    let msg = [errMsg, message, nestedErr, det, hint, emailErr].filter(Boolean).join(' — ');
     // Avoid duplicating the same SMTP detail twice when error already includes email_error
     if (errMsg && emailErr && errMsg.includes(emailErr)) {
       msg = [errMsg, message, det, hint].filter(Boolean).join(' — ');
@@ -291,16 +309,28 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ emails }),
       }),
-    loginWithGoogle: async (credential: string) => {
+    loginWithGoogle: async (credential: string, portal?: 'super_admin') => {
       const data = await request('/auth.php?action=google_login', {
         method: 'POST',
-        body: JSON.stringify({ credential }),
+        body: JSON.stringify({ credential, ...(portal ? { portal } : {}) }),
       });
       setToken(data.token);
       setStoredUser(data.user);
       if (data.organization) setStoredOrg(data.organization);
       return data;
     },
+    requestEmailChangeOtp: (data: { new_email: string; login_emails?: string[] }) =>
+      request('/auth.php?action=request_email_change_otp', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }) as Promise<{ message?: string; sent_to?: string; purpose?: string }>,
+    confirmEmailChange: (otp: string) =>
+      request('/auth.php?action=confirm_email_change', {
+        method: 'POST',
+        body: JSON.stringify({ otp }),
+      }) as Promise<{ message?: string; email?: string; emails?: { id?: string; email?: string }[] }>,
+    googleConfig: () =>
+      request('/auth.php?action=google_config') as Promise<{ client_id?: string; enabled?: boolean }>,
     signup: async (email: string, password: string, full_name: string, role?: string, invite_code?: string) => {
       const data = await request('/auth.php?action=signup', {
         method: 'POST',
@@ -418,6 +448,10 @@ export const api = {
       uncapped?: boolean;
       /** Stop client-side paging after this many rows (role caps / picker search). */
       maxRows?: number;
+      /** Only rows in this Leads source card (server scans, does not download the whole org first). */
+      source_bucket?: string;
+      /** Called after each page so the screen can render before later pages finish. */
+      onPage?: (page: { data: any[]; truncated?: boolean; total?: number }) => void;
     }) => {
       const buildQs = (limit: number, offset: number) => {
         const q = new URLSearchParams();
@@ -430,6 +464,7 @@ export const api = {
         if (params?.lite) q.set('lite', '1');
         if (params?.org_id) q.set('org_id', params.org_id);
         if (params?.status_changed) q.set('status_changed', params.status_changed);
+        if (params?.source_bucket) q.set('source_bucket', params.source_bucket);
         q.set('limit', String(limit));
         if (offset > 0) q.set('offset', String(offset));
         return q.toString();
@@ -460,6 +495,11 @@ export const api = {
         const rows = Array.isArray(data?.data) ? data.data : [];
         total = typeof data?.total === 'number' ? data.total : allRows.length + rows.length;
         allRows.push(...rows);
+        params?.onPage?.({
+          data: allRows.slice(0, softCap),
+          truncated: Boolean(data?.truncated),
+          total,
+        });
         const previousOffset = offset;
         const nextOffset = Number(data?.next_offset);
         offset = Number.isFinite(nextOffset) ? nextOffset : offset + rows.length;
@@ -505,6 +545,37 @@ export const api = {
           body: JSON.stringify({ action: 'bulk_delete', ids }),
         },
       ),
+    /** Source-card counts only. The Leads page draws cards from this instead of every lead row. */
+    sourceCards: (params?: { org_id?: string; form_leads?: boolean; referred_by?: string }) => {
+      const q = new URLSearchParams({ action: 'source_cards' });
+      if (params?.org_id) q.set('org_id', params.org_id);
+      if (params?.referred_by) q.set('referred_by', params.referred_by);
+      if (params?.form_leads === true) q.set('form_leads', '1');
+      else if (params?.form_leads === false) q.set('form_leads', '0');
+      return request<{
+        cards?: Array<{
+          key: string;
+          label: string;
+          isImport?: boolean;
+          isPeaklyy?: boolean;
+          isForm?: boolean;
+          isAdded?: boolean;
+          isMetaAd?: boolean;
+          total: number;
+          byStatus: Record<string, number>;
+          unassigned: number;
+          latestCreatedAtMs?: number;
+        }>;
+        kpi?: {
+          total: number;
+          new: number;
+          pipeline: number;
+          enrolled: number;
+          lost: number;
+          unassigned: number;
+        };
+      }>(`/leads.php?${q}`);
+    },
   },
 
   // Lead Management — source-card folders
@@ -678,9 +749,16 @@ export const api = {
 
   // Manual payment submissions (Payment Records → Payments / Approvals)
   manualPayments: {
-    list: (status: 'approved' | 'pending' | 'rejected' | 'all' = 'approved') =>
-      request(`/manual-payments.php?action=list&status=${encodeURIComponent(status)}`),
-    approvals: () => request('/manual-payments.php?action=approvals'),
+    list: (status: 'approved' | 'pending' | 'rejected' | 'all' = 'approved', orgId?: string) => {
+      const q = new URLSearchParams({ action: 'list', status });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/manual-payments.php?${q.toString()}`);
+    },
+    approvals: (orgId?: string) => {
+      const q = new URLSearchParams({ action: 'approvals' });
+      if (orgId) q.set('org_id', orgId);
+      return request(`/manual-payments.php?${q.toString()}`);
+    },
     create: async (fields: {
       amount: number | string;
       payment_method: string;
@@ -725,12 +803,13 @@ export const api = {
   },
 
   paymentCandidates: {
-    list: (params?: { owner_user_id?: string; search?: string; from?: number; to?: number }) => {
+    list: (params?: { owner_user_id?: string; search?: string; from?: number; to?: number; org_id?: string }) => {
       const q = new URLSearchParams({ action: 'list' });
       if (params?.owner_user_id) q.set('owner_user_id', params.owner_user_id);
       if (params?.search) q.set('search', params.search);
       if (params?.from !== undefined) q.set('from', String(params.from));
       if (params?.to !== undefined) q.set('to', String(params.to));
+      if (params?.org_id) q.set('org_id', params.org_id);
       return request(`/payment-candidates.php?${q.toString()}`);
     },
     detail: (id: string) =>
@@ -870,6 +949,7 @@ export const api = {
         method: 'POST',
         headers,
         body: fd,
+        credentials: 'include',
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as any)?.error || 'Logo upload failed');
@@ -887,6 +967,7 @@ export const api = {
         method: 'POST',
         headers,
         body: fd,
+        credentials: 'include',
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as any)?.error || 'QR upload failed');
@@ -1019,9 +1100,17 @@ export const api = {
       request(`/marketing.php?action=email_campaigns${params?.mine ? '&mine=1' : ''}`),
     createEmailCampaign: (data: any) => request('/marketing.php?action=email_campaigns', { method: 'POST', body: JSON.stringify(data) }),
     updateEmailCampaign: (id: string, data: any) => request(`/marketing.php?action=email_campaigns&id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    emailSends: (campaignIds: string[]) => {
-      if (!campaignIds.length) return Promise.resolve({ data: [] });
-      return request(`/marketing.php?action=email_sends&campaign_ids=${encodeURIComponent(campaignIds.join(','))}`);
+    emailSends: async (campaignIds: string[]) => {
+      if (!campaignIds.length) return { data: [] };
+      const chunkSize = 40;
+      const all: any[] = [];
+      for (let i = 0; i < campaignIds.length; i += chunkSize) {
+        const chunk = campaignIds.slice(i, i + chunkSize);
+        const res = await request(`/marketing.php?action=email_sends&campaign_ids=${encodeURIComponent(chunk.join(','))}`);
+        const rows = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+        all.push(...rows);
+      }
+      return { data: all };
     },
     createEmailSends: (campaignId: string, recipients: Array<string | { recipient_email?: string; email?: string; status?: string }>) =>
       request('/marketing.php?action=email_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
@@ -1054,9 +1143,17 @@ export const api = {
       request(`/marketing.php?action=whatsapp_campaigns${params?.mine ? '&mine=1' : ''}`),
     createWhatsappCampaign: (data: any) => request('/marketing.php?action=whatsapp_campaigns', { method: 'POST', body: JSON.stringify(data) }),
     updateWhatsappCampaign: (id: string, data: any) => request(`/marketing.php?action=whatsapp_campaigns&id=${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    whatsappSends: (campaignIds: string[]) => {
-      if (!campaignIds.length) return Promise.resolve({ data: [] });
-      return request(`/marketing.php?action=whatsapp_sends&campaign_ids=${encodeURIComponent(campaignIds.join(','))}`);
+    whatsappSends: async (campaignIds: string[]) => {
+      if (!campaignIds.length) return { data: [] };
+      const chunkSize = 40;
+      const all: any[] = [];
+      for (let i = 0; i < campaignIds.length; i += chunkSize) {
+        const chunk = campaignIds.slice(i, i + chunkSize);
+        const res = await request(`/marketing.php?action=whatsapp_sends&campaign_ids=${encodeURIComponent(chunk.join(','))}`);
+        const rows = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
+        all.push(...rows);
+      }
+      return { data: all };
     },
     createWhatsappSends: (campaignId: string, recipients: Array<string | { recipient_phone?: string; phone?: string; status?: string }>) =>
       request('/marketing.php?action=whatsapp_sends', { method: 'POST', body: JSON.stringify({ campaign_id: campaignId, recipients }) }),
@@ -1079,7 +1176,7 @@ export const api = {
       const token = getToken();
       const headers: Record<string, string> = {};
       if (token) headers.Authorization = `Bearer ${token}`;
-      const res = await fetch(`${API_BASE}/marketing.php?action=upload_resume`, { method: 'POST', headers, body: fd });
+      const res = await fetch(`${API_BASE}/marketing.php?action=upload_resume`, { method: 'POST', headers, body: fd, credentials: 'include' });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Resume upload failed');
       return data.resume_path as string;
@@ -1365,6 +1462,7 @@ export const api = {
         method: 'POST',
         headers,
         body: fd,
+        credentials: 'include',
       });
       const raw = await res.text();
       let data: Record<string, unknown> = {};
@@ -1394,14 +1492,19 @@ export const api = {
       request('/certificate-templates.php?action=types', { method: 'POST', body: JSON.stringify(data) }),
     deleteTemplate: (id: string) => request(`/certificate-templates.php?id=${id}`, { method: 'DELETE' }),
     listIssued: () => request('/issued-certificates.php'),
-    verifyPublic: (id: string, token: string) =>
-      request(`/public-certificate-verify.php?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}`),
-    /** Public issued PDF (token-gated; same file as email). No login redirect on failure. */
-    verifyPublicPdf: async (id: string, token: string): Promise<Blob> => {
+    verifyPublic: (id: string, token?: string) => {
+      const qs = new URLSearchParams({ id });
+      if (token) qs.set('token', token);
+      return request(`/public-certificate-verify.php?${qs.toString()}`);
+    },
+    /** Public issued PDF (same file as email). Token is optional; the cert id in the QR is enough. */
+    verifyPublicPdf: async (id: string, token?: string): Promise<Blob> => {
+      const qs = new URLSearchParams({ id, format: 'pdf' });
+      if (token) qs.set('token', token);
       let res: Response;
       try {
         res = await fetch(
-          `${API_BASE}/public-certificate-verify.php?id=${encodeURIComponent(id)}&token=${encodeURIComponent(token)}&format=pdf`,
+          `${API_BASE}/public-certificate-verify.php?${qs.toString()}`,
           { credentials: 'include' },
         );
       } catch {

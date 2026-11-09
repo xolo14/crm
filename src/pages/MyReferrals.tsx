@@ -53,7 +53,15 @@ export default function MyReferrals() {
       // List first — awaiting syncDailyReports(730) blocked this page for minutes
       // (org/manager syncs every sales rep × up to 730 dates before the spinner clears).
       const [leadsData, profilesData, reportsData] = await Promise.all([
-        api.leads.list({ lite: true, limit: 5000 }),
+        api.leads.list({
+          lite: true,
+          limit: 2000,
+          maxRows: 5000,
+          onPage: (page) => {
+            setAllLeads(page.data || []);
+            setLoading(false);
+          },
+        }),
         api.profiles.list(),
         api.dailyReports.list(),
       ]);

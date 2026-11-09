@@ -35,7 +35,7 @@ interface AuthContextType {
   organization: Organization | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signInWithGoogle: (credential: string) => Promise<void>;
+  signInWithGoogle: (credential: string, portal?: 'super_admin') => Promise<void>;
   signUp: (email: string, password: string, fullName: string, role?: string, inviteCode?: string) => Promise<void>;
   signOut: () => Promise<void>;
   switchOrg: (orgId: string | null) => Promise<void>;
@@ -117,8 +117,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOrganization(data.organization ?? null);
   }, []);
 
-  const signInWithGoogle = useCallback(async (credential: string) => {
-    const data = await api.auth.loginWithGoogle(credential);
+  const signInWithGoogle = useCallback(async (credential: string, portal?: 'super_admin') => {
+    const data = await api.auth.loginWithGoogle(credential, portal);
     setUser(data.user);
     setOrganization(data.organization ?? null);
   }, []);

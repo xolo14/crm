@@ -6,11 +6,14 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
+import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X, Download, ChevronLeft, ChevronRight, Paperclip } from 'lucide-react';
 import { BulkAssignDialog } from '@/components/BulkAssignDialog';
 import { SOURCE_BUCKET_LABELS, getPeaklyyAttemptCount, isAddedSourceBucket, isPeaklyySourceBucket, type LeadSourceBucket } from '@/lib/leadSources';
 import { cn } from '@/lib/utils';
 import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
+import { openProtectedUpload } from '@/lib/resumeHref';
+import { formatFormFieldLabel, parseFormLeadNotes } from '@/lib/parseFormLeadNotes';
 
 const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
 const SOURCE_CARD_PAGE_SIZES = [50, 100, 200] as const;
@@ -47,6 +50,8 @@ type SourceLeadsDialogProps = {
   title?: string;
   initialStatus?: string;
   leads: any[];
+  /** True while the first page of this card is still loading. */
+  leadsLoading?: boolean;
   teamMembers: TeamMember[];
   isManager: boolean;
   canBulkAssign: boolean;
@@ -83,6 +88,7 @@ export function SourceLeadsDialog({
   title,
   initialStatus = 'all',
   leads,
+  leadsLoading = false,
   teamMembers,
   isManager,
   canBulkAssign,
@@ -166,6 +172,23 @@ export function SourceLeadsDialog({
     return lead.assigned_to ? [String(lead.assigned_to)] : [];
   };
 
+  /** All uploaded files for a lead (resume + any other file-upload fields), de-duplicated. */
+  const leadFiles = (lead: any): { key: string; label: string; path: string }[] => {
+    const files: { key: string; label: string; path: string }[] = [];
+    const seen = new Set<string>();
+    if (lead.resume_path) {
+      files.push({ key: 'resume', label: 'Resume', path: lead.resume_path });
+      seen.add(lead.resume_path);
+    }
+    const parsed = parseFormLeadNotes(lead.notes);
+    for (const [key, path] of Object.entries(parsed.attachments)) {
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      files.push({ key, label: formatFormFieldLabel(key), path });
+    }
+    return files;
+  };
+
   const assigneeOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const lead of leads) {
@@ -175,7 +198,8 @@ export function SourceLeadsDialog({
         if (!id) return;
         if (currentUserId && id === String(currentUserId)) return;
         const fromTeam = teamMembers.find((m) => String(m.id) === id)?.full_name;
-        const raw = String(fromTeam || names[i] || '').trim();
+        const fromApi = String(lead?.assigned_to_name || '').trim();
+        const raw = String(fromTeam || names[i] || fromApi || '').trim();
         const name = !raw || /^assigned to self$/i.test(raw) ? 'Assigned' : raw;
         if (!byId.has(id)) byId.set(id, name);
       });
@@ -193,6 +217,14 @@ export function SourceLeadsDialog({
     const fromApi = String(lead?.created_by_name || '').trim();
     if (fromApi) return fromApi;
     return lead?.created_by ? 'Unknown' : '—';
+  };
+
+  const resolveAssignedLabel = (lead: any) => {
+    const names = getLeadAssignedNames(lead);
+    if (names.length > 0) return names.join(', ');
+    const fromApi = String(lead?.assigned_to_name || '').trim();
+    if (fromApi) return fromApi;
+    return lead?.assigned_to ? 'Assigned' : 'Unassigned';
   };
 
   const filtered = useMemo(() => {
@@ -548,14 +580,13 @@ export function SourceLeadsDialog({
                 {filtered.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-14">
                     <Users className="h-10 w-10 text-muted-foreground/30 mb-3" />
-                    <p className="text-sm text-muted-foreground">No leads in this view</p>
+                    <p className="text-sm text-muted-foreground">{leadsLoading ? 'Loading leads…' : 'No leads in this view'}</p>
                   </div>
                 ) : (
                   paginatedLeads.map((lead) => {
-                    const names = getLeadAssignedNames(lead);
-                    const assignedLabel =
-                      names.length > 0 ? names.join(', ') : lead.assigned_to ? 'Assigned' : 'Unassigned';
-                    const isAssigned = names.length > 0 || !!lead.assigned_to;
+                    const assignedLabel = resolveAssignedLabel(lead);
+                    const isAssigned =
+                      assignedLabel !== 'Unassigned' || !!lead.assigned_to || leadAssigneeIds(lead).length > 0;
                     const isActive = selectedLeadId && String(selectedLeadId) === String(lead.id);
                     return (
                       <div
@@ -681,6 +712,7 @@ export function SourceLeadsDialog({
                       )}
                       <TableHead>Lead</TableHead>
                       <TableHead>Contact</TableHead>
+                      <TableHead>Files</TableHead>
                       <TableHead>Status</TableHead>
                       {showAttempts && <TableHead>Attempts</TableHead>}
                       {showPaymentColumn && <TableHead>Payment</TableHead>}
@@ -696,7 +728,7 @@ export function SourceLeadsDialog({
                         <TableCell
                           colSpan={
                             (canSelect ? 1 : 0) +
-                            (isManager ? 7 : 5) +
+                            (isManager ? 8 : 6) +
                             (showAttempts ? 1 : 0) +
                             (showCreatedBy ? 1 : 0) +
                             (showPaymentColumn ? 1 : 0)
@@ -704,7 +736,7 @@ export function SourceLeadsDialog({
                           className="text-center py-12"
                         >
                           <Users className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
-                          <p className="text-sm text-muted-foreground">No leads in this view</p>
+                          <p className="text-sm text-muted-foreground">{leadsLoading ? 'Loading leads…' : 'No leads in this view'}</p>
                         </TableCell>
                       </TableRow>
                     ) : (
@@ -739,6 +771,49 @@ export function SourceLeadsDialog({
                               {lead.phone && (
                                 <div className="text-xs text-muted-foreground truncate">{lead.phone}</div>
                               )}
+                            </TableCell>
+                            <TableCell onClick={(e) => e.stopPropagation()}>
+                              {(() => {
+                                const files = leadFiles(lead);
+                                if (files.length === 0) return <span className="text-sm text-muted-foreground">—</span>;
+                                if (files.length === 1) {
+                                  return (
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8"
+                                      title={`View ${files[0].label}`}
+                                      onClick={() => {
+                                        void openProtectedUpload(files[0].path).catch(() => {});
+                                      }}
+                                    >
+                                      <Paperclip className="h-4 w-4 text-teal-600" />
+                                    </Button>
+                                  );
+                                }
+                                return (
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button variant="ghost" size="icon" className="h-8 w-8" title={`${files.length} files`}>
+                                        <Paperclip className="h-4 w-4 text-teal-600" />
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent container={portalEl} className="z-[110]">
+                                      <DropdownMenuLabel>Uploaded files</DropdownMenuLabel>
+                                      {files.map((f) => (
+                                        <DropdownMenuItem
+                                          key={f.key}
+                                          onClick={() => {
+                                            void openProtectedUpload(f.path).catch(() => {});
+                                          }}
+                                        >
+                                          {f.label}
+                                        </DropdownMenuItem>
+                                      ))}
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                );
+                              })()}
                             </TableCell>
                             <TableCell onClick={(e) => e.stopPropagation()}>
                               {canEditLead?.(lead) && onStatusChange ? (
@@ -795,10 +870,9 @@ export function SourceLeadsDialog({
                             {isManager && (
                               <TableCell>
                                 {(() => {
-                                  const names = getLeadAssignedNames(lead);
-                                  const assignedLabel =
-                                    names.length > 0 ? names.join(', ') : lead.assigned_to ? 'Assigned' : 'Unassigned';
-                                  const assigned = names.length > 0 || !!lead.assigned_to;
+                                  const assignedLabel = resolveAssignedLabel(lead);
+                                  const assigned =
+                                    assignedLabel !== 'Unassigned' || !!lead.assigned_to || leadAssigneeIds(lead).length > 0;
                                   return (
                                     <span className={`text-sm font-medium line-clamp-2 ${assigned ? '' : 'text-xs text-amber-600'}`}>
                                       {assignedLabel}

@@ -513,7 +513,7 @@ export function DocumentTemplateEditor({
     const box: OfferTextBox = {
       id: crypto.randomUUID(),
       type: 'text',
-      content: '{{candidate_name}}',
+      content: 'Enter text here',
       x: 50,
       y: 45,
       width: 42,
@@ -1252,13 +1252,34 @@ export function DocumentTemplateEditor({
   );
 }
 
-/** Remove persisted overlay markup so it never leaks into the contentEditable body. */
+/**
+ * Remove every `<div class="sync-text-boxes">...</div>` overlay wrapper (plus its
+ * persisted markers) so it never leaks into the contentEditable body. Walks matching
+ * tag depth via findMatchingDivClose instead of a lazy regex, which would stop at the
+ * first nested box div and leave sibling box markup — and the orphaned outer closing
+ * tag — behind whenever the overlay has more than one floating text/image box nested
+ * inside it. Handles multiple sibling overlays by repeating until none remain.
+ */
 export function stripOfferOverlayArtifacts(html: string): string {
   let out = html
     .replace(/<!--\s*SYNC_TEXT_BOXES:[\s\S]*?-->/gi, '')
-    .replace(/<div\s+class="sync-text-boxes"[^>]*>[\s\S]*?<\/div>/gi, '')
     .replace(/<!--\s*SYNC_OFFER_BODY:[\s\S]*?-->/gi, '')
     .replace(/<!--\s*SYNC_BODY_BOX:[\s\S]*?-->/gi, '');
+
+  const openRe = /<div\s+class="sync-text-boxes"[^>]*>/i;
+  for (;;) {
+    const openMatch = openRe.exec(out);
+    if (!openMatch || openMatch.index == null) break;
+    const openEnd = openMatch.index + openMatch[0].length;
+    const closeAt = findMatchingDivClose(out, openEnd);
+    if (closeAt < 0) {
+      // Unterminated overlay markup — drop from the opening tag onward rather than loop forever.
+      out = out.slice(0, openMatch.index);
+      break;
+    }
+    out = out.slice(0, openMatch.index) + out.slice(closeAt + '</div>'.length);
+  }
+
   // Stray horizontal rules often appear at the top of a moved text box
   out = out.replace(/^(?:\s|&nbsp;|<br\s*\/?>)*<hr\b[^>]*>/i, '');
   return out.trim();

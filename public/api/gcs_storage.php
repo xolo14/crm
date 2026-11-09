@@ -383,7 +383,7 @@ function syncpediaGcsSignedGetUrl(string $objectName, int $ttlSeconds = 600): ar
  * Download object bytes via signed URL.
  * @return array{ok: bool, bytes?: string, error?: string}
  */
-function syncpediaGcsDownloadObject(string $objectName): array
+function syncpediaGcsDownloadObject(string $objectName, int $timeoutSeconds = 45): array
 {
     if (!syncpediaGcsEnabled()) {
         return ['ok' => false, 'error' => 'GCS disabled'];
@@ -406,7 +406,8 @@ function syncpediaGcsDownloadObject(string $objectName): array
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $tok['token']],
-            CURLOPT_TIMEOUT => 120,
+            CURLOPT_CONNECTTIMEOUT => min(8, max(1, $timeoutSeconds)),
+            CURLOPT_TIMEOUT => max(1, $timeoutSeconds),
         ]);
         $body = curl_exec($ch);
         $errno = curl_errno($ch);
@@ -422,7 +423,8 @@ function syncpediaGcsDownloadObject(string $objectName): array
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_TIMEOUT => 120,
+        CURLOPT_CONNECTTIMEOUT => min(8, max(1, $timeoutSeconds)),
+        CURLOPT_TIMEOUT => max(1, $timeoutSeconds),
     ]);
     $body = curl_exec($ch);
     $errno = curl_errno($ch);

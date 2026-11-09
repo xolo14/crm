@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { LogIn } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
@@ -11,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { AUTH_PORTAL } from "@/lib/portalAuth";
 import { HostingerSetupBanner } from "@/components/HostingerSetupBanner";
 import { ForgotPasswordFlow } from "@/components/auth/ForgotPasswordFlow";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import {
   getPostLoginPath,
   isLoginPortalRole,
@@ -23,13 +25,14 @@ import loginHero from "@/assets/login-hero.webp";
 import syncpediaLogo from "@/assets/syncpedia-logo.webp";
 
 export default function LoginPortal() {
-  const { user, loading, signIn, signOut } = useAuth();
+  const { user, loading, signIn, signInWithGoogle, signOut } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [forgotOpen, setForgotOpen] = useState(false);
+  const [googleClientId, setGoogleClientId] = useState("");
 
   useEffect(() => {
     try {
@@ -37,6 +40,23 @@ export default function LoginPortal() {
     } catch {
       /* ignore */
     }
+  }, []);
+
+  useEffect(() => {
+    const fromEnv = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim();
+    if (fromEnv) {
+      setGoogleClientId(fromEnv);
+      return;
+    }
+    void (async () => {
+      try {
+        const data = await api.auth.googleConfig();
+        const id = String(data?.client_id || "").trim();
+        if (id) setGoogleClientId(id);
+      } catch {
+        /* Google button hidden until config is set */
+      }
+    })();
   }, []);
 
   if (loading) {
@@ -51,32 +71,49 @@ export default function LoginPortal() {
     return <Navigate to={getPostLoginPath(user.role, user.page_access)} replace />;
   }
 
+  const finishPortalSession = async () => {
+    let storedUser = JSON.parse(localStorage.getItem("auth_user") || "null") as Record<string, unknown> | null;
+    const role = String(storedUser?.role ?? "");
+
+    if (isSuperAdminPortalRole(role)) {
+      await signOut();
+      throw new Error("Super Admin accounts must sign in at /super_admin.");
+    }
+    if (!isLoginPortalRole(role)) {
+      await signOut();
+      throw new Error("This account cannot use the Login Portal.");
+    }
+
+    storedUser = await resolveMarketingLoginUser(storedUser);
+    syncHrLocalSession(storedUser);
+    navigate(
+      getPostLoginPath(String(storedUser?.role ?? role), (storedUser?.page_access as PageAccess | null | undefined) ?? null),
+      { replace: true },
+    );
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     try {
       await signIn(email.trim(), password);
-      let storedUser = JSON.parse(localStorage.getItem("auth_user") || "null") as Record<string, unknown> | null;
-      const role = String(storedUser?.role ?? "");
-
-      if (isSuperAdminPortalRole(role)) {
-        await signOut();
-        throw new Error("Super Admin accounts must sign in at /super_admin.");
-      }
-      if (!isLoginPortalRole(role)) {
-        await signOut();
-        throw new Error("This account cannot use the Login Portal.");
-      }
-
-      storedUser = await resolveMarketingLoginUser(storedUser);
-      syncHrLocalSession(storedUser);
-      navigate(
-        getPostLoginPath(String(storedUser?.role ?? role), (storedUser?.page_access as PageAccess | null | undefined) ?? null),
-        { replace: true },
-      );
+      await finishPortalSession();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Something went wrong";
       toast({ variant: "destructive", title: "Login failed", description: message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleGoogleCredential = async (credential: string) => {
+    setSubmitting(true);
+    try {
+      await signInWithGoogle(credential);
+      await finishPortalSession();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Something went wrong";
+      toast({ variant: "destructive", title: "Google sign-in failed", description: message });
     } finally {
       setSubmitting(false);
     }
@@ -119,9 +156,26 @@ export default function LoginPortal() {
             <Card className="border-border/50 shadow-xl shadow-primary/5 rounded-2xl">
               <CardHeader className="text-center pb-2 px-5 sm:px-6 pt-6">
                 <CardTitle className="text-xl font-bold">Login Portal</CardTitle>
-                <CardDescription>Sign in with your work email and password</CardDescription>
+                <CardDescription>Sign in with Google or your work email and password</CardDescription>
               </CardHeader>
               <CardContent className="px-5 sm:px-6 pb-6">
+                {googleClientId ? (
+                  <>
+                    <GoogleSignInButton
+                      clientId={googleClientId}
+                      onCredential={(cred) => void handleGoogleCredential(cred)}
+                      disabled={submitting}
+                    />
+                    <div className="relative my-4">
+                      <div className="absolute inset-0 flex items-center">
+                        <span className="w-full border-t border-border" />
+                      </div>
+                      <div className="relative flex justify-center text-xs uppercase">
+                        <span className="bg-card px-2 text-muted-foreground">or</span>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
                 <form onSubmit={handleLogin} className="space-y-4">
                   <div className="space-y-2">
                     <Label className="text-sm">Email</Label>

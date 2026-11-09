@@ -858,9 +858,38 @@ function paymentLinkProcessWebhookEvent(array $event): array
         'payment_link.partially_paid',
         'payment_link.cancelled',
         'payment_link.expired',
+        'order.paid',
+        'payment.captured',
     ];
     if (!in_array($type, $handled, true)) {
         return [];
+    }
+
+    if (in_array($type, ['order.paid', 'payment.captured'], true)) {
+        $payloadEarly = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+        $orderWrap = $payloadEarly['order'] ?? null;
+        $orderEntity = is_array($orderWrap) && is_array($orderWrap['entity'] ?? null)
+            ? $orderWrap['entity']
+            : (is_array($orderWrap) ? $orderWrap : null);
+        $payWrap = $payloadEarly['payment'] ?? null;
+        $payEntity = is_array($payWrap) && is_array($payWrap['entity'] ?? null)
+            ? $payWrap['entity']
+            : (is_array($payWrap) ? $payWrap : null);
+        $orderId = is_array($orderEntity) ? trim((string) ($orderEntity['id'] ?? '')) : '';
+        if ($orderId === '' && is_array($payEntity)) {
+            $orderId = trim((string) ($payEntity['order_id'] ?? ''));
+        }
+        if ($orderId === '' || !str_starts_with($orderId, 'order_')) {
+            return [];
+        }
+        $row = paymentLinkFindByRazorpayId($orderId);
+        if (!is_array($row)) {
+            return [];
+        }
+        if (!is_array($payEntity)) {
+            $payEntity = ['amount' => (int) ($row['amount'] ?? 0), 'order_id' => $orderId];
+        }
+        return paymentLinkProcessLeadFormOrderPaid($orderId, $payEntity);
     }
 
     $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];

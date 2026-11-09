@@ -93,6 +93,15 @@ function handlePaymentLinksWebhook(): void
             ? $plinkWrap['entity']
             : (is_array($plinkWrap) ? $plinkWrap : null);
         $plinkId = is_array($plinkEntity) ? trim((string) ($plinkEntity['id'] ?? '')) : '';
+        if ($plinkId === '') {
+            $payWrap = $payload['payment'] ?? $payload['order'] ?? null;
+            $payEnt = is_array($payWrap) && is_array($payWrap['entity'] ?? null)
+                ? $payWrap['entity']
+                : (is_array($payWrap) ? $payWrap : null);
+            if (is_array($payEnt)) {
+                $plinkId = trim((string) ($payEnt['order_id'] ?? $payEnt['id'] ?? ''));
+            }
+        }
         if ($plinkId !== '') {
             try {
                 $db = (new Database())->getConnection();
@@ -128,7 +137,7 @@ function handlePaymentLinksWebhook(): void
     }
 
     // Payment row is persisted before side-effects; fail so Razorpay retries receipt/enrollment.
-    if (in_array($type, ['payment_link.paid', 'payment_link.partially_paid'], true)) {
+    if (in_array($type, ['payment_link.paid', 'payment_link.partially_paid', 'order.paid', 'payment.captured'], true)) {
         $receipt = is_array($result['receipt'] ?? null) ? $result['receipt'] : null;
         if ($receipt !== null && empty($receipt['ok']) && empty($receipt['skipped'])) {
             error_log('[RAZORPAY WEBHOOK] receipt failed: ' . (string) ($receipt['error'] ?? 'unknown'));
@@ -718,6 +727,9 @@ try {
             if ($method !== 'GET') {
                 paymentLinksError('Method not allowed', 405);
             }
+            // Every call regenerates the invoice PDF (Dompdf render) — rate-limit to stop a
+            // script from hammering this into an expensive-render DoS.
+            syncpediaRateLimitConsume('payment_link_invoice', 30, 900);
             $plinkId = $id !== '' ? $id : trim((string) ($_GET['id'] ?? ''));
             if ($plinkId === '') {
                 paymentLinksError('Payment link id required', 400);

@@ -150,6 +150,21 @@ function isMysqlForeignKeyViolation(Throwable $e): bool
     return stripos($m, '1452') !== false || stripos($m, 'foreign key constraint') !== false;
 }
 
+/** True when the exception is MySQL's "server has gone away" (2006) or "lost connection" (2013). */
+function syncpediaIsGoneAwayError(Throwable $e): bool
+{
+    $code = $e instanceof PDOException ? (int) ($e->errorInfo[1] ?? 0) : 0;
+    if ($code === 2006 || $code === 2013) {
+        return true;
+    }
+    $m = $e->getMessage();
+
+    return stripos($m, '2006') !== false
+        || stripos($m, '2013') !== false
+        || stripos($m, 'server has gone away') !== false
+        || stripos($m, 'lost connection') !== false;
+}
+
 /**
  * Portable INSERT … upsert suffix (MySQL ON DUPLICATE KEY UPDATE / PostgreSQL ON CONFLICT).
  *

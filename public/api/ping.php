@@ -4,6 +4,12 @@
  * Always returns JSON (works before database is configured).
  */
 header('Content-Type: application/json; charset=UTF-8');
+// Same baseline headers as syncpediaSecurityHeaders() in helpers.php — inlined rather than
+// requiring helpers.php/bootstrap.php, since this endpoint must keep working even when
+// config.php is missing/broken (that's its whole purpose as a pre-setup deploy check).
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: strict-origin-when-cross-origin');
 
 $configPath = __DIR__ . '/config.php';
 

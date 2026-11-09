@@ -3,20 +3,33 @@
 if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && @realpath((string)$_SERVER['SCRIPT_FILENAME']) === @realpath(__FILE__)) { http_response_code(403); header('Content-Type: text/plain; charset=UTF-8'); echo 'Forbidden'; exit; }
 // Copy this file to config.php on Hostinger and fill in values from hPanel → Databases.
 
+/**
+ * Env-var-first secret lookup: if an OS/host environment variable of this name is set
+ * (e.g. configured in Hostinger's hPanel / your process manager), use it; otherwise fall
+ * back to the literal value below. This lets a secret be rotated or supplied by the host
+ * without ever being written into this PHP file on disk — prefer setting these via env vars
+ * in production rather than editing the fallback literals.
+ */
+function syncpediaEnvOr(string $envName, $fallback) {
+    $v = getenv($envName);
+    return ($v === false || $v === '') ? $fallback : $v;
+}
+
 // ── MySQL (Hostinger shared hosting) ───────────────────────────────────────
-define('DB_DRIVER', 'mysql');              // mysql on Hostinger
-define('DB_HOST', 'localhost');            // almost always localhost on Hostinger
-define('DB_PORT', '3306');
-define('DB_NAME', 'u123456789_syncpedia'); // database name from hPanel
-define('DB_USER', 'u123456789_crmuser');   // database user from hPanel
-define('DB_PASS', 'your_mysql_password');
+define('DB_DRIVER', syncpediaEnvOr('DB_DRIVER', 'mysql'));              // mysql on Hostinger
+define('DB_HOST', syncpediaEnvOr('DB_HOST', 'localhost'));            // almost always localhost on Hostinger
+define('DB_PORT', syncpediaEnvOr('DB_PORT', '3306'));
+define('DB_NAME', syncpediaEnvOr('DB_NAME', 'u123456789_syncpedia')); // database name from hPanel
+define('DB_USER', syncpediaEnvOr('DB_USER', 'u123456789_crmuser'));   // database user from hPanel
+define('DB_PASS', syncpediaEnvOr('DB_PASS', 'your_mysql_password'));
 define('DB_CHARSET', 'utf8mb4');
 
 // ── Auth ────────────────────────────────────────────────────────────────────
-define('JWT_SECRET', 'change-this-to-a-random-secret-key-at-least-32-chars');
+define('JWT_SECRET', syncpediaEnvOr('JWT_SECRET', 'change-this-to-a-random-secret-key-at-least-32-chars'));
 define('FRONTEND_URL', 'https://your-domain.com'); // REQUIRED in production — never use * (locks CORS to this origin)
 define('TOKEN_EXPIRY', 28800); // 8 hours — shorter TTL reduces blast radius of stolen JWTs
-define('GOOGLE_CLIENT_ID', ''); // optional
+define('GOOGLE_CLIENT_ID', syncpediaEnvOr('GOOGLE_CLIENT_ID', '')); // Web client ID. Android sign-in also needs an Android OAuth client (package com.syncpedia.crm + app SHA-1) in the same Google Cloud project.
+define('GOOGLE_CLIENT_SECRET', syncpediaEnvOr('GOOGLE_CLIENT_SECRET', '')); // keep on the server only; never expose via API or git
 define('APP_DEBUG', false); // true only on local dev — hides server paths in API errors
 define('SIGNUP_ENABLED', false); // public self-registration (requires invite codes below)
 define('MIN_PASSWORD_LENGTH', 8);
@@ -34,29 +47,29 @@ define('SMTP_HOST', 'smtp.hostinger.com'); // or smtp.titan.email
 define('SMTP_PORT', 587);                  // or 465 with ssl
 define('SMTP_ENCRYPTION', 'tls');          // 'tls' for 587, 'ssl' for 465
 define('SMTP_SUPPORT_USER', 'support@syncpedia.in');
-define('SMTP_SUPPORT_PASS', ''); // e.g. define('SMTP_SUPPORT_PASS', 'your-mailbox-password');
+define('SMTP_SUPPORT_PASS', syncpediaEnvOr('SMTP_SUPPORT_PASS', '')); // e.g. set SMTP_SUPPORT_PASS in the environment
 define('SMTP_HR_USER', 'hr@syncpedia.in');
-define('SMTP_HR_PASS', '');
+define('SMTP_HR_PASS', syncpediaEnvOr('SMTP_HR_PASS', ''));
 // Dedicated 32-byte key for encrypting organization Gmail App Passwords.
 // Generate once: php -r "echo base64_encode(random_bytes(32));"
 // Keep this value stable; changing it makes saved organization SMTP passwords unreadable.
-define('SMTP_CREDENTIAL_KEY_V1', '');
+define('SMTP_CREDENTIAL_KEY_V1', syncpediaEnvOr('SMTP_CREDENTIAL_KEY_V1', ''));
 // Do NOT enable on production — PHP mail() often returns true without delivering mail.
 define('SMTP_ALLOW_MAIL_FALLBACK', false);
 
 // ── Razorpay (optional — payment links) ─────────────────────────────────────
 // Optional platform fallback. Prefer Settings → Razorpay Setup (per organization).
-define('RAZORPAY_KEY_ID', '');
-define('RAZORPAY_KEY_SECRET', '');
-define('RAZORPAY_WEBHOOK_SECRET', '');
+define('RAZORPAY_KEY_ID', syncpediaEnvOr('RAZORPAY_KEY_ID', ''));
+define('RAZORPAY_KEY_SECRET', syncpediaEnvOr('RAZORPAY_KEY_SECRET', ''));
+define('RAZORPAY_WEBHOOK_SECRET', syncpediaEnvOr('RAZORPAY_WEBHOOK_SECRET', ''));
 define('CRM_PUBLIC_URL', ''); // leave empty to auto-detect from your domain
 
 // ── Meta Ads Marketing API (Settings → Meta Ads; hourly cron sync) ───────────
 // Create a Meta App with Facebook Login for Business + Marketing API (ads_read).
 // Valid OAuth redirect (must match Meta App → Facebook Login → Settings):
 //   https://YOUR_DOMAIN/api/meta-ads.php?action=oauth_callback
-define('META_ADS_APP_ID', '');
-define('META_ADS_APP_SECRET', '');
+define('META_ADS_APP_ID', syncpediaEnvOr('META_ADS_APP_ID', ''));
+define('META_ADS_APP_SECRET', syncpediaEnvOr('META_ADS_APP_SECRET', ''));
 define('META_ADS_GRAPH_VERSION', 'v19.0');
 // OAuth scopes — start with ads_read only. After Meta App Review grants Advanced Access
 // for leads_retrieval + Pages permissions, set:
@@ -73,7 +86,7 @@ define('META_ADS_GRAPH_VERSION', 'v19.0');
 // Auth header (either):
 //   Authorization: Bearer <PUBLIC_LEAD_API_KEY>
 //   X-Lead-Api-Key: <PUBLIC_LEAD_API_KEY>
-define('PUBLIC_LEAD_API_KEY', ''); // e.g. openssl rand -hex 24
+define('PUBLIC_LEAD_API_KEY', syncpediaEnvOr('PUBLIC_LEAD_API_KEY', '')); // e.g. openssl rand -hex 24
 // Lock all ingest leads to one org (REQUIRED — client org_id is rejected). Syncpedia:
 // define('LEAD_INGEST_ORG_ID', 'ea27b26d-4d0b-11f1-b983-e3ef033e3038');
 define('LEAD_INGEST_ORG_ID', ''); // REQUIRED before enable: organizations.id UUID — POST returns 503 if empty
@@ -83,32 +96,33 @@ define('LEAD_INGEST_EXTRA_ORIGINS', ''); // e.g. 'https://syncpedia.in,https://w
 
 // ── WhatsApp (optional — per-org config in Communications → WhatsApp Setup) ─
 // Meta Cloud API (direct):
-define('META_WHATSAPP_APP_ID', '');        // Meta App ID (for Embedded Signup OAuth)
-define('META_WHATSAPP_ACCESS_TOKEN', '');
-define('META_WHATSAPP_PHONE_NUMBER_ID', '');
-define('META_WHATSAPP_WABA_ID', '');
-define('META_WHATSAPP_APP_SECRET', '');
-define('META_WHATSAPP_WEBHOOK_VERIFY_TOKEN', '');
+define('META_WHATSAPP_APP_ID', syncpediaEnvOr('META_WHATSAPP_APP_ID', ''));        // Meta App ID (for Embedded Signup OAuth)
+define('META_WHATSAPP_ACCESS_TOKEN', syncpediaEnvOr('META_WHATSAPP_ACCESS_TOKEN', ''));
+define('META_WHATSAPP_PHONE_NUMBER_ID', syncpediaEnvOr('META_WHATSAPP_PHONE_NUMBER_ID', ''));
+define('META_WHATSAPP_WABA_ID', syncpediaEnvOr('META_WHATSAPP_WABA_ID', ''));
+define('META_WHATSAPP_APP_SECRET', syncpediaEnvOr('META_WHATSAPP_APP_SECRET', ''));
+define('META_WHATSAPP_WEBHOOK_VERIFY_TOKEN', syncpediaEnvOr('META_WHATSAPP_WEBHOOK_VERIFY_TOKEN', ''));
 // Optional aliases (webhook handler reads these or META_* above):
-define('WHATSAPP_VERIFY_TOKEN', '');   // e.g. openssl rand -hex 16 — paste same value in Meta App Dashboard
-define('WHATSAPP_APP_SECRET', '');     // Meta App → Settings → Basic → App secret (X-Hub-Signature-256)
-define('WHATSAPP_ACCESS_TOKEN', '');   // System user / permanent token for Graph API sends
+define('WHATSAPP_VERIFY_TOKEN', syncpediaEnvOr('WHATSAPP_VERIFY_TOKEN', ''));   // e.g. openssl rand -hex 16 — paste same value in Meta App Dashboard
+define('WHATSAPP_APP_SECRET', syncpediaEnvOr('WHATSAPP_APP_SECRET', ''));     // Meta App → Settings → Basic → App secret (X-Hub-Signature-256)
+define('WHATSAPP_ACCESS_TOKEN', syncpediaEnvOr('WHATSAPP_ACCESS_TOKEN', ''));   // System user / permanent token for Graph API sends
 
 // ── Optional n8n automation (server-side only — never put these in VITE_*) ───
-define('N8N_WHATSAPP_WEBHOOK', '');
-define('N8N_EMAIL_WEBHOOK', '');
+define('N8N_WHATSAPP_WEBHOOK', syncpediaEnvOr('N8N_WHATSAPP_WEBHOOK', ''));
+define('N8N_EMAIL_WEBHOOK', syncpediaEnvOr('N8N_EMAIL_WEBHOOK', ''));
 
 // ── Google Cloud Storage (issued offer-letter + certificate PDFs) ───────────
 // Private bucket + service-account JSON outside public_html. Leave disabled until configured.
 define('GCS_ENABLED', false);
-define('GCS_BUCKET', ''); // e.g. syncpedia-crm-docs
+define('GCS_BUCKET', syncpediaEnvOr('GCS_BUCKET', '')); // e.g. syncpedia-crm-docs
 // Absolute path on Hostinger, e.g. '/home/u123456789/private/gcs-sa.json' (chmod 600)
-define('GCS_SA_JSON_PATH', '');
+define('GCS_SA_JSON_PATH', syncpediaEnvOr('GCS_SA_JSON_PATH', ''));
 
 // ── LMS Classes (Syncpedia only — Match LMS / Access Users) ─────────────────
-// Set the live key on VPS api/config.php only — never commit the real key.
+// Set the live key via the LMS_CLASSES_API_KEY environment variable in production —
+// never commit the real key into this file.
 // Enable get_course_list + get_batch_schedule (and student list/create if available)
 // on the key in lmsclasses.com. Courses can fall back to /api/public/courses.
-define('LMS_CLASSES_API_KEY', ''); // REQUIRED on VPS: paste live key in config.php only (never commit)
+define('LMS_CLASSES_API_KEY', syncpediaEnvOr('LMS_CLASSES_API_KEY', '')); // REQUIRED on VPS: set via env var (never commit the real key)
 define('LMS_CLASSES_BASE_URL', 'https://lmsclasses.com');
 // On lmsclasses.com → API keys: enable get_course_list + get_batch_schedule (and student scopes if used).

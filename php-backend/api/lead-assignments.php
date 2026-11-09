@@ -49,7 +49,12 @@ if ($method === 'GET') {
             LIMIT 500
         ");
         $stmt->execute(array_merge([$userId, $userId], $params));
-        respond(['data' => $stmt->fetchAll()]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        syncpediaFillUserRecordLabelsOnRows($db, $rows, [
+            'assigned_to' => 'assigned_to_name',
+            'created_by' => 'created_by_name',
+        ]);
+        respond(['data' => $rows]);
     }
     if ($action === 'my_form_leads') {
         $status = trim((string)($_GET['status'] ?? ''));
@@ -81,7 +86,12 @@ if ($method === 'GET') {
             LIMIT 500
         ");
         $stmt->execute($params);
-        respond(['data' => $stmt->fetchAll()]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        syncpediaFillUserRecordLabelsOnRows($db, $rows, [
+            'assigned_to' => 'assigned_to_name',
+            'created_by' => 'created_by_name',
+        ]);
+        respond(['data' => $rows]);
     }
 
     $leadId = $_GET['lead_id'] ?? '';
@@ -148,7 +158,12 @@ if ($method === 'GET') {
             respond(['data' => []]);
         }
     }
-    respond(['data' => $stmt->fetchAll()]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    syncpediaFillUserRecordLabelsOnRows($db, $rows, [
+        'user_id' => 'user_name',
+        'assigned_to' => 'assigned_user_name',
+    ]);
+    respond(['data' => $rows]);
 }
 
 if ($method === 'POST') {

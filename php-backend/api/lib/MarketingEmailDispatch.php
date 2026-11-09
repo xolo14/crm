@@ -714,6 +714,169 @@ function marketingDispatchEmailCampaign(
     ];
 }
 
+/**
+ * How long a row may sit in status='sending' before it's considered stuck (worker crashed or
+ * lost its connection mid-send and the status write never landed). Configurable via a
+ * MARKETING_STUCK_SEND_STALE_MINUTES constant in config.php; defaults to 10 minutes, which is
+ * roughly an order of magnitude longer than a single row's realistic processing time (the drain
+ * loop sleeps 3s between rows, and one SMTP attempt — including its own transport-level
+ * timeouts/retries — normally completes in well under a minute).
+ */
+function marketingStuckSendStaleMinutes(): int
+{
+    if (defined('MARKETING_STUCK_SEND_STALE_MINUTES')) {
+        $v = (int) MARKETING_STUCK_SEND_STALE_MINUTES;
+        if ($v >= 3) {
+            return $v;
+        }
+    }
+    return 10;
+}
+
+/**
+ * Run $run($db) and, if it throws because the MySQL connection dropped (error 2006/2013),
+ * reconnect once via Database::reconnect() and retry exactly one time with the fresh handle.
+ * $db is passed by reference so the caller's connection is updated for subsequent calls too.
+ *
+ * Only ever wrap pure DB operations here — never the actual SMTP send — so a reconnect can
+ * never cause an email to be sent twice.
+ *
+ * If $reacquireLockName is given, re-acquires that MySQL named lock on the fresh connection
+ * immediately after reconnecting (a dropped connection silently releases any lock it held,
+ * since GET_LOCK is session-scoped — this restores the invariant as quickly as possible).
+ */
+function marketingRunWithReconnect(PDO &$db, callable $run, ?string $reacquireLockName = null)
+{
+    try {
+        return $run($db);
+    } catch (Throwable $e) {
+        if (!syncpediaIsGoneAwayError($e)) {
+            throw $e;
+        }
+        error_log('[MarketingEmailDispatch] DB connection dropped (' . $e->getMessage() . '); reconnecting and retrying once');
+        $db = Database::reconnect();
+        if ($reacquireLockName !== null) {
+            try {
+                $rl = $db->prepare('SELECT GET_LOCK(?, 5)');
+                $rl->execute([$reacquireLockName]);
+                $rl->fetchColumn();
+                $rl->closeCursor();
+            } catch (Throwable $e2) {
+                error_log('[MarketingEmailDispatch] could not re-acquire ' . $reacquireLockName . ' after reconnect: ' . $e2->getMessage());
+            }
+        }
+        return $run($db);
+    }
+}
+
+/**
+ * Atomically claim one pending send row so it can never be picked up and sent twice. Once a
+ * row is 'sending', the SELECT that feeds the send loop (status='pending') can never select it
+ * again — the only way back to 'pending' is an admin's explicit, confirmed resolve_stuck_send
+ * call (see marketingResolveStuckSend()).
+ */
+function marketingClaimSendRow(PDO &$db, string $id): bool
+{
+    try {
+        return (bool) marketingRunWithReconnect($db, function (PDO $conn) use ($id) {
+            $st = $conn->prepare("UPDATE email_sends SET status = 'sending', sent_at = NOW() WHERE id = ? AND status = 'pending'");
+            $st->execute([$id]);
+            return $st->rowCount() > 0;
+        }, 'syncpedia_mkt_email');
+    } catch (Throwable $e) {
+        error_log('[marketingClaimSendRow] id=' . $id . ': ' . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Record final status for a send row; survives one dropped-connection reconnect. Returns false
+ * only if the write failed even after the retry — the row then stays 'sending' (never reverts
+ * to 'pending'), so it is never auto-resent; it surfaces via marketingListStuckSends() instead.
+ */
+function marketingMarkSendStatus(PDO &$db, string $id, string $status, ?string $error, ?string $sentAt): bool
+{
+    try {
+        return (bool) marketingRunWithReconnect($db, function (PDO $conn) use ($id, $status, $error, $sentAt) {
+            $upd = $conn->prepare('UPDATE email_sends SET status = ?, error_message = ?, sent_at = ? WHERE id = ?');
+            $upd->execute([$status, $error, $sentAt, $id]);
+            return true;
+        }, 'syncpedia_mkt_email');
+    } catch (Throwable $e) {
+        error_log('[marketingMarkSendStatus] CRITICAL: could not record final status for email_sends.id=' . $id . ' status=' . $status . ': ' . $e->getMessage() . ' — row left in its current state to avoid duplicate send; check list_stuck_sends.');
+        return false;
+    }
+}
+
+/**
+ * Rows stuck in 'sending' longer than the stale threshold — the worker almost certainly died or
+ * lost its DB connection mid-send and the status write never landed. We do NOT know whether the
+ * SMTP call itself succeeded, so these are reported for an admin to check (e.g. against the mail
+ * provider's own send log) and resolve explicitly via marketingResolveStuckSend(). Nothing here
+ * changes any row.
+ */
+function marketingListStuckSends(PDO $db, ?int $staleMinutes = null): array
+{
+    $minutes = $staleMinutes ?? marketingStuckSendStaleMinutes();
+    try {
+        $st = $db->prepare(
+            "SELECT es.id, es.campaign_id, ec.name AS campaign_name, es.recipient_email, es.sent_at AS claimed_at
+             FROM email_sends es
+             LEFT JOIN email_campaigns ec ON ec.id = es.campaign_id
+             WHERE es.status = 'sending'
+               AND es.sent_at IS NOT NULL
+               AND es.sent_at <= (NOW() - INTERVAL ? MINUTE)
+             ORDER BY es.sent_at ASC
+             LIMIT 500"
+        );
+        $st->execute([$minutes]);
+        return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (Throwable $e) {
+        error_log('[marketingListStuckSends] ' . $e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Resolve one stuck 'sending' row by an explicit, confirmed admin decision. This is the ONLY
+ * code path that can move a row out of 'sending' other than the original send attempt itself —
+ * there is no automatic sweep that marks a stuck row as failed or requeues it.
+ *
+ * @param string $decision 'mark_sent' | 'mark_failed' | 'requeue'
+ * @return array{ok:bool, error?:string, changed?:bool}
+ */
+function marketingResolveStuckSend(PDO $db, string $id, string $decision, bool $confirm): array
+{
+    if (!$confirm) {
+        return ['ok' => false, 'error' => 'This action requires explicit confirmation (confirm: true).'];
+    }
+    $id = trim($id);
+    if ($id === '') {
+        return ['ok' => false, 'error' => 'id required'];
+    }
+    $map = [
+        'mark_sent' => ['sent', null, true],
+        'mark_failed' => ['failed', 'Marked failed by an administrator after manual review.', false],
+        'requeue' => ['pending', null, false],
+    ];
+    if (!isset($map[$decision])) {
+        return ['ok' => false, 'error' => 'decision must be one of mark_sent, mark_failed, requeue'];
+    }
+    [$status, $errorMsg, $setSentNow] = $map[$decision];
+    try {
+        $st = $db->prepare(
+            'UPDATE email_sends SET status = ?, error_message = ?, sent_at = ? WHERE id = ? AND status = \'sending\''
+        );
+        $st->execute([$status, $errorMsg, $setSentNow ? date('Y-m-d H:i:s') : null, $id]);
+        $changed = $st->rowCount() > 0;
+        error_log("[marketingResolveStuckSend] id={$id} decision={$decision} changed=" . ($changed ? '1' : '0'));
+        return ['ok' => true, 'changed' => $changed];
+    } catch (Throwable $e) {
+        error_log('[marketingResolveStuckSend] id=' . $id . ': ' . $e->getMessage());
+        return ['ok' => false, 'error' => 'Could not update this row'];
+    }
+}
+
 /** Finish the HTTP response, then send due campaign mail without the 120 second page limit. */
 function marketingEchoJsonAndContinue(array $data, int $status = 200): void
 {
@@ -741,7 +904,7 @@ function marketingEchoJsonAndContinue(array $data, int $status = 200): void
 /**
  * @return array{scanned:int,sent:int,failed:int,skipped:int}
  */
-function marketingProcessDueEmailSends(PDO $db, int $limit = 200): array
+function marketingProcessDueEmailSends(PDO &$db, int $limit = 200): array
 {
     $out = ['scanned' => 0, 'sent' => 0, 'failed' => 0, 'skipped' => 0];
     $lock = $db->query("SELECT GET_LOCK('syncpedia_mkt_email', 0)");
@@ -767,7 +930,7 @@ function marketingProcessDueEmailSends(PDO $db, int $limit = 200): array
 /**
  * @return array{scanned:int,sent:int,failed:int,skipped:int}
  */
-function marketingProcessDueEmailSendsLocked(PDO $db, int $limit = 200): array
+function marketingProcessDueEmailSendsLocked(PDO &$db, int $limit = 200): array
 {
     $out = ['scanned' => 0, 'sent' => 0, 'failed' => 0, 'skipped' => 0];
     marketingEnsureEmailDispatchSchema($db);
@@ -778,24 +941,25 @@ function marketingProcessDueEmailSendsLocked(PDO $db, int $limit = 200): array
     require_once __DIR__ . '/../mail_transport.php';
 
     try {
-        $st = $db->query(
-            "SELECT es.*, ec.org_id AS campaign_org_id, ec.smtp_account_id AS campaign_smtp,
-                    ed.attachment_path AS draft_attachment_path, ed.attachment_name AS draft_attachment_name
-             FROM email_sends es
-             INNER JOIN email_campaigns ec ON ec.id = es.campaign_id
-             LEFT JOIN email_drafts ed ON ed.id = ec.draft_id
-             WHERE es.status = 'pending'
-               AND (es.scheduled_at IS NULL OR es.scheduled_at <= NOW())
-             ORDER BY es.scheduled_at ASC
-             LIMIT " . max(1, (int) $limit)
-        );
-        $rows = $st ? $st->fetchAll(PDO::FETCH_ASSOC) : [];
+        $rows = marketingRunWithReconnect($db, function (PDO $conn) use ($limit) {
+            $st = $conn->query(
+                "SELECT es.*, ec.org_id AS campaign_org_id, ec.smtp_account_id AS campaign_smtp,
+                        ed.attachment_path AS draft_attachment_path, ed.attachment_name AS draft_attachment_name
+                 FROM email_sends es
+                 INNER JOIN email_campaigns ec ON ec.id = es.campaign_id
+                 LEFT JOIN email_drafts ed ON ed.id = ec.draft_id
+                 WHERE es.status = 'pending'
+                   AND (es.scheduled_at IS NULL OR es.scheduled_at <= NOW())
+                 ORDER BY es.scheduled_at ASC
+                 LIMIT " . max(1, (int) $limit)
+            );
+            return $st ? $st->fetchAll(PDO::FETCH_ASSOC) : [];
+        }, 'syncpedia_mkt_email');
     } catch (Throwable $e) {
         error_log('[marketingProcessDueEmailSends] list: ' . $e->getMessage());
         return $out;
     }
 
-    $upd = $db->prepare('UPDATE email_sends SET status = ?, error_message = ?, sent_at = ? WHERE id = ?');
     $touchedCampaigns = [];
 
     foreach ($rows as $row) {
@@ -816,11 +980,7 @@ function marketingProcessDueEmailSendsLocked(PDO $db, int $limit = 200): array
                     ? 'No email body was saved for this recipient, so it was not sent.'
                     : 'This send row is incomplete, so it was not sent.');
             if ($id !== '') {
-                try {
-                    $upd->execute(['failed', $reason, null, $id]);
-                } catch (Throwable $e) {
-                    error_log('[marketingProcessDueEmailSends] update: ' . $e->getMessage());
-                }
+                marketingMarkSendStatus($db, $id, 'failed', $reason, null);
                 $out['failed']++;
                 $cid = trim((string) ($row['campaign_id'] ?? ''));
                 if ($cid !== '') {
@@ -830,18 +990,20 @@ function marketingProcessDueEmailSendsLocked(PDO $db, int $limit = 200): array
             $out['skipped']++;
             continue;
         }
+
+        // Claim before doing anything else: once this flips to 'sending', the SELECT above
+        // (status='pending') can never select this row again, so it can never be sent twice —
+        // even if everything below this point fails, including the final status write.
+        if (!marketingClaimSendRow($db, $id)) {
+            // Already claimed/processed (shouldn't normally happen under the outer GET_LOCK,
+            // but stay safe rather than risk a double-send).
+            $out['skipped']++;
+            continue;
+        }
+
         $mailbox = marketingLoadOrgMailbox($db, $orgId, $smtpId);
         if ($mailbox === null) {
-            try {
-                $upd->execute([
-                    'failed',
-                    'The mailbox for this campaign is missing or inactive. Check Email Setup.',
-                    null,
-                    $id,
-                ]);
-            } catch (Throwable $e) {
-                error_log('[marketingProcessDueEmailSends] update: ' . $e->getMessage());
-            }
+            marketingMarkSendStatus($db, $id, 'failed', 'The mailbox for this campaign is missing or inactive. Check Email Setup.', null);
             $out['failed']++;
             $cid = trim((string) ($row['campaign_id'] ?? ''));
             if ($cid !== '') {
@@ -851,6 +1013,8 @@ function marketingProcessDueEmailSendsLocked(PDO $db, int $limit = 200): array
         }
         $fromName = $mailbox['from_name'] !== '' ? $mailbox['from_name'] : ($mailbox['label'] !== '' ? $mailbox['label'] : 'Syncpedia');
         $accountId = $mailbox['id'];
+        // The actual SMTP send: exactly once per row, never wrapped in marketingRunWithReconnect
+        // (that wrapper is for DB operations only) and never retried by this code.
         $res = marketingSendOneCampaignEmail(
             $orgId,
             $accountId,
@@ -864,15 +1028,15 @@ function marketingProcessDueEmailSendsLocked(PDO $db, int $limit = 200): array
             ])
         );
         $ok = !empty($res['ok']);
-        try {
-            $upd->execute([
-                $ok ? 'sent' : 'failed',
-                $ok ? null : (trim((string) ($res['error'] ?? '')) ?: 'Send failed. The mail server did not accept this message.'),
-                $ok ? date('Y-m-d H:i:s') : null,
-                $id,
-            ]);
-        } catch (Throwable $e) {
-            error_log('[marketingProcessDueEmailSends] update: ' . $e->getMessage());
+        $wrote = marketingMarkSendStatus(
+            $db,
+            $id,
+            $ok ? 'sent' : 'failed',
+            $ok ? null : (trim((string) ($res['error'] ?? '')) ?: 'Send failed. The mail server did not accept this message.'),
+            $ok ? date('Y-m-d H:i:s') : null
+        );
+        if (!$wrote) {
+            error_log("[marketingProcessDueEmailSends] CRITICAL: status write failed for email_sends.id={$id} after send attempt (smtp ok=" . ($ok ? '1' : '0') . "). Row left in 'sending' — will surface via list_stuck_sends, never auto-resent.");
         }
         if ($ok) {
             $out['sent']++;
@@ -887,23 +1051,26 @@ function marketingProcessDueEmailSendsLocked(PDO $db, int $limit = 200): array
 
     foreach (array_keys($touchedCampaigns) as $cid) {
         try {
-            $agg = $db->prepare(
-                "SELECT
-                    COUNT(*) AS total_count,
-                    SUM(CASE WHEN status = 'sent' AND sent_at IS NOT NULL AND sent_at > '1970-01-02 00:00:00' THEN 1 ELSE 0 END) AS sent_count,
-                    SUM(CASE WHEN status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at > NOW() THEN 1 ELSE 0 END) AS pending_count,
-                    SUM(CASE WHEN status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= NOW()) THEN 1 ELSE 0 END) AS sending_count
-                 FROM email_sends WHERE campaign_id = ?"
-            );
-            $agg->execute([$cid]);
-            $c = $agg->fetch(PDO::FETCH_ASSOC) ?: [];
-            $sentC = (int) ($c['sent_count'] ?? 0);
-            $pendC = (int) ($c['pending_count'] ?? 0);
-            $sendC = (int) ($c['sending_count'] ?? 0);
-            $failC = max(0, (int) ($c['total_count'] ?? 0) - $sentC - $pendC - $sendC);
-            $stt = marketingCampaignStatusFromCounts($sentC, $failC, $pendC, $sendC);
-            $db->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
-                ->execute([$sentC, $failC, $pendC + $sendC, $stt, $cid]);
+            marketingRunWithReconnect($db, function (PDO $conn) use ($cid) {
+                $agg = $conn->prepare(
+                    "SELECT
+                        COUNT(*) AS total_count,
+                        SUM(CASE WHEN status = 'sent' AND sent_at IS NOT NULL AND sent_at > '1970-01-02 00:00:00' THEN 1 ELSE 0 END) AS sent_count,
+                        SUM(CASE WHEN status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at > NOW() THEN 1 ELSE 0 END) AS pending_count,
+                        SUM(CASE WHEN status = 'pending' AND (scheduled_at IS NULL OR scheduled_at <= NOW()) THEN 1 ELSE 0 END) AS sending_count
+                     FROM email_sends WHERE campaign_id = ?"
+                );
+                $agg->execute([$cid]);
+                $c = $agg->fetch(PDO::FETCH_ASSOC) ?: [];
+                $sentC = (int) ($c['sent_count'] ?? 0);
+                $pendC = (int) ($c['pending_count'] ?? 0);
+                $sendC = (int) ($c['sending_count'] ?? 0);
+                $failC = max(0, (int) ($c['total_count'] ?? 0) - $sentC - $pendC - $sendC);
+                $stt = marketingCampaignStatusFromCounts($sentC, $failC, $pendC, $sendC);
+                $conn->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
+                    ->execute([$sentC, $failC, $pendC + $sendC, $stt, $cid]);
+                return true;
+            }, 'syncpedia_mkt_email');
         } catch (Throwable $e) {
             error_log('[marketingProcessDueEmailSends] campaign: ' . $e->getMessage());
         }
@@ -938,7 +1105,7 @@ function marketingCountDueEmailSends(PDO $db): int
  *
  * @return array{scanned:int,sent:int,failed:int,skipped:int}
  */
-function marketingDrainDueEmailCampaigns(PDO $db): array
+function marketingDrainDueEmailCampaigns(PDO &$db): array
 {
     @set_time_limit(0);
     ignore_user_abort(true);
@@ -1063,10 +1230,29 @@ function marketingRetryFailedEmailCampaign(PDO $db, string $campaignId): array
         error_log('[marketingRetryFailedEmailCampaign] ' . $e->getMessage());
     }
 
+    // Report (never touch) rows stuck in 'sending' for this campaign — ambiguous delivery
+    // status, never automatically folded into a retry. An admin must resolve each one
+    // explicitly via resolve_stuck_send after checking the mail provider's own send log.
+    $stuckCount = 0;
+    try {
+        $stuckSt = $db->prepare(
+            "SELECT COUNT(*) FROM email_sends
+             WHERE campaign_id = ? AND status = 'sending' AND sent_at IS NOT NULL
+               AND sent_at <= (NOW() - INTERVAL ? MINUTE)"
+        );
+        $stuckSt->execute([$campaignId, marketingStuckSendStaleMinutes()]);
+        $stuckCount = (int) $stuckSt->fetchColumn();
+        $stuckSt->closeCursor();
+    } catch (Throwable $e) {
+        error_log('[marketingRetryFailedEmailCampaign] stuck count: ' . $e->getMessage());
+    }
+
     return [
         'ok' => true,
         'queued' => $queued,
         'error' => null,
-        'message' => "Sending {$queued}. You can leave this page; they go out about every 3 seconds.",
+        'stuck_sending' => $stuckCount,
+        'message' => "Sending {$queued}. You can leave this page; they go out about every 3 seconds."
+            . ($stuckCount > 0 ? " ({$stuckCount} earlier send(s) have an unresolved status — an admin can review them under Stuck Sends.)" : ''),
     ];
 }

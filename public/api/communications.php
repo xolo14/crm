@@ -30,7 +30,7 @@ function commIsSuperAdmin(array $tokenData): bool {
 
 function commIsAdmin(array $tokenData): bool {
     $r = commNormRole($tokenData);
-    return in_array($r, ['super_admin', 'admin', 'org', 'manager'], true);
+    return in_array($r, ['super_admin', 'admin', 'org', 'manager', 'operational_manager'], true);
 }
 
 /** Roles allowed to send WhatsApp and load hub operational data. */
@@ -125,7 +125,7 @@ function commCanAssignVirtualNumbers(array $tokenData): bool
 function commCanAssignNumbersToEmployees(array $tokenData): bool
 {
     $r = commNormRole($tokenData);
-    return in_array($r, ['super_admin', 'admin', 'org', 'manager'], true);
+    return in_array($r, ['super_admin', 'admin', 'org', 'manager', 'operational_manager'], true);
 }
 
 /** Assign a virtual number to org admin users (admin / org roles) in the target organization. */

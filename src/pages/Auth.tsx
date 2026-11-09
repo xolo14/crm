@@ -8,19 +8,18 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { Shield, Mail } from "lucide-react";
 import loginHero from "@/assets/login-hero.webp";
+import superAdminMark from "@/assets/syncpedia-super-admin.png";
 import { AUTH_PORTAL, pathnameToAuthRoleParam } from "@/lib/portalAuth";
 import { HostingerSetupBanner } from "@/components/HostingerSetupBanner";
 import { ForgotPasswordFlow } from "@/components/auth/ForgotPasswordFlow";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import { getPostLoginPath, isSuperAdminPortalRole } from "@/lib/postLoginRoute";
 import { normalizeAppRole } from "@/lib/roleUtils";
 
 const SUPER_ADMIN_PORTAL = {
   label: "Super Admin Portal",
   desc: "Master control for all organizations, analytics & platform settings",
-  gradient: "from-amber-600 to-orange-700",
-  iconColor: "text-amber-100",
 } as const;
 
 export default function Auth() {
@@ -32,23 +31,16 @@ export default function Auth() {
 }
 
 function SuperAdminAuth() {
-  const { user, loading, signIn, signOut } = useAuth();
+  const { user, loading, signIn, signInWithGoogle, signOut } = useAuth();
   const { toast } = useToast();
   const navigate = useNavigate();
-  const location = useLocation();
 
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [googleClientId, setGoogleClientId] = useState("");
   const [forgotOpen, setForgotOpen] = useState(false);
-  /** Default: passwordless email. "Try another way" → password. */
-  const [loginMode, setLoginMode] = useState<"email" | "password">("email");
-  const [emailSent, setEmailSent] = useState(false);
-  const [pollToken, setPollToken] = useState<string | null>(null);
-  const [emailWaitError, setEmailWaitError] = useState("");
-  const [completingEmailLogin, setCompletingEmailLogin] = useState(false);
   const wrongPortalSignOutRef = useRef(false);
-  const emailOkHandled = useRef(false);
 
   const roleMatchesPortal = (rawRole?: string | null) => isSuperAdminPortalRole(normalizeAppRole(rawRole));
 
@@ -60,76 +52,25 @@ function SuperAdminAuth() {
     }
   }, []);
 
-  // Finish session after user clicked "Yes" in the approval email
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    if (params.get("email_ok") !== "1" || emailOkHandled.current) return;
-    emailOkHandled.current = true;
-    setCompletingEmailLogin(true);
+    const fromEnv = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim();
+    if (fromEnv) {
+      setGoogleClientId(fromEnv);
+      return;
+    }
     void (async () => {
       try {
-        localStorage.setItem("auth_session", "1");
-        const data = await api.auth.me();
-        if (!roleMatchesPortal(data.user?.role)) {
-          await api.auth.logout();
-          throw new Error("This account is not a Super Admin.");
-        }
-        toast({ title: "Signed in", description: "Email login approved." });
-        window.location.replace(getPostLoginPath(data.user.role));
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : "Could not complete email login";
-        toast({ variant: "destructive", title: "Login failed", description: message });
-        navigate("/super_admin", { replace: true });
-        setCompletingEmailLogin(false);
+        const data = await api.auth.googleConfig();
+        const id = String(data?.client_id || "").trim();
+        if (id) setGoogleClientId(id);
+      } catch {
+        /* Google button hidden until config is set */
       }
     })();
-  }, [location.search, navigate, toast]);
+  }, []);
 
   useEffect(() => {
-    if (!pollToken) return;
-    let cancelled = false;
-    let busy = false;
-    const tick = async () => {
-      if (cancelled || busy) return;
-      busy = true;
-      try {
-        const data = await api.auth.pollSuperAdminEmailLogin(pollToken);
-        if (cancelled) return;
-        if (data?.status === "signed_in") {
-          cancelled = true;
-          if (!roleMatchesPortal(data.user?.role)) {
-            await api.auth.logout();
-            setPollToken(null);
-            setEmailWaitError("This account is not a Super Admin. Request a new email.");
-            return;
-          }
-          toast({ title: "Signed in", description: "Email login approved." });
-          window.location.replace(getPostLoginPath(data.user?.role));
-          return;
-        }
-        if (data?.status === "expired" || data?.status === "invalid" || data?.status === "used") {
-          cancelled = true;
-          setPollToken(null);
-          setEmailWaitError("This login link expired or was already used. Request a new email.");
-        }
-      } catch {
-        // Keep polling through a brief network error.
-      } finally {
-        busy = false;
-      }
-    };
-    void tick();
-    const id = window.setInterval(() => {
-      void tick();
-    }, 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [pollToken, toast]);
-
-  useEffect(() => {
-    if (loading || !user || completingEmailLogin) return;
+    if (loading || !user) return;
     if (roleMatchesPortal(user.role)) return;
     if (normalizeAppRole(user.role) === "assessment_viewer") return;
     if (wrongPortalSignOutRef.current) return;
@@ -143,7 +84,7 @@ function SuperAdminAuth() {
       });
       wrongPortalSignOutRef.current = false;
     })();
-  }, [loading, user, signOut, toast, completingEmailLogin]);
+  }, [loading, user, signOut, toast]);
 
   const finalizePortalAndNavigate = useCallback(async () => {
     const storedUser = JSON.parse(localStorage.getItem("auth_user") || "null");
@@ -154,7 +95,7 @@ function SuperAdminAuth() {
     navigate(getPostLoginPath(storedUser?.role), { replace: true });
   }, [signOut, navigate]);
 
-  if (loading || completingEmailLogin) {
+  if (loading) {
     return (
       <div className="flex min-h-dvh items-center justify-center">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -165,28 +106,6 @@ function SuperAdminAuth() {
   if (user && roleMatchesPortal(user.role)) {
     return <Navigate to={getPostLoginPath(user.role)} replace />;
   }
-
-  const handleEmailLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSubmitting(true);
-    setEmailSent(false);
-    setEmailWaitError("");
-    setPollToken(null);
-    try {
-      const res = await api.auth.requestSuperAdminEmailLogin(loginEmail.trim());
-      setEmailSent(true);
-      const token = typeof res?.poll_token === "string" ? res.poll_token : "";
-      setPollToken(token || null);
-      toast({
-        title: "Check your email",
-        description: "Click Yes, log me in. This page will open the app when you do.",
-      });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Something went wrong";
-      toast({ variant: "destructive", title: "Could not send login email", description: message });
-    }
-    setSubmitting(false);
-  };
 
   const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -201,6 +120,19 @@ function SuperAdminAuth() {
     setSubmitting(false);
   };
 
+  const handleGoogleCredential = async (credential: string) => {
+    setSubmitting(true);
+    try {
+      await signInWithGoogle(credential, "super_admin");
+      await finalizePortalAndNavigate();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Something went wrong";
+      toast({ variant: "destructive", title: "Google sign-in failed", description: message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <>
       <div className="flex min-h-screen min-h-[100dvh]">
@@ -208,9 +140,12 @@ function SuperAdminAuth() {
           <img src={loginHero} alt="Syncpedia CRM Dashboard" className="absolute inset-0 w-full h-full object-cover" decoding="async" fetchPriority="high" />
           <div className="absolute inset-0 bg-black/50" />
           <div className="relative z-10 px-12 max-w-lg text-center">
-            <div className="h-20 w-20 rounded-2xl bg-white/15 backdrop-blur-sm flex items-center justify-center mx-auto mb-6">
-              <Shield className={`h-10 w-10 ${SUPER_ADMIN_PORTAL.iconColor}`} />
-            </div>
+            <img
+              src={superAdminMark}
+              alt="Syncpedia"
+              className="h-24 w-24 rounded-2xl object-cover mx-auto mb-6 shadow-lg ring-1 ring-white/20"
+              decoding="async"
+            />
             <h1 className="text-4xl font-extrabold text-white mb-3 tracking-tight">{SUPER_ADMIN_PORTAL.label}</h1>
             <p className="text-lg text-white/80 font-medium">Syncpedia CRM</p>
             <p className="text-sm text-white/60 mt-3 leading-relaxed">{SUPER_ADMIN_PORTAL.desc}</p>
@@ -221,9 +156,12 @@ function SuperAdminAuth() {
           <div className="w-full max-w-md">
             <HostingerSetupBanner />
             <div className="flex flex-col items-center gap-3 mb-8 lg:hidden">
-              <div className={`h-14 w-14 rounded-2xl bg-gradient-to-br ${SUPER_ADMIN_PORTAL.gradient} flex items-center justify-center shadow-lg`}>
-                <Shield className="h-7 w-7 text-white" />
-              </div>
+              <img
+                src={superAdminMark}
+                alt="Syncpedia"
+                className="h-14 w-14 rounded-2xl object-cover shadow-lg ring-1 ring-border"
+                decoding="async"
+              />
               <div className="text-center">
                 <p className="text-lg font-bold text-foreground">{SUPER_ADMIN_PORTAL.label}</p>
                 <p className="text-xs text-muted-foreground">Syncpedia CRM</p>
@@ -233,107 +171,62 @@ function SuperAdminAuth() {
             <Card className="border-border/50 shadow-xl shadow-primary/5 rounded-2xl">
               <CardHeader className="text-center pb-2 px-5 sm:px-6 pt-6">
                 <CardTitle className="text-xl font-bold">{SUPER_ADMIN_PORTAL.label}</CardTitle>
-                <CardDescription>
-                  {loginMode === "email"
-                    ? "Sign in with an allowed email — confirm via the link we send"
-                    : "Sign in with email and password"}
-                </CardDescription>
+                <CardDescription>Sign in with Google, or email and password</CardDescription>
               </CardHeader>
               <CardContent className="px-5 sm:px-6 pb-6">
-                {loginMode === "email" ? (
+                {googleClientId ? (
                   <>
-                    <form onSubmit={handleEmailLogin} className="space-y-4">
-                      <div className="space-y-2">
-                        <Label className="text-sm">Email</Label>
-                        <Input
-                          type="email"
-                          required
-                          value={loginEmail}
-                          onChange={(e) => setLoginEmail(e.target.value)}
-                          placeholder="you@syncpedia.in"
-                          maxLength={255}
-                          className="h-12 rounded-xl"
-                          autoComplete="username"
-                        />
+                    <GoogleSignInButton
+                      clientId={googleClientId}
+                      onCredential={(cred) => void handleGoogleCredential(cred)}
+                      disabled={submitting}
+                    />
+                    <div className="relative my-4">
+                      <div className="absolute inset-0 flex items-center">
+                        <span className="w-full border-t border-border" />
                       </div>
-                      <Button type="submit" className="w-full h-12 rounded-xl text-sm font-semibold" disabled={submitting}>
-                        {submitting ? "Sending…" : "Login"}
-                      </Button>
-                    </form>
-                    {emailSent ? (
-                      <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-900 flex gap-2">
-                        <Mail className="h-4 w-4 shrink-0 mt-0.5" />
-                        <p>
-                          Check your inbox on any device and click <strong>Yes, log me in</strong>. This page stays open and signs you in here. The link expires in 15 minutes.
-                        </p>
+                      <div className="relative flex justify-center text-xs uppercase">
+                        <span className="bg-card px-2 text-muted-foreground">or</span>
                       </div>
-                    ) : null}
-                    {emailWaitError ? (
-                      <p className="mt-3 text-sm text-destructive">{emailWaitError}</p>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="text-xs text-primary hover:underline w-full text-center mt-4"
-                      onClick={() => {
-                        setLoginMode("password");
-                        setEmailSent(false);
-                        setPollToken(null);
-                        setEmailWaitError("");
-                      }}
-                    >
-                      Try another way
-                    </button>
+                    </div>
                   </>
-                ) : (
-                  <>
-                    <form onSubmit={handlePasswordLogin} className="space-y-4">
-                      <div className="space-y-2">
-                        <Label className="text-sm">Email</Label>
-                        <Input
-                          type="email"
-                          required
-                          value={loginEmail}
-                          onChange={(e) => setLoginEmail(e.target.value)}
-                          placeholder="you@syncpedia.in"
-                          maxLength={255}
-                          className="h-12 rounded-xl"
-                          autoComplete="username"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-sm">Password</Label>
-                        <PasswordInput
-                          required
-                          value={loginPassword}
-                          onChange={(e) => setLoginPassword(e.target.value)}
-                          placeholder="••••••••"
-                          className="h-12 rounded-xl"
-                          autoComplete="current-password"
-                        />
-                      </div>
-                      <Button type="submit" className="w-full h-12 rounded-xl text-sm font-semibold" disabled={submitting}>
-                        {submitting ? "Logging in…" : "Login with password"}
-                      </Button>
-                    </form>
-                    <button
-                      type="button"
-                      className="text-xs text-primary hover:underline w-full text-center mt-4"
-                      onClick={() => setForgotOpen(true)}
-                    >
-                      Forgot password?
-                    </button>
-                    <button
-                      type="button"
-                      className="text-xs text-muted-foreground hover:underline w-full text-center mt-2"
-                      onClick={() => {
-                        setLoginMode("email");
-                        setLoginPassword("");
-                      }}
-                    >
-                      Back to email login
-                    </button>
-                  </>
-                )}
+                ) : null}
+                <form onSubmit={handlePasswordLogin} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label className="text-sm">Email</Label>
+                    <Input
+                      type="email"
+                      required
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      placeholder="you@syncpedia.in"
+                      maxLength={255}
+                      className="h-12 rounded-xl"
+                      autoComplete="username"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-sm">Password</Label>
+                    <PasswordInput
+                      required
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="h-12 rounded-xl"
+                      autoComplete="current-password"
+                    />
+                  </div>
+                  <Button type="submit" className="w-full h-12 rounded-xl text-sm font-semibold" disabled={submitting}>
+                    {submitting ? "Logging in…" : "Login"}
+                  </Button>
+                </form>
+                <button
+                  type="button"
+                  className="text-xs text-primary hover:underline w-full text-center mt-4"
+                  onClick={() => setForgotOpen(true)}
+                >
+                  Forgot password?
+                </button>
                 <p className="text-[11px] text-muted-foreground text-center mt-4">
                   Org admins and staff use the{" "}
                   <a href={AUTH_PORTAL.login} className="text-primary hover:underline">

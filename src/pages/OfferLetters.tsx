@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -42,6 +43,7 @@ import {
   applyMappedValuesToBulkRow,
   applyMappedValuesToSendState,
   applyOfferPlaceholders,
+  applyOfferPlaceholdersHtml,
   canonicalOfferPlaceholderKey,
   findMissingOfferPlaceholders,
   getOfferPlaceholderValue,
@@ -569,6 +571,23 @@ export default function OfferLetters() {
 
   const [templates, setTemplates] = useState<OfferTemplate[]>([]);
   const [sentLetters, setSentLetters] = useState<SentLetter[]>([]);
+  const [sentSearch, setSentSearch] = useState('');
+  const [sentTemplateFilter, setSentTemplateFilter] = useState('all');
+  const templateNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of templates) map.set(t.id, t.template_name);
+    return map;
+  }, [templates]);
+  const filteredSentLetters = useMemo(() => {
+    const q = sentSearch.trim().toLowerCase();
+    return sentLetters.filter((s) => {
+      if (sentTemplateFilter !== 'all' && (s.template_id || '') !== sentTemplateFilter) return false;
+      if (!q) return true;
+      const templateName = s.template_id ? templateNameById.get(s.template_id) || '' : '';
+      const hay = [s.recipient_name, s.recipient_email, s.role_title, templateName].join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  }, [sentLetters, sentSearch, sentTemplateFilter, templateNameById]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('templates');
 
@@ -892,8 +911,16 @@ export default function OfferLetters() {
   };
 
   const saveTemplate = async () => {
-    if (!templateForm.template_name || !templateForm.role_title) {
+    if (!templateForm.template_name.trim()) {
+      toast({ variant: 'destructive', title: 'Name required', description: 'Please enter an offer letter template name.' });
+      return;
+    }
+    if (!templateForm.role_title) {
       toast({ variant: 'destructive', title: 'Name and role title are required' }); return;
+    }
+    if (!templateForm.html_content || !templateForm.html_content.trim()) {
+      toast({ variant: 'destructive', title: 'Content required', description: 'Please add offer letter content before saving.' });
+      return;
     }
     const mail_json = {
       mail_subject: templateForm.mail_subject,
@@ -1088,7 +1115,14 @@ export default function OfferLetters() {
   const renderOfferPlaceholders = (text: string, values: Record<string, string>): string =>
     applyOfferPlaceholders(text, withOfferFallbackValues(values));
 
-  const replacePlaceholders = (html: string) => renderOfferPlaceholders(html, offerSendValues());
+  // HTML-context rendering (letter body / mail body / preview / PDF / print): escapes
+  // candidate/lead values so they can't break the markup or inject HTML — unlike
+  // renderOfferPlaceholders above, which stays raw for plain-text contexts
+  // (mail subject, filename pattern, bare email address lookups).
+  const renderOfferPlaceholdersHtml = (text: string, values: Record<string, string>): string =>
+    applyOfferPlaceholdersHtml(text, withOfferFallbackValues(values));
+
+  const replacePlaceholders = (html: string) => renderOfferPlaceholdersHtml(html, offerSendValues());
 
   const dynamicOfferPlaceholderKeys = useMemo(() => {
     if (!sendTemplate) return [] as string[];
@@ -1199,7 +1233,7 @@ export default function OfferLetters() {
     const toFromTemplate = renderOfferPlaceholders(`{{${mailCfg.recipient_email_placeholder}}}`, values).trim();
     // Compose must use the template's saved mail subject/body (placeholders replaced).
     const renderedSubject = renderOfferPlaceholders(mailCfg.mail_subject || '', values).trim();
-    const renderedBody = renderOfferPlaceholders(mailCfg.mail_body || '', values);
+    const renderedBody = renderOfferPlaceholdersHtml(mailCfg.mail_body || '', values);
     const attachmentPattern = renderOfferPlaceholders(
       mailCfg.pdf_filename_pattern || '{{candidate_name}}_OfferLetter.pdf',
       values,
@@ -1605,9 +1639,9 @@ export default function OfferLetters() {
             probation_period: candidate.probation_period,
             ...(bulkExtraByRowId[candidate.id] || {}),
           });
-          const finalHtml = renderOfferPlaceholders(bulkTemplate.html_content, values);
+          const finalHtml = renderOfferPlaceholdersHtml(bulkTemplate.html_content, values);
           const renderedSubject = renderOfferPlaceholders(mailCfg.mail_subject, values).trim();
-          const renderedBody = renderOfferPlaceholders(mailCfg.mail_body || '', values);
+          const renderedBody = renderOfferPlaceholdersHtml(mailCfg.mail_body || '', values);
           const recipientTokenKey = (mailCfg.recipient_email_placeholder || 'recipient_email').replace(/^\{\{|\}\}$/g, '');
           const resolvedTo = values[recipientTokenKey] || candidate.recipient_email;
           const attachmentName = renderOfferPlaceholders(
@@ -2192,7 +2226,11 @@ export default function OfferLetters() {
         </TabsContent>
 
         <TabsContent value="issued">
-          <DocIssuedPanel docKind="offer_letter" canDelete={canDeleteLetters} />
+          <DocIssuedPanel
+            docKind="offer_letter"
+            canDelete={canDeleteLetters}
+            templates={templates.map((t) => ({ id: t.id, label: `${t.template_name} (${t.role_title || "—"})` }))}
+          />
         </TabsContent>
 
         <TabsContent value="templates">
@@ -2236,12 +2274,37 @@ export default function OfferLetters() {
           )}
         </TabsContent>
 
-        <TabsContent value="sent">
+        <TabsContent value="sent" className="space-y-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Input
+              value={sentSearch}
+              onChange={(e) => setSentSearch(e.target.value)}
+              placeholder="Search name, email, role…"
+              className="h-9 sm:max-w-xs"
+            />
+            <Select value={sentTemplateFilter} onValueChange={setSentTemplateFilter}>
+              <SelectTrigger className="h-9 sm:w-[260px]">
+                <SelectValue placeholder="All templates" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All templates</SelectItem>
+                {templates.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.template_name} ({t.role_title || '—'})</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           {sentLetters.length === 0 ? (
             <Card>
               <CardContent className="flex flex-col items-center justify-center py-12">
                 <Mail className="h-12 w-12 text-muted-foreground/30 mb-3" />
                 <p className="text-sm text-muted-foreground">No offer letters sent yet.</p>
+              </CardContent>
+            </Card>
+          ) : filteredSentLetters.length === 0 ? (
+            <Card>
+              <CardContent className="py-10 text-center">
+                <p className="text-sm text-muted-foreground">No letters match this search.</p>
               </CardContent>
             </Card>
           ) : (
@@ -2252,6 +2315,7 @@ export default function OfferLetters() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Recipient</TableHead>
+                        <TableHead>Template</TableHead>
                         <TableHead>Email</TableHead>
                         <TableHead>Role</TableHead>
                         <TableHead>Status</TableHead>
@@ -2260,9 +2324,10 @@ export default function OfferLetters() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {sentLetters.map(s => (
+                      {filteredSentLetters.map(s => (
                         <TableRow key={s.id}>
                           <TableCell className="font-medium">{s.recipient_name}</TableCell>
+                          <TableCell className="text-sm">{s.template_id ? (templateNameById.get(s.template_id) || '—') : '—'}</TableCell>
                           <TableCell className="text-sm text-muted-foreground">{s.recipient_email}</TableCell>
                           <TableCell><Badge variant="outline" className="text-[10px]">{s.role_title}</Badge></TableCell>
                           <TableCell><Badge variant={s.status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{s.status}</Badge></TableCell>

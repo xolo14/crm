@@ -77,7 +77,7 @@ export function isSalesRepRole(role?: string | null): boolean {
   return normalizeAppRole(role) === "sales_representative";
 }
 
-/** L2 Operational Manager — org ops (forms, students, payment records read-only). */
+/** L2 Operational Manager — same manager-level rights when the page is granted. */
 export function isOperationalManagerRole(role?: string | null): boolean {
   return normalizeAppRole(role) === "operational_manager";
 }
@@ -92,6 +92,3 @@ export function isMarketingFamilyRole(role?: string | null): boolean {
   return normalizeAppRole(role) === "marketing";
 }
 
-export function isSalesMarketingRole(role?: string | null): boolean {
-  return false;
-}

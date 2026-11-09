@@ -210,7 +210,7 @@ function teamCallerCanSendWelcomeTo(PDO $db, array $tokenData, array $targetUser
         return true;
     }
 
-    if ($callerRole === 'manager') {
+    if (in_array($callerRole, ['manager', 'operational_manager'], true)) {
         $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
         return in_array($targetId, $visibleIds, true);
     }
@@ -365,9 +365,26 @@ if ($method === 'POST') {
     try {
         $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, reports_to_id, referral_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
         $stmt->execute([$id, $email, $hash, $fullName, $phone, $memberRole, $orgId, $reportsToId, $refCode]);
-    } catch (Exception $e) {
-        $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, referral_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$id, $email, $hash, $fullName, $phone, $memberRole, $orgId, $refCode]);
+    } catch (PDOException $e) {
+        if (isMysqlDuplicateKey($e)) {
+            // A concurrent signup won the race for this email between our pre-check (above) and
+            // this insert — report it the same way the sequential pre-check already does.
+            respond(['error' => 'Email already exists'], 409);
+        }
+        $isUnknownReportsToColumn = stripos($e->getMessage(), 'unknown column') !== false
+            && preg_match('/unknown column\s+[\'`]?reports_to_id[\'`]?/i', $e->getMessage()) === 1;
+        if (!$isUnknownReportsToColumn) {
+            throw $e; // anything else is a real, unexpected failure — do not silently retry it
+        }
+        try {
+            $stmt = $db->prepare("INSERT INTO users (id, email, password_hash, full_name, phone, role, org_id, referral_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            $stmt->execute([$id, $email, $hash, $fullName, $phone, $memberRole, $orgId, $refCode]);
+        } catch (PDOException $e2) {
+            if (isMysqlDuplicateKey($e2)) {
+                respond(['error' => 'Email already exists'], 409);
+            }
+            throw $e2;
+        }
     }
     syncpediaStoreUserLoginPassword($db, $id, (string) $password);
 
@@ -446,7 +463,7 @@ if ($method === 'PUT') {
         respond(['error' => 'ID required'], 400);
     }
     $callerRole = normalizeRoleValue((string) ($tokenData['role'] ?? ''));
-    $isManagerCaller = $callerRole === 'manager';
+    $isManagerCaller = in_array($callerRole, ['manager', 'operational_manager'], true);
 
     if ($isManagerCaller) {
         $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
@@ -454,7 +471,7 @@ if ($method === 'PUT') {
             respond(['error' => 'You can only update members on your team'], 403);
         }
         $input = getInput();
-        // Managers may only change page-access toggles on their L1 reports.
+        // Managers / OMs may only change page-access toggles on their L1 reports.
         if (!array_key_exists('page_access', $input)) {
             respond(['error' => 'Managers can only update page access toggles for team members'], 403);
         }
@@ -528,7 +545,7 @@ if ($method === 'PUT') {
         $allowedRoles = [];
         if (in_array($callerRole, ['super_admin', 'org'], true)) {
             $allowedRoles = array_merge(['manager', 'operational_manager'], syncpediaL1AssignableRoles(), ['student']);
-        } elseif ($callerRole === 'manager') {
+        } elseif (in_array($callerRole, ['manager', 'operational_manager'], true)) {
             $allowedRoles = syncpediaL1AssignableRoles();
         }
 
@@ -667,11 +684,11 @@ if ($method === 'DELETE') {
     }
 
     try {
-        $chk = $db->prepare("SELECT id, role, org_id, full_name, reports_to_id FROM users WHERE id = ? LIMIT 1");
+        $chk = $db->prepare("SELECT id, role, org_id, full_name, referral_code, reports_to_id FROM users WHERE id = ? LIMIT 1");
         $chk->execute([$id]);
         $target = $chk->fetch();
     } catch (Throwable $e) {
-        $chk = $db->prepare("SELECT id, role, org_id, full_name FROM users WHERE id = ? LIMIT 1");
+        $chk = $db->prepare("SELECT id, role, org_id, full_name, referral_code FROM users WHERE id = ? LIMIT 1");
         $chk->execute([$id]);
         $target = $chk->fetch();
     }
@@ -692,6 +709,7 @@ if ($method === 'DELETE') {
 
     // Archive full user payload to trash before deletion.
     trashArchiveRow($db, 'team_member', 'users', $id, $tokenData);
+    syncpediaArchiveDeletedUser($db, is_array($target) ? $target : ['id' => $id]);
 
     // Clean reporting relationships for downline users.
     try {

@@ -7,6 +7,7 @@ import {
   Bell,
   Calendar,
   CheckSquare,
+  ClipboardCheck,
   ClipboardList,
   FileCheck,
   LayoutDashboard,
@@ -19,6 +20,7 @@ import {
   Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { assessmentsApi } from "@/services/assessments";
 import { useAuth } from "@/hooks/useAuth";
 import { hrHasPageAccess } from "@/lib/hrPageAccess";
 import { canAccessFormManagement, canAccessOfferLetters } from "@/lib/orgAccess";
@@ -39,6 +41,7 @@ const navItems: { to: string; label: string; icon: typeof LayoutDashboard; acces
   { to: "/hr/communications", label: "Communications", icon: PhoneCall, accessKey: "communications" },
   { to: "/hr/holidays", label: "Holidays", icon: Calendar, accessKey: "holidays" },
   { to: "/hr/coupons", label: "Coupons", icon: Tag, accessKey: "" },
+  { to: "/hr/assignments", label: "Assignments", icon: ClipboardCheck, accessKey: "" },
   { to: "/hr/offer-letters", label: "Offer Letters", icon: FileCheck, accessKey: "offer_letters" },
   { to: "/hr/form-management", label: "Form Management", icon: ClipboardList, accessKey: "form_management" },
   { to: "/hr/settings", label: "Settings", icon: Settings, accessKey: "settings" },
@@ -49,12 +52,14 @@ function NavLinks({
   pageAccess,
   organization,
   role,
+  hasAssignedAssignments,
   onNavigate,
 }: {
   unreadCount: number;
   pageAccess?: PageAccess | null;
   organization?: { slug?: string | null; features?: Record<string, boolean> | null } | null;
   role?: string | null;
+  hasAssignedAssignments?: boolean;
   onNavigate?: () => void;
 }) {
   const visible = navItems.filter((item) => {
@@ -66,6 +71,11 @@ function NavLinks({
       item.accessKey === FEATURE_FORM_MANAGEMENT &&
       !canAccessFormManagement(role ?? null, organization ?? null, pageAccess)
     ) {
+      return false;
+    }
+    // Assignments: not an admin-grantable page — shown only once a Super Admin has
+    // actually assigned this HR user an assignment (mirrors the main CRM sidebar).
+    if (item.to === "/hr/assignments" && !hasAssignedAssignments) {
       return false;
     }
     return true;
@@ -114,6 +124,11 @@ export default function HRLayout({ children }: { children: ReactNode }) {
     (Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []).filter(
       (n: { is_read?: number | boolean }) => !Number(n.is_read),
     ).length;
+  const { data: myAssignmentsRes } = useQuery({
+    queryKey: ["my_assignments"],
+    queryFn: () => assessmentsApi.myAssignments(),
+  });
+  const hasAssignedAssignments = Boolean(myAssignmentsRes?.data && myAssignmentsRes.data.length > 0);
 
   const logout = () => {
     api.hr.logout();
@@ -124,7 +139,13 @@ export default function HRLayout({ children }: { children: ReactNode }) {
     <div className="flex h-dvh max-h-dvh bg-background overflow-hidden">
       <aside className="hidden w-60 border-r bg-sidebar text-sidebar-foreground md:flex md:flex-col shrink-0">
         <div className="border-b border-sidebar-border px-4 py-4 text-lg font-bold">HR Portal</div>
-        <NavLinks unreadCount={unreadCount} pageAccess={pageAccess} organization={organization} role={user?.role} />
+        <NavLinks
+          unreadCount={unreadCount}
+          pageAccess={pageAccess}
+          organization={organization}
+          role={user?.role}
+          hasAssignedAssignments={hasAssignedAssignments}
+        />
       </aside>
 
       {/* Mobile header — owns safe-area-inset-top */}
@@ -147,6 +168,7 @@ export default function HRLayout({ children }: { children: ReactNode }) {
                 pageAccess={pageAccess}
                 organization={organization}
                 role={user?.role}
+                hasAssignedAssignments={hasAssignedAssignments}
                 onNavigate={() => setSheetOpen(false)}
               />
             </SheetContent>

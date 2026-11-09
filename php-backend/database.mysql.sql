@@ -248,6 +248,10 @@ CREATE TABLE IF NOT EXISTS `leads` (
   `next_follow_up` DATETIME DEFAULT NULL,
   `org_id` CHAR(36) DEFAULT NULL,
   `created_by` CHAR(36) DEFAULT NULL,
+  `source_key` VARCHAR(255) DEFAULT NULL,
+  `source_label` VARCHAR(255) DEFAULT NULL,
+  `source_gate_key` VARCHAR(255) DEFAULT NULL,
+  `source_key_at` TIMESTAMP NULL DEFAULT NULL,
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -258,6 +262,7 @@ CREATE TABLE IF NOT EXISTS `leads` (
   INDEX `idx_leads_org` (`org_id`),
   INDEX `idx_leads_org_status` (`org_id`, `status`),
   INDEX `idx_leads_org_created` (`org_id`, `created_at`),
+  INDEX `idx_leads_org_source_key` (`org_id`, `source_key`, `status`),
   INDEX `idx_leads_created_by` (`created_by`),
   FOREIGN KEY (`assigned_to`) REFERENCES `users`(`id`) ON DELETE SET NULL,
   FOREIGN KEY (`org_id`) REFERENCES `organizations`(`id`) ON DELETE CASCADE,
@@ -1044,6 +1049,37 @@ CREATE TABLE IF NOT EXISTS `password_resets` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_password_resets_token` (`token`),
   KEY `idx_password_resets_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+-- OTP when org admin / Super Admin change their own email
+-- --------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS `email_change_otps` (
+  `id` CHAR(36) NOT NULL,
+  `user_id` CHAR(36) NOT NULL,
+  `purpose` VARCHAR(40) NOT NULL,
+  `payload` TEXT NOT NULL,
+  `token_hash` VARCHAR(255) NOT NULL,
+  `expires_at` DATETIME NOT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_email_change_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------
+-- Staff ID labels for deleted team members (leads still hold user UUIDs)
+-- --------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS `deleted_users` (
+  `id` CHAR(36) NOT NULL,
+  `org_id` CHAR(36) DEFAULT NULL,
+  `referral_code` VARCHAR(64) NOT NULL,
+  `full_name` VARCHAR(255) DEFAULT NULL,
+  `deleted_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_deleted_users_org` (`org_id`),
+  KEY `idx_deleted_users_code` (`referral_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- --------------------------------------------------------

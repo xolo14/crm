@@ -33,6 +33,21 @@ class Database {
         }
         return $this->conn;
     }
+
+    /**
+     * Force a brand-new PDO connection, replacing the shared one. Call ONLY after detecting
+     * a dropped connection (MySQL "gone away" / "lost connection") — never speculatively.
+     * Note: any MySQL named lock (GET_LOCK) held on the old connection is released by MySQL
+     * the moment that connection dies — reconnecting cannot preserve it. Callers that depend
+     * on such a lock must re-acquire it on the fresh connection if they need the invariant
+     * restored (see marketingRunWithReconnect()'s $reacquireLockName parameter).
+     */
+    public static function reconnect(): PDO {
+        self::$shared = null;
+        $fresh = syncpediaCreatePdo();
+        self::$shared = $fresh;
+        return $fresh;
+    }
 }
 
 /** Security headers for JSON API responses (static assets use root .htaccess). */
@@ -370,6 +385,11 @@ function requireRole($tokenData, $roles) {
         static fn($r) => syncpediaNormalizeRoleKey((string) $r),
         $roles,
     );
+    // Operational Manager is L2 like Manager. When an endpoint allows manager,
+    // OM gets the same API right; page_access / org features gate the UI.
+    if (in_array('manager', $allowed, true) && !in_array('operational_manager', $allowed, true)) {
+        $allowed[] = 'operational_manager';
+    }
     if (!in_array($role, $allowed, true)) {
         respond(['error' => 'Insufficient permissions'], 403);
     }
@@ -446,36 +466,145 @@ function syncpediaValidateSignupInvite(string $role, string $inviteCode): bool
 }
 
 /** Simple file-based rate limiter (per IP + bucket). */
-function syncpediaRateLimitConsume(string $bucket, int $maxAttempts = 10, int $windowSeconds = 900): void
+/**
+ * Shared flock-safe read-modify-write for one rate-limit bucket file. $key is the already-hashed
+ * filename stem (caller decides whether it includes the client IP or not).
+ *
+ * Fail-open by design: if the limiter's own storage can't be opened or locked (disk full,
+ * permissions, read-only filesystem), we log loudly and let the request through UNTHROTTLED
+ * rather than blocking every endpoint that calls this — a broken limiter must never become a
+ * site-wide outage.
+ */
+function syncpediaRateLimitConsumeByKey(string $key, int $maxAttempts, int $windowSeconds): void
 {
-    $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
-    $key = hash('sha256', $bucket . '|' . $ip);
     $dir = dirname(__DIR__) . '/storage/rate_limits';
     if (!is_dir($dir)) {
         @mkdir($dir, 0750, true);
     }
     $file = $dir . '/' . $key . '.json';
     $now = time();
-    $data = ['attempts' => [], 'blocked_until' => 0];
-    if (is_file($file)) {
-        $decoded = json_decode((string) @file_get_contents($file), true);
-        if (is_array($decoded)) {
-            $data = $decoded;
+
+    $fh = @fopen($file, 'c+');
+    if ($fh === false) {
+        error_log("[syncpediaRateLimitConsume] could not open {$file} — failing open (this request is NOT rate-limited)");
+        return;
+    }
+    if (!flock($fh, LOCK_EX)) {
+        error_log("[syncpediaRateLimitConsume] could not lock {$file} — failing open (this request is NOT rate-limited)");
+        fclose($fh);
+        return;
+    }
+    try {
+        $raw = stream_get_contents($fh);
+        $data = ['attempts' => [], 'blocked_until' => 0];
+        if (is_string($raw) && $raw !== '') {
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                $data = $decoded;
+            }
         }
+        if ((int) ($data['blocked_until'] ?? 0) > $now) {
+            respond(['error' => 'Too many attempts. Please try again later.'], 429);
+        }
+        $attempts = array_values(array_filter(
+            $data['attempts'] ?? [],
+            static fn($t) => ($now - (int) $t) < $windowSeconds,
+        ));
+        if (count($attempts) >= $maxAttempts) {
+            ftruncate($fh, 0);
+            rewind($fh);
+            fwrite($fh, json_encode(['attempts' => $attempts, 'blocked_until' => $now + $windowSeconds]));
+            fflush($fh);
+            respond(['error' => 'Too many attempts. Please try again later.'], 429);
+        }
+        $attempts[] = $now;
+        ftruncate($fh, 0);
+        rewind($fh);
+        fwrite($fh, json_encode(['attempts' => $attempts, 'blocked_until' => 0]));
+        fflush($fh);
+    } finally {
+        flock($fh, LOCK_UN);
+        fclose($fh);
     }
-    if ((int) ($data['blocked_until'] ?? 0) > $now) {
-        respond(['error' => 'Too many attempts. Please try again later.'], 429);
+}
+
+/** Per-IP rate limit (unchanged bucket/window semantics from before). */
+function syncpediaRateLimitConsume(string $bucket, int $maxAttempts = 10, int $windowSeconds = 900): void
+{
+    $ip = (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $key = hash('sha256', $bucket . '|' . $ip);
+    syncpediaRateLimitConsumeByKey($key, $maxAttempts, $windowSeconds);
+}
+
+/**
+ * IP-agnostic rate limit — one shared counter across ALL clients for this bucket. Use for
+ * distributed-abuse protection (e.g. one organization's data being scraped from many IPs)
+ * where a per-IP limit alone would not catch it.
+ */
+function syncpediaRateLimitConsumeGlobal(string $bucket, int $maxAttempts, int $windowSeconds): void
+{
+    $key = hash('sha256', 'global|' . $bucket);
+    syncpediaRateLimitConsumeByKey($key, $maxAttempts, $windowSeconds);
+}
+
+/** True once $key's schema check has completed successfully (see syncpediaRunSchemaCheckOnce). */
+function syncpediaSchemaCheckDone(string $key): bool
+{
+    $key = preg_replace('/[^a-zA-Z0-9_.-]/', '_', $key) ?? $key;
+    return is_file(dirname(__DIR__) . '/storage/schema_checks/' . $key . '.done');
+}
+
+/**
+ * Run an expensive, idempotent schema check (CREATE TABLE IF NOT EXISTS / ALTER TABLE ... /
+ * UPDATE ...) at most once, instead of on every request — PHP-FPM's per-request process model
+ * means a `static $done` guard inside the check function itself only survives one request, not
+ * across requests, so every request was re-running these DDL statements.
+ *
+ * $key MUST include a version suffix (e.g. "ensure_leads_resume_v1") — bump the version if the
+ * underlying $check logic ever changes, so a stale marker from before the change can never skip
+ * the new check.
+ *
+ * Flock-serialized with a double-check after acquiring the lock (so two requests racing to run
+ * the check for the first time don't both execute it), and the marker is written ONLY after
+ * $check() returns successfully — if $check() throws, the exception propagates and no marker is
+ * written, so a failed check is retried on the next request rather than being wrongly cached as
+ * done.
+ */
+function syncpediaRunSchemaCheckOnce(string $key, callable $check): void
+{
+    $safeKey = preg_replace('/[^a-zA-Z0-9_.-]/', '_', $key) ?? $key;
+    if (syncpediaSchemaCheckDone($safeKey)) {
+        return;
     }
-    $attempts = array_values(array_filter(
-        $data['attempts'] ?? [],
-        static fn($t) => ($now - (int) $t) < $windowSeconds,
-    ));
-    if (count($attempts) >= $maxAttempts) {
-        @file_put_contents($file, json_encode(['attempts' => $attempts, 'blocked_until' => $now + $windowSeconds]));
-        respond(['error' => 'Too many attempts. Please try again later.'], 429);
+    $dir = dirname(__DIR__) . '/storage/schema_checks';
+    if (!is_dir($dir)) {
+        @mkdir($dir, 0750, true);
     }
-    $attempts[] = $now;
-    @file_put_contents($file, json_encode(['attempts' => $attempts, 'blocked_until' => 0]));
+    $lockFile = $dir . '/' . $safeKey . '.lock';
+    $fh = @fopen($lockFile, 'c');
+    if ($fh === false) {
+        // Can't lock — fall back to running the check every time (same as before this fix,
+        // just for this one key; correctness is unaffected, only the perf win is lost).
+        error_log("[syncpediaRunSchemaCheckOnce] could not open {$lockFile} — running check every request for key={$safeKey}");
+        $check();
+        return;
+    }
+    if (!flock($fh, LOCK_EX)) {
+        error_log("[syncpediaRunSchemaCheckOnce] could not lock {$lockFile} — running check every request for key={$safeKey}");
+        fclose($fh);
+        $check();
+        return;
+    }
+    try {
+        if (syncpediaSchemaCheckDone($safeKey)) {
+            return; // another request already finished this while we waited for the lock
+        }
+        $check(); // let exceptions propagate — marker below is only written on success
+        @file_put_contents($dir . '/' . $safeKey . '.done', (string) time());
+    } finally {
+        flock($fh, LOCK_UN);
+        fclose($fh);
+    }
 }
 
 /** Run heavy due-reminder scan at most once per org per interval (notification polls hit this often). */
@@ -2078,6 +2207,57 @@ function syncpediaSendPasswordResetOtpEmail(string $toEmail, string $fullName, s
     ];
 }
 
+function syncpediaBuildEmailChangeOtpEmailHtml(string $fullName, string $otp): string
+{
+    $h = static function (string $s): string {
+        return htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    };
+    $legal = $h(syncpediaMailLegalEntityName());
+    $code = $h($otp);
+    $name = trim($fullName) !== '' ? $h(trim($fullName)) : 'there';
+
+    return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"></head><body style="margin:0;padding:0;background:#eceff1;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#eceff1;"><tr><td align="center" style="padding:24px 12px;">'
+        . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;">'
+        . '<tr><td style="background:#0f2318;padding:24px;font-family:Arial,Helvetica,sans-serif;font-size:20px;font-weight:700;color:#ffffff;text-align:center;">'
+        . 'Confirm email change'
+        . '</td></tr>'
+        . '<tr><td style="background:#ffffff;padding:28px;font-family:Arial,Helvetica,sans-serif;">'
+        . '<p style="margin:0 0 18px 0;font-size:16px;line-height:1.5;color:#1e293b;">Hello ' . $name . ',</p>'
+        . '<p style="margin:0 0 20px 0;font-size:15px;line-height:1.55;color:#475569;">Use this one-time code to confirm an email change on your Syncpedia CRM account. It expires in <strong>10 minutes</strong>.</p>'
+        . '<p style="margin:0;text-align:center;font-size:32px;font-weight:700;letter-spacing:0.35em;color:#0f2318;font-family:Consolas,monospace;">' . $code . '</p>'
+        . '<p style="margin:22px 0 0 0;font-size:12px;line-height:1.5;color:#94a3b8;">If you did not request this, you can ignore this email. Your login email will stay the same.</p>'
+        . '</td></tr>'
+        . '<tr><td align="center" style="padding:12px;font-size:12px;color:#94a3b8;font-family:Arial,Helvetica,sans-serif;">' . $legal . '</td></tr>'
+        . '</table></td></tr></table></body></html>';
+}
+
+/**
+ * Email-change OTP — SMTP only, sent to the current mailbox.
+ *
+ * @return array{email_sent: bool, email_error: ?string, from: string}
+ */
+function syncpediaSendEmailChangeOtpEmail(string $toEmail, string $fullName, string $otp): array
+{
+    syncpediaSetMailCategory('password_reset');
+    $from = syncpediaSupportMailAddress();
+    $name = getenv('SYNCPIEDIA_MAIL_FROM_NAME');
+    $disp = ($name !== false && trim($name) !== '') ? trim($name) : 'Syncpedia';
+    $res = syncpediaSendHtmlEmailViaSmtp(
+        $toEmail,
+        'Your Syncpedia CRM email change code',
+        syncpediaBuildEmailChangeOtpEmailHtml($fullName, $otp),
+        $from,
+        $disp,
+    );
+    $ok = ($res['ok'] ?? false) === true;
+    return [
+        'email_sent' => $ok,
+        'email_error' => $ok ? null : ($res['error'] ?? 'Email send failed'),
+        'from' => (string) ($res['from'] ?? $from),
+    ];
+}
+
 /**
  * Team welcome credentials — SMTP only (same transport as password-reset OTP).
  *
@@ -2899,6 +3079,82 @@ function leadsFindDuplicateInOrg(PDO $db, ?string $orgId, string $email, string 
 }
 
 /**
+ * Acquire one MySQL named lock per normalized identity component (email, phone) that this
+ * submission supplies, so two concurrent submissions sharing EITHER an email OR a phone (even
+ * if the other field differs) are correctly serialized — matching leadsFindDuplicateInOrg's
+ * independent email-OR-phone match. Locks are always acquired in a fixed, content-independent
+ * order (sorted lock names) so no two concurrent requests can ever wait on each other in
+ * opposite orders (lock-ordering deadlock avoidance).
+ *
+ * Never reconnects the PDO connection — the lock, the duplicate check, and the insert must all
+ * run on the exact same connection, since MySQL named locks are session-scoped.
+ *
+ * @return list<string>|null Acquired lock names (release via leadsReleaseDuplicateLocks() in a
+ *                            finally block — safe even though respond() calls exit(), since PHP
+ *                            still runs a finally block when exit() happens inside its try).
+ *                            Null if any needed lock could not be acquired within the timeout —
+ *                            caller MUST NOT proceed with an unlocked check-then-insert in that
+ *                            case; respond with a retryable 503 instead.
+ */
+function leadsAcquireDuplicateLocks(PDO $db, ?string $orgId, string $email, string $phone, int $timeoutSeconds = 5): ?array
+{
+    $orgKey = trim((string) $orgId);
+    $emailNorm = strtolower(trim($email));
+    $phoneDigits = preg_replace('/\D+/', '', $phone) ?? '';
+    if (strlen($phoneDigits) > 10) {
+        $phoneDigits = substr($phoneDigits, -10);
+    }
+    $phoneNorm = strlen($phoneDigits) >= 10 ? $phoneDigits : '';
+
+    $wanted = [];
+    if ($emailNorm !== '') {
+        $wanted[] = 'lead_dup_email:' . substr(sha1($orgKey . '|' . $emailNorm), 0, 40);
+    }
+    if ($phoneNorm !== '') {
+        $wanted[] = 'lead_dup_phone:' . substr(sha1($orgKey . '|' . $phoneNorm), 0, 40);
+    }
+    if ($wanted === []) {
+        // Nothing to key on — matches leadsFindDuplicateInOrg's own no-op case (no lock needed).
+        return [];
+    }
+    sort($wanted); // fixed global order across all requests — avoids lock-ordering deadlocks
+
+    $acquired = [];
+    foreach ($wanted as $lockName) {
+        try {
+            $st = $db->prepare('SELECT GET_LOCK(?, ?)');
+            $st->execute([$lockName, $timeoutSeconds]);
+            $got = (int) $st->fetchColumn();
+            $st->closeCursor();
+        } catch (Throwable $e) {
+            error_log('[leadsAcquireDuplicateLocks] ' . $e->getMessage());
+            $got = 0;
+        }
+        if ($got !== 1) {
+            // Could not get every needed lock — release whatever we already hold and bail.
+            leadsReleaseDuplicateLocks($db, $acquired);
+            return null;
+        }
+        $acquired[] = $lockName;
+    }
+    return $acquired;
+}
+
+/** @param list<string> $lockNames */
+function leadsReleaseDuplicateLocks(PDO $db, array $lockNames): void
+{
+    foreach (array_reverse($lockNames) as $lockName) {
+        try {
+            $st = $db->prepare('SELECT RELEASE_LOCK(?)');
+            $st->execute([$lockName]);
+            $st->closeCursor();
+        } catch (Throwable $e) {
+            error_log('[leadsReleaseDuplicateLocks] ' . $e->getMessage());
+        }
+    }
+}
+
+/**
  * Load an org's dedup keys once so bulk import can check duplicates in memory
  * instead of running one full-table REPLACE(...) LIKE scan per imported row.
  *
@@ -2964,7 +3220,7 @@ function userCanAccessStudentRow(PDO $db, array $tokenData, string $userId, stri
         return true;
     }
     // Legacy rows with empty org_id: admins/managers in the tenant may still manage them.
-    if ($studentOrg === '' && in_array($role, ['admin', 'org', 'manager', 'super_admin'], true)) {
+    if ($studentOrg === '' && in_array($role, ['admin', 'org', 'manager', 'operational_manager', 'super_admin'], true)) {
         return true;
     }
     $leadId = trim((string) ($studentRow['lead_id'] ?? ''));
@@ -3561,14 +3817,17 @@ function userCanAccessPaymentsPage(array $tokenData, ?array $userRow = null): bo
     if (in_array($role, ['super_admin', 'admin', 'org', 'finance', 'manager'], true)) {
         return true;
     }
-    if ($role !== 'sales_representative') {
-        return false;
-    }
     $access = null;
     if (is_array($userRow)) {
         $access = isset($userRow['page_access']) && is_array($userRow['page_access'])
             ? $userRow['page_access']
             : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
+    }
+    if ($role === 'operational_manager') {
+        return userOperationalManagerHasPageAccess($access, 'payments');
+    }
+    if ($role !== 'sales_representative') {
+        return false;
     }
     return !empty($access['payments']);
 }
@@ -4436,6 +4695,24 @@ function leadResumeMaxBytes(): int {
     return 5 * 1024 * 1024;
 }
 
+/**
+ * Map a sniffed (finfo) MIME type to the extension we actually write to disk, so the
+ * stored file's extension always reflects what the content really is — never whatever
+ * extension a crafted upload's filename happened to claim. Returns null for a MIME not
+ * in the allow-list (caller should already have rejected it).
+ */
+function syncpediaExtensionForAllowedMime(string $mime, array $map): ?string {
+    return $map[$mime] ?? null;
+}
+
+function leadResumeMimeExtensionMap(): array {
+    return [
+        'application/pdf' => 'pdf',
+        'application/msword' => 'doc',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+    ];
+}
+
 /** Certificate template background / asset images (JPG, PNG, WebP). */
 function certTemplateImageMaxBytes(): int {
     return 50 * 1024 * 1024;
@@ -4644,6 +4921,10 @@ function saveLeadResumeUpload(?array $file): ?string {
     if ($mime === '' || !in_array($mime, leadResumeAllowedMimeTypes(), true)) {
         respond(['error' => 'Resume must be PDF or Word document'], 400);
     }
+    $ext = syncpediaExtensionForAllowedMime($mime, leadResumeMimeExtensionMap());
+    if ($ext === null) {
+        respond(['error' => 'Resume must be PDF or Word document'], 400);
+    }
     $uploadParent = __DIR__ . '/../uploads/resumes';
     if (!is_dir($uploadParent)) {
         if (!mkdir($uploadParent, 0755, true)) {
@@ -4654,9 +4935,11 @@ function saveLeadResumeUpload(?array $file): ?string {
     if ($baseDir === false) {
         respond(['error' => 'Upload directory unavailable'], 500);
     }
-    $orig = basename((string) ($file['name'] ?? 'resume'));
-    $orig = preg_replace('/[^a-zA-Z0-9._-]/', '_', $orig) ?: 'resume';
-    $filename = uniqid('', true) . '_' . $orig;
+    // Extension is forced from the sniffed MIME type (not the client-supplied filename) so a
+    // polyglot upload can never land on disk with an executable extension like .php.
+    $origBase = pathinfo(basename((string) ($file['name'] ?? 'resume')), PATHINFO_FILENAME);
+    $origBase = preg_replace('/[^a-zA-Z0-9._-]/', '_', $origBase) ?: 'resume';
+    $filename = uniqid('', true) . '_' . $origBase . '.' . $ext;
     $destFs = $baseDir . DIRECTORY_SEPARATOR . $filename;
     if (!move_uploaded_file($tmp, $destFs)) {
         respond(['error' => 'Failed to save resume'], 500);
@@ -5360,6 +5643,22 @@ function callRecordingMaxBytes(): int {
     return 30 * 1024 * 1024;
 }
 
+function callRecordingMimeExtensionMap(): array {
+    return [
+        'audio/mpeg' => 'mp3',
+        'audio/mp3' => 'mp3',
+        'audio/wav' => 'wav',
+        'audio/x-wav' => 'wav',
+        'audio/mp4' => 'm4a',
+        'audio/x-m4a' => 'm4a',
+        'audio/aac' => 'aac',
+        'audio/aacp' => 'aac',
+        'audio/webm' => 'webm',
+        'audio/ogg' => 'ogg',
+        'application/pdf' => 'pdf',
+    ];
+}
+
 /**
  * Safe single path segment for recordings/{org_name}/{username}/.
  */
@@ -5486,6 +5785,10 @@ function saveCallRecordingUpload(?array $file, ?PDO $db = null, ?string $orgId =
     if ($mime === '' || !in_array($mime, callRecordingAllowedMimeTypes(), true)) {
         respond(['error' => 'Recording must be audio (mp3, wav, m4a, webm, ogg) or PDF'], 400);
     }
+    $ext = syncpediaExtensionForAllowedMime($mime, callRecordingMimeExtensionMap());
+    if ($ext === null) {
+        respond(['error' => 'Recording must be audio (mp3, wav, m4a, webm, ogg) or PDF'], 400);
+    }
 
     $dirRel = '/uploads/recordings/unknown/unknown';
     if ($db instanceof PDO && $orgId !== null && $orgId !== '' && $userId !== null && $userId !== '') {
@@ -5493,9 +5796,10 @@ function saveCallRecordingUpload(?array $file, ?PDO $db = null, ?string $orgId =
     }
     $baseDir = callRecordingEnsureAbsoluteDir($dirRel);
 
-    $orig = basename((string) ($file['name'] ?? 'recording'));
-    $orig = preg_replace('/[^a-zA-Z0-9._-]/', '_', $orig) ?: 'recording';
-    $filename = uniqid('', true) . '_' . $orig;
+    // Extension is forced from the sniffed MIME type, not the client-supplied filename.
+    $origBase = pathinfo(basename((string) ($file['name'] ?? 'recording')), PATHINFO_FILENAME);
+    $origBase = preg_replace('/[^a-zA-Z0-9._-]/', '_', $origBase) ?: 'recording';
+    $filename = uniqid('', true) . '_' . $origBase . '.' . $ext;
     $destFs = $baseDir . DIRECTORY_SEPARATOR . $filename;
     if (!move_uploaded_file($tmp, $destFs)) {
         respond(['error' => 'Failed to save recording'], 500);
@@ -5544,7 +5848,12 @@ function paymentProofMaxBytes(): int
     return 12 * 1024 * 1024;
 }
 
-/** Image + PDF mime types accepted as payment proof. */
+/**
+ * Image + PDF mime types accepted as payment proof.
+ * SVG is intentionally excluded: it can embed <script>/event handlers, so accepting it here
+ * would be a stored-XSS vector if a proof file is ever served/opened with an image/svg+xml
+ * content type rather than forced to download.
+ */
 function paymentProofAllowedMimeTypes(): array
 {
     return [
@@ -5559,9 +5868,27 @@ function paymentProofAllowedMimeTypes(): array
         'image/tiff',
         'image/heic',
         'image/heif',
-        'image/svg+xml',
         'application/pdf',
         'application/x-pdf',
+    ];
+}
+
+function paymentProofMimeExtensionMap(): array
+{
+    return [
+        'image/jpeg' => 'jpg',
+        'image/jpg' => 'jpg',
+        'image/pjpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/gif' => 'gif',
+        'image/webp' => 'webp',
+        'image/bmp' => 'bmp',
+        'image/x-ms-bmp' => 'bmp',
+        'image/tiff' => 'tiff',
+        'image/heic' => 'heic',
+        'image/heif' => 'heif',
+        'application/pdf' => 'pdf',
+        'application/x-pdf' => 'pdf',
     ];
 }
 
@@ -5595,8 +5922,13 @@ function savePaymentProofUpload(?array $file): ?string
         $finfo = new finfo(FILEINFO_MIME_TYPE);
         $mime = $finfo->file($tmp) ?: '';
     }
-    if ($mime === '' || !in_array(strtolower($mime), paymentProofAllowedMimeTypes(), true)) {
-        respond(['error' => 'Proof must be an image (jpg, png, gif, webp, bmp, tiff, heic, svg) or PDF'], 400);
+    $mimeLower = strtolower($mime);
+    if ($mime === '' || !in_array($mimeLower, paymentProofAllowedMimeTypes(), true)) {
+        respond(['error' => 'Proof must be an image (jpg, png, gif, webp, bmp, tiff, heic) or PDF'], 400);
+    }
+    $ext = syncpediaExtensionForAllowedMime($mimeLower, paymentProofMimeExtensionMap());
+    if ($ext === null) {
+        respond(['error' => 'Proof must be an image (jpg, png, gif, webp, bmp, tiff, heic) or PDF'], 400);
     }
     $uploadParent = __DIR__ . '/../uploads/payment_proofs';
     if (!is_dir($uploadParent)) {
@@ -5608,9 +5940,10 @@ function savePaymentProofUpload(?array $file): ?string
     if ($baseDir === false) {
         respond(['error' => 'Upload directory unavailable'], 500);
     }
-    $orig = basename((string) ($file['name'] ?? 'proof'));
-    $orig = preg_replace('/[^a-zA-Z0-9._-]/', '_', $orig) ?: 'proof';
-    $filename = uniqid('mp_', true) . '_' . $orig;
+    // Extension is forced from the sniffed MIME type, not the client-supplied filename.
+    $origBase = pathinfo(basename((string) ($file['name'] ?? 'proof')), PATHINFO_FILENAME);
+    $origBase = preg_replace('/[^a-zA-Z0-9._-]/', '_', $origBase) ?: 'proof';
+    $filename = uniqid('mp_', true) . '_' . $origBase . '.' . $ext;
     $destFs = $baseDir . DIRECTORY_SEPARATOR . $filename;
     if (!move_uploaded_file($tmp, $destFs)) {
         respond(['error' => 'Failed to save proof file'], 500);
@@ -6811,6 +7144,190 @@ function syncpediaUserDisplayName(PDO $db, string $userId): string {
     }
 }
 
+function ensureDeletedUsersTable(PDO $db): void
+{
+    static $ok = false;
+    if ($ok) {
+        return;
+    }
+    try {
+        $db->exec(
+            "CREATE TABLE IF NOT EXISTS deleted_users (
+                id CHAR(36) NOT NULL,
+                org_id CHAR(36) DEFAULT NULL,
+                referral_code VARCHAR(64) NOT NULL,
+                full_name VARCHAR(255) DEFAULT NULL,
+                deleted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                KEY idx_deleted_users_org (org_id),
+                KEY idx_deleted_users_code (referral_code)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        );
+    } catch (Throwable $e) {
+        error_log('[deleted_users] ' . $e->getMessage());
+    }
+    $ok = true;
+}
+
+function syncpediaDeletedUserStaffFallback(string $userId, ?string $referralCode): string
+{
+    $code = strtoupper(trim((string) $referralCode));
+    if ($code !== '') {
+        return $code;
+    }
+    $id = trim($userId);
+    if ($id === '') {
+        return '';
+    }
+    return strtoupper(substr($id, 0, 8));
+}
+
+function syncpediaArchiveDeletedUser(PDO $db, array $user): void
+{
+    $id = trim((string) ($user['id'] ?? ''));
+    if ($id === '') {
+        return;
+    }
+    ensureDeletedUsersTable($db);
+    $code = syncpediaDeletedUserStaffFallback($id, isset($user['referral_code']) ? (string) $user['referral_code'] : null);
+    $name = trim((string) ($user['full_name'] ?? ''));
+    $orgId = trim((string) ($user['org_id'] ?? ''));
+    try {
+        $st = $db->prepare(
+            'INSERT INTO deleted_users (id, org_id, referral_code, full_name, deleted_at)
+             VALUES (?, ?, ?, ?, UTC_TIMESTAMP())
+             ON DUPLICATE KEY UPDATE
+                org_id = VALUES(org_id),
+                referral_code = VALUES(referral_code),
+                full_name = VALUES(full_name),
+                deleted_at = VALUES(deleted_at)'
+        );
+        $st->execute([$id, $orgId !== '' ? $orgId : null, $code, $name !== '' ? $name : null]);
+    } catch (Throwable $e) {
+        error_log('[deleted_users] archive: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Live full_name, else archived Staff ID. Never returns a full UUID.
+ *
+ * @param list<string> $userIds
+ * @return array<string,string>
+ */
+function syncpediaUserRecordLabels(PDO $db, array $userIds): array
+{
+    $ids = [];
+    foreach ($userIds as $id) {
+        $id = trim((string) $id);
+        if ($id !== '') {
+            $ids[$id] = true;
+        }
+    }
+    $idList = array_keys($ids);
+    if ($idList === []) {
+        return [];
+    }
+    $labels = [];
+    foreach (array_chunk($idList, 200) as $chunk) {
+        $ph = implode(',', array_fill(0, count($chunk), '?'));
+        try {
+            $st = $db->prepare("SELECT id, full_name, referral_code FROM users WHERE id IN ($ph)");
+            $st->execute($chunk);
+            while ($u = $st->fetch(PDO::FETCH_ASSOC)) {
+                if (!is_array($u)) {
+                    continue;
+                }
+                $uid = trim((string) ($u['id'] ?? ''));
+                if ($uid === '') {
+                    continue;
+                }
+                $name = trim((string) ($u['full_name'] ?? ''));
+                $labels[$uid] = $name !== '' ? $name : syncpediaDeletedUserStaffFallback($uid, (string) ($u['referral_code'] ?? ''));
+            }
+        } catch (Throwable $e) {
+        }
+    }
+    $missing = [];
+    foreach ($idList as $id) {
+        if (!isset($labels[$id]) || $labels[$id] === '') {
+            $missing[] = $id;
+        }
+    }
+    if ($missing !== []) {
+        ensureDeletedUsersTable($db);
+        foreach (array_chunk($missing, 200) as $chunk) {
+            $ph = implode(',', array_fill(0, count($chunk), '?'));
+            try {
+                $st = $db->prepare("SELECT id, referral_code FROM deleted_users WHERE id IN ($ph)");
+                $st->execute($chunk);
+                while ($u = $st->fetch(PDO::FETCH_ASSOC)) {
+                    if (!is_array($u)) {
+                        continue;
+                    }
+                    $uid = trim((string) ($u['id'] ?? ''));
+                    $code = syncpediaDeletedUserStaffFallback($uid, (string) ($u['referral_code'] ?? ''));
+                    if ($uid !== '' && $code !== '') {
+                        $labels[$uid] = $code;
+                    }
+                }
+            } catch (Throwable $e) {
+            }
+        }
+    }
+    return $labels;
+}
+
+function syncpediaUserRecordLabel(PDO $db, string $userId): string
+{
+    $userId = trim($userId);
+    if ($userId === '') {
+        return '';
+    }
+    $map = syncpediaUserRecordLabels($db, [$userId]);
+    return trim((string) ($map[$userId] ?? ''));
+}
+
+/**
+ * @param array<int,array<string,mixed>> $rows
+ * @param array<string,string> $fields user-id column => label column
+ */
+function syncpediaFillUserRecordLabelsOnRows(PDO $db, array &$rows, array $fields): void
+{
+    if ($rows === [] || $fields === []) {
+        return;
+    }
+    $ids = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        foreach (array_keys($fields) as $idCol) {
+            $id = trim((string) ($row[$idCol] ?? ''));
+            if ($id !== '') {
+                $ids[] = $id;
+            }
+        }
+    }
+    $labels = syncpediaUserRecordLabels($db, $ids);
+    foreach ($rows as &$row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        foreach ($fields as $idCol => $nameCol) {
+            $id = trim((string) ($row[$idCol] ?? ''));
+            if ($id !== '' && isset($labels[$id]) && $labels[$id] !== '') {
+                $row[$nameCol] = $labels[$id];
+                continue;
+            }
+            $existing = trim((string) ($row[$nameCol] ?? ''));
+            if ($existing === '') {
+                $row[$nameCol] = null;
+            }
+        }
+    }
+    unset($row);
+}
+
 /** Active org admins (admin / org) in a tenant. */
 function syncpediaOrgAdminUserIds(PDO $db, ?string $orgId): array {
     $orgId = trim((string) $orgId);
@@ -7705,6 +8222,765 @@ function syncpediaMetaAdSourceKey(array $row): string
         }
     }
     return 'meta_ads';
+}
+
+/**
+ * Same card key the Leads page uses in the browser (import file, form, ad, assessment, …).
+ *
+ * @param array<string,mixed> $row
+ */
+function syncpediaLeadSourceBucketKey(array $row): string
+{
+    $tags = syncpediaParseLeadTags($row['tags'] ?? null);
+    $sourceRaw = trim((string) ($row['source'] ?? ''));
+    $source = strtolower($sourceRaw);
+    $notesBlob = (string) ($row['notes_import_tag'] ?? '');
+    if ($notesBlob === '' && isset($row['notes'])) {
+        $notesBlob = (string) $row['notes'];
+    }
+
+    $importTag = null;
+    foreach ($tags as $t) {
+        if (stripos($t, 'import_set:') === 0 || stripos($t, 'import_set:') !== false) {
+            if (preg_match('/import_set:[0-9]{8,14}-[a-z0-9]+/i', $t, $m)) {
+                $importTag = $m[0];
+                break;
+            }
+            if (stripos($t, 'import_set:') === 0) {
+                $importTag = $t;
+                break;
+            }
+        }
+    }
+    if ($importTag === null && $notesBlob !== '' && preg_match('/import_set:[0-9]{8,14}-[a-z0-9]+/i', $notesBlob, $m)) {
+        $importTag = $m[0];
+    }
+    $isImport = $importTag !== null
+        || str_starts_with($source, 'import')
+        || str_contains($source, 'import_')
+        || ($notesBlob !== '' && stripos($notesBlob, 'import_set:') !== false);
+    if ($isImport) {
+        return $importTag !== null && $importTag !== '' ? $importTag : 'import';
+    }
+
+    if (syncpediaIsPeaklyyLeadRow($row)) {
+        if (stripos($sourceRaw, 'peaklyy:') === 0) {
+            return $sourceRaw;
+        }
+        foreach ($tags as $t) {
+            if (stripos($t, 'peaklyy_id:') === 0) {
+                return 'peaklyy:' . substr($t, strlen('peaklyy_id:'));
+            }
+        }
+        return 'peaklyy';
+    }
+
+    $metaTagged = str_starts_with($source, 'meta_ad:');
+    if (!$metaTagged) {
+        foreach ($tags as $t) {
+            if (
+                str_starts_with($t, 'meta_ad:')
+                || str_starts_with($t, 'meta_ad_name:')
+                || str_starts_with($t, 'meta_lead_id:')
+                || str_starts_with($t, 'meta_ad_id:')
+            ) {
+                $metaTagged = true;
+                break;
+            }
+        }
+    }
+    if ($metaTagged) {
+        return syncpediaMetaAdSourceKey($row);
+    }
+
+    if ($source === 'api_ingest' || $source === 'third_party') {
+        return 'api_ingest';
+    }
+    foreach ($tags as $t) {
+        $tl = strtolower(trim($t));
+        if ($tl === 'ingest:api' || $tl === 'ingest:lead-ingest' || $tl === 'source:api_ingest' || $tl === 'api_ingest') {
+            return 'api_ingest';
+        }
+    }
+
+    $manualTag = false;
+    foreach ($tags as $t) {
+        $v = strtolower(trim($t));
+        if ($v === 'entry:manual' || $v === 'added_lead') {
+            $manualTag = true;
+            break;
+        }
+    }
+    if ($manualTag || $source === 'manual' || $source === 'added' || $source === 'added_leads' || $source === 'other' || $source === '') {
+        return 'added_leads';
+    }
+
+    if (trim((string) ($row['referred_by'] ?? '')) !== '' || $source === 'google_forms' || $source === 'normal_form' || str_starts_with($source, 'form_')) {
+        if (str_starts_with($source, 'form_') && strlen($source) > 5) {
+            return 'form_' . substr($sourceRaw, 5);
+        }
+        if ($source === 'google_forms') {
+            return 'form_google_forms';
+        }
+        if ($source === 'normal_form') {
+            return 'form_normal';
+        }
+        return 'form_other';
+    }
+
+    $known = [
+        'google_ads' => 'google_ads',
+        'youtube' => 'youtube',
+        'website' => 'website',
+        'api_ingest' => 'api_ingest',
+        'third_party' => 'api_ingest',
+        'whatsapp' => 'whatsapp',
+        'referral' => 'referral',
+        'walkin' => 'walkin',
+        'college_seminar' => 'college_seminar',
+        'facebook' => 'meta_ads',
+        'instagram' => 'meta_ads',
+        'meta_ads' => 'meta_ads',
+        'other' => 'other',
+        'peaklyy' => 'peaklyy',
+    ];
+    return $known[$source] ?? 'other';
+}
+
+/** @param array<string,mixed> $row */
+function syncpediaLeadSourceBucketLabel(array $row, string $key): string
+{
+    $tags = syncpediaParseLeadTags($row['tags'] ?? null);
+    if (str_starts_with($key, 'import_set:')) {
+        foreach ($tags as $t) {
+            if (stripos($t, 'import_file:') === 0) {
+                $name = trim(substr($t, strlen('import_file:')));
+                if ($name !== '') {
+                    return $name;
+                }
+            }
+        }
+        return 'Import';
+    }
+    if ($key === 'import') {
+        return 'Import';
+    }
+    if (str_starts_with($key, 'peaklyy:') || $key === 'peaklyy') {
+        foreach ($tags as $t) {
+            if (stripos($t, 'peaklyy_title:') === 0) {
+                $name = trim(substr($t, strlen('peaklyy_title:')));
+                if ($name !== '') {
+                    return $name;
+                }
+            }
+        }
+        return 'Peaklyy Assignment';
+    }
+    if (str_starts_with($key, 'meta_ad:') || $key === 'meta_ads') {
+        foreach ($tags as $t) {
+            if (stripos($t, 'meta_ad_name:') === 0) {
+                $name = trim(substr($t, strlen('meta_ad_name:')));
+                if ($name !== '') {
+                    return $name;
+                }
+            }
+        }
+        if (str_starts_with($key, 'meta_ad:') && strlen($key) > strlen('meta_ad:')) {
+            return substr($key, strlen('meta_ad:'));
+        }
+        return $key === 'meta_ads' ? 'Meta Ads' : 'Meta Ad';
+    }
+    if (str_starts_with($key, 'form_')) {
+        $slug = substr($key, 5);
+        $slug = trim(str_replace(['-', '_'], ' ', $slug));
+        return $slug !== '' ? ucwords($slug) : 'Form lead';
+    }
+    $static = [
+        'added_leads' => 'Added leads',
+        'google_ads' => 'Google Ads',
+        'meta_ads' => 'Meta Ads',
+        'youtube' => 'YouTube',
+        'website' => 'Website',
+        'api_ingest' => 'API / Website leads',
+        'form_leads' => 'Form leads',
+        'peaklyy' => 'Peaklyy Assignments',
+        'whatsapp' => 'WhatsApp',
+        'referral' => 'Referral',
+        'walkin' => 'Walk-in',
+        'college_seminar' => 'College Seminar',
+        'other' => 'Other',
+    ];
+    return $static[$key] ?? $key;
+}
+
+/**
+ * Cached card identity on leads. Same keys/labels/gates as the PHP bucket helpers.
+ * Lets source-card loads GROUP BY instead of scanning every row + notes TEXT.
+ */
+function syncpediaLeadSourceCardFieldsEnsureSchema(PDO $db): bool
+{
+    static $ok = null;
+    if ($ok !== null) {
+        return $ok;
+    }
+    try {
+        $cols = [
+            'source_key' => 'VARCHAR(255) NULL',
+            'source_label' => 'VARCHAR(255) NULL',
+            'source_gate_key' => 'VARCHAR(255) NULL',
+            'source_key_at' => 'TIMESTAMP NULL DEFAULT NULL',
+        ];
+        foreach ($cols as $name => $ddl) {
+            if (syncpediaColumnExists($db, 'leads', $name)) {
+                continue;
+            }
+            try {
+                $db->exec('ALTER TABLE leads ADD COLUMN `' . $name . '` ' . $ddl);
+            } catch (Throwable $e) {
+                /* duplicate column / already exists */
+            }
+        }
+        if (function_exists('syncpediaEnsureIndex')) {
+            syncpediaEnsureIndex($db, 'idx_leads_org_source_key', 'leads', '`org_id`, `source_key`, `status`');
+        }
+        $ok = syncpediaColumnExists($db, 'leads', 'source_key')
+            && syncpediaColumnExists($db, 'leads', 'source_label')
+            && syncpediaColumnExists($db, 'leads', 'source_gate_key')
+            && syncpediaColumnExists($db, 'leads', 'source_key_at');
+        return $ok;
+    } catch (Throwable $e) {
+        error_log('[lead source cards] schema: ' . $e->getMessage());
+        $ok = false;
+        return false;
+    }
+}
+
+/** @return array{key: string, label: string, gate: string} */
+function syncpediaLeadSourceCardFieldsFromRow(array $row): array
+{
+    $key = syncpediaLeadSourceBucketKey($row);
+    if ($key === '') {
+        $key = 'other';
+    }
+    $label = syncpediaLeadSourceBucketLabel($row, $key);
+    if (strlen($label) > 255) {
+        $label = substr($label, 0, 255);
+    }
+    $gate = syncpediaLeadFormOrAssessmentSourceKey($row);
+    $gateStore = $gate === null ? '' : trim((string) $gate);
+    if (strlen($gateStore) > 255) {
+        $gateStore = substr($gateStore, 0, 255);
+    }
+    return ['key' => $key, 'label' => $label, 'gate' => $gateStore];
+}
+
+function syncpediaLeadSourceCardFieldsDirtySql(string $where): string
+{
+    return "($where) AND (
+        source_key IS NULL OR TRIM(source_key) = ''
+        OR source_key_at IS NULL
+        OR updated_at > source_key_at
+    )";
+}
+
+/**
+ * Compute persisted card fields for rows that are new or changed since last persist.
+ * Uses the same PHP bucket/gate helpers so cards do not drift.
+ */
+function syncpediaLeadSourceCardFieldsBackfill(PDO $db, string $where, array $params): bool
+{
+    $sqlWithNotes = 'SELECT id, source, tags, referred_by, created_at,
+        CASE
+            WHEN tags LIKE \'%import_set:%\' THEN \'\'
+            WHEN notes LIKE \'%import_set:%\' THEN SUBSTRING(notes, LOCATE(\'import_set:\', notes), 48)
+            ELSE \'\'
+        END AS notes_import_tag
+        FROM leads WHERE ' . syncpediaLeadSourceCardFieldsDirtySql($where) . ' LIMIT 500';
+    $sqlSlim = 'SELECT id, source, tags, referred_by, created_at
+        FROM leads WHERE ' . syncpediaLeadSourceCardFieldsDirtySql($where) . ' LIMIT 500';
+
+    $maxChunks = 200;
+    for ($chunk = 0; $chunk < $maxChunks; $chunk++) {
+        $rows = [];
+        try {
+            $stmt = $db->prepare($sqlWithNotes);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } catch (Throwable $e) {
+            try {
+                $stmt = $db->prepare($sqlSlim);
+                $stmt->execute($params);
+                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            } catch (Throwable $e2) {
+                error_log('[lead source cards] backfill select: ' . $e2->getMessage());
+                return false;
+            }
+        }
+        if ($rows === []) {
+            return true;
+        }
+        $items = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $id = trim((string) ($row['id'] ?? ''));
+            if ($id === '') {
+                continue;
+            }
+            $fields = syncpediaLeadSourceCardFieldsFromRow($row);
+            $items[] = [
+                'id' => $id,
+                'key' => $fields['key'],
+                'label' => $fields['label'],
+                'gate' => $fields['gate'],
+            ];
+        }
+        if ($items === []) {
+            return true;
+        }
+        try {
+            syncpediaLeadSourceCardFieldsFlushChunk($db, $items);
+        } catch (Throwable $e) {
+            error_log('[lead source cards] backfill update: ' . $e->getMessage());
+            return false;
+        }
+        if (count($rows) < 500) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @param array<int,array{id: string, key: string, label: string, gate: string}> $items
+ */
+function syncpediaLeadSourceCardFieldsFlushChunk(PDO $db, array $items): void
+{
+    $ids = [];
+    $keySql = 'CASE id';
+    $labelSql = 'CASE id';
+    $gateSql = 'CASE id';
+    $params = [];
+    foreach ($items as $item) {
+        $ids[] = $item['id'];
+        $keySql .= ' WHEN ? THEN ?';
+        $labelSql .= ' WHEN ? THEN ?';
+        $gateSql .= ' WHEN ? THEN ?';
+        $params[] = $item['id'];
+        $params[] = $item['key'];
+        $params[] = $item['id'];
+        $params[] = $item['label'];
+        $params[] = $item['id'];
+        $params[] = $item['gate'];
+    }
+    $keySql .= ' END';
+    $labelSql .= ' END';
+    $gateSql .= ' END';
+    $ph = implode(',', array_fill(0, count($ids), '?'));
+    $sql = "UPDATE leads SET source_key = $keySql, source_label = $labelSql, source_gate_key = $gateSql,
+        source_key_at = CURRENT_TIMESTAMP, updated_at = updated_at
+        WHERE id IN ($ph)";
+    $stmt = $db->prepare($sql);
+    $stmt->execute(array_merge($params, $ids));
+}
+
+/**
+ * @return array{granted: array<string,bool>, userId: string, isManager: bool}
+ */
+function syncpediaLeadSourceCardManagerContext(PDO $db, array $tokenData): array
+{
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    $isManager = in_array($role, ['manager', 'operational_manager'], true);
+    $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    $granted = [];
+    if ($isManager && $userId !== '') {
+        $orgId = getOrgId($tokenData);
+        if ($orgId === null || trim((string) $orgId) === '') {
+            $orgId = resolveCreatorOrgId($db, $tokenData);
+        }
+        $orgId = $orgId !== null ? trim((string) $orgId) : '';
+        if ($orgId !== '') {
+            syncpediaLeadSourceCardManagersEnsureSchema($db);
+            try {
+                $st = $db->prepare(
+                    'SELECT source_key FROM lead_source_card_managers WHERE org_id = ? AND manager_user_id = ?'
+                );
+                $st->execute([$orgId, $userId]);
+                while ($key = $st->fetchColumn()) {
+                    $key = trim((string) $key);
+                    if ($key !== '') {
+                        $granted[$key] = true;
+                    }
+                }
+            } catch (Throwable $e) {
+            }
+        }
+        foreach (syncpediaAssignedPeaklyySourceKeys($db, $userId) as $key) {
+            $granted[$key] = true;
+        }
+    }
+    return ['granted' => $granted, 'userId' => $userId, 'isManager' => $isManager];
+}
+
+/**
+ * SQL equivalent of the PHP manager card-access gate (non-gated, grant, assignee, creator, lead_assignments).
+ *
+ * @param array<string,bool> $granted
+ * @return array{sql: string, params: array<int,mixed>}
+ */
+function syncpediaLeadSourceCardsManagerFilterSql(array $granted, string $userId): array
+{
+    $parts = ['source_gate_key IS NULL', "TRIM(COALESCE(source_gate_key, '')) = ''"];
+    $params = [];
+    $grantKeys = array_values(array_filter(array_map('strval', array_keys($granted)), static function (string $k): bool {
+        return trim($k) !== '';
+    }));
+    if ($grantKeys !== []) {
+        $ph = implode(',', array_fill(0, count($grantKeys), '?'));
+        $parts[] = "source_gate_key IN ($ph)";
+        foreach ($grantKeys as $k) {
+            $params[] = $k;
+        }
+        if (isset($granted['meta_ads'])) {
+            $parts[] = "source_gate_key LIKE 'meta_ad:%'";
+        }
+    }
+    if ($userId !== '') {
+        $parts[] = 'assigned_to = ?';
+        $params[] = $userId;
+        $parts[] = 'created_by = ?';
+        $params[] = $userId;
+        $parts[] = 'EXISTS (SELECT 1 FROM lead_assignments la WHERE la.user_id = ? AND la.lead_id = leads.id)';
+        $params[] = $userId;
+    }
+    return ['sql' => ' AND (' . implode(' OR ', $parts) . ')', 'params' => $params];
+}
+
+/** @return array<string,mixed> */
+function syncpediaLeadSourceCardSkeleton(string $key, string $label): array
+{
+    return [
+        'key' => $key,
+        'label' => $label !== '' ? $label : $key,
+        'isImport' => str_starts_with($key, 'import_set:') || $key === 'import',
+        'isPeaklyy' => str_starts_with($key, 'peaklyy:') || $key === 'peaklyy',
+        'isForm' => $key === 'form_leads' || str_starts_with($key, 'form_'),
+        'isAdded' => $key === 'added_leads',
+        'isMetaAd' => str_starts_with($key, 'meta_ad:') || $key === 'meta_ads',
+        'total' => 0,
+        'byStatus' => [],
+        'unassigned' => 0,
+        'latestCreatedAtMs' => 0,
+    ];
+}
+
+/**
+ * @param array<string,array<string,mixed>> $cards
+ * @param array<string,int> $kpi
+ * @return array{cards: array<int,array<string,mixed>>, kpi: array<string,int>}
+ */
+function syncpediaLeadSourceCardsSort(array $cards, array $kpi): array
+{
+    $list = array_values($cards);
+    usort($list, static function (array $a, array $b): int {
+        $byDate = ((int) ($b['latestCreatedAtMs'] ?? 0)) <=> ((int) ($a['latestCreatedAtMs'] ?? 0));
+        if ($byDate !== 0) {
+            return $byDate;
+        }
+        return strcmp((string) ($a['label'] ?? ''), (string) ($b['label'] ?? ''));
+    });
+    return ['cards' => $list, 'kpi' => $kpi];
+}
+
+function syncpediaLeadSourceCardsEmptyKpi(): array
+{
+    return [
+        'total' => 0,
+        'new' => 0,
+        'pipeline' => 0,
+        'enrolled' => 0,
+        'lost' => 0,
+        'unassigned' => 0,
+    ];
+}
+
+/**
+ * Fold COUNT(*) rows (one per source_key + status) into the same card/KPI shape as the row scan.
+ *
+ * @param array<int,array<string,mixed>> $rows
+ * @return array{cards: array<int,array<string,mixed>>, kpi: array<string,int>}
+ */
+function syncpediaLeadSourceCardsFromGroupedRows(array $rows): array
+{
+    $cards = [];
+    $kpi = syncpediaLeadSourceCardsEmptyKpi();
+    $pipeline = [
+        'qualified' => true,
+        'interested' => true,
+        'demo_scheduled' => true,
+        'demo_attended' => true,
+        'considering' => true,
+    ];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $key = trim((string) ($row['source_key'] ?? ''));
+        if ($key === '') {
+            $key = 'other';
+        }
+        $statusKey = strtolower(trim((string) ($row['status_key'] ?? '')));
+        if ($statusKey === '') {
+            $statusKey = 'new';
+        }
+        $n = (int) ($row['cnt'] ?? 0);
+        if ($n < 1) {
+            continue;
+        }
+        $unassigned = (int) ($row['unassigned'] ?? 0);
+        $created = trim((string) ($row['latest_at'] ?? ''));
+        $createdMs = $created !== '' ? (int) (strtotime($created) * 1000) : 0;
+        $label = trim((string) ($row['label'] ?? ''));
+        if (!isset($cards[$key])) {
+            if ($label === '' || $label === $key) {
+                $label = syncpediaLeadSourceBucketLabel(['source' => $key], $key);
+            }
+            $cards[$key] = syncpediaLeadSourceCardSkeleton($key, $label);
+        }
+        $cards[$key]['total'] += $n;
+        $cards[$key]['byStatus'][$statusKey] = (int) ($cards[$key]['byStatus'][$statusKey] ?? 0) + $n;
+        $cards[$key]['unassigned'] += $unassigned;
+        $kpi['unassigned'] += $unassigned;
+        if ($createdMs > (int) $cards[$key]['latestCreatedAtMs']) {
+            $cards[$key]['latestCreatedAtMs'] = $createdMs;
+            if ($label !== '' && $label !== $key) {
+                $cards[$key]['label'] = $label;
+            }
+        }
+        $kpi['total'] += $n;
+        if ($statusKey === 'new') {
+            $kpi['new'] += $n;
+        } elseif (isset($pipeline[$statusKey])) {
+            $kpi['pipeline'] += $n;
+        } elseif ($statusKey === 'enrolled') {
+            $kpi['enrolled'] += $n;
+        } elseif ($statusKey === 'lost' || $statusKey === 'not_interested') {
+            $kpi['lost'] += $n;
+        }
+    }
+    return syncpediaLeadSourceCardsSort($cards, $kpi);
+}
+
+/**
+ * Fast path: GROUP BY persisted source_key. Same card keys, counts, labels, and manager gating.
+ *
+ * @param array<int,mixed> $params
+ * @return array{cards: array<int,array<string,mixed>>, kpi: array<string,int>}
+ */
+function syncpediaAggregateLeadSourceCardsGrouped(PDO $db, array $tokenData, string $where, array $params): array
+{
+    $ctx = syncpediaLeadSourceCardManagerContext($db, $tokenData);
+    $mgrSql = '';
+    if ($ctx['isManager']) {
+        $mgr = syncpediaLeadSourceCardsManagerFilterSql($ctx['granted'], $ctx['userId']);
+        $mgrSql = $mgr['sql'];
+        $params = array_merge($params, $mgr['params']);
+    }
+
+    $statusExpr = "CASE
+        WHEN LOWER(TRIM(COALESCE(status, ''))) = '' THEN 'new'
+        WHEN LOWER(TRIM(status)) = 'converted' THEN 'enrolled'
+        ELSE LOWER(TRIM(status))
+    END";
+    $keyExpr = "COALESCE(NULLIF(TRIM(source_key), ''), 'other')";
+    if (function_exists('syncpediaDbIsMysql') && !syncpediaDbIsMysql($db)) {
+        $labelExpr = "(ARRAY_AGG(NULLIF(source_label, '') ORDER BY created_at DESC) FILTER (WHERE NULLIF(source_label, '') IS NOT NULL))[1]";
+    } else {
+        $labelExpr = "SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(source_label, '') ORDER BY created_at DESC SEPARATOR 0x1f), 0x1f, 1)";
+    }
+
+    if (!function_exists('syncpediaDbIsMysql') || syncpediaDbIsMysql($db)) {
+        try {
+            $db->exec('SET SESSION group_concat_max_len = 65535');
+        } catch (Throwable $e) {
+        }
+    }
+
+    $sql = "SELECT
+            $keyExpr AS source_key,
+            $statusExpr AS status_key,
+            COUNT(*) AS cnt,
+            SUM(CASE WHEN assigned_to IS NULL OR TRIM(assigned_to) = '' THEN 1 ELSE 0 END) AS unassigned,
+            MAX(created_at) AS latest_at,
+            $labelExpr AS label
+        FROM leads
+        WHERE $where $mgrSql
+        GROUP BY 1, 2";
+
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    return syncpediaLeadSourceCardsFromGroupedRows(is_array($rows) ? $rows : []);
+}
+
+/**
+ * One pass over slim lead columns. Returns source cards + KPI counts without shipping every row.
+ *
+ * @param array<string,mixed> $tokenData
+ * @param array<int,mixed> $params
+ * @return array{cards: array<int,array<string,mixed>>, kpi: array<string,int>}
+ */
+function syncpediaAggregateLeadSourceCards(PDO $db, array $tokenData, string $where, array $params): array
+{
+    try {
+        if (syncpediaLeadSourceCardFieldsEnsureSchema($db)
+            && syncpediaLeadSourceCardFieldsBackfill($db, $where, $params)
+        ) {
+            return syncpediaAggregateLeadSourceCardsGrouped($db, $tokenData, $where, $params);
+        }
+    } catch (Throwable $e) {
+        error_log('[lead source cards] grouped path: ' . $e->getMessage());
+    }
+    return syncpediaAggregateLeadSourceCardsScan($db, $tokenData, $where, $params);
+}
+
+/**
+ * Original per-row scan. Used when persisted columns are unavailable.
+ *
+ * @param array<string,mixed> $tokenData
+ * @param array<int,mixed> $params
+ * @return array{cards: array<int,array<string,mixed>>, kpi: array<string,int>}
+ */
+function syncpediaAggregateLeadSourceCardsScan(PDO $db, array $tokenData, string $where, array $params): array
+{
+    $ctx = syncpediaLeadSourceCardManagerContext($db, $tokenData);
+    $isManager = $ctx['isManager'];
+    $userId = $ctx['userId'];
+    $granted = $ctx['granted'];
+    $assignedLeadIds = [];
+    if ($isManager && $userId !== '') {
+        try {
+            $st = $db->prepare('SELECT lead_id FROM lead_assignments WHERE user_id = ?');
+            $st->execute([$userId]);
+            while ($lid = $st->fetchColumn()) {
+                $lid = trim((string) $lid);
+                if ($lid !== '') {
+                    $assignedLeadIds[$lid] = true;
+                }
+            }
+        } catch (Throwable $e) {
+        }
+    }
+
+    $sqlWithNotes = "SELECT id, source, status, tags, assigned_to, created_by, referred_by, created_at,
+        CASE WHEN notes LIKE '%import_set:%' THEN SUBSTRING(notes, LOCATE('import_set:', notes), 48) ELSE '' END AS notes_import_tag
+        FROM leads WHERE $where";
+    $sqlSlim = "SELECT id, source, status, tags, assigned_to, created_by, referred_by, created_at
+        FROM leads WHERE $where";
+
+    $buffered = true;
+    try {
+        $buffered = (bool) $db->getAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY);
+        $db->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, false);
+    } catch (Throwable $e) {
+    }
+
+    $stmt = null;
+    $cards = [];
+    $kpi = syncpediaLeadSourceCardsEmptyKpi();
+    $pipeline = [
+        'qualified' => true,
+        'interested' => true,
+        'demo_scheduled' => true,
+        'demo_attended' => true,
+        'considering' => true,
+    ];
+    try {
+        try {
+            $stmt = $db->prepare($sqlWithNotes);
+            $stmt->execute($params);
+        } catch (Throwable $e) {
+            $stmt = $db->prepare($sqlSlim);
+            $stmt->execute($params);
+        }
+
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            if (!is_array($row)) {
+                continue;
+            }
+            if ($isManager) {
+                $gate = syncpediaLeadFormOrAssessmentSourceKey($row);
+                if ($gate !== null) {
+                    $allowed = isset($granted[$gate])
+                        || (str_starts_with($gate, 'meta_ad:') && isset($granted['meta_ads']));
+                    if (!$allowed) {
+                        $lid = trim((string) ($row['id'] ?? ''));
+                        $assignedTo = trim((string) ($row['assigned_to'] ?? ''));
+                        $createdBy = trim((string) ($row['created_by'] ?? ''));
+                        $self = $userId !== '' && (
+                            $assignedTo === $userId
+                            || $createdBy === $userId
+                            || ($lid !== '' && isset($assignedLeadIds[$lid]))
+                        );
+                        if (!$self) {
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            $key = syncpediaLeadSourceBucketKey($row);
+            if ($key === '') {
+                $key = 'other';
+            }
+            $status = strtolower(trim((string) ($row['status'] ?? '')));
+            if ($status === '' || $status === 'converted') {
+                $statusKey = $status === 'converted' ? 'enrolled' : ($status === '' ? 'new' : $status);
+            } else {
+                $statusKey = $status;
+            }
+            $created = trim((string) ($row['created_at'] ?? ''));
+            $createdMs = $created !== '' ? (int) (strtotime($created) * 1000) : 0;
+
+            if (!isset($cards[$key])) {
+                $cards[$key] = syncpediaLeadSourceCardSkeleton($key, syncpediaLeadSourceBucketLabel($row, $key));
+            }
+            $cards[$key]['total']++;
+            $cards[$key]['byStatus'][$statusKey] = (int) ($cards[$key]['byStatus'][$statusKey] ?? 0) + 1;
+            if (trim((string) ($row['assigned_to'] ?? '')) === '') {
+                $cards[$key]['unassigned']++;
+                $kpi['unassigned']++;
+            }
+            if ($createdMs > (int) $cards[$key]['latestCreatedAtMs']) {
+                $cards[$key]['latestCreatedAtMs'] = $createdMs;
+                $better = syncpediaLeadSourceBucketLabel($row, $key);
+                if ($better !== '' && $better !== $key) {
+                    $cards[$key]['label'] = $better;
+                }
+            }
+            $kpi['total']++;
+            if ($statusKey === 'new') {
+                $kpi['new']++;
+            } elseif (isset($pipeline[$statusKey])) {
+                $kpi['pipeline']++;
+            } elseif ($statusKey === 'enrolled') {
+                $kpi['enrolled']++;
+            } elseif ($statusKey === 'lost' || $statusKey === 'not_interested') {
+                $kpi['lost']++;
+            }
+        }
+    } finally {
+        if ($stmt instanceof PDOStatement) {
+            $stmt->closeCursor();
+        }
+        try {
+            $db->setAttribute(PDO::MYSQL_ATTR_USE_BUFFERED_QUERY, $buffered);
+        } catch (Throwable $e) {
+        }
+    }
+
+    return syncpediaLeadSourceCardsSort($cards, $kpi);
 }
 
 /**

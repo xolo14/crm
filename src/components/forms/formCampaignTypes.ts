@@ -18,6 +18,8 @@ export type FormCampaignConfig = {
   whatsapp_template_id?: string;
   auto_send_email?: boolean;
   auto_send_whatsapp?: boolean;
+  email_require_payment?: boolean;
+  whatsapp_require_payment?: boolean;
 };
 
 export const EMPTY_FORM_CAMPAIGN: FormCampaignConfig = {
@@ -29,6 +31,8 @@ export const EMPTY_FORM_CAMPAIGN: FormCampaignConfig = {
   whatsapp_template_id: "",
   auto_send_email: false,
   auto_send_whatsapp: false,
+  email_require_payment: false,
+  whatsapp_require_payment: false,
 };
 
 export function parseFormCampaign(meta?: Record<string, unknown> | null): FormCampaignConfig {
@@ -47,6 +51,8 @@ export function parseFormCampaign(meta?: Record<string, unknown> | null): FormCa
     whatsapp_template_id: String(c.whatsapp_template_id ?? ""),
     auto_send_email: Boolean(c.auto_send_email),
     auto_send_whatsapp: Boolean(c.auto_send_whatsapp),
+    email_require_payment: Boolean(c.email_require_payment),
+    whatsapp_require_payment: Boolean(c.whatsapp_require_payment),
   };
 }
 

@@ -12,7 +12,7 @@ $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 function fsmAllowedRole(string $role): bool
 {
     $r = syncpediaNormalizeRoleKey($role);
-    return in_array($r, ['super_admin', 'admin', 'org', 'manager'], true);
+    return in_array($r, ['super_admin', 'admin', 'org', 'manager', 'operational_manager'], true);
 }
 
 /** Org policy edit: org admin / admin / super_admin only. */

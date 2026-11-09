@@ -23,11 +23,67 @@ if ($method === 'GET') {
     $sql .= " FROM issued_certificates WHERE {$org['where']} ORDER BY created_at DESC LIMIT 2000";
     $stmt = $db->prepare($sql);
     $stmt->execute($org['params']);
-    $rows = $stmt->fetchAll();
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $emailByCert = [];
+    $ids = [];
+    foreach ($rows as $row) {
+        $cid = trim((string) ($row['id'] ?? ''));
+        if ($cid !== '') {
+            $ids[] = $cid;
+        }
+    }
+    if ($ids) {
+        try {
+            $hasStatus = tableHasColumn($db, 'certificate_email_logs', 'status');
+            $hasError = tableHasColumn($db, 'certificate_email_logs', 'error_message');
+            $statusSelect = $hasStatus ? 'status' : "'sent' AS status";
+            $errorSelect = $hasError ? 'error_message' : 'NULL AS error_message';
+            $in = implode(',', array_fill(0, count($ids), '?'));
+            // Latest log per certificate_id (MySQL 8 window, with ORDER BY fallback via max created_at join).
+            $logSql = "
+                SELECT cel.certificate_id, cel.to_email, cel.sent_at, {$statusSelect}, {$errorSelect}, cel.created_at
+                FROM certificate_email_logs cel
+                INNER JOIN (
+                    SELECT certificate_id, MAX(created_at) AS max_created
+                    FROM certificate_email_logs
+                    WHERE certificate_id IN ({$in})
+                    GROUP BY certificate_id
+                ) latest ON latest.certificate_id = cel.certificate_id AND latest.max_created = cel.created_at
+            ";
+            $logStmt = $db->prepare($logSql);
+            $logStmt->execute($ids);
+            while ($log = $logStmt->fetch(PDO::FETCH_ASSOC)) {
+                $cid = trim((string) ($log['certificate_id'] ?? ''));
+                if ($cid === '' || isset($emailByCert[$cid])) {
+                    continue;
+                }
+                $st = strtolower(trim((string) ($log['status'] ?? 'sent')));
+                if ($st !== 'failed') {
+                    $st = 'sent';
+                }
+                $emailByCert[$cid] = [
+                    'email_status' => $st,
+                    'email_error' => $st === 'failed' ? trim((string) ($log['error_message'] ?? '')) : null,
+                    'email_to' => trim((string) ($log['to_email'] ?? '')),
+                    'email_sent_at' => $log['sent_at'] ?? null,
+                ];
+            }
+        } catch (Throwable $e) {
+            error_log('[issued-certificates] email status: ' . $e->getMessage());
+        }
+    }
+
     foreach ($rows as &$row) {
         if (isset($row['cert_type'])) {
             $row['cert_type'] = certNormalizeType($row['cert_type']);
         }
+        $cid = trim((string) ($row['id'] ?? ''));
+        $mail = $emailByCert[$cid] ?? null;
+        $row['email_status'] = is_array($mail) ? ($mail['email_status'] ?? null) : null;
+        $row['email_error'] = is_array($mail) ? ($mail['email_error'] ?? null) : null;
+        $row['email_to'] = is_array($mail) ? ($mail['email_to'] ?? null) : null;
+        $row['email_sent_at'] = is_array($mail) ? ($mail['email_sent_at'] ?? null) : null;
     }
     unset($row);
     respond(['data' => $rows]);
@@ -45,6 +101,7 @@ if ($method === 'POST') {
     $hasVerifyToken = tableHasColumn($db, 'issued_certificates', 'verify_token');
     $created = 0;
     $ids = [];
+    $idMap = [];
     $errors = [];
     $tplOrg = orgFilter($tokenData, 'ct', $db);
 
@@ -107,15 +164,11 @@ if ($method === 'POST') {
             $errors[] = ['id' => $id, 'error' => 'Organization prefix is required before issuing certificates.'];
             continue;
         }
-        if ($id === '') {
-            try {
-                $id = certGenerateIssuedId($db, $prefix, $certType);
-            } catch (Throwable $e) {
-                $errors[] = ['id' => $id, 'error' => 'Could not allocate a unique certificate number'];
-                continue;
-            }
-        } elseif (!certIsValidIssuedId($id, $prefix, $certType)) {
-            $errors[] = ['id' => $id, 'error' => 'Certificate number must be PREFIX-TYPE-XXXXXX for this organization (e.g. SP-CS-482193)'];
+        $proposed = $id;
+        try {
+            $id = certResolveIssuedId($db, $proposed, $prefix, $certType);
+        } catch (Throwable $e) {
+            $errors[] = ['id' => $proposed, 'error' => 'Could not allocate a unique certificate number'];
             continue;
         }
 
@@ -127,11 +180,15 @@ if ($method === 'POST') {
             }
             $created += 1;
             $ids[] = $id;
+            if ($proposed !== '') {
+                $idMap[$proposed] = $id;
+            }
         } catch (Throwable $e) {
+            error_log('[issued-certificates] insert: ' . $e->getMessage());
             if (isMysqlDuplicateKey($e)) {
                 $errors[] = ['id' => $id, 'error' => 'Certificate already exists'];
             } else {
-                $errors[] = ['id' => $id, 'error' => $e->getMessage()];
+                $errors[] = ['id' => $id, 'error' => 'Could not save this certificate. Refresh the page and try again.'];
             }
         }
     }
@@ -146,7 +203,17 @@ if ($method === 'POST') {
         );
     }
 
-    respond(['created' => $created, 'ids' => $ids, 'errors' => $errors], $created > 0 ? 201 : 400);
+    $topError = null;
+    if ($created === 0 && $errors !== []) {
+        $topError = (string) ($errors[0]['error'] ?? 'Could not issue certificate');
+    }
+    respond([
+        'created' => $created,
+        'ids' => $ids,
+        'id_map' => $idMap,
+        'errors' => $errors,
+        'error' => $topError,
+    ], $created > 0 ? 201 : 400);
 }
 
 if ($method === 'PUT') {

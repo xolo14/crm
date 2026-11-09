@@ -10,32 +10,47 @@ require_once __DIR__ . '/document_storage.php';
 cors();
 
 $db = (new Database())->getConnection();
-$certId = trim((string) ($_GET['id'] ?? ''));
+$certId = strtoupper(trim((string) ($_GET['id'] ?? '')));
 $token = trim((string) ($_GET['token'] ?? ''));
 $format = strtolower(trim((string) ($_GET['format'] ?? '')));
 
-if ($certId === '' || $token === '') {
-    respond(['verified' => false, 'error' => 'Certificate id and verification token are required'], 400);
+if ($certId === '') {
+    respond(['verified' => false, 'error' => 'Certificate id is required'], 400);
 }
 
-if (!syncpediaColumnExists($db, 'issued_certificates', 'verify_token')) {
-    respond(['verified' => false, 'error' => 'Verification not available'], 404);
+// Per-IP limit (a single visitor/scanner checking a handful of certificates).
+syncpediaRateLimitConsume('cert_verify', 60, 900);
+// IP-agnostic limit on this org+type's certificate space, so a scrape distributed across many
+// IPs can't bypass the per-IP limit above by spreading requests out.
+syncpediaRateLimitConsumeGlobal('cert_verify_org:' . substr($certId, 0, 5), 300, 900);
+
+// Printed QR codes point at /verify/{id} with no token. Only issued ids of the
+// PREFIX-TYPE-###### form can be opened that way. A token, when present, must match.
+if ($token === '' && !preg_match(certIssuedIdPattern(), $certId)) {
+    error_log('[cert-verify] invalid lookup: malformed id=' . $certId . ' ip=' . (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
+    respond(['verified' => false, 'error' => 'Certificate not found'], 404);
 }
 
+$hasTokenCol = syncpediaColumnExists($db, 'issued_certificates', 'verify_token');
+$tokenSelect = $hasTokenCol ? ', verify_token' : '';
 $stmt = $db->prepare(
-    'SELECT id, template_id, template_name, recipient_name, course_name, cert_type, issue_date, status, verify_token
-     FROM issued_certificates WHERE id = ? LIMIT 1',
+    "SELECT id, template_id, template_name, recipient_name, course_name, cert_type, issue_date, status{$tokenSelect}
+     FROM issued_certificates WHERE id = ? LIMIT 1",
 );
 $stmt->execute([$certId]);
 $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
 if (!$row || ($row['status'] ?? '') !== 'issued') {
+    error_log('[cert-verify] invalid lookup: not found/not issued id=' . $certId . ' ip=' . (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
     respond(['verified' => false, 'error' => 'Certificate not found'], 404);
 }
 
-$stored = (string) ($row['verify_token'] ?? '');
-if ($stored === '' || !hash_equals($stored, $token)) {
-    respond(['verified' => false, 'error' => 'Invalid verification token'], 403);
+if ($token !== '') {
+    $stored = (string) ($row['verify_token'] ?? '');
+    if (!$hasTokenCol || $stored === '' || !hash_equals($stored, $token)) {
+        error_log('[cert-verify] invalid lookup: bad token id=' . $certId . ' ip=' . (string) ($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
+        respond(['verified' => false, 'error' => 'Invalid verification token'], 403);
+    }
 }
 
 /**
@@ -121,6 +136,25 @@ if ($tplId !== '') {
     }
 }
 
+if ($format === 'asset') {
+    $asset = basename(str_replace('\\', '/', trim((string) ($_GET['asset'] ?? ''))));
+    if ($asset === '' || $asset === '.' || $asset === '..' || !preg_match('/^[A-Za-z0-9._-]+$/', $asset)) {
+        respond(['error' => 'Asset not found'], 404);
+    }
+    $allowed = certPublicTemplateAssetPaths(is_array($template) ? $template : null);
+    $match = '';
+    foreach ($allowed as $path) {
+        if (basename($path) === $asset) {
+            $match = $path;
+            break;
+        }
+    }
+    if ($match === '') {
+        respond(['error' => 'Asset not found'], 404);
+    }
+    certPublicStreamTemplateAsset($match);
+}
+
 respond([
     'verified' => true,
     'certId' => $row['id'],
@@ -136,3 +170,102 @@ respond([
         'domainName' => $row['course_name'],
     ],
 ]);
+
+/**
+ * Upload paths this issued certificate's template is allowed to show publicly.
+ *
+ * @param array<string, mixed>|null $template
+ * @return list<string>
+ */
+function certPublicTemplateAssetPaths(?array $template): array
+{
+    if (!is_array($template)) {
+        return [];
+    }
+    $found = [];
+    $push = static function ($value) use (&$found): void {
+        $raw = trim((string) $value);
+        if ($raw === '' || str_starts_with($raw, 'data:') || str_starts_with($raw, 'blob:')) {
+            return;
+        }
+        if (strpos($raw, '..') !== false) {
+            return;
+        }
+        $idx = strpos($raw, '/uploads/certificate_assets/');
+        if ($idx === false) {
+            return;
+        }
+        $path = substr($raw, $idx);
+        $path = (string) strtok($path, '?#');
+        if ($path === '' || !preg_match('#^/uploads/certificate_assets/[0-9a-fA-F-]{36}/[A-Za-z0-9._-]+$#', $path)) {
+            return;
+        }
+        $found[$path] = true;
+    };
+    $style = is_array($template['style'] ?? null) ? $template['style'] : [];
+    $fields = is_array($template['fields'] ?? null) ? $template['fields'] : [];
+    foreach (['bgImage', 'bgPdf'] as $key) {
+        $push($style[$key] ?? '');
+    }
+    foreach (['signatureImage', 'watermarkImage', 'logoLeftImage', 'logoRightImage'] as $key) {
+        $push($fields[$key] ?? '');
+    }
+    $layers = is_array($template['layers'] ?? null) ? $template['layers'] : [];
+    foreach ($layers as $layer) {
+        if (!is_array($layer)) {
+            continue;
+        }
+        $push($layer['content'] ?? '');
+    }
+    return array_keys($found);
+}
+
+function certPublicStreamTemplateAsset(string $rawPath): void
+{
+    $relUploads = str_replace('/', DIRECTORY_SEPARATOR, $rawPath);
+    $candidates = [
+        dirname(__DIR__) . $relUploads,
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'uploads' . str_replace('/', DIRECTORY_SEPARATOR, substr($rawPath, strlen('/uploads'))),
+        dirname(__DIR__, 2) . $relUploads,
+        dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'public' . $relUploads,
+        dirname(__DIR__) . DIRECTORY_SEPARATOR . 'public' . $relUploads,
+    ];
+    $abs = null;
+    foreach ($candidates as $candidate) {
+        $resolved = realpath($candidate);
+        if ($resolved === false || !is_file($resolved)) {
+            continue;
+        }
+        $norm = str_replace('\\', '/', $resolved);
+        if (strpos($norm, '/uploads/certificate_assets/') === false) {
+            continue;
+        }
+        $abs = $resolved;
+        break;
+    }
+    if ($abs === null) {
+        respond(['error' => 'Asset not found'], 404);
+    }
+    $ext = strtolower(pathinfo($abs, PATHINFO_EXTENSION));
+    $mime = [
+        'jpg' => 'image/jpeg',
+        'jpeg' => 'image/jpeg',
+        'png' => 'image/png',
+        'webp' => 'image/webp',
+        'gif' => 'image/gif',
+        'pdf' => 'application/pdf',
+    ][$ext] ?? '';
+    if ($mime === '') {
+        respond(['error' => 'Asset not found'], 404);
+    }
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . (string) filesize($abs));
+    header('X-Content-Type-Options: nosniff');
+    header('Content-Disposition: inline; filename="' . basename($abs) . '"');
+    header('Cache-Control: public, max-age=86400');
+    readfile($abs);
+    exit;
+}

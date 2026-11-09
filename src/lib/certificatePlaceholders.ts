@@ -3,6 +3,7 @@
  */
 
 import { applyPlaceholders, extractPlaceholderKeys } from "@/modules/docForms/types";
+import { escapeOfferHtmlAttr, escapeOfferHtmlText } from "@/lib/offerLetterPlaceholders";
 
 /** Auto-filled at issue time — never shown as manual bulk columns. */
 export const CERT_AUTO_PLACEHOLDER_KEYS = new Set([
@@ -135,6 +136,51 @@ export function applyCertPlaceholders(text: string, values: Record<string, strin
     return v !== undefined ? v : full;
   });
   return applyPlaceholders(withMustache, values);
+}
+
+/**
+ * HTML-safe variant of applyCertPlaceholders for contexts that render as real HTML
+ * (certificate email body, HTML previews). Escapes candidate/recipient values for the
+ * context they land in — a quoted attribute or HTML text — so they can never break out
+ * of the template markup or inject a script/event handler. The trusted template HTML
+ * itself is left untouched.
+ *
+ * Unlike applyCertPlaceholders, this does not fall back to the raw applyPlaceholders()
+ * pass: a token neither <<...>> / {{...}} lookup resolves is left as literal text rather
+ * than risking an unescaped substitution.
+ */
+export function applyCertPlaceholdersHtml(text: string, values: Record<string, string>): string {
+  let out = String(text || "");
+
+  // Pass 1: tokens sitting inside a quoted attribute value — attribute-escape so they
+  // can never close the quote / inject a new attribute or event handler.
+  out = out.replace(
+    /(=\s*)(["'])((?:(?!\2)[\s\S])*?)\2/g,
+    (full: string, eq: string, quote: string, inner: string) => {
+      if (!/<<|\{\{/.test(inner)) return full;
+      let replaced = inner.replace(/<<\s*([^<>]+?)\s*>>/g, (m: string, raw: string) => {
+        const v = lookupCertPlaceholderValue(raw, values);
+        return v !== undefined ? escapeOfferHtmlAttr(v) : m;
+      });
+      replaced = replaced.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (m: string, key: string) => {
+        const v = lookupCertPlaceholderValue(key, values);
+        return v !== undefined ? escapeOfferHtmlAttr(v) : m;
+      });
+      return `${eq}${quote}${replaced}${quote}`;
+    },
+  );
+
+  // Pass 2: remaining tokens are in HTML text/content context — entity-escape.
+  out = out.replace(/<<\s*([^<>]+?)\s*>>/g, (full: string, raw: string) => {
+    const v = lookupCertPlaceholderValue(raw, values);
+    return v !== undefined ? escapeOfferHtmlText(v) : full;
+  });
+  out = out.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (full: string, key: string) => {
+    const v = lookupCertPlaceholderValue(key, values);
+    return v !== undefined ? escapeOfferHtmlText(v) : full;
+  });
+
+  return out;
 }
 
 export function extractAnglePlaceholderLabels(...chunks: string[]): string[] {

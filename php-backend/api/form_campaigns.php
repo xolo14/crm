@@ -246,20 +246,26 @@ function formCampaignN8nWebhook(string $type): ?string
 
 function formCampaignPersonalize(string $text, array $lead): string
 {
-    $name = trim((string) ($lead['name'] ?? $lead['full_name'] ?? ''));
+    $name = trim((string) ($lead['name'] ?? $lead['full_name'] ?? $lead['candidate_name'] ?? ''));
     $email = trim((string) ($lead['email'] ?? ''));
     $phone = trim((string) ($lead['phone'] ?? ''));
     $values = [
         'name' => $name,
         'full_name' => $name,
+        'candidate_name' => $name,
+        'recipient_name' => $name,
+        'student_name' => $name,
         'email' => $email,
         'phone' => $phone,
         'link' => trim((string) ($lead['link'] ?? $lead['meeting_link'] ?? $lead['url'] ?? '')),
     ];
     $text = marketingFillAnglePlaceholders($text, $values);
-    return str_replace(
-        ['{{name}}', '{{email}}', '{{phone}}', '{{full_name}}'],
-        [$name, $email, $phone, $name],
+    return str_ireplace(
+        [
+            '{{name}}', '{{email}}', '{{phone}}', '{{full_name}}',
+            '{{candidate_name}}', '{{recipient_name}}', '{{student_name}}',
+        ],
+        [$name, $email, $phone, $name, $name, $name, $name],
         $text,
     );
 }
@@ -327,6 +333,7 @@ function formCampaignMergeIntoMeta(array $meta, array $campaignInput): array
     $allowed = [
         'assign_email', 'assign_whatsapp', 'email_source', 'email_template_id',
         'whatsapp_source', 'whatsapp_template_id', 'auto_send_email', 'auto_send_whatsapp',
+        'email_require_payment', 'whatsapp_require_payment',
     ];
     foreach ($allowed as $key) {
         if (array_key_exists($key, $campaignInput)) {
@@ -417,72 +424,74 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
         return ['ok' => false, 'error' => 'No recipients with valid email addresses'];
     }
 
-    $db->prepare('INSERT INTO email_campaigns (id, subject, draft_id, recipient_count, pending_count, sent_count, failed_count, status, created_by, org_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    // The shared marketing worker needs a concrete org_smtp_accounts id on the campaign row (it
+    // has no "pick any active mailbox" fallback of its own, unlike the mail-transport layer the
+    // old inline-send call used). Resolve the org's default active mailbox once, up front, and
+    // store it — same "any active account for this org, lowest slot first" fallback the
+    // mail-transport layer itself falls back to when no specific category route is configured.
+    $defaultSmtpAccountId = null;
+    if ($orgId !== '') {
+        try {
+            $acctSt = $db->prepare(
+                'SELECT id FROM org_smtp_accounts WHERE org_id = ? AND is_active = 1 ORDER BY slot ASC LIMIT 1'
+            );
+            $acctSt->execute([$orgId]);
+            $defaultSmtpAccountId = $acctSt->fetchColumn() ?: null;
+        } catch (Throwable $e) {
+            error_log('[formCampaignSendEmail] resolve default mailbox: ' . $e->getMessage());
+        }
+    }
+    if ($defaultSmtpAccountId === null) {
+        return ['ok' => false, 'error' => 'No active mailbox configured for this organization. Add one in Email Setup.'];
+    }
+
+    $db->prepare('INSERT INTO email_campaigns (id, subject, draft_id, recipient_count, pending_count, sent_count, failed_count, status, created_by, org_id, smtp_account_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
         ->execute([
             $campaignId,
             $draft['subject'] ?? $draft['name'] ?? 'Form campaign',
             $draft['id'],
             count($valid),
-            0,
+            count($valid),
             0,
             0,
             'sending',
             $userId,
             $orgId !== '' ? $orgId : null,
+            $defaultSmtpAccountId,
         ]);
 
-    $sendStmt = $db->prepare('INSERT INTO email_sends (id, campaign_id, recipient_email, status, error_message, sent_at) VALUES (?,?,?,?,?,?)');
-    $sent = 0;
-    $failed = 0;
-    $firstError = null;
-    $fromAddr = 'support@syncpedia.in';
-    $fromName = trim((string) ($formRow['name'] ?? 'Syncpedia'));
     $subject = (string) ($draft['subject'] ?? 'Message from Syncpedia');
     $html = (string) ($draft['html_body'] ?? '');
-    syncpediaSetMailContext($orgId !== '' ? $orgId : null, 'form_campaigns');
     if ($html === '') {
         $html = '<p>' . nl2br(htmlspecialchars((string) ($draft['plain_text'] ?? ''), ENT_QUOTES, 'UTF-8')) . '</p>';
     }
 
+    // Persist every recipient as a 'pending' email_sends row BEFORE any sending is attempted —
+    // this is what lets the already-hardened marketing email worker (reconnect-safe, claim-
+    // before-send, never auto-resends a row once it's been claimed) take over delivery, instead
+    // of sending inline within this request (which previously had no row at all for a recipient
+    // not yet reached if the request timed out mid-batch).
+    //
+    // Per-recipient personalization (formCampaignPersonalize) is baked into sent_subject/
+    // sent_html now, at insert time, the same way marketingDispatchEmailCampaign() already does
+    // it for ordinary marketing campaigns — the worker only needs to send what's stored here.
+    $sendStmt = $db->prepare(
+        'INSERT INTO email_sends (id, campaign_id, recipient_email, status, sent_subject, sent_html, scheduled_at) VALUES (?,?,?,?,?,?,?)'
+    );
     foreach ($valid as $lead) {
         $email = trim((string) $lead['email']);
         $body = formCampaignPersonalize($html, $lead);
         $subj = formCampaignPersonalize($subject, $lead);
-        $attachments = marketingEmailDraftAttachments($draft);
-        $missingPdf = false;
-        foreach ($attachments as $file) {
-            if (!empty($file['missing'])) {
-                $missingPdf = true;
-                break;
-            }
-        }
-        if ($missingPdf) {
-            $res = ['ok' => false, 'error' => 'The PDF attached to this draft is missing, so this message was not sent.'];
-        } else {
-            $res = syncpediaSendHtmlEmailViaSmtpWithOptions($email, $subj, $body, $fromAddr, $fromName, '', '', $attachments);
-        }
-        $status = $res['ok'] ? 'sent' : 'failed';
-        if ($res['ok']) {
-            $sent++;
-        } else {
-            $failed++;
-            if ($firstError === null) {
-                $firstError = trim((string) ($res['error'] ?? 'SMTP send failed'));
-            }
-        }
         $sendStmt->execute([
             generateUUID(),
             $campaignId,
             $email,
-            $status,
-            $res['ok'] ? null : (trim((string) ($res['error'] ?? '')) ?: 'Send failed. The mail server did not accept this message.'),
-            $res['ok'] ? date('Y-m-d H:i:s') : null,
+            'pending',
+            $subj,
+            $body,
+            null,
         ]);
     }
-
-    $pending = max(0, count($valid) - $sent - $failed);
-    $db->prepare('UPDATE email_campaigns SET sent_count = ?, failed_count = ?, pending_count = ?, status = ? WHERE id = ?')
-        ->execute([$sent, $failed, $pending, $failed > 0 && $sent === 0 ? 'failed' : ($failed > 0 ? 'partial' : 'completed'), $campaignId]);
 
     $webhook = formCampaignN8nWebhook('email');
     if ($webhook !== null) {
@@ -496,13 +505,25 @@ function formCampaignSendEmail(PDO $db, array $tokenData, array $formRow, string
         ]);
     }
 
+    // Fire-and-forget: spawn a background process to drain the queue. This never blocks or
+    // exits the current request (unlike marketingEchoJsonAndContinue()/marketingDrainDueEmail-
+    // Campaigns(), which this function deliberately does NOT call) — formCampaignSendEmail() is
+    // invoked both from a top-level HTTP action (forms.php, where exiting early would be fine)
+    // AND synchronously mid-request from the public lead-submission auto-send path (where it
+    // would NOT be fine — it would cut off the lead-creation response). The HTTP caller in
+    // forms.php additionally falls back to an inline drain if this background kick fails.
+    $workerKicked = function_exists('marketingKickEmailCampaignWorker') && marketingKickEmailCampaignWorker();
+
     return [
-        'ok' => $sent > 0,
-        'sent' => $sent,
-        'failed' => $failed,
+        'ok' => true,
+        'sent' => 0,
+        'failed' => 0,
+        'pending' => count($valid),
         'skipped' => 0,
         'campaign_id' => $campaignId,
-        'error' => $sent === 0 ? ($firstError ?: 'No emails were accepted by SMTP') : null,
+        'worker_kicked' => $workerKicked,
+        'error' => null,
+        'message' => 'Queued ' . count($valid) . ' email(s); they go out every few seconds.',
     ];
 }
 
@@ -538,6 +559,39 @@ function formCampaignSendWhatsapp(PDO $db, array $tokenData, array $formRow, str
         if ($sendOrgId === '') {
             return ['ok' => false, 'error' => 'Organization is required for WhatsApp campaigns'];
         }
+
+        // Persist every recipient as a 'pending' row BEFORE any send is attempted — mirrors the
+        // whatsapp_campaigns/whatsapp_sends pattern already used a few lines below in this same
+        // file (the non-communications branch), so if this request times out mid-loop there is
+        // still a record of exactly which recipients were/weren't reached, instead of the
+        // previous behavior where an unreached recipient left no trace at all.
+        $commCampaignId = generateUUID();
+        try {
+            $db->prepare('INSERT INTO whatsapp_campaigns (id, subject, draft_id, recipient_count, pending_count, sent_count, failed_count, status, created_by, org_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+                ->execute([
+                    $commCampaignId,
+                    (string) ($template['name'] ?? 'Form campaign'),
+                    null,
+                    count($valid),
+                    count($valid),
+                    0,
+                    0,
+                    'sending',
+                    $userId,
+                    $sendOrgId,
+                ]);
+            $commSendStmt = $db->prepare('INSERT INTO whatsapp_sends (id, campaign_id, recipient_phone, status) VALUES (?,?,?,?)');
+            $commSendIds = [];
+            foreach ($valid as $lead) {
+                $sid = generateUUID();
+                $commSendIds[(string) $lead['phone']] = $sid;
+                $commSendStmt->execute([$sid, $commCampaignId, (string) $lead['phone'], 'pending']);
+            }
+        } catch (Throwable $e) {
+            error_log('[formCampaignSendWhatsapp] persist recipients: ' . $e->getMessage());
+            $commSendIds = [];
+        }
+
         $sent = 0;
         $failed = 0;
         require_once __DIR__ . '/lib/WhatsAppInbox.php';
@@ -546,12 +600,23 @@ function formCampaignSendWhatsapp(PDO $db, array $tokenData, array $formRow, str
             $orgCfg = commLoadOrgConfig($db, $sendOrgId);
         } catch (Throwable $ignored) {
         }
+        $updSendStatus = static function (string $phone, string $status) use ($db, $commSendIds): void {
+            $sid = $commSendIds[$phone] ?? null;
+            if ($sid === null) {
+                return;
+            }
+            try {
+                $db->prepare('UPDATE whatsapp_sends SET status = ? WHERE id = ?')->execute([$status, $sid]);
+            } catch (Throwable $ignored) {
+            }
+        };
         foreach ($valid as $lead) {
             $name = trim((string) ($lead['name'] ?? ''));
             $vars = $name !== '' ? [$name] : [];
             $send = commSendViaOrgProvider($db, $sendOrgId, (string) $lead['phone'], $template, $vars, null);
             if ($send['ok']) {
                 $sent++;
+                $updSendStatus((string) $lead['phone'], 'sent');
                 $bodyText = (string) ($template['body'] ?? $template['name'] ?? 'WhatsApp template');
                 if (function_exists('commRenderTemplate') && $vars !== []) {
                     try {
@@ -578,9 +643,15 @@ function formCampaignSendWhatsapp(PDO $db, array $tokenData, array $formRow, str
                 }
             } else {
                 $failed++;
+                $updSendStatus((string) $lead['phone'], 'failed');
             }
         }
-        return ['ok' => $sent > 0 || $failed === 0, 'sent' => $sent, 'failed' => $failed, 'skipped' => 0];
+        try {
+            $db->prepare('UPDATE whatsapp_campaigns SET sent_count = ?, failed_count = ?, pending_count = 0, status = ? WHERE id = ?')
+                ->execute([$sent, $failed, $failed > 0 && $sent === 0 ? 'failed' : ($failed > 0 ? 'partial' : 'completed'), $commCampaignId]);
+        } catch (Throwable $ignored) {
+        }
+        return ['ok' => $sent > 0 || $failed === 0, 'sent' => $sent, 'failed' => $failed, 'skipped' => 0, 'campaign_id' => $commCampaignId];
     }
 
     $st = $db->prepare('SELECT * FROM whatsapp_drafts WHERE id = ? LIMIT 1');
@@ -677,7 +748,7 @@ function formCampaignSendBulk(PDO $db, array $tokenData, array $formRow, string 
 }
 
 /** @param array<string,mixed> $lead */
-function formCampaignAutoSendForNewLead(PDO $db, array $formRow, array $lead): void
+function formCampaignAutoSendForNewLead(PDO $db, array $formRow, array $lead, bool $isPaid = false): void
 {
     $rawMeta = $formRow['meta_json'] ?? null;
     if (is_string($rawMeta)) {
@@ -699,7 +770,38 @@ function formCampaignAutoSendForNewLead(PDO $db, array $formRow, array $lead): v
         'org_id' => $formOrg !== '' ? $formOrg : null,
     ];
 
-    if (!empty($cfg['auto_send_email']) && !empty($cfg['email_template_id'])) {
+    $leadId = trim((string) ($lead['id'] ?? ''));
+    $tags = [];
+    if ($leadId !== '') {
+        try {
+            $st = $db->prepare('SELECT tags FROM leads WHERE id = ? LIMIT 1');
+            $st->execute([$leadId]);
+            $rawTags = $st->fetchColumn();
+            $decoded = is_string($rawTags) ? json_decode($rawTags, true) : (is_array($rawTags) ? $rawTags : []);
+            $tags = is_array($decoded) ? $decoded : [];
+        } catch (Throwable $e) {
+            $tags = [];
+        }
+    }
+    $markSent = static function (string $key) use ($db, $leadId, &$tags): void {
+        if ($leadId === '') {
+            return;
+        }
+        $tags[$key] = true;
+        $tags[$key . '_at'] = date('c');
+        try {
+            $db->prepare('UPDATE leads SET tags = ? WHERE id = ?')->execute([
+                json_encode($tags, JSON_UNESCAPED_UNICODE),
+                $leadId,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[form campaign auto tag] ' . $e->getMessage());
+        }
+    };
+
+    $emailReady = !empty($cfg['auto_send_email']) && !empty($cfg['email_template_id']);
+    $emailPayOk = empty($cfg['email_require_payment']) || $isPaid;
+    if ($emailReady && $emailPayOk && empty($tags['campaign_email_sent'])) {
         $source = (string) ($cfg['email_source'] ?? 'marketing');
         $tid = (string) $cfg['email_template_id'];
         if ($tid !== '') {
@@ -707,6 +809,8 @@ function formCampaignAutoSendForNewLead(PDO $db, array $formRow, array $lead): v
                 $res = formCampaignSendEmail($db, $tokenShim, $formRow, $source, $tid, [$lead], $ownerId);
                 if (empty($res['ok'])) {
                     error_log('[form campaign auto email] ' . (string) ($res['error'] ?? 'send failed'));
+                } else {
+                    $markSent('campaign_email_sent');
                 }
             } catch (Throwable $e) {
                 error_log('[form campaign auto email] ' . $e->getMessage());
@@ -714,16 +818,21 @@ function formCampaignAutoSendForNewLead(PDO $db, array $formRow, array $lead): v
         }
     }
     if (!empty($cfg['auto_send_whatsapp']) && !empty($cfg['whatsapp_template_id'])) {
-        $source = (string) ($cfg['whatsapp_source'] ?? 'marketing');
-        $tid = (string) $cfg['whatsapp_template_id'];
-        if ($tid !== '') {
-            try {
-                $res = formCampaignSendWhatsapp($db, $tokenShim, $formRow, $source, $tid, [$lead], $ownerId);
-                if (empty($res['ok'])) {
-                    error_log('[form campaign auto whatsapp] ' . (string) ($res['error'] ?? 'send failed'));
+        $waPayOk = empty($cfg['whatsapp_require_payment']) || $isPaid;
+        if ($waPayOk && empty($tags['campaign_whatsapp_sent'])) {
+            $source = (string) ($cfg['whatsapp_source'] ?? 'marketing');
+            $tid = (string) $cfg['whatsapp_template_id'];
+            if ($tid !== '') {
+                try {
+                    $res = formCampaignSendWhatsapp($db, $tokenShim, $formRow, $source, $tid, [$lead], $ownerId);
+                    if (empty($res['ok'])) {
+                        error_log('[form campaign auto whatsapp] ' . (string) ($res['error'] ?? 'send failed'));
+                    } else {
+                        $markSent('campaign_whatsapp_sent');
+                    }
+                } catch (Throwable $e) {
+                    error_log('[form campaign auto whatsapp] ' . $e->getMessage());
                 }
-            } catch (Throwable $e) {
-                error_log('[form campaign auto whatsapp] ' . $e->getMessage());
             }
         }
     }

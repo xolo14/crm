@@ -49,6 +49,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
+import { getApiBase } from "@/lib/apiBase";
 import { searchAccessibleLeads } from "@/lib/searchAccessibleLeads";
 import { cn } from "@/lib/utils";
 import { normalizeAppRole } from "@/lib/roleUtils";
@@ -62,6 +63,7 @@ import {
 } from "@/lib/placeholderSheetImport";
 import {
   applyCertPlaceholders,
+  applyCertPlaceholdersHtml,
   canonicalCertPlaceholderKey,
   certPlaceholderLabel,
   extractAnglePlaceholderLabels,
@@ -74,7 +76,7 @@ import {
 } from "@/lib/certificatePlaceholders";
 import { ProtectedUploadImage } from "@/components/ProtectedUploadImage";
 import { PlaceholderPalette } from "@/components/templates/PlaceholderPalette";
-import { resolveUploadSrc } from "@/lib/resumeHref";
+import { resolveUploadSrc, resumeStoragePath } from "@/lib/resumeHref";
 import { buildCertificatePdfBase64, certPageSizePx } from "@/utils/certificatePdf";
 import { createRoot } from "react-dom/client";
 
@@ -436,6 +438,8 @@ interface CertTemplate {
   layers: CertLayer[];
 }
 
+type IssuedEmailStatus = "sent" | "failed";
+
 interface IssuedCertificate {
   id: string;
   templateId: string;
@@ -446,6 +450,11 @@ interface IssuedCertificate {
   issueDate: string;
   status: IssuedStatus;
   verifyToken?: string;
+  /** Latest compose/send attempt from certificate_email_logs. */
+  emailStatus?: IssuedEmailStatus | null;
+  emailError?: string | null;
+  emailTo?: string | null;
+  emailSentAt?: string | null;
 }
 
 interface VerifyPayload {
@@ -1060,7 +1069,7 @@ function QRCodeWidget({
         value={url}
         size={size}
         fgColor={fgColor}
-        bgColor="transparent"
+        bgColor="#ffffff"
         style={fill ? { width: "100%", height: "100%" } : undefined}
         className={fill ? "h-full w-full" : undefined}
       />
@@ -1231,13 +1240,13 @@ function CertificatePreview({
       )}
       {bgImageSrc && overlayOpacity > 0 ? (
         <div
-          className="absolute inset-0 bg-white dark:bg-slate-900 pointer-events-none"
+          className="absolute inset-0 bg-white pointer-events-none"
           style={{ opacity: overlayOpacity }}
         />
       ) : null}
       {template.style.bgPdf && renderPdfBackground && overlayOpacity > 0 ? (
         <div
-          className="absolute inset-0 bg-white dark:bg-slate-900 pointer-events-none"
+          className="absolute inset-0 bg-white pointer-events-none"
           style={{ opacity: overlayOpacity }}
         />
       ) : null}
@@ -1323,6 +1332,7 @@ function CertificatePreview({
       )}
       {[...layers].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0)).map((layer) => {
         if (layer.type === "qr") {
+          if (!showQr) return null;
           return (
             <CanvasTextBoxFrame
               key={layer.id}
@@ -1457,6 +1467,7 @@ export async function captureCertificatePdfBase64(opts: {
   companyName?: string;
   date: string;
   certID?: string;
+  verifyToken?: string;
   placeholderValues?: Record<string, string>;
 }): Promise<string> {
   const page = getCertPageSpec(opts.template.style.pageFormat);
@@ -1502,6 +1513,13 @@ export async function captureCertificatePdfBase64(opts: {
             overrides={{ domainName: opts.domainName }}
             renderPdfBackground={usePdfObject}
             showQr
+            verifyUrl={
+              opts.certID && opts.verifyToken
+                ? getVerifyURL(opts.certID, opts.verifyToken)
+                : opts.certID
+                  ? getVerifyURL(opts.certID)
+                  : undefined
+            }
           />
         </div>,
       );
@@ -2117,6 +2135,14 @@ function TemplateBuilderModal({
   };
 
   const saveDraft = async () => {
+    if (!draft.name.trim()) {
+      toast({ variant: "destructive", title: "Name required", description: "Please enter a certificate template name." });
+      return;
+    }
+    if ((draft.layers || []).length === 0) {
+      toast({ variant: "destructive", title: "Add a layer", description: "Add at least one layer before saving the certificate template." });
+      return;
+    }
     if (normalizeCertPrefix(prefixDraft).length !== 2) {
       toast({ variant: "destructive", title: "Prefix required", description: "Enter exactly two letters for the organization prefix." });
       return;
@@ -2131,6 +2157,14 @@ function TemplateBuilderModal({
   };
 
   const saveAndActivate = async () => {
+    if (!draft.name.trim()) {
+      toast({ variant: "destructive", title: "Name required", description: "Please enter a certificate template name." });
+      return;
+    }
+    if ((draft.layers || []).length === 0) {
+      toast({ variant: "destructive", title: "Add a layer", description: "Add at least one layer before saving the certificate template." });
+      return;
+    }
     if (normalizeCertPrefix(prefixDraft).length !== 2) {
       toast({ variant: "destructive", title: "Prefix required", description: "Enter exactly two letters for the organization prefix." });
       return;
@@ -3177,12 +3211,14 @@ function SingleIssueCertDialog({
   template,
   orgPrefix,
   onConfirm,
+  onEmailLogged,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   template: CertTemplate | null;
   orgPrefix: string;
-  onConfirm: (issued: IssuedCertificate[]) => Promise<void>;
+  onConfirm: (issued: IssuedCertificate[]) => Promise<{ ids?: string[]; id_map?: Record<string, string> } | void>;
+  onEmailLogged?: () => void;
 }) {
   const { toast } = useToast();
   const [step, setStep] = useState<"details" | "preview" | "email">("details");
@@ -3197,6 +3233,8 @@ function SingleIssueCertDialog({
   const [leadsTruncated, setLeadsTruncated] = useState(false);
   const [leadsLoading, setLeadsLoading] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [mailTo, setMailTo] = useState("");
+  const [leadHadEmail, setLeadHadEmail] = useState(false);
   const [issuePayload, setIssuePayload] = useState<{
     studentName: string;
     studentEmail: string;
@@ -3221,6 +3259,9 @@ function SingleIssueCertDialog({
     () => templateKeys.filter((k) => k !== "issue_date"),
     [templateKeys],
   );
+  const templateHasEmailField = fillKeys.some(
+    (k) => k === "recipient_email" || k === "email" || k.toLowerCase().includes("email"),
+  );
 
   useEffect(() => {
     if (!open || !template) return;
@@ -3233,6 +3274,8 @@ function SingleIssueCertDialog({
     setLeadSuggestionsOpen(false);
     setLeadSearch("");
     setSelectedLeadId(null);
+    setMailTo("");
+    setLeadHadEmail(false);
     setEmailDraft({ to: "", cc: "", bcc: "", subject: "", body: "", attachmentUrl: "", attachmentName: "" });
     const seed: Record<string, string> = {};
     for (const k of getCertificateTemplatePlaceholderKeys(template)) {
@@ -3288,19 +3331,26 @@ function SingleIssueCertDialog({
 
   const applyLead = (lead: CertLeadOption) => {
     const mapped = mapLeadToCertPlaceholderValues(lead, fillKeys);
+    const leadEmail = lead.email.trim();
     setValues((prev) => ({ ...prev, ...mapped }));
+    setMailTo(leadEmail);
+    setLeadHadEmail(leadEmail.includes("@"));
     setSelectedLeadId(lead.id);
     setLeadSuggestionsOpen(false);
     setLeadSearch(lead.name || lead.email);
     toast({
       title: "Lead selected",
-      description: `${lead.name || lead.email} — fields filled from lead.`,
+      description: leadEmail
+        ? `${lead.name || leadEmail} — email taken from the lead.`
+        : `${lead.name || "Lead"} has no email. Enter the recipient email below.`,
     });
   };
 
   const assertFilled = (): boolean => {
     const missing = fillKeys.filter((k) => !String(values[k] ?? "").trim());
     if (!issueDate.trim()) missing.push("issue_date");
+    const emailNow = String(values.recipient_email || values.email || mailTo || "").trim();
+    if (!emailNow || !emailNow.includes("@")) missing.push("recipient_email");
     if (missing.length) {
       toast({
         variant: "destructive",
@@ -3313,7 +3363,7 @@ function SingleIssueCertDialog({
   };
 
   const recipientName = String(values.recipient_name || values.name || "").trim();
-  const recipientEmail = String(values.recipient_email || values.email || "").trim();
+  const recipientEmail = String(values.recipient_email || values.email || mailTo || "").trim();
   const domainName = String(values.domain_name || values.course_name || values.domain || "").trim();
   const companyName = String(values.company_name || template?.fields.companyName || "").trim();
 
@@ -3348,10 +3398,10 @@ function SingleIssueCertDialog({
     if (!template || !assertFilled()) return;
     setIsIssuing(true);
     try {
-      const certId = generateCertId(template.certType, orgPrefix);
+      const proposedCertId = generateCertId(template.certType, orgPrefix);
       const verifyToken = generateOpaqueVerifyToken();
       const nextIssued: IssuedCertificate = {
-        id: certId,
+        id: proposedCertId,
         templateId: template.id,
         templateName: template.name,
         recipientName,
@@ -3361,7 +3411,8 @@ function SingleIssueCertDialog({
         status: "issued",
         verifyToken,
       };
-      await onConfirm([nextIssued]);
+      const saved = await onConfirm([nextIssued]);
+      const certId = String(saved?.id_map?.[proposedCertId] || saved?.ids?.[0] || proposedCertId).trim() || proposedCertId;
 
       let pdfBase64 = "";
       try {
@@ -3372,6 +3423,7 @@ function SingleIssueCertDialog({
           companyName: companyName || template.fields.companyName,
           date: issueDate,
           certID: certId,
+          verifyToken,
           placeholderValues,
         });
       } catch (pdfErr) {
@@ -3397,7 +3449,7 @@ function SingleIssueCertDialog({
       }
 
       const res = await api.certificates.issue({
-        recipientId: `single-${crypto.randomUUID()}`,
+        recipientId: selectedLeadId || crypto.randomUUID(),
         templateId: template.id,
         syncId: certId,
         recipientName,
@@ -3433,7 +3485,8 @@ function SingleIssueCertDialog({
         cc: "",
         bcc: "",
         subject: applyCertPlaceholders(mailCfg.mail_subject, emailValues),
-        body: applyCertPlaceholders(mailCfg.mail_body, emailValues),
+        // HTML-context rendering: escapes recipient/cert values before they reach the email body.
+        body: applyCertPlaceholdersHtml(mailCfg.mail_body, emailValues),
         attachmentUrl: payload.pdfUrl,
         attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.certificateId}.pdf`,
       });
@@ -3466,8 +3519,10 @@ function SingleIssueCertDialog({
       });
       setEmailSent(true);
       toast({ title: "Certificate email sent!" });
+      onEmailLogged?.();
     } catch (e: any) {
       toast({ variant: "destructive", title: "Email send failed", description: e?.message || "Unable to send email." });
+      onEmailLogged?.();
     } finally {
       setSendingEmail(false);
     }
@@ -3598,25 +3653,51 @@ function SingleIssueCertDialog({
                       </div>
                     );
                   }
+                  const isEmailKey = key === "recipient_email" || key === "email" || key.toLowerCase().includes("email");
                   return (
-                    <div key={key}>
+                    <div key={key} className={isEmailKey ? "sm:col-span-2 space-y-1.5" : undefined}>
                       <Label className="text-xs">
                         {certPlaceholderLabel(key)} *
                         <span className="ml-1 font-mono text-[10px] text-muted-foreground">{`{{${key}}}`}</span>
                       </Label>
                       <Input
-                        type={key.includes("email") ? "email" : "text"}
+                        type={isEmailKey ? "email" : "text"}
                         value={values[key] || ""}
                         onChange={(e) => {
-                          setSelectedLeadId(null);
+                          if (!isEmailKey) setSelectedLeadId(null);
                           setValue(key, e.target.value);
+                          if (isEmailKey) setMailTo(e.target.value);
                         }}
-                        placeholder={certPlaceholderLabel(key)}
+                        placeholder={isEmailKey ? "name@example.com" : certPlaceholderLabel(key)}
                       />
+                      {isEmailKey && selectedLeadId && !leadHadEmail ? (
+                        <p className="text-[10px] text-amber-700">This lead has no email. Enter the address to send the certificate.</p>
+                      ) : isEmailKey && selectedLeadId && leadHadEmail ? (
+                        <p className="text-[10px] text-emerald-700">Taken from the selected lead. You can edit it before sending.</p>
+                      ) : null}
                     </div>
                   );
                 })
               )}
+              {!templateHasEmailField ? (
+                <div className="sm:col-span-2 space-y-1.5">
+                  <Label className="text-xs">Recipient email *</Label>
+                  <Input
+                    type="email"
+                    value={mailTo}
+                    onChange={(e) => setMailTo(e.target.value)}
+                    placeholder="name@example.com"
+                    autoComplete="off"
+                  />
+                  {selectedLeadId && leadHadEmail ? (
+                    <p className="text-[10px] text-emerald-700">Taken from the selected lead. You can edit it before sending.</p>
+                  ) : selectedLeadId ? (
+                    <p className="text-[10px] text-amber-700">This lead has no email. Enter the address to send the certificate.</p>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground">Required. Filled automatically when the selected lead has an email.</p>
+                  )}
+                </div>
+              ) : null}
               <div>
                 <Label className="text-xs">Issue date *</Label>
                 <Input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
@@ -3720,13 +3801,15 @@ function IssueCertWizard({
   initialTemplateId,
   onConfirm,
   orgPrefix,
+  onEmailLogged,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   templates: CertTemplate[];
   initialTemplateId?: string;
-  onConfirm: (issued: IssuedCertificate[]) => Promise<void>;
+  onConfirm: (issued: IssuedCertificate[]) => Promise<{ ids?: string[]; id_map?: Record<string, string> } | void>;
   orgPrefix: string;
+  onEmailLogged?: () => void;
 }) {
   const { toast } = useToast();
   const [step, setStep] = useState<1 | 2 | 3>(1);
@@ -4167,10 +4250,11 @@ function IssueCertWizard({
     });
     try {
       setIsIssuing(true);
-      await onConfirm(issuedList);
+      const saved = await onConfirm(issuedList);
       const issueResults: Array<{ recipientId: string; res: any }> = [];
       for (const recipient of selectedRecipients) {
         const issued = issuedByRecipientId[recipient.id] || issuedList[0];
+        const certId = String(saved?.id_map?.[issued.id] || issued.id);
         const name = resolveRecipientName(recipient);
         const email = resolveRecipientEmail(recipient);
         const course = resolveCourse(recipient);
@@ -4183,9 +4267,9 @@ function IssueCertWizard({
           name,
           recipient_email: email,
           email,
-          cert_id: issued.id,
-          certificate_id: issued.id,
-          CertID: issued.id,
+          cert_id: certId,
+          certificate_id: certId,
+          CertID: certId,
           course_name: course,
           domain_name: course,
           issue_date: issueDate,
@@ -4200,7 +4284,8 @@ function IssueCertWizard({
             domainName: course || selectedTemplate.fields.domainName,
             companyName: placeholderValues.company_name || selectedTemplate.fields.companyName,
             date: issueDate,
-            certID: issued.id,
+            certID: certId,
+            verifyToken: issued.verifyToken,
             placeholderValues,
           });
         } catch (pdfErr) {
@@ -4226,7 +4311,7 @@ function IssueCertWizard({
         const res = await api.certificates.issue({
           recipientId: recipient.id,
           templateId: selectedTemplate.id,
-          syncId: issued.id,
+          syncId: certId,
           recipientName: name,
           recipientEmail: email,
           courseName: course,
@@ -4270,7 +4355,8 @@ function IssueCertWizard({
         cc: "",
         bcc: "",
         subject: applyCertPlaceholders(mailCfg.mail_subject, emailValues),
-        body: applyCertPlaceholders(mailCfg.mail_body, emailValues),
+        // HTML-context rendering: escapes recipient/cert values before they reach the email body.
+        body: applyCertPlaceholdersHtml(mailCfg.mail_body, emailValues),
         attachmentUrl: payload.pdfUrl,
         attachmentName: `Certificate_${payload.studentName.replace(/\s+/g, "_")}_${payload.certificateId}.pdf`,
       });
@@ -4303,8 +4389,10 @@ function IssueCertWizard({
       });
       setEmailSent(true);
       toast({ title: "Certificate email sent!" });
+      onEmailLogged?.();
     } catch (e: any) {
       toast({ variant: "destructive", title: "Email send failed", description: e?.message || "Unable to send email." });
+      onEmailLogged?.();
     } finally {
       setSendingEmail(false);
     }
@@ -4961,6 +5049,25 @@ function CertIdBadge({ certId }: { certId: string }) {
   );
 }
 
+function issuedEmailLabel(c: IssuedCertificate): { label: string; variant: "default" | "secondary" | "destructive" | "outline"; detail?: string } {
+  if (c.emailStatus === "sent") {
+    return {
+      label: "Sent",
+      variant: "default",
+      detail: c.emailTo ? `Sent to ${c.emailTo}` : undefined,
+    };
+  }
+  if (c.emailStatus === "failed") {
+    const reason = String(c.emailError || "Email send failed").trim();
+    return {
+      label: "Failed",
+      variant: "destructive",
+      detail: reason,
+    };
+  }
+  return { label: "Not sent", variant: "secondary" };
+}
+
 function IssuedCertificatesTable({
   issuedCerts,
   templates,
@@ -4996,15 +5103,19 @@ function IssuedCertificatesTable({
                 <TableRow>
                   <TableHead>Cert ID</TableHead>
                   <TableHead>Recipient</TableHead>
+                  <TableHead>Template</TableHead>
                   <TableHead>Course</TableHead>
                   <TableHead>Cert Type</TableHead>
                   <TableHead>Issue Date</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Email</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {issuedCerts.map((c) => (
+                {issuedCerts.map((c) => {
+                  const email = issuedEmailLabel(c);
+                  return (
                   <TableRow key={c.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
@@ -5023,6 +5134,7 @@ function IssuedCertificatesTable({
                       </div>
                     </TableCell>
                     <TableCell>{c.recipientName}</TableCell>
+                    <TableCell className="text-sm">{c.templateName || "—"}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{c.courseName}</TableCell>
                     <TableCell>
                       <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(c.certType))}>
@@ -5034,6 +5146,19 @@ function IssuedCertificatesTable({
                       <Badge variant={issuedStatusBadgeVariant(c.status)} className="text-[10px]">
                         {c.status}
                       </Badge>
+                    </TableCell>
+                    <TableCell className="max-w-[220px]">
+                      <div className="space-y-0.5" title={email.detail || undefined}>
+                        <Badge variant={email.variant} className="text-[10px]">
+                          {email.label}
+                        </Badge>
+                        {email.label === "Failed" && email.detail ? (
+                          <p className="text-[10px] leading-snug text-destructive/90 line-clamp-2">{email.detail}</p>
+                        ) : null}
+                        {email.label === "Sent" && c.emailTo ? (
+                          <p className="text-[10px] text-muted-foreground truncate">{c.emailTo}</p>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
@@ -5091,7 +5216,8 @@ function IssuedCertificatesTable({
                       </div>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
@@ -5355,6 +5481,44 @@ function ImportModal({
   );
 }
 
+/** Public image URL for a template asset. The query must not contain "/uploads/" or the image loader sends it to the login-only files endpoint. */
+function publicCertAssetUrl(certId: string, token: string, storedPath: string): string {
+  const storage = resumeStoragePath(storedPath);
+  if (!storage || !storage.startsWith("/uploads/certificate_assets/")) return storedPath;
+  const asset = storage.split("/").pop() || "";
+  if (!asset || asset.includes("..") || asset.includes("/") || asset.includes("\\")) return storedPath;
+  const qs = new URLSearchParams({ id: certId, format: "asset", asset });
+  if (token) qs.set("token", token);
+  return `${getApiBase()}/public-certificate-verify.php?${qs.toString()}`;
+}
+
+function rewriteTemplateAssetsForPublicVerify(template: CertTemplate, certId: string, token: string): CertTemplate {
+  const mapPath = (value?: string) => {
+    const raw = String(value || "");
+    if (!raw || raw.startsWith("data:") || raw.startsWith("blob:")) return raw;
+    return publicCertAssetUrl(certId, token, raw);
+  };
+  return {
+    ...template,
+    style: {
+      ...template.style,
+      bgImage: template.style.bgImage ? mapPath(template.style.bgImage) : template.style.bgImage,
+      bgPdf: template.style.bgPdf ? mapPath(template.style.bgPdf) : template.style.bgPdf,
+    },
+    fields: {
+      ...template.fields,
+      logoLeftImage: mapPath(template.fields.logoLeftImage),
+      logoRightImage: mapPath(template.fields.logoRightImage),
+      watermarkImage: mapPath(template.fields.watermarkImage),
+      signatureImage: mapPath(template.fields.signatureImage),
+    },
+    layers: (template.layers || []).map((layer) => {
+      if (layer.type !== "logo" && layer.type !== "image" && layer.type !== "signature") return layer;
+      return { ...layer, content: mapPath(layer.content) };
+    }),
+  };
+}
+
 export function CertificateVerifyPage() {
   const { certId = "" } = useParams();
   const [searchParams] = useSearchParams();
@@ -5365,33 +5529,25 @@ export function CertificateVerifyPage() {
   const [displayId, setDisplayId] = useState(certId);
   const [displayOverrides, setDisplayOverrides] = useState<Partial<CertTemplateFields>>({});
   const [displayDate, setDisplayDate] = useState<string | undefined>(undefined);
-  const [pdfUrl, setPdfUrl] = useState("");
   const [recipientLabel, setRecipientLabel] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    let revoked: string | null = null;
     async function load() {
-      const normalizedCertId = decodeURIComponent(certId || "");
+      const normalizedCertId = decodeURIComponent(certId || "").trim();
       if (!normalizedCertId) {
         setLoading(false);
         return;
       }
-      if (!verifyToken) {
-        setLoading(false);
-        setVerified(false);
-        return;
-      }
 
-      const embedded = resolveEmbeddedVerify(normalizedCertId, verifyToken);
+      const embedded = verifyToken ? resolveEmbeddedVerify(normalizedCertId, verifyToken) : null;
       if (embedded) {
         if (cancelled) return;
         setVerified(true);
         setDisplayId(embedded.certId);
-        setDisplayTemplate(embedded.template);
+        setDisplayTemplate(rewriteTemplateAssetsForPublicVerify(embedded.template, embedded.certId, verifyToken));
         setDisplayOverrides(embedded.overrides);
         setDisplayDate(undefined);
-        setPdfUrl("");
         setRecipientLabel(String(embedded.overrides.recipientName || ""));
         setLoading(false);
         return;
@@ -5405,8 +5561,9 @@ export function CertificateVerifyPage() {
           return;
         }
 
+        const issuedId = String(res.certId || normalizedCertId);
         setVerified(true);
-        setDisplayId(String(res.certId || normalizedCertId));
+        setDisplayId(issuedId);
         setRecipientLabel(String(res.recipientName || res.overrides?.recipientName || ""));
         setDisplayOverrides({
           recipientName: String(res.recipientName || res.overrides?.recipientName || ""),
@@ -5415,21 +5572,9 @@ export function CertificateVerifyPage() {
         });
         setDisplayDate(typeof res.issueDate === "string" ? res.issueDate : undefined);
         if (res.template) {
-          setDisplayTemplate(res.template as CertTemplate);
-        }
-
-        // Prefer the stored issued PDF (same bytes as email) so bg + fonts match.
-        const tryPdf = res.hasPdf !== false;
-        if (tryPdf) {
-          try {
-            const blob = await api.certificates.verifyPublicPdf(normalizedCertId, verifyToken);
-            if (cancelled) return;
-            const next = URL.createObjectURL(blob);
-            revoked = next;
-            setPdfUrl(next);
-          } catch {
-            // Fall back to live template re-render below.
-          }
+          setDisplayTemplate(
+            rewriteTemplateAssetsForPublicVerify(res.template as CertTemplate, issuedId, verifyToken),
+          );
         }
       } catch {
         if (!cancelled) setVerified(false);
@@ -5440,18 +5585,15 @@ export function CertificateVerifyPage() {
     void load();
     return () => {
       cancelled = true;
-      if (revoked) URL.revokeObjectURL(revoked);
     };
   }, [certId, verifyToken]);
-
-  const showLiveFallback = verified && !pdfUrl && displayTemplate;
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-8">
       <div className="max-w-5xl mx-auto space-y-4">
         {loading ? (
           <Card><CardContent className="py-10 text-center text-muted-foreground">Verifying certificate…</CardContent></Card>
-        ) : !verified || (!pdfUrl && !displayTemplate) ? (
+        ) : !verified ? (
           <Card>
             <CardContent className="py-10 text-center">
               <h1 className="text-xl font-bold">Certificate not found</h1>
@@ -5476,15 +5618,7 @@ export function CertificateVerifyPage() {
                 <p className="font-mono text-xs text-muted-foreground">{displayId}</p>
               ) : null}
             </div>
-            {pdfUrl ? (
-              <div className="overflow-hidden rounded-lg border bg-muted/20 shadow-sm">
-                <iframe
-                  title={`Certificate ${displayId}`}
-                  src={pdfUrl}
-                  className="h-[min(80vh,920px)] w-full bg-white"
-                />
-              </div>
-            ) : showLiveFallback ? (
+            {displayTemplate ? (
               <CertificatePreviewFit
                 pageFormat={displayTemplate.style.pageFormat}
                 className={cn(
@@ -5505,7 +5639,17 @@ export function CertificateVerifyPage() {
                   renderPdfBackground
                 />
               </CertificatePreviewFit>
-            ) : null}
+            ) : (
+              <Card>
+                <CardContent className="py-8 text-center space-y-1">
+                  <p className="text-lg font-semibold">{recipientLabel || "Certificate verified"}</p>
+                  {displayOverrides.domainName ? (
+                    <p className="text-sm text-muted-foreground">{displayOverrides.domainName}</p>
+                  ) : null}
+                  {displayDate ? <p className="text-sm text-muted-foreground">{displayDate}</p> : null}
+                </CardContent>
+              </Card>
+            )}
           </>
         )}
       </div>
@@ -5534,6 +5678,8 @@ export default function CertificatesPage() {
   const [templatesSyncError, setTemplatesSyncError] = useState<string | null>(null);
   const [certTypeOptions, setCertTypeOptions] = useState<CertTypeOption[]>(BUILTIN_CERT_TYPE_OPTIONS);
   const [issuedCerts, setIssuedCerts] = useState<IssuedCertificate[]>([]);
+  const [issuedSearch, setIssuedSearch] = useState("");
+  const [issuedTemplateFilter, setIssuedTemplateFilter] = useState("all");
   const [loadingIssued, setLoadingIssued] = useState(false);
   const [activeTab, setActiveTab] = useState<"templates" | "forms" | "issued" | "form_issued">("templates");
   const [showBuilder, setShowBuilder] = useState(false);
@@ -5543,6 +5689,7 @@ export default function CertificatesPage() {
   const [singleIssueTemplate, setSingleIssueTemplate] = useState<CertTemplate | null>(null);
   const [previewTemplate, setPreviewTemplate] = useState<CertTemplate | null>(null);
   const prevWizardOpen = useRef(false);
+  const prevSingleIssueOpen = useRef(false);
   const [editingTemplate, setEditingTemplate] = useState<CertTemplate | null>(null);
   const [wizardInitialTemplateId, setWizardInitialTemplateId] = useState<string | undefined>(undefined);
 
@@ -5593,21 +5740,33 @@ export default function CertificatesPage() {
         return;
       }
       const normalized: IssuedCertificate[] = rows
-        .map((row: any) => ({
-          id: String(row?.id || "").trim(),
-          templateId: String(row?.template_id || row?.templateId || "").trim(),
-          templateName: String(row?.template_name || row?.templateName || "").trim(),
-          recipientName: String(row?.recipient_name || row?.recipientName || "").trim(),
-          courseName: String(row?.course_name || row?.courseName || "").trim(),
-          certType: normalizeCertType(row?.cert_type || row?.certType || "CC"),
-          issueDate: String(row?.issue_date || row?.issueDate || "").trim(),
-          status: (String(row?.status || "issued").trim() as IssuedStatus),
-          verifyToken: typeof row?.verify_token === "string"
-            ? row.verify_token
-            : typeof row?.verifyToken === "string"
-              ? row.verifyToken
-              : undefined,
-        }))
+        .map((row: any) => {
+          const rawEmailStatus = String(row?.email_status || row?.emailStatus || "").trim().toLowerCase();
+          const emailStatus: IssuedEmailStatus | null =
+            rawEmailStatus === "sent" || rawEmailStatus === "failed" ? rawEmailStatus : null;
+          const emailError = String(row?.email_error || row?.emailError || "").trim();
+          const emailTo = String(row?.email_to || row?.emailTo || "").trim();
+          const emailSentAt = String(row?.email_sent_at || row?.emailSentAt || "").trim();
+          return {
+            id: String(row?.id || "").trim(),
+            templateId: String(row?.template_id || row?.templateId || "").trim(),
+            templateName: String(row?.template_name || row?.templateName || "").trim(),
+            recipientName: String(row?.recipient_name || row?.recipientName || "").trim(),
+            courseName: String(row?.course_name || row?.courseName || "").trim(),
+            certType: normalizeCertType(row?.cert_type || row?.certType || "CC"),
+            issueDate: String(row?.issue_date || row?.issueDate || "").trim(),
+            status: (String(row?.status || "issued").trim() as IssuedStatus),
+            verifyToken: typeof row?.verify_token === "string"
+              ? row.verify_token
+              : typeof row?.verifyToken === "string"
+                ? row.verifyToken
+                : undefined,
+            emailStatus,
+            emailError: emailError || null,
+            emailTo: emailTo || null,
+            emailSentAt: emailSentAt || null,
+          };
+        })
         .filter((c) => c.id && c.templateId && c.templateName && c.recipientName && c.courseName && c.issueDate && isIssuedCertificate(c));
       setIssuedCerts(normalized);
     } catch (e: any) {
@@ -5628,6 +5787,13 @@ export default function CertificatesPage() {
     }
     prevWizardOpen.current = showWizard;
   }, [showWizard, fetchIssuedCertificates]);
+
+  useEffect(() => {
+    if (prevSingleIssueOpen.current && !showSingleIssue) {
+      void fetchIssuedCertificates();
+    }
+    prevSingleIssueOpen.current = showSingleIssue;
+  }, [showSingleIssue, fetchIssuedCertificates]);
 
   const openNewTemplate = () => {
     const seedLayers = buildDefaultImportLayers(certOrgContext, "CC").map((l) => ({ ...l, locked: false }));
@@ -5723,9 +5889,10 @@ export default function CertificatesPage() {
   };
 
   const addIssuedBatch = async (list: IssuedCertificate[]) => {
-    await api.certificates.createIssuedBulk(list);
+    const res = await api.certificates.createIssuedBulk(list);
     await fetchIssuedCertificates();
     setActiveTab("issued");
+    return res as { ids?: string[]; id_map?: Record<string, string> };
   };
 
   const revokeIssued = async (id: string) => {
@@ -5740,6 +5907,15 @@ export default function CertificatesPage() {
 
   const activeTemplates = useMemo(() => templates.filter((t) => t.status !== "archived"), [templates]);
   const archivedTemplates = useMemo(() => templates.filter((t) => t.status === "archived"), [templates]);
+  const filteredIssuedCerts = useMemo(() => {
+    const q = issuedSearch.trim().toLowerCase();
+    return issuedCerts.filter((c) => {
+      if (issuedTemplateFilter !== "all" && c.templateId !== issuedTemplateFilter) return false;
+      if (!q) return true;
+      const hay = [c.id, c.recipientName, c.courseName, c.templateName, c.emailTo || ""].join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+  }, [issuedCerts, issuedSearch, issuedTemplateFilter]);
 
   const exportAllZip = async () => {
     try {
@@ -5881,8 +6057,27 @@ export default function CertificatesPage() {
         </TabsContent>
 
         <TabsContent value="issued" className="space-y-4">
-          <div className="flex justify-end">
-            <Button size="sm" className="gap-1.5" onClick={() => { setWizardInitialTemplateId(undefined); setShowWizard(true); }}>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Input
+              value={issuedSearch}
+              onChange={(e) => setIssuedSearch(e.target.value)}
+              placeholder="Search cert ID, recipient, course, email…"
+              className="h-9 sm:max-w-xs"
+            />
+            <Select value={issuedTemplateFilter} onValueChange={setIssuedTemplateFilter}>
+              <SelectTrigger className="h-9 sm:w-[260px]">
+                <SelectValue placeholder="All templates" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All templates</SelectItem>
+                {templates.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>
+                    {t.name} ({t.certType})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button size="sm" className="gap-1.5 sm:ml-auto" onClick={() => { setWizardInitialTemplateId(undefined); setShowWizard(true); }}>
               <Award className="h-3.5 w-3.5" /> Issue Wizard
             </Button>
           </div>
@@ -5894,9 +6089,15 @@ export default function CertificatesPage() {
                 <p className="text-sm text-muted-foreground">{loadingIssued ? "Loading issued certificates..." : "No certificates issued yet."}</p>
               </CardContent>
             </Card>
+          ) : filteredIssuedCerts.length === 0 ? (
+            <Card>
+              <CardContent className="py-10 text-center">
+                <p className="text-sm text-muted-foreground">No certificates match this search.</p>
+              </CardContent>
+            </Card>
           ) : (
             <IssuedCertificatesTable
-              issuedCerts={issuedCerts}
+              issuedCerts={filteredIssuedCerts}
               templates={templates}
               onRevoke={revokeIssued}
               canDelete={canDeleteIssued}
@@ -5942,6 +6143,9 @@ export default function CertificatesPage() {
         initialTemplateId={wizardInitialTemplateId}
         orgPrefix={certOrgContext.orgPrefix}
         onConfirm={addIssuedBatch}
+        onEmailLogged={() => {
+          void fetchIssuedCertificates();
+        }}
       />
       <SingleIssueCertDialog
         open={showSingleIssue}
@@ -5952,6 +6156,9 @@ export default function CertificatesPage() {
         template={singleIssueTemplate}
         orgPrefix={certOrgContext.orgPrefix}
         onConfirm={addIssuedBatch}
+        onEmailLogged={() => {
+          void fetchIssuedCertificates();
+        }}
       />
       <Dialog open={!!previewTemplate} onOpenChange={(o) => !o && setPreviewTemplate(null)}>
         <DialogContent className="max-w-4xl max-h-[min(92dvh,100%)] overflow-y-auto">

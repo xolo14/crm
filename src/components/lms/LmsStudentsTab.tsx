@@ -52,7 +52,7 @@ export function canUseLmsStudentsTab(
   const r = normalizeAppRole(role);
   if (r === "super_admin") return true;
   if (!isSyncpediaOrganization(org)) return false;
-  return r === "org" || r === "manager";
+  return r === "org" || r === "manager" || r === "operational_manager";
 }
 
 function errMessage(err: unknown): string {

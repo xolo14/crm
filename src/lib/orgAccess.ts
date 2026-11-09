@@ -220,11 +220,11 @@ export function canAccessPaymentRecords(role: string | null, pageAccess?: PageAc
   return false;
 }
 
-/** Manual payment entry button — not for super_admin or read-only Operational Manager. */
+/** Manual payment entry button — not for super_admin. OM matches manager when payments page is granted. */
 export function canSubmitManualPayment(role: string | null): boolean {
   if (!role) return false;
   const r = normalizeAppRole(role);
-  if (r === "super_admin" || r === "operational_manager") return false;
+  if (r === "super_admin") return false;
   return canAccessPaymentRecords(role);
 }
 

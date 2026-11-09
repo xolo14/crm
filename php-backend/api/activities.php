@@ -24,7 +24,9 @@ if ($method === 'GET') {
 
     $stmt = $db->prepare($sql);
     $stmt->execute($params);
-    respond(['data' => $stmt->fetchAll()]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    syncpediaFillUserRecordLabelsOnRows($db, $rows, ['user_id' => 'user_name']);
+    respond(['data' => $rows]);
 }
 
 if ($method === 'POST') {

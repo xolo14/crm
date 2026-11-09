@@ -62,7 +62,15 @@ export default function MarketingPortalDashboard() {
       setWaCampaigns(phpList(waRes));
 
       if (code) {
-        const leadsRes = await api.leads.list({ referred_by: code, lite: true });
+        const leadsRes = await api.leads.list({
+          referred_by: code,
+          lite: true,
+          limit: 2000,
+          onPage: (page) => {
+            setFormLeads(page.data || []);
+            setLoading(false);
+          },
+        });
         setFormLeads(phpList(leadsRes));
       }
     } catch (err: any) {

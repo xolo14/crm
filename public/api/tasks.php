@@ -11,7 +11,12 @@ if ($method === 'GET') {
     $scope = tenantTaskListScopeSql($db, $tokenData);
     $stmt = $db->prepare("SELECT * FROM tasks WHERE 1=1" . $scope['sql'] . " ORDER BY CASE WHEN status = 'completed' THEN 1 ELSE 0 END, due_date ASC LIMIT 500");
     $stmt->execute($scope['params']);
-    respond(['data' => $stmt->fetchAll()]);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    syncpediaFillUserRecordLabelsOnRows($db, $rows, [
+        'assigned_to' => 'assigned_to_name',
+        'created_by' => 'created_by_name',
+    ]);
+    respond(['data' => $rows]);
 }
 
 if ($method === 'POST') {

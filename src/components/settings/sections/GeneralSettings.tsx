@@ -67,7 +67,11 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
   const [removeAvatar, setRemoveAvatar] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState("");
+  const [emailOtp, setEmailOtp] = useState("");
+  const [otpSentTo, setOtpSentTo] = useState("");
+  const [awaitingEmailOtp, setAwaitingEmailOtp] = useState(false);
   const isSuperAdmin = role === "super_admin";
+  const requiresEmailChangeOtp = role === "super_admin" || role === "org" || role === "admin";
   const [theme, setTheme] = useState<ThemeChoice>("light");
   const [compactMode, setCompactMode] = useState(false);
   const [collapsedSidebar, setCollapsedSidebar] = useState(false);
@@ -120,6 +124,13 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
     setRemoveAvatar(false);
     setProfileError("");
   }, [profile?.full_name, profile?.email, profile?.phone, profile?.avatar_url]);
+
+  const clearEmailOtpChallenge = () => {
+    if (!awaitingEmailOtp) return;
+    setAwaitingEmailOtp(false);
+    setEmailOtp("");
+    setOtpSentTo("");
+  };
 
   useEffect(() => {
     if (!isSuperAdmin) return;
@@ -192,24 +203,77 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
       return;
     }
 
+    const e1 = loginEmail1.trim().toLowerCase();
+    const e2 = loginEmail2.trim().toLowerCase();
+    if (isSuperAdmin) {
+      for (const e of [e1, e2]) {
+        if (e && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
+          setProfileError(`Invalid login email: ${e}`);
+          return;
+        }
+      }
+    }
+
+    const emailChanged = cleanEmail !== (profile?.email ?? "").trim().toLowerCase();
+    const loginChanged =
+      isSuperAdmin &&
+      (e1 !== loginEmailsLoaded[0].toLowerCase() || e2 !== loginEmailsLoaded[1].toLowerCase());
+    const otherProfileChanged =
+      cleanName !== (profile?.full_name ?? "").trim() ||
+      cleanPhone !== (profile?.phone ?? "").trim() ||
+      avatarFile !== null ||
+      removeAvatar;
+
     setProfileSaving(true);
     setProfileError("");
     try {
-      await api.auth.updateProfile({
-        full_name: cleanName,
-        email: cleanEmail,
-        phone: cleanPhone,
-        avatar: avatarFile,
-        remove_avatar: removeAvatar,
-      });
-      if (isSuperAdmin) {
-        const e1 = loginEmail1.trim().toLowerCase();
-        const e2 = loginEmail2.trim().toLowerCase();
-        for (const e of [e1, e2]) {
-          if (e && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
-            throw new Error(`Invalid login email: ${e}`);
-          }
+      if (requiresEmailChangeOtp && (emailChanged || loginChanged)) {
+        if (!awaitingEmailOtp) {
+          const res = await api.auth.requestEmailChangeOtp({
+            new_email: cleanEmail,
+            ...(isSuperAdmin && loginChanged ? { login_emails: [e1, e2].filter(Boolean) } : {}),
+          });
+          const sentTo = String(res.sent_to || profile?.email || "").trim();
+          setAwaitingEmailOtp(true);
+          setOtpSentTo(sentTo);
+          setEmailOtp("");
+          toast({
+            title: "Check your email",
+            description: sentTo
+              ? `A verification code was sent to ${sentTo}.`
+              : "A verification code was sent to your current email.",
+          });
+          return;
         }
+        const code = emailOtp.replace(/\D/g, "").slice(0, 6);
+        if (code.length !== 6) {
+          setProfileError("Enter the 6-digit code from your current email.");
+          return;
+        }
+        const confirmed = await api.auth.confirmEmailChange(code);
+        if (isSuperAdmin && Array.isArray(confirmed.emails)) {
+          const list = confirmed.emails;
+          const s1 = String(list[0]?.email ?? "").trim();
+          const s2 = String(list[1]?.email ?? "").trim();
+          setLoginEmail1(s1);
+          setLoginEmail2(s2);
+          setLoginEmailsLoaded([s1, s2]);
+        }
+        setAwaitingEmailOtp(false);
+        setEmailOtp("");
+        setOtpSentTo("");
+      }
+
+      if (otherProfileChanged || !requiresEmailChangeOtp) {
+        await api.auth.updateProfile({
+          full_name: cleanName,
+          email: cleanEmail,
+          phone: cleanPhone,
+          avatar: avatarFile,
+          remove_avatar: removeAvatar,
+        });
+      }
+      if (isSuperAdmin && loginChanged && !requiresEmailChangeOtp) {
         const saved = await api.auth.saveSuperAdminLoginEmails([e1, e2].filter(Boolean));
         const list = Array.isArray(saved.emails) ? saved.emails : [];
         const s1 = String(list[0]?.email ?? "").trim();
@@ -328,30 +392,30 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
           <Input value={fullName} maxLength={100} onChange={(event) => { setFullName(event.target.value); setProfileError(""); }} autoComplete="name" />
         </SettingsRow>
         <SettingsRow label="Email address" description="Used for signing in and account communication.">
-          <Input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setProfileError(""); }} autoComplete="email" />
+          <Input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setProfileError(""); clearEmailOtpChallenge(); }} autoComplete="email" />
         </SettingsRow>
         {isSuperAdmin ? (
           <>
             <SettingsRow
               label="Other login email 1"
-              description="Allowed to request Super Admin email login (max 2). Leave blank to clear."
+              description="Allowed for Super Admin Google Sign-In (max 2). Leave blank to clear."
             >
               <Input
                 type="email"
                 value={loginEmail1}
-                onChange={(event) => { setLoginEmail1(event.target.value); setProfileError(""); }}
+                onChange={(event) => { setLoginEmail1(event.target.value); setProfileError(""); clearEmailOtpChallenge(); }}
                 placeholder="second@example.com"
                 autoComplete="off"
               />
             </SettingsRow>
             <SettingsRow
               label="Other login email 2"
-              description="Second allowed email for Super Admin passwordless login."
+              description="Second allowed email for Super Admin Google Sign-In."
             >
               <Input
                 type="email"
                 value={loginEmail2}
-                onChange={(event) => { setLoginEmail2(event.target.value); setProfileError(""); }}
+                onChange={(event) => { setLoginEmail2(event.target.value); setProfileError(""); clearEmailOtpChallenge(); }}
                 placeholder="third@example.com"
                 autoComplete="off"
               />
@@ -361,9 +425,48 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
         <SettingsRow label="Phone number" description="Include the country code when applicable." border={false}>
           <Input type="tel" value={phone} maxLength={24} onChange={(event) => { setPhone(event.target.value); setProfileError(""); }} autoComplete="tel" />
         </SettingsRow>
+        {awaitingEmailOtp ? (
+          <div className="border-t border-border px-5 py-4">
+            <p className="text-sm text-muted-foreground">
+              Code sent to {otpSentTo || "your current email"}. Enter it to confirm the email change.
+            </p>
+            <div className="mt-3 max-w-xs">
+              <Input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={emailOtp}
+                onChange={(event) => {
+                  setEmailOtp(event.target.value.replace(/\D/g, "").slice(0, 6));
+                  setProfileError("");
+                }}
+                placeholder="000000"
+                className="text-center text-lg tracking-[0.35em] font-mono h-12"
+              />
+            </div>
+            <button
+              type="button"
+              className="mt-2 text-xs text-primary hover:underline"
+              onClick={() => {
+                setAwaitingEmailOtp(false);
+                setEmailOtp("");
+                setOtpSentTo("");
+                setProfileError("");
+              }}
+            >
+              Cancel verification
+            </button>
+          </div>
+        ) : null}
         <div className="flex flex-col gap-3 border-t border-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm text-destructive">{profileError}</p>
-          <SaveButton onClick={() => void saveProfile()} loading={profileSaving} disabled={!profileChanged} label="Save Changes" />
+          <SaveButton
+            onClick={() => void saveProfile()}
+            loading={profileSaving}
+            disabled={!profileChanged || (awaitingEmailOtp && emailOtp.replace(/\D/g, "").length !== 6)}
+            label={awaitingEmailOtp ? "Verify code" : "Save Changes"}
+          />
         </div>
       </SettingsSection>
 

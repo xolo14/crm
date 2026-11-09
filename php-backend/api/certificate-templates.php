@@ -138,8 +138,14 @@ if ($method === 'GET' && $action === '') {
         ];
     }
     $out = array_map(fn($x) => $x['template'], $rows);
-    $orgId = trim((string) (getOrgId($tokenData) ?? ''));
+    $orgId = trim((string) (resolveWriteOrgId($db, $tokenData) ?? getOrgId($tokenData) ?? ''));
     $certPrefix = $orgId !== '' ? certGetOrgPrefix($db, $orgId) : null;
+    if ($certPrefix === null && $orgId !== '') {
+        $claimedPrefix = certClaimOrgPrefix($db, $orgId, certSuggestPrefix($db, $orgId));
+        if (!empty($claimedPrefix['ok'])) {
+            $certPrefix = $claimedPrefix['prefix'];
+        }
+    }
     respond([
         'data' => $out,
         'cert_prefix' => $certPrefix,
@@ -189,12 +195,28 @@ if ($method === 'POST' && $action === '') {
     $fieldsJson = json_encode($fields, JSON_UNESCAPED_UNICODE);
     $layersJson = json_encode($layers, JSON_UNESCAPED_UNICODE);
 
-    $check = $db->prepare("SELECT id FROM certificate_templates WHERE id = ? LIMIT 1");
-    $check->execute([$id]);
-    $exists = (bool)$check->fetch();
+    // Three possible states for this id, checked in order:
+    //  1. Exists in MY org            -> UPDATE, report success (even if 0 rows changed because
+    //                                     the submitted values already matched — that's a
+    //                                     legitimate no-op, not a "missing record").
+    //  2. Exists, but in ANOTHER org  -> 404. Falling through to the INSERT below would collide
+    //                                     on the primary key (same id already used by that other
+    //                                     org's row) and crash with an uncaught duplicate-key
+    //                                     error, so this must be caught explicitly, not left to
+    //                                     rowCount() on an UPDATE that was never org-matched.
+    //  3. Doesn't exist anywhere      -> INSERT (today's "create a new template" path, unchanged).
+    $org = orgFilter($tokenData);
+    $ownCheckParams = [$id];
+    $ownCheckSql = "SELECT id FROM certificate_templates WHERE id = ?";
+    if ($org['where'] !== '1=1') {
+        $ownCheckSql .= " AND {$org['where']}";
+        $ownCheckParams = array_merge($ownCheckParams, $org['params']);
+    }
+    $ownCheck = $db->prepare($ownCheckSql . " LIMIT 1");
+    $ownCheck->execute($ownCheckParams);
+    $existsInMyOrg = (bool) $ownCheck->fetch();
 
-    if ($exists) {
-        $org = orgFilter($tokenData);
+    if ($existsInMyOrg) {
         $params = [$name, $status, $certType, $layoutStyle, $bgColor, $accentColor, $styleJson, $fieldsJson, $layersJson, $id];
         $sql = "
             UPDATE certificate_templates
@@ -208,6 +230,14 @@ if ($method === 'POST' && $action === '') {
         $stmt = $db->prepare($sql);
         $stmt->execute($params);
         respond(['id' => $id, 'message' => 'Template updated', 'cert_prefix' => $orgId !== '' ? certGetOrgPrefix($db, $orgId) : null]);
+    }
+
+    $globalCheck = $db->prepare("SELECT id FROM certificate_templates WHERE id = ? LIMIT 1");
+    $globalCheck->execute([$id]);
+    if ($globalCheck->fetch()) {
+        // Exists, but not in our org — report not-found rather than attempting a create that
+        // would collide on the primary key.
+        respond(['error' => 'Template not found'], 404);
     }
 
     $stmt = $db->prepare("

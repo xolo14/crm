@@ -904,6 +904,17 @@ if ($method === 'POST') {
         if (empty($result['ok'])) {
             respond(['error' => $result['error'] ?? 'Campaign send failed', 'details' => $result], 502);
         }
+        // Email campaigns are now queued (see formCampaignSendEmail()), not sent inline. If the
+        // background worker it tried to spawn didn't actually start, drain inline here instead —
+        // this is the one context where blocking/exiting is safe (a direct, top-level HTTP
+        // request), matching marketing.php's own dispatch_email_campaign action.
+        if ($channel === 'email' && ($result['pending'] ?? 0) > 0) {
+            marketingEchoJsonAndContinue(['message' => 'Campaign sent', 'data' => $result]);
+            if (empty($result['worker_kicked'])) {
+                marketingDrainDueEmailCampaigns($db);
+            }
+            exit;
+        }
         respond(['message' => 'Campaign sent', 'data' => $result]);
     }
 

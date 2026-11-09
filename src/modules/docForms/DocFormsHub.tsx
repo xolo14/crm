@@ -73,10 +73,11 @@ import { buildPublicDocFormUrl } from "@/lib/applyFormUrl";
 import { ShareFormLinkDialog } from "@/components/forms/ShareFormLinkDialog";
 import { DocFormDetailDialog } from "@/components/forms/DocFormDetailDialog";
 import { ValidationRuleEditor } from "@/components/forms/ValidationRuleEditor";
-import { OFFER_AUTO_PLACEHOLDER_KEYS, applyOfferPlaceholders, canonicalOfferPlaceholderKey, getOfferTemplatePlaceholderKeys, lookupOfferPlaceholderValue } from "@/lib/offerLetterPlaceholders";
+import { OFFER_AUTO_PLACEHOLDER_KEYS, applyOfferPlaceholders, applyOfferPlaceholdersHtml, canonicalOfferPlaceholderKey, escapeOfferHtmlText, getOfferTemplatePlaceholderKeys, lookupOfferPlaceholderValue } from "@/lib/offerLetterPlaceholders";
 import {
   CERT_AUTO_PLACEHOLDER_KEYS,
   applyCertPlaceholders,
+  applyCertPlaceholdersHtml,
   canonicalCertPlaceholderKey,
   getCertificateTemplatePlaceholderKeys,
   lookupCertPlaceholderValue,
@@ -2063,9 +2064,11 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
       let issuedPdfUrl = "";
       if (formType === "offer_letter") {
         const mail = parseMailJson(tpl.mail_json);
-        const html = applyOfferPlaceholders(String(tpl.html_content || ""), filled);
+        // HTML-context rendering: escapes candidate values so they can't break the markup
+        // or inject HTML into the issued letter / email body.
+        const html = applyOfferPlaceholdersHtml(String(tpl.html_content || ""), filled);
         const subject = applyOfferPlaceholders(mail.mail_subject || "Offer Letter", filled);
-        const body = applyOfferPlaceholders(mail.mail_body || "<p>Please find your offer letter attached.</p>", filled);
+        const body = applyOfferPlaceholdersHtml(mail.mail_body || "<p>Please find your offer letter attached.</p>", filled);
         const emailKey = fieldKeyToPlaceholder(mail.recipient_email_placeholder || "recipient_email");
         const email = String(lookupOfferPlaceholderValue(emailKey, filled) || lookupOfferPlaceholderValue("recipient_email", filled) || "").trim();
         const name = String(lookupOfferPlaceholderValue("candidate_name", filled) || "Candidate");
@@ -2114,7 +2117,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
         issuedPdfUrl = String((issued as any)?.pdfUrl || "").trim();
         const mail = parseMailJson(tpl.mail_json || tpl.style);
         const subject = applyCertPlaceholders(mail.mail_subject || "Certificate", { ...filled, recipient_name: name, recipient_email: email });
-        const body = applyCertPlaceholders(mail.mail_body || "<p>Please find your certificate attached.</p>", { ...filled, recipient_name: name, recipient_email: email });
+        const body = applyCertPlaceholdersHtml(mail.mail_body || "<p>Please find your certificate attached.</p>", { ...filled, recipient_name: name, recipient_email: email });
         if (issuedPdfUrl) {
           await api.certificates.sendEmail({
             certificateId: String((issued as any)?.certificateId || (issued as any)?.syncId || ""),
@@ -2165,14 +2168,18 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
     }
     const values = row.values_json || {};
     if (formType === "offer_letter") {
-      setPreviewHtml(applyOfferPlaceholders(String(tpl.html_content || ""), values));
+      // HTML-context rendering (dangerouslySetInnerHTML below) — escape submitted values.
+      setPreviewHtml(applyOfferPlaceholdersHtml(String(tpl.html_content || ""), values));
     } else {
+      const name = escapeOfferHtmlText(lookupCertPlaceholderValue("recipient_name", values) || "");
+      const domain = escapeOfferHtmlText(lookupCertPlaceholderValue("domain_name", values) || "");
+      const date = escapeOfferHtmlText(lookupCertPlaceholderValue("issue_date", values) || values.date || "");
       setPreviewHtml(
         `<div style="padding:24px;font-family:Georgia,serif">
           <h2>Certificate preview</h2>
-          <p><strong>Name:</strong> ${lookupCertPlaceholderValue("recipient_name", values) || ""}</p>
-          <p><strong>Domain:</strong> ${lookupCertPlaceholderValue("domain_name", values) || ""}</p>
-          <p><strong>Date:</strong> ${lookupCertPlaceholderValue("issue_date", values) || values.date || ""}</p>
+          <p><strong>Name:</strong> ${name}</p>
+          <p><strong>Domain:</strong> ${domain}</p>
+          <p><strong>Date:</strong> ${date}</p>
           <p class="muted">Full canvas preview is available from the Certificates template editor.</p>
         </div>`,
       );
@@ -2613,10 +2620,20 @@ function IssuedDocPdfViewer({ row }: { row: import("@/modules/docForms/types").D
   );
 }
 
-export function DocIssuedPanel({ docKind, canDelete = false }: { docKind: DocFormType; canDelete?: boolean }) {
+export function DocIssuedPanel({
+  docKind,
+  canDelete = false,
+  templates,
+}: {
+  docKind: DocFormType;
+  canDelete?: boolean;
+  templates?: { id: string; label: string }[];
+}) {
   const { toast } = useToast();
   const [rows, setRows] = useState<import("@/modules/docForms/types").DocIssuedDocument[]>([]);
   const [loading, setLoading] = useState(true);
+  const [issuedSearch, setIssuedSearch] = useState("");
+  const [issuedTemplateFilter, setIssuedTemplateFilter] = useState("all");
   const [deletingId, setDeletingId] = useState("");
   const [preview, setPreview] = useState<import("@/modules/docForms/types").DocIssuedDocument | null>(null);
 
@@ -2655,6 +2672,16 @@ export function DocIssuedPanel({ docKind, canDelete = false }: { docKind: DocFor
     }
   }
 
+  const templateOptions = templates ?? [];
+  const showTemplateFilter = templates !== undefined;
+  const templateLabel = (id?: string | null) => templateOptions.find((t) => t.id === id)?.label || "";
+  const filteredRows = rows.filter((r) => {
+    if (issuedTemplateFilter !== "all" && (r.template_id || "") !== issuedTemplateFilter) return false;
+    const q = issuedSearch.trim().toLowerCase();
+    if (!q) return true;
+    const hay = [r.recipient_name, r.recipient_email, r.subject, templateLabel(r.template_id)].filter(Boolean).join(" ").toLowerCase();
+    return hay.includes(q);
+  });
   if (loading) return <div className="py-10 flex justify-center"><Loader2 className="h-5 w-5 animate-spin" /></div>;
   if (!rows.length) {
     return (
@@ -2670,11 +2697,40 @@ export function DocIssuedPanel({ docKind, canDelete = false }: { docKind: DocFor
 
   return (
     <>
+    {showTemplateFilter ? (
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center mb-3">
+        <Input
+          value={issuedSearch}
+          onChange={(e) => setIssuedSearch(e.target.value)}
+          placeholder="Search name, email, subject…"
+          className="h-9 sm:max-w-xs"
+        />
+        <Select value={issuedTemplateFilter} onValueChange={setIssuedTemplateFilter}>
+          <SelectTrigger className="h-9 sm:w-[260px]">
+            <SelectValue placeholder="All templates" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All templates</SelectItem>
+            {templateOptions.map((t) => (
+              <SelectItem key={t.id} value={t.id}>{t.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    ) : null}
+    {filteredRows.length === 0 ? (
+      <Card>
+        <CardContent className="py-10 text-center text-sm text-muted-foreground">
+          No documents match this search.
+        </CardContent>
+      </Card>
+    ) : (
     <div className="rounded-md border overflow-auto">
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Recipient</TableHead>
+            {showTemplateFilter ? <TableHead>Template</TableHead> : null}
             <TableHead>Email</TableHead>
             <TableHead>Subject</TableHead>
             <TableHead>Status</TableHead>
@@ -2684,9 +2740,10 @@ export function DocIssuedPanel({ docKind, canDelete = false }: { docKind: DocFor
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map((r) => (
+          {filteredRows.map((r) => (
             <TableRow key={r.id}>
               <TableCell className="text-sm">{r.recipient_name || "—"}</TableCell>
+              {showTemplateFilter ? <TableCell className="text-sm">{templateLabel(r.template_id) || "—"}</TableCell> : null}
               <TableCell className="text-xs">{r.recipient_email || "—"}</TableCell>
               <TableCell className="text-xs">{r.subject || "—"}</TableCell>
               <TableCell><Badge variant="secondary" className="text-[10px]">{r.status}</Badge></TableCell>
@@ -2733,6 +2790,7 @@ export function DocIssuedPanel({ docKind, canDelete = false }: { docKind: DocFor
         </TableBody>
       </Table>
     </div>
+    )}
       <Dialog open={!!preview} onOpenChange={(open) => { if (!open) setPreview(null); }}>
         <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)]">
           <DialogHeader>

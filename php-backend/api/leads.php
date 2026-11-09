@@ -232,6 +232,12 @@ if ($method === 'GET') {
         }
     }
 
+    $sourceCardsAction = trim((string) ($_GET['action'] ?? ''));
+    if ($sourceCardsAction === 'source_cards') {
+        $summary = syncpediaAggregateLeadSourceCards($db, $tokenData, $where, $params);
+        respond($summary);
+    }
+
     if ($debug) {
         $debugMeta['role'] = $role;
         $debugMeta['user_id'] = $userId;
@@ -297,6 +303,7 @@ if ($method === 'GET') {
         }
     };
 
+    $sourceBucket = isset($_GET['source_bucket']) ? trim((string) $_GET['source_bucket']) : '';
     $managerCardFilter = in_array(syncpediaNormalizeRoleKey((string) $role), ['manager', 'operational_manager'], true)
         && function_exists('syncpediaFilterLeadsForManagerCardAccess');
     $rows = [];
@@ -304,7 +311,7 @@ if ($method === 'GET') {
     $nextOffset = $offset;
     $hasMore = false;
 
-    if ($managerCardFilter) {
+    if ($managerCardFilter || $sourceBucket !== '') {
         // Card access is applied after SQL, so keep scanning until this page is full of visible leads.
         // next_offset is the SQL cursor, not the count of rows returned.
         $visible = [];
@@ -341,11 +348,15 @@ if ($method === 'GET') {
                     continue;
                 }
                 $id = trim((string) ($raw['id'] ?? ''));
-                if ($id !== '' && isset($keep[$id])) {
-                    $visible[] = $keep[$id];
-                    if (count($visible) >= $limit) {
-                        break;
-                    }
+                if ($id === '' || !isset($keep[$id])) {
+                    continue;
+                }
+                if ($sourceBucket !== '' && syncpediaLeadSourceBucketKey($keep[$id]) !== $sourceBucket) {
+                    continue;
+                }
+                $visible[] = $keep[$id];
+                if (count($visible) >= $limit) {
+                    break;
                 }
             }
             $cursor += $consumed;
@@ -382,57 +393,19 @@ if ($method === 'GET') {
         $nextOffset = $offset + $fetched;
     }
 
-    if (!$lite && $rows !== []) {
+    if ($rows !== []) {
         if (!function_exists('leadsAttachFormPaymentFields')) {
             require_once __DIR__ . '/payment_link_store.php';
         }
         leadsAttachFormPaymentFields($db, $rows);
     }
 
-    // Resolve creator display names for "Created by" (Added leads card, managers).
-    if (!$lite && $fetched > 0 && syncpediaColumnExists($db, 'leads', 'created_by')) {
-        $creatorIds = [];
-        foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-            $cid = trim((string) ($row['created_by'] ?? ''));
-            if ($cid !== '') {
-                $creatorIds[$cid] = true;
-            }
+    if ($rows !== []) {
+        $labelFields = ['assigned_to' => 'assigned_to_name'];
+        if (syncpediaColumnExists($db, 'leads', 'created_by')) {
+            $labelFields['created_by'] = 'created_by_name';
         }
-        $idList = array_keys($creatorIds);
-        if ($idList !== []) {
-            $nameMap = [];
-            foreach (array_chunk($idList, 200) as $chunk) {
-                $ph = implode(',', array_fill(0, count($chunk), '?'));
-                try {
-                    $ns = $db->prepare("SELECT id, full_name FROM users WHERE id IN ($ph)");
-                    $ns->execute($chunk);
-                    while ($u = $ns->fetch(PDO::FETCH_ASSOC)) {
-                        if (!is_array($u)) {
-                            continue;
-                        }
-                        $uid = trim((string) ($u['id'] ?? ''));
-                        if ($uid === '') {
-                            continue;
-                        }
-                        $nameMap[$uid] = trim((string) ($u['full_name'] ?? ''));
-                    }
-                } catch (Throwable $ignored) {
-                }
-            }
-            foreach ($rows as &$row) {
-                if (!is_array($row)) {
-                    continue;
-                }
-                $cid = trim((string) ($row['created_by'] ?? ''));
-                $row['created_by_name'] = ($cid !== '' && isset($nameMap[$cid]) && $nameMap[$cid] !== '')
-                    ? $nameMap[$cid]
-                    : null;
-            }
-            unset($row);
-        }
+        syncpediaFillUserRecordLabelsOnRows($db, $rows, $labelFields);
     }
 
     respond([
@@ -847,8 +820,24 @@ if ($method === 'POST') {
             $createOrgId = $ao;
         }
     }
+    // Serialize the duplicate-check + insert for this exact email/phone so two near-simultaneous
+    // requests (double-click, or two PHP-FPM workers) cannot both pass the check before either
+    // INSERT commits. Never reconnects the DB connection while holding these locks.
+    $leadsCreateDupLocks = leadsAcquireDuplicateLocks($db, is_string($createOrgId) ? $createOrgId : null, $emailIn, $phoneIn);
+    if ($leadsCreateDupLocks === null) {
+        respond(['error' => 'Busy processing a similar submission, please retry in a few seconds.'], 503);
+    }
+    register_shutdown_function(function () use ($db, &$leadsCreateDupLocks) {
+        if ($leadsCreateDupLocks !== null) {
+            leadsReleaseDuplicateLocks($db, $leadsCreateDupLocks);
+            $leadsCreateDupLocks = null;
+        }
+    });
+
     $dup = leadsFindDuplicateInOrg($db, is_string($createOrgId) ? $createOrgId : null, $emailIn, $phoneIn);
     if ($dup) {
+        leadsReleaseDuplicateLocks($db, $leadsCreateDupLocks);
+        $leadsCreateDupLocks = null;
         respond([
             'error' => 'A lead with this email or phone already exists',
             'existing_lead_id' => $dup['id'],

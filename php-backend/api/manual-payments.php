@@ -113,81 +113,100 @@ if ($method === 'POST' && ($action === '' || $action === 'create')) {
         : null;
     $leadId = trim((string) ($input['lead_id'] ?? ''));
 
-    try {
-        $resolved = paymentCandidatesResolveForPayment(
-            $db,
-            (string) $orgId,
-            $userId,
-            $customerName,
-            $customerEmail,
-            $customerPhone,
-            $pitchPrice,
-            $candidateIdInput !== '' ? $candidateIdInput : null,
-            $leadId !== '' ? $leadId : null,
-        );
-    } catch (InvalidArgumentException $e) {
-        respond(['error' => $e->getMessage()], 400);
+    // Serialize candidate resolution AND the installment-number insert that follows for this
+    // exact customer identity, so two concurrent manual-payment submissions can never both
+    // create a candidate for the same new customer, and can never both compute the same next
+    // installment_number. Never reconnects the DB connection while holding this lock.
+    $paymentDupLocks = paymentCandidatesAcquireLock(
+        $db,
+        (string) $orgId,
+        $userId,
+        $customerEmail,
+        $customerPhone,
+        $candidateIdInput !== '' ? $candidateIdInput : null,
+    );
+    if ($paymentDupLocks === null) {
+        respond(['error' => 'Busy processing a similar submission, please retry in a few seconds.'], 503);
     }
+    try {
+        try {
+            $resolved = paymentCandidatesResolveForPayment(
+                $db,
+                (string) $orgId,
+                $userId,
+                $customerName,
+                $customerEmail,
+                $customerPhone,
+                $pitchPrice,
+                $candidateIdInput !== '' ? $candidateIdInput : null,
+                $leadId !== '' ? $leadId : null,
+            );
+        } catch (InvalidArgumentException $e) {
+            respond(['error' => $e->getMessage()], 400);
+        }
 
-    $candidateId = $resolved['id'];
-    $installmentNumber = $resolved['installment_number'];
+        $candidateId = $resolved['id'];
+        $installmentNumber = $resolved['installment_number'];
 
-    $proofPath = null;
-    if ($multipart) {
-        foreach (['proof', 'file', 'image', 'attachment'] as $fk) {
-            if (!empty($_FILES[$fk]) && is_array($_FILES[$fk])) {
-                $proofPath = savePaymentProofUpload($_FILES[$fk]);
-                if ($proofPath) {
-                    break;
+        $proofPath = null;
+        if ($multipart) {
+            foreach (['proof', 'file', 'image', 'attachment'] as $fk) {
+                if (!empty($_FILES[$fk]) && is_array($_FILES[$fk])) {
+                    $proofPath = savePaymentProofUpload($_FILES[$fk]);
+                    if ($proofPath) {
+                        break;
+                    }
                 }
             }
         }
+        if ($proofPath === null || $proofPath === '') {
+            respond(['error' => 'Payment proof image is required'], 400);
+        }
+
+        // Admin / org: auto-approve into payment records. Others: pending approval.
+        $needsApproval = !in_array($role, ['admin', 'org'], true);
+        $status = $needsApproval ? 'pending' : 'approved';
+        $reviewedBy = $needsApproval ? null : $userId;
+        $reviewedAt = $needsApproval ? null : date('Y-m-d H:i:s');
+
+        $id = generateUUID();
+        $st = $db->prepare("
+            INSERT INTO manual_payments (
+                id, org_id, submitted_by, amount, currency, payment_method,
+                customer_name, customer_email, customer_phone, paid_at, notes, proof_path,
+                status, reviewed_by, reviewed_at, candidate_id, installment_number
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ");
+        $st->execute([
+            $id,
+            $orgId,
+            $userId,
+            round($amount, 2),
+            strtoupper(trim((string) ($input['currency'] ?? 'INR'))) ?: 'INR',
+            $paymentMethod,
+            $customerName,
+            $customerEmail,
+            $customerPhone,
+            $paidAt,
+            null,
+            $proofPath,
+            $status,
+            $reviewedBy,
+            $reviewedAt,
+            $candidateId,
+            $installmentNumber,
+        ]);
+
+        $row = manualPaymentsFetchById($db, $id);
+        respond([
+            'data' => $row,
+            'message' => $needsApproval
+                ? 'Submitted for approval'
+                : 'Payment added to records',
+        ], 201);
+    } finally {
+        paymentCandidatesReleaseLock($db, $paymentDupLocks);
     }
-    if ($proofPath === null || $proofPath === '') {
-        respond(['error' => 'Payment proof image is required'], 400);
-    }
-
-    // Admin / org: auto-approve into payment records. Others: pending approval.
-    $needsApproval = !in_array($role, ['admin', 'org'], true);
-    $status = $needsApproval ? 'pending' : 'approved';
-    $reviewedBy = $needsApproval ? null : $userId;
-    $reviewedAt = $needsApproval ? null : date('Y-m-d H:i:s');
-
-    $id = generateUUID();
-    $st = $db->prepare("
-        INSERT INTO manual_payments (
-            id, org_id, submitted_by, amount, currency, payment_method,
-            customer_name, customer_email, customer_phone, paid_at, notes, proof_path,
-            status, reviewed_by, reviewed_at, candidate_id, installment_number
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    ");
-    $st->execute([
-        $id,
-        $orgId,
-        $userId,
-        round($amount, 2),
-        strtoupper(trim((string) ($input['currency'] ?? 'INR'))) ?: 'INR',
-        $paymentMethod,
-        $customerName,
-        $customerEmail,
-        $customerPhone,
-        $paidAt,
-        null,
-        $proofPath,
-        $status,
-        $reviewedBy,
-        $reviewedAt,
-        $candidateId,
-        $installmentNumber,
-    ]);
-
-    $row = manualPaymentsFetchById($db, $id);
-    respond([
-        'data' => $row,
-        'message' => $needsApproval
-            ? 'Submitted for approval'
-            : 'Payment added to records',
-    ], 201);
 }
 
 if ($method === 'POST' && in_array($action, ['approve', 'reject'], true)) {
@@ -311,7 +330,7 @@ function manualPaymentsEnsureSchema(PDO $db): void
 
 function manualPaymentsIsApproverRole(string $role): bool
 {
-    return in_array($role, ['super_admin', 'admin', 'org', 'manager'], true);
+    return in_array($role, ['super_admin', 'admin', 'org', 'manager', 'operational_manager'], true);
 }
 
 /**
@@ -326,6 +345,13 @@ function manualPaymentsListScope(PDO $db, array $tokenData): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     $userId = trim((string) ($tokenData['user_id'] ?? ''));
+    if ($role === 'super_admin') {
+        $qOrg = trim((string) ($_GET['org_id'] ?? ''));
+        if ($qOrg !== '') {
+            return ['sql' => ' AND mp.org_id = ?', 'params' => [$qOrg]];
+        }
+        return ['sql' => '', 'params' => []];
+    }
     $orgId = resolveCreatorOrgId($db, $tokenData);
 
     if ($role === 'super_admin' && ($orgId === null || $orgId === '')) {

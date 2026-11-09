@@ -611,7 +611,7 @@ if ($action === 'whatsapp_sends') {
             INNER JOIN whatsapp_campaigns wc ON wc.id = ws.campaign_id
             WHERE ws.campaign_id IN ($placeholders) AND ($w)
             ORDER BY ws.created_at DESC
-            LIMIT 1000
+            LIMIT 5000
         ");
         $stmt->execute(array_merge($idList, $scopeParams));
         respond(['data' => $stmt->fetchAll()]);
@@ -776,6 +776,27 @@ if ($action === 'retry_email_campaign' && $method === 'POST') {
         exit;
     }
     respond($result, $ok ? 200 : 400);
+}
+
+// ---- Email worker reconciliation: rows stuck in 'sending' (ambiguous delivery) ----
+// Restricted to admin-tier roles (narrower than marketingGateRoles()) since resolving an
+// ambiguous send is an administrative data-integrity decision, not routine campaign work.
+if ($action === 'list_stuck_sends' && $method === 'GET') {
+    requireRole($tokenData, marketingAdminRoles());
+    respond(['data' => marketingListStuckSends($db)]);
+}
+
+if ($action === 'resolve_stuck_send' && $method === 'POST') {
+    requireRole($tokenData, marketingAdminRoles());
+    $input = getInput();
+    $id = trim((string) ($input['id'] ?? ''));
+    $decision = trim((string) ($input['decision'] ?? ''));
+    $confirm = !empty($input['confirm']) && $input['confirm'] !== 'false';
+    if ($id === '') {
+        respond(['error' => 'id required'], 400);
+    }
+    $result = marketingResolveStuckSend($db, $id, $decision, $confirm);
+    respond($result, !empty($result['ok']) ? 200 : 400);
 }
 
 // ---- Dispatch WhatsApp campaign via Meta (templates) or session text (drafts) ----

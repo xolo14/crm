@@ -50,6 +50,8 @@ export async function getAllPaymentLinks(filters?: {
   period?: PaymentLinkPeriod;
   /** Bypass the server-side sync cache and force a full Razorpay sync. */
   force?: boolean;
+  /** Super admin: limit the list to one organization. */
+  orgId?: string;
   /** Payment Records page: managers see self + downline only. */
   forRecords?: boolean;
   /** Used when period is `custom`. */
@@ -58,6 +60,7 @@ export async function getAllPaymentLinks(filters?: {
   const extra: Record<string, string> = {};
   if (filters?.status) extra.status = filters.status;
   if (filters?.force) extra.force = "1";
+  if (filters?.orgId) extra.org_id = filters.orgId;
   if (filters?.forRecords) extra.view = "records";
 
   let from = filters?.from;

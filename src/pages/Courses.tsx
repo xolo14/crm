@@ -26,10 +26,10 @@ type Course = {
  duration_weeks: number | null; is_active: boolean; modules: string[]; created_at: string;
 };
 
-const CAN_CREATE_ROLES = ['super_admin', 'admin', 'manager'];
-const CAN_EDIT_ROLES = ['super_admin', 'admin', 'manager'];
+const CAN_CREATE_ROLES = ['super_admin', 'admin', 'manager', 'operational_manager'];
+const CAN_EDIT_ROLES = ['super_admin', 'admin', 'manager', 'operational_manager'];
 const CAN_DELETE_ROLES = ['super_admin', 'admin'];
-const CAN_TOGGLE_ROLES = ['super_admin', 'admin', 'manager'];
+const CAN_TOGGLE_ROLES = ['super_admin', 'admin', 'manager', 'operational_manager'];
 
 export default function Courses() {
  const { role, organization } = useAuth();

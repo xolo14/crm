@@ -75,10 +75,13 @@ export default function Tasks() {
   });
 
   const isOverdue = (t: any) => t.due_date && new Date(t.due_date) < new Date() && t.status !== 'completed';
-  const getAssigneeName = (userId: string | null) => {
+  const getAssigneeName = (userId: string | null, task?: any) => {
     if (!userId) return null;
-    const m = teamMembers.find((m: any) => (m.user_id || m.id) === userId);
-    return m?.full_name || m?.email || null;
+    const m = teamMembers.find((member: any) => (member.user_id || member.id) === userId);
+    if (m?.full_name) return m.full_name;
+    const fromApi = String(task?.assigned_to_name || '').trim();
+    if (fromApi) return fromApi;
+    return m?.email || null;
   };
 
   if (isLoading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
@@ -124,7 +127,7 @@ export default function Tasks() {
                   <div className="flex flex-wrap items-center gap-2 mt-2.5">
                     <Badge variant="outline" className={`${priorityColors[task.priority || 'medium']} capitalize text-[11px] px-2 py-0.5 rounded-md`}>{task.priority}</Badge>
                     {task.due_date && <span className={`text-[12px] ${isOverdue(task) ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>{new Date(task.due_date).toLocaleDateString()}</span>}
-                    {getAssigneeName(task.assigned_to) && <span className="text-[12px] text-primary font-medium">→ {getAssigneeName(task.assigned_to)}</span>}
+                    {getAssigneeName(task.assigned_to, task) && <span className="text-[12px] text-primary font-medium">→ {getAssigneeName(task.assigned_to, task)}</span>}
                   </div>
                 </div>
                 <DropdownMenu>
@@ -156,7 +159,7 @@ export default function Tasks() {
                   </TableCell>
                   <TableCell><Badge variant="outline" className={`${priorityColors[task.priority || 'medium']} capitalize text-xs`}>{task.priority}</Badge></TableCell>
                   <TableCell>{task.due_date ? <span className={`text-sm ${isOverdue(task) ? 'text-destructive font-medium' : 'text-muted-foreground'}`}>{new Date(task.due_date).toLocaleDateString()}</span> : '—'}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{getAssigneeName(task.assigned_to) || '—'}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{getAssigneeName(task.assigned_to, task) || '—'}</TableCell>
                   <TableCell><Badge variant="secondary" className="capitalize text-xs">{task.status?.replace('_', ' ')}</Badge></TableCell>
                   <TableCell>
                     <DropdownMenu>

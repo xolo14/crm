@@ -212,7 +212,10 @@ function syncpediaOrgSmtpRowToResolved(array $row): ?array
         'user' => $email,
         'pass' => $pass,
         'from_name' => trim((string) ($row['from_name'] ?? '')),
-        'profiles' => [['host' => 'smtp.gmail.com', 'port' => 587, 'enc' => 'tls']],
+        'profiles' => [
+            ['host' => 'smtp.gmail.com', 'port' => 587, 'enc' => 'tls'],
+            ['host' => 'smtp.gmail.com', 'port' => 465, 'enc' => 'ssl'],
+        ],
         'slot' => (int) ($row['slot'] ?? 0),
         'account_id' => (string) ($row['id'] ?? ''),
     ];

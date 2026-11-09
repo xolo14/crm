@@ -200,22 +200,50 @@ function leadFormCertLoadImage(string $src)
     return $im ?: null;
 }
 
-function leadFormCertFindTtf(bool $serif = true, bool $bold = false): ?string
+/**
+ * Classify a CSS font-family stack into 'serif' | 'sans' | 'mono' using explicit font-name
+ * tokens — never a loose check for the substring "serif", which also matches inside the CSS
+ * generic keyword "sans-serif" (every bundled sans option's value ends in "sans-serif", so a
+ * naive str_contains($family, 'serif') misclassified Arial/Verdana/Segoe UI/Futura/System as
+ * serif). Unknown/unrecognized families default to sans, the common case.
+ */
+function leadFormCertFontCategory(string $family): string
+{
+    $family = strtolower($family);
+    if (str_contains($family, 'courier') || str_contains($family, 'consolas') || str_contains($family, 'monospace')) {
+        return 'mono';
+    }
+    if (str_contains($family, 'georgia') || str_contains($family, 'times')) {
+        return 'serif';
+    }
+    return 'sans';
+}
+
+function leadFormCertFindTtf(string $category = 'sans', bool $bold = false): ?string
 {
     $bundledDir = __DIR__ . DIRECTORY_SEPARATOR . 'fonts';
-    $bundled = $bold
+    $bundledSans = $bold
         ? [$bundledDir . DIRECTORY_SEPARATOR . 'Roboto-Bold.ttf', $bundledDir . DIRECTORY_SEPARATOR . 'Roboto-Regular.ttf']
         : [$bundledDir . DIRECTORY_SEPARATOR . 'Roboto-Regular.ttf', $bundledDir . DIRECTORY_SEPARATOR . 'Roboto-Bold.ttf'];
-    foreach ($bundled as $path) {
-        if (is_file($path)) {
-            return $path;
+    // Only short-circuit to the bundled sans font when a sans font was actually requested.
+    // Previously this ran unconditionally before even looking at the requested category, so
+    // EVERY font — including Georgia/Times New Roman — silently rendered as the bundled Roboto
+    // on any host that has it (which is always, since it ships with this codebase).
+    if ($category === 'sans') {
+        foreach ($bundledSans as $path) {
+            if (is_file($path)) {
+                return $path;
+            }
         }
     }
-    $serifNames = ['georgia.ttf', 'times.ttf', 'timesnr.ttf', 'DejaVuSerif.ttf', 'LiberationSerif-Regular.ttf'];
-    $sansNames = $bold
-        ? ['arialbd.ttf', 'DejaVuSans-Bold.ttf', 'LiberationSans-Bold.ttf', 'Roboto-Bold.ttf']
-        : ['arial.ttf', 'DejaVuSans.ttf', 'LiberationSans-Regular.ttf', 'FreeSans.ttf', 'Roboto-Regular.ttf'];
-    $names = $serif ? array_merge($serifNames, $sansNames) : array_merge($sansNames, $serifNames);
+    $namesByCategory = [
+        'serif' => ['georgia.ttf', 'times.ttf', 'timesnr.ttf', 'DejaVuSerif.ttf', 'LiberationSerif-Regular.ttf'],
+        'mono' => ['cour.ttf', 'courbd.ttf', 'consola.ttf', 'DejaVuSansMono.ttf', 'LiberationMono-Regular.ttf', 'FreeMono.ttf'],
+        'sans' => $bold
+            ? ['arialbd.ttf', 'DejaVuSans-Bold.ttf', 'LiberationSans-Bold.ttf', 'Roboto-Bold.ttf']
+            : ['arial.ttf', 'DejaVuSans.ttf', 'LiberationSans-Regular.ttf', 'FreeSans.ttf', 'Roboto-Regular.ttf'],
+    ];
+    $names = $namesByCategory[$category] ?? $namesByCategory['sans'];
     $dirs = [
         $bundledDir,
         'C:\\Windows\\Fonts',
@@ -236,6 +264,14 @@ function leadFormCertFindTtf(bool $serif = true, bool $bold = false): ?string
             if (is_file($path)) {
                 return $path;
             }
+        }
+    }
+    // Last resort for serif/mono when no matching system font exists: the bundled sans font is
+    // still better than no TTF at all (leadFormCertTtfUsable() would otherwise force the much
+    // cruder scaled-bitmap fallback for every certificate on that host).
+    foreach ($bundledSans as $path) {
+        if (is_file($path)) {
+            return $path;
         }
     }
     return null;
@@ -559,10 +595,12 @@ function leadFormCertRenderTemplatePdf(array $tplRow, array $vars): array
         return $za <=> $zb;
     });
 
-    $serif = leadFormCertFindTtf(true, false);
-    $sans = leadFormCertFindTtf(false, false);
-    $sansBold = leadFormCertFindTtf(false, true);
+    $serif = leadFormCertFindTtf('serif', false);
+    $sans = leadFormCertFindTtf('sans', false);
+    $mono = leadFormCertFindTtf('mono', false);
+    $sansBold = leadFormCertFindTtf('sans', true);
     $defaultFont = $sans ?: $serif;
+    $fontByCategory = ['serif' => $serif, 'sans' => $sans, 'mono' => $mono];
 
     $verifyBase = function_exists('syncpediaCrmAppBaseUrl') ? syncpediaCrmAppBaseUrl() : 'https://crm.syncpedia.in';
     $verifyUrl = rtrim($verifyBase, '/') . '/verify/' . rawurlencode($certId);
@@ -572,15 +610,26 @@ function leadFormCertRenderTemplatePdf(array $tplRow, array $vars): array
             continue;
         }
         $type = strtolower(trim((string) ($layer['type'] ?? 'text')));
+        // Layer x/y/width/height are always stored as 0-100 percentages — confirmed by reading
+        // the only writer of this data (CanvasTextBoxFrame.tsx, which builds raw `${geom.x}%`
+        // CSS strings with no fraction conversion anywhere). A previous heuristic here silently
+        // multiplied any layer whose x/y/width were all <= 1.5 by 100, assuming it must be a
+        // stored 0-1 fraction — removed, since that assumption doesn't match the actual format
+        // and would wrongly blow up a legitimately thin (e.g. 1%-wide) decorative layer. If a
+        // template ever does contain such suspiciously small values (e.g. from manually edited
+        // or very old data), log it instead of silently reinterpreting it, so it's visible for
+        // manual review rather than invisibly "corrected" one way or the other.
         $xPct = (float) ($layer['x'] ?? 50);
         $yPct = (float) ($layer['y'] ?? 50);
         $wPct = (float) ($layer['width'] ?? 20);
         $hPct = (float) ($layer['height'] ?? 10);
         if ($xPct <= 1.5 && $yPct <= 1.5 && $wPct <= 1.5) {
-            $xPct *= 100;
-            $yPct *= 100;
-            $wPct *= 100;
-            $hPct *= 100;
+            error_log(sprintf(
+                '[LeadFormCertRender] layer with suspiciously small x/y/width (%.3f/%.3f/%.3f) rendered as-is (percent, not auto-scaled) — verify this template\'s layer coordinates',
+                $xPct,
+                $yPct,
+                $wPct,
+            ));
         }
         $boxW = max(8, (int) round($W * $wPct / 100));
         $boxH = max(8, (int) round($H * $hPct / 100));
@@ -620,10 +669,10 @@ function leadFormCertRenderTemplatePdf(array $tplRow, array $vars): array
         $gdSize = max(10.0, $cssPx * $scale * 0.75);
         $weight = strtolower((string) ($layer['fontWeight'] ?? 'normal'));
         $family = strtolower((string) ($layer['fontFamily'] ?? ''));
-        $useSerif = str_contains($family, 'georgia') || str_contains($family, 'times') || str_contains($family, 'serif');
+        $category = leadFormCertFontCategory($family);
         $font = $weight === 'bold'
             ? ($sansBold ?: ($sans ?: $serif))
-            : (($useSerif ? $serif : $sans) ?: $defaultFont);
+            : (($fontByCategory[$category] ?? null) ?: $defaultFont);
         [$tr, $tg, $tb] = leadFormCertHexRgb((string) ($layer['color'] ?? '#111827'));
         $align = strtolower((string) ($layer['align'] ?? 'center'));
         $pad = (int) max(2, round($boxW * 0.02));
@@ -632,7 +681,10 @@ function leadFormCertRenderTemplatePdf(array $tplRow, array $vars): array
         $drew = false;
         if (leadFormCertTtfUsable($font, $gdSize)) {
             $lines = leadFormCertWrapTtf((string) $font, $gdSize, $content, $maxW);
-            $lineH = $gdSize * 1.28;
+            // Match the browser preview's CSS line-height (CertificatesPage.tsx: lineHeight: 1.35)
+            // so multi-line text blocks wrap to the same total height and vertical centering in
+            // both the preview and an auto-issued certificate.
+            $lineH = $gdSize * 1.35;
             $blockH = count($lines) * $lineH;
             $y0 = $top + max(0, ($boxH - $blockH) / 2) + $gdSize;
             $color = imagecolorallocate($canvas, $tr, $tg, $tb);

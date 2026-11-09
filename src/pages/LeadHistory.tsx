@@ -38,9 +38,16 @@ export default function LeadHistory() {
   const fetchLeads = async () => {
     setLoading(true);
     try {
-      const data = await api.leads.list({ form_leads: false, lite: true });
-      const allLeads = data.data || [];
-      setLeads(allLeads);
+      const data = await api.leads.list({
+        form_leads: false,
+        lite: true,
+        limit: 2000,
+        onPage: (page) => {
+          setLeads(page.data || []);
+          setLoading(false);
+        },
+      });
+      setLeads(data.data || []);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
   };

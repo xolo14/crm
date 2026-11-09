@@ -288,6 +288,48 @@ function razorpayCreateStandardPaymentLink(array $input): array
     return razorpayApiRequest('POST', 'payment_links', $payload);
 }
 
+function razorpayPublicKeyId(): string
+{
+    return trim((string) (razorpayResolvedCredentials()['key_id'] ?? ''));
+}
+
+/** @param array<string, mixed> $input */
+function razorpayCreateOrder(array $input): array
+{
+    $notes = is_array($input['notes'] ?? null) ? $input['notes'] : [];
+    $notes['created_by'] = 'SYNCPedia CRM';
+    $payload = [
+        'amount' => (int) round((float) ($input['amount'] ?? 0)),
+        'currency' => $input['currency'] ?? 'INR',
+        'notes' => $notes,
+    ];
+    $receipt = trim((string) ($input['receipt'] ?? ''));
+    if ($receipt !== '') {
+        $payload['receipt'] = substr($receipt, 0, 40);
+    }
+    return razorpayApiRequest('POST', 'orders', $payload);
+}
+
+function razorpayFetchOrder(string $orderId): array
+{
+    return razorpayApiRequest('GET', 'orders/' . rawurlencode($orderId));
+}
+
+function razorpayFetchPayment(string $paymentId): array
+{
+    return razorpayApiRequest('GET', 'payments/' . rawurlencode($paymentId));
+}
+
+function razorpayVerifyPaymentSignature(string $orderId, string $paymentId, string $signature): bool
+{
+    $secret = trim((string) (razorpayResolvedCredentials()['key_secret'] ?? ''));
+    if ($secret === '' || $orderId === '' || $paymentId === '' || $signature === '') {
+        return false;
+    }
+    $expected = hash_hmac('sha256', $orderId . '|' . $paymentId, $secret);
+    return hash_equals($expected, $signature);
+}
+
 function razorpayVerifyWebhookSignature(string $rawBody, string $signature, ?string $preferredSecret = null): bool
 {
     if ($signature === '') {

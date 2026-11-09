@@ -13,14 +13,15 @@ export const CAN_CREATE_ROLES = [
   "super_admin",
   "org",
   "manager",
+  "operational_manager",
   "sales_representative",
 ];
-export const CAN_EDIT_ALL_ROLES = ["super_admin", "org", "manager"];
-export const CAN_DELETE_ROLES = ["super_admin", "org", "manager"];
-export const CAN_BULK_DELETE_ROLES = ["super_admin", "org", "manager"];
-export const CAN_IMPORT_ROLES = ["super_admin", "org", "manager"];
+export const CAN_EDIT_ALL_ROLES = ["super_admin", "org", "manager", "operational_manager"];
+export const CAN_DELETE_ROLES = ["super_admin", "org", "manager", "operational_manager"];
+export const CAN_BULK_DELETE_ROLES = ["super_admin", "org", "manager", "operational_manager"];
+export const CAN_IMPORT_ROLES = ["super_admin", "org", "manager", "operational_manager"];
 /** Export is L2+ only — L1 (sales rep / HR / marketing) never gets export. */
-export const CAN_EXPORT_ROLES = ["super_admin", "org", "manager"];
+export const CAN_EXPORT_ROLES = ["super_admin", "org", "manager", "operational_manager"];
 
 function roleKey(role: string | null): string {
   return normalizeAppRole(role);

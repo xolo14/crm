@@ -1661,9 +1661,10 @@ if ($action === 'meta' && $method === 'GET') {
 }
 
 // ── Admin list/create ──
+// Any authenticated role may call this: super_admin sees every assessment, every other
+// role's query below is already scoped to assessments assigned to that caller's own user_id.
 if ($action === 'list' && $method === 'GET') {
     $token = verifyToken();
-    requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
     $role = syncpediaNormalizeRoleKey((string) ($token['role'] ?? ''));
     $userId = (string) ($token['user_id'] ?? $token['id'] ?? '');
     try {
@@ -2061,9 +2062,10 @@ if ($action === 'assigned_users' && $method === 'GET') {
 }
 
 // ── Get assignments assigned to current user (for dashboard & sidebar) ──
+// Open to any authenticated role (e.g. hr) — the query below only ever returns
+// assignments rows whose user_id matches the caller, so there is nothing to over-expose.
 if ($action === 'my_assignments' && $method === 'GET') {
     $token = verifyToken();
-    requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
     $userId = (string) ($token['user_id'] ?? $token['id'] ?? '');
     $role = (string) ($token['role'] ?? '');
 
@@ -2107,9 +2109,9 @@ if ($action === 'attempts' && $method === 'GET') {
             $aid = $mine;
         }
         peaklyyAssertViewerAssessment($db, $token, $aid);
-    } else {
-        requireRole($token, ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager']);
     }
+    // Any other authenticated role may call this — the ownership check right below rejects
+    // the request unless the caller is super_admin or is themself assigned to $aid.
     if ($aid === '') {
         respond(['error' => 'assessment_id required'], 400);
     }

@@ -72,6 +72,7 @@ export type PaymentCandidateKpi = {
 interface Props {
   ownerUserId?: string;
   ownerName?: string;
+  orgId?: string;
   showOwnerColumn?: boolean;
   onBack?: () => void;
   onRefreshParent?: () => void;
@@ -128,6 +129,7 @@ const PAGE_SIZE = 20;
 export default function CandidatePaymentRecords({
   ownerUserId,
   ownerName,
+  orgId,
   showOwnerColumn = false,
   onBack,
   onRefreshParent,
@@ -175,9 +177,11 @@ export default function CandidatePaymentRecords({
         search?: string;
         from?: number;
         to?: number;
+        org_id?: string;
       } = {
         owner_user_id: ownerUserId,
         search: search.trim() || undefined,
+        org_id: orgId,
       };
       if (period !== "all") {
         if (unixRange.from !== undefined) query.from = unixRange.from;
@@ -206,7 +210,7 @@ export default function CandidatePaymentRecords({
     } finally {
       setLoading(false);
     }
-  }, [ownerUserId, search, period, customFrom, customTo]);
+  }, [ownerUserId, orgId, search, period, customFrom, customTo]);
 
   useEffect(() => {
     void loadList();

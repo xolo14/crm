@@ -730,10 +730,27 @@ export default function FormsManagerPage() {
   const sensors = useSensors(useSensor(PointerSensor), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const builderRef = useRef(builder);
   const editingRef = useRef(editing);
-  const savingRef = useRef(false);
   const allowAutosaveRef = useRef(false);
   builderRef.current = builder;
   editingRef.current = editing;
+  // Validation-only reads inside saveForm — kept as refs (not saveForm dependencies) so a
+  // background refetch of these lists can't recreate saveForm's identity and re-arm the
+  // autosave effect for reasons unrelated to what the user is actually editing.
+  const offerTemplatesRef = useRef(offerTemplates);
+  const certTemplatesRef = useRef(certTemplates);
+  const loadingDocTemplatesRef = useRef(loadingDocTemplates);
+  offerTemplatesRef.current = offerTemplates;
+  certTemplatesRef.current = certTemplates;
+  loadingDocTemplatesRef.current = loadingDocTemplates;
+  // In-flight save coordination: savingPromiseRef holds the currently-running save (if any) so a
+  // concurrent caller can await the SAME request instead of polling a boolean with a timeout.
+  // inFlightSnapshotRef is the serialized payload that request is sending, so a concurrent caller
+  // with identical content can ride along on it instead of firing a duplicate network request.
+  // lastSavedSnapshotRef is the payload as of the last successful save, used to skip autosaving
+  // when nothing has actually changed.
+  const savingPromiseRef = useRef<Promise<string | null> | null>(null);
+  const inFlightSnapshotRef = useRef<string | null>(null);
+  const lastSavedSnapshotRef = useRef<string | null>(null);
 
   const isSuperAdmin = role === "super_admin";
   const isAdmin = role === "org";
@@ -1114,7 +1131,7 @@ export default function FormsManagerPage() {
         return null;
       }
       if (current.autoOfferLetter) {
-        if (loadingDocTemplates) {
+        if (loadingDocTemplatesRef.current) {
           if (!quiet) {
             toast({
               title: "Still loading templates",
@@ -1124,7 +1141,7 @@ export default function FormsManagerPage() {
           setSaveStatus("idle");
           return null;
         }
-        const tpl = offerTemplates.find((t) => t.id === current.offerLetterTemplateId);
+        const tpl = offerTemplatesRef.current.find((t) => t.id === current.offerLetterTemplateId);
         if (!tpl) {
           if (!quiet) {
             toast({
@@ -1153,7 +1170,7 @@ export default function FormsManagerPage() {
         }
       }
       if (current.autoCertificate) {
-        if (loadingDocTemplates) {
+        if (loadingDocTemplatesRef.current) {
           if (!quiet) {
             toast({
               title: "Still loading templates",
@@ -1163,7 +1180,7 @@ export default function FormsManagerPage() {
           setSaveStatus("idle");
           return null;
         }
-        const tpl = certTemplates.find((t) => t.id === current.certificateTemplateId);
+        const tpl = certTemplatesRef.current.find((t) => t.id === current.certificateTemplateId);
         if (!tpl) {
           if (!quiet) {
             toast({
@@ -1191,21 +1208,14 @@ export default function FormsManagerPage() {
           return null;
         }
       }
-      if (savingRef.current) return currentEditing?.id ?? null;
-      savingRef.current = true;
-      setFormNameError("");
-      setSaveStatus("saving");
-      setSaving(true);
-      let formId: string | null = currentEditing?.id ?? null;
-      try {
-        const slug = (
-          current.slug ||
-          (currentEditing ? makeSlug(current.title) : uniqueFormSlug(current.title))
-        ).trim();
-        const existingCampaign = currentEditing
-          ? parseFormCampaign(currentEditing.meta_json)
-          : parseFormCampaign(null);
-        const meta_json: Record<string, unknown> = {
+      const slug = (
+        current.slug ||
+        (currentEditing ? makeSlug(current.title) : uniqueFormSlug(current.title))
+      ).trim();
+      const existingCampaign = currentEditing
+        ? parseFormCampaign(currentEditing.meta_json)
+        : parseFormCampaign(null);
+      const meta_json: Record<string, unknown> = {
           company_name: current.companyName.trim(),
           logo_url: current.companyLogoUrl.trim() || "",
           header_image_url: current.headerImageUrl.trim() || "",
@@ -1272,85 +1282,133 @@ export default function FormsManagerPage() {
             : 0,
           campaign: campaign ? { ...existingCampaign, ...campaign } : existingCampaign,
         };
-        const payload = {
-          name: current.title.trim(),
-          slug,
-          description: current.description.trim() || null,
-          fields_json: toLegacyFields(current.questions),
-          meta_json,
-          is_active: publish ? true : current.isActive,
-        };
-        if (isSuperAdmin) {
-          (payload as { org_id?: string | null }).org_id = resolveSuperAdminFormOrgId(current.orgId);
-        }
+      const payload = {
+        name: current.title.trim(),
+        slug,
+        description: current.description.trim() || null,
+        fields_json: toLegacyFields(current.questions),
+        meta_json,
+        is_active: publish ? true : current.isActive,
+      };
+      if (isSuperAdmin) {
+        (payload as { org_id?: string | null }).org_id = resolveSuperAdminFormOrgId(current.orgId);
+      }
 
-        let savedRow: LeadForm;
-        if (currentEditing) {
-          await api.forms.update(currentEditing.id, payload);
-          formId = currentEditing.id;
-          savedRow = {
-            ...currentEditing,
-            name: payload.name,
-            slug: payload.slug,
-            description: payload.description,
-            fields_json: payload.fields_json,
-            meta_json: payload.meta_json as LeadForm["meta_json"],
-            is_active: payload.is_active ? 1 : 0,
-            ...(isSuperAdmin
-              ? { org_id: (payload as { org_id?: string | null }).org_id ?? currentEditing.org_id }
-              : {}),
-          };
-          setForms((prev) => prev.map((f) => (f.id === savedRow.id ? savedRow : f)));
-          setEditing(savedRow);
-          if (!quiet) toast({ title: publish ? "Form published" : "Form saved" });
-        } else {
-          const created = await api.forms.create(payload);
-          formId = created?.id ?? null;
-          if (!formId) throw new Error("Form was created but no id was returned");
-          const finalSlug = String((created as { slug?: string })?.slug || slug).trim() || slug;
-          savedRow = {
-            id: formId,
-            name: payload.name,
-            slug: finalSlug,
-            description: payload.description,
-            fields_json: payload.fields_json,
-            meta_json: payload.meta_json as LeadForm["meta_json"],
-            is_active: payload.is_active ? 1 : 0,
-            source: "custom",
-            created_by: user?.id,
-            ...(isSuperAdmin
-              ? { org_id: (payload as { org_id?: string | null }).org_id ?? undefined }
-              : {}),
-          };
-          // Pin id immediately so a concurrent autosave cannot INSERT again.
-          editingRef.current = savedRow;
-          setForms((prev) => [savedRow, ...prev.filter((f) => f.id !== savedRow.id)]);
-          setEditing(savedRow);
-          if (current.slug !== finalSlug) {
-            dispatchBuilder({ type: "set", patch: { slug: finalSlug } });
+      // Fingerprint of exactly what would be sent — same object used for the real request below,
+      // so this is guaranteed to reflect every field that actually affects persistence.
+      const snapshot = JSON.stringify(payload);
+
+      if (savingPromiseRef.current) {
+        if (inFlightSnapshotRef.current === snapshot) {
+          // An identical save is already in flight — ride along on it instead of firing a
+          // duplicate request. Still honor THIS caller's own closeAfter intent once it settles.
+          const result = await savingPromiseRef.current;
+          if (closeAfter && result !== null) {
+            setBuilderOpen(false);
+            void bootstrap({ soft: true });
           }
-          if (!quiet) toast({ title: publish ? "Form published" : "Form saved" });
+          return result;
         }
+        // Content differs from what's currently being sent (the user kept editing) — wait for
+        // that request to finish, then fall through to start a fresh save with the latest content.
+        await savingPromiseRef.current.catch(() => null);
+      }
 
-        setSaveStatus("saved");
-        window.setTimeout(() => {
-          setSaveStatus((s) => (s === "saved" ? "idle" : s));
-        }, 1500);
-        if (closeAfter) {
+      if (quiet && snapshot === lastSavedSnapshotRef.current) {
+        // Nothing has actually changed since the last successful save — skip the network call.
+        return currentEditing?.id ?? null;
+      }
+
+      setFormNameError("");
+      setSaveStatus("saving");
+      setSaving(true);
+
+      const run = (async (): Promise<string | null> => {
+        let formId: string | null = currentEditing?.id ?? null;
+        try {
+          let savedRow: LeadForm;
+          if (currentEditing) {
+            await api.forms.update(currentEditing.id, payload);
+            formId = currentEditing.id;
+            savedRow = {
+              ...currentEditing,
+              name: payload.name,
+              slug: payload.slug,
+              description: payload.description,
+              fields_json: payload.fields_json,
+              meta_json: payload.meta_json as LeadForm["meta_json"],
+              is_active: payload.is_active ? 1 : 0,
+              ...(isSuperAdmin
+                ? { org_id: (payload as { org_id?: string | null }).org_id ?? currentEditing.org_id }
+                : {}),
+            };
+            setForms((prev) => prev.map((f) => (f.id === savedRow.id ? savedRow : f)));
+            setEditing(savedRow);
+            if (!quiet) toast({ title: publish ? "Form published" : "Form saved" });
+          } else {
+            const created = await api.forms.create(payload);
+            formId = created?.id ?? null;
+            if (!formId) throw new Error("Form was created but no id was returned");
+            const finalSlug = String((created as { slug?: string })?.slug || slug).trim() || slug;
+            savedRow = {
+              id: formId,
+              name: payload.name,
+              slug: finalSlug,
+              description: payload.description,
+              fields_json: payload.fields_json,
+              meta_json: payload.meta_json as LeadForm["meta_json"],
+              is_active: payload.is_active ? 1 : 0,
+              source: "custom",
+              created_by: user?.id,
+              ...(isSuperAdmin
+                ? { org_id: (payload as { org_id?: string | null }).org_id ?? undefined }
+                : {}),
+            };
+            // Pin id immediately so a concurrent autosave cannot INSERT again.
+            editingRef.current = savedRow;
+            setForms((prev) => [savedRow, ...prev.filter((f) => f.id !== savedRow.id)]);
+            setEditing(savedRow);
+            if (current.slug !== finalSlug) {
+              dispatchBuilder({ type: "set", patch: { slug: finalSlug } });
+            }
+            if (!quiet) toast({ title: publish ? "Form published" : "Form saved" });
+          }
+
+          // Only remember this as "saved" on actual success — a failed request must not be
+          // mistaken for up-to-date content on the next dirty check.
+          lastSavedSnapshotRef.current = snapshot;
+          setSaveStatus("saved");
+          window.setTimeout(() => {
+            setSaveStatus((s) => (s === "saved" ? "idle" : s));
+          }, 1500);
+          return formId;
+        } catch (error: any) {
+          setSaveStatus("idle");
+          toast({ variant: "destructive", title: "Save failed", description: error?.message || "Try again." });
+          return null;
+        } finally {
+          setSaving(false);
+        }
+      })();
+
+      savingPromiseRef.current = run;
+      inFlightSnapshotRef.current = snapshot;
+      try {
+        const result = await run;
+        // Never close the builder after a failed save — only when this save actually succeeded.
+        if (closeAfter && result !== null) {
           setBuilderOpen(false);
           void bootstrap({ soft: true });
         }
-        return formId;
-      } catch (error: any) {
-        setSaveStatus("idle");
-        toast({ variant: "destructive", title: "Save failed", description: error?.message || "Try again." });
-        return null;
+        return result;
       } finally {
-        savingRef.current = false;
-        setSaving(false);
+        if (savingPromiseRef.current === run) {
+          savingPromiseRef.current = null;
+          inFlightSnapshotRef.current = null;
+        }
       }
     },
-    [isSuperAdmin, resolveSuperAdminFormOrgId, user?.id, offerTemplates, certTemplates, loadingDocTemplates, toast],
+    [isSuperAdmin, resolveSuperAdminFormOrgId, user?.id, toast],
   );
 
   useEffect(() => {
@@ -1922,7 +1980,7 @@ export default function FormsManagerPage() {
               <Button variant="outline" size="sm" onClick={() => void handleShareClick()} disabled={saving}>
                 {shareHint ? "Copied!" : "Share"}
               </Button>
-              <Button size="sm" onClick={() => void saveForm(false, false, undefined, false)} disabled={saving}>
+              <Button size="sm" onClick={() => void saveForm(false, true, undefined, false)}>
                 {saving ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Save className="h-4 w-4 mr-1" />}
                 Save
               </Button>
@@ -2146,7 +2204,13 @@ export default function FormsManagerPage() {
                   <div className="flex items-center justify-between"><span>Allow only one response</span><Checkbox checked={!builder.allowMultipleResponses} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { allowMultipleResponses: c !== true } })} /></div>
                   <div className="flex items-center justify-between"><span>Edit after submit</span><Checkbox checked={builder.editAfterSubmit} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { editAfterSubmit: c === true } })} /></div>
                   <div className="flex items-center justify-between"><span>Form is active</span><Checkbox checked={builder.isActive} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { isActive: c === true } })} /></div>
-                  <div className="flex items-center justify-between"><span>Payment</span><Checkbox checked={builder.paymentEnabled} disabled={builder.leadDestination === "hr_leads"} onCheckedChange={(c) => dispatchBuilder({ type: "set", patch: { paymentEnabled: c === true, collectEmail: c === true ? true : builder.collectEmail, offerLetterRequirePayment: c === true ? builder.offerLetterRequirePayment : false, certificateRequirePayment: c === true ? builder.certificateRequirePayment : false } })} /></div>
+                  <div className="flex items-center justify-between"><span>Payment</span><Checkbox checked={builder.paymentEnabled} disabled={builder.leadDestination === "hr_leads"} onCheckedChange={(c) => {
+                    const on = c === true;
+                    dispatchBuilder({ type: "set", patch: { paymentEnabled: on, collectEmail: on ? true : builder.collectEmail, offerLetterRequirePayment: on ? builder.offerLetterRequirePayment : false, certificateRequirePayment: on ? builder.certificateRequirePayment : false } });
+                    if (!on && (builderCampaignCfg.email_require_payment || builderCampaignCfg.whatsapp_require_payment)) {
+                      void patchBuilderCampaign({ email_require_payment: false, whatsapp_require_payment: false });
+                    }
+                  }} /></div>
                   {builder.paymentEnabled && builder.leadDestination !== "hr_leads" ? (
                     <div className="space-y-3">
                       <div>
@@ -2474,6 +2538,7 @@ export default function FormsManagerPage() {
                                     email_template_id: "",
                                     assign_email: false,
                                     auto_send_email: false,
+                                    email_require_payment: false,
                                   });
                                   return;
                                 }
@@ -2511,9 +2576,28 @@ export default function FormsManagerPage() {
                               id="builder-auto-email"
                               checked={Boolean(builderCampaignCfg.auto_send_email)}
                               disabled={savingBuilderCampaign || !builderCampaignCfg.email_template_id || !editing?.id}
-                              onCheckedChange={(v) => void patchBuilderCampaign({ auto_send_email: v })}
+                              onCheckedChange={(v) => void patchBuilderCampaign({ auto_send_email: v, email_require_payment: v ? builderCampaignCfg.email_require_payment : false })}
                             />
                           </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label htmlFor="builder-email-pay" className="text-xs font-normal">Payment</Label>
+                            <Switch
+                              id="builder-email-pay"
+                              checked={Boolean(builderCampaignCfg.email_require_payment)}
+                              disabled={
+                                savingBuilderCampaign ||
+                                !builderCampaignCfg.auto_send_email ||
+                                !builderCampaignCfg.email_template_id ||
+                                !editing?.id ||
+                                !builder.paymentEnabled ||
+                                builder.leadDestination === "hr_leads"
+                              }
+                              onCheckedChange={(v) => void patchBuilderCampaign({ email_require_payment: v })}
+                            />
+                          </div>
+                          {builderCampaignCfg.auto_send_email && builderCampaignCfg.email_require_payment ? (
+                            <p className="text-[11px] text-muted-foreground">Only after successful payment.</p>
+                          ) : null}
                           <Button
                             type="button"
                             variant="outline"
@@ -2543,6 +2627,7 @@ export default function FormsManagerPage() {
                                     whatsapp_template_id: "",
                                     assign_whatsapp: false,
                                     auto_send_whatsapp: false,
+                                    whatsapp_require_payment: false,
                                   });
                                   return;
                                 }
@@ -2596,9 +2681,28 @@ export default function FormsManagerPage() {
                               id="builder-auto-wa"
                               checked={Boolean(builderCampaignCfg.auto_send_whatsapp)}
                               disabled={savingBuilderCampaign || !builderCampaignCfg.whatsapp_template_id || !editing?.id}
-                              onCheckedChange={(v) => void patchBuilderCampaign({ auto_send_whatsapp: v })}
+                              onCheckedChange={(v) => void patchBuilderCampaign({ auto_send_whatsapp: v, whatsapp_require_payment: v ? builderCampaignCfg.whatsapp_require_payment : false })}
                             />
                           </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label htmlFor="builder-wa-pay" className="text-xs font-normal">Payment</Label>
+                            <Switch
+                              id="builder-wa-pay"
+                              checked={Boolean(builderCampaignCfg.whatsapp_require_payment)}
+                              disabled={
+                                savingBuilderCampaign ||
+                                !builderCampaignCfg.auto_send_whatsapp ||
+                                !builderCampaignCfg.whatsapp_template_id ||
+                                !editing?.id ||
+                                !builder.paymentEnabled ||
+                                builder.leadDestination === "hr_leads"
+                              }
+                              onCheckedChange={(v) => void patchBuilderCampaign({ whatsapp_require_payment: v })}
+                            />
+                          </div>
+                          {builderCampaignCfg.auto_send_whatsapp && builderCampaignCfg.whatsapp_require_payment ? (
+                            <p className="text-[11px] text-muted-foreground">Only after successful payment.</p>
+                          ) : null}
                           <Button
                             type="button"
                             variant="outline"

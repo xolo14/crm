@@ -53,7 +53,7 @@ function canUseLiveClasses(
   if (r === "super_admin") return true;
   if (!isSyncpediaOrganization(org)) return false;
   // Must match php-backend/api/lms-sync.php lmsRequireAccess roles.
-  return r === "org" || r === "manager";
+  return r === "org" || r === "manager" || r === "operational_manager";
 }
 
 function errMessage(err: unknown): string {

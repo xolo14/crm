@@ -17,7 +17,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Mail, Send, Plus, Eye, Loader2, FileText, Trash2,
-  CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, CalendarClock, Paperclip, X
+  CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, CalendarClock, Paperclip, X, TrendingUp
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { useSearchParams } from 'react-router-dom';
@@ -547,6 +547,12 @@ export default function MarketingPortal() {
   const totalSent = sendTotals.sent;
   const totalFailed = sendTotals.failed;
   const totalPending = sendTotals.pending;
+  const totalCampaigns = campaigns.length;
+  const totalRecipients = sends.length > 0
+    ? sends.length
+    : campaigns.reduce((sum, c) => sum + Number(c.recipient_count || 0), 0);
+  const deliveryBase = totalSent + totalFailed + totalPending;
+  const deliveryRate = deliveryBase > 0 ? ((totalSent / deliveryBase) * 100).toFixed(1) : '0';
 
   const campaignLogRequest = useRef(0);
   const openCampaignLog = (campaign: any) => {
@@ -604,31 +610,25 @@ export default function MarketingPortal() {
       </div>
 
       {activeTab !== 'analytics' ? (
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card className="border-l-4 border-l-emerald-500">
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2 mb-1"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /><span className="text-[10px] uppercase tracking-wider text-muted-foreground">Sent</span></div>
-            <p className="text-lg md:text-xl font-bold text-emerald-600">{totalSent}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-red-500">
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2 mb-1"><XCircle className="h-3.5 w-3.5 text-red-500" /><span className="text-[10px] uppercase tracking-wider text-muted-foreground">Failed</span></div>
-            <p className="text-lg md:text-xl font-bold text-red-600">{totalFailed}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-amber-500">
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2 mb-1"><Clock className="h-3.5 w-3.5 text-amber-500" /><span className="text-[10px] uppercase tracking-wider text-muted-foreground">Pending</span></div>
-            <p className="text-lg md:text-xl font-bold text-amber-600">{totalPending}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-blue-500">
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2 mb-1"><Users className="h-3.5 w-3.5 text-blue-500" /><span className="text-[10px] uppercase tracking-wider text-muted-foreground">Form Leads</span></div>
-            <p className="text-lg md:text-xl font-bold text-blue-600">{formLeadRows.length}</p>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        {[
+          { label: 'Campaigns', value: totalCampaigns, icon: BarChart3, color: 'text-primary', borderColor: 'border-l-primary' },
+          { label: 'Total Emails', value: totalRecipients, icon: Mail, color: 'text-blue-500', borderColor: 'border-l-blue-500' },
+          { label: 'Sent', value: totalSent, icon: CheckCircle2, color: 'text-emerald-500', borderColor: 'border-l-emerald-500' },
+          { label: 'Failed', value: totalFailed, icon: XCircle, color: 'text-red-500', borderColor: 'border-l-red-500' },
+          { label: 'Pending', value: totalPending, icon: Clock, color: 'text-amber-500', borderColor: 'border-l-amber-500' },
+          { label: 'Delivery %', value: `${deliveryRate}%`, icon: TrendingUp, color: 'text-purple-500', borderColor: 'border-l-purple-500' },
+        ].map((stat) => (
+          <Card key={stat.label} className={`border-l-4 ${stat.borderColor}`}>
+            <CardContent className="p-3">
+              <div className="flex items-center gap-1.5 mb-1">
+                <stat.icon className={`h-3.5 w-3.5 ${stat.color}`} />
+                <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">{stat.label}</span>
+              </div>
+              <p className="text-lg md:text-xl font-bold">{stat.value}</p>
+            </CardContent>
+          </Card>
+        ))}
       </div>
       ) : null}
 
@@ -823,7 +823,7 @@ export default function MarketingPortal() {
         </TabsContent>
 
         <TabsContent value="analytics">
-          <EmailAnalytics embedded />
+          <EmailAnalytics embedded campaigns={campaigns} sends={sends} />
         </TabsContent>
       </Tabs>
 

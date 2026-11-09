@@ -69,7 +69,15 @@ export default function ImportedLeads() {
       const code = user?.referral_code || '';
       setReferralCode(code);
       if (code) {
-        const leadsRes = await api.leads.list({ referred_by: code, lite: true });
+        const leadsRes = await api.leads.list({
+          referred_by: code,
+          lite: true,
+          limit: 2000,
+          onPage: (page) => {
+            setLeads(page.data || []);
+            setLoading(false);
+          },
+        });
         setLeads(phpList(leadsRes));
       }
     } catch (err: any) {

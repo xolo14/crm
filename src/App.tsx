@@ -597,6 +597,7 @@ const App = () => (
               <Route path="coupons" element={<HRPageGate><CouponsPage /></HRPageGate>} />
               <Route path="offer-letters" element={<HRPageGate><OfferLetters /></HRPageGate>} />
               <Route path="form-management" element={<HRPageGate><FormsManagerPage /></HRPageGate>} />
+              <Route path="assignments" element={<AssessmentsAdminPage />} />
               <Route path="settings" element={<HRPageGate><SettingsPage /></HRPageGate>} />
             </Route>
           </Routes>

@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Plus } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { api } from "@/lib/api";
+import { normalizeAppRole } from "@/lib/roleUtils";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import type {
   PaymentLinkStats as Stats,
@@ -40,7 +43,10 @@ const POLL_INTERVAL_MS = 20_000;
 
 export default function PaymentLinksPage() {
   const { toast } = useToast();
-  const { profile } = useAuth();
+  const { profile, role } = useAuth();
+  const isSuperAdmin = normalizeAppRole(role) === "super_admin";
+  const [orgOptions, setOrgOptions] = useState<{ id: string; name: string }[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState("all");
   const [searchParams, setSearchParams] = useSearchParams();
   const referralCode = profile?.referral_code?.trim() ?? "";
   const pollInFlight = useRef(false);
@@ -70,6 +76,7 @@ export default function PaymentLinksPage() {
         const res = await getAllPaymentLinks({
           period,
           force: options?.force === true,
+          orgId: isSuperAdmin && selectedOrgId !== "all" ? selectedOrgId : undefined,
         });
         setLinks(res.items ?? []);
         if (!silent) {
@@ -86,7 +93,7 @@ export default function PaymentLinksPage() {
         }
       }
     },
-    [period],
+    [period, isSuperAdmin, selectedOrgId],
   );
 
   const refreshLinksQuiet = useCallback(() => {
@@ -96,6 +103,21 @@ export default function PaymentLinksPage() {
       pollInFlight.current = false;
     });
   }, [loadLinks]);
+
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    void api.organizations.list()
+      .then((res) => {
+        const rows = Array.isArray((res as { data?: unknown })?.data) ? (res as { data: Array<{ id?: string; name?: string }> }).data : [];
+        setOrgOptions(
+          rows
+            .map((o) => ({ id: String(o.id || "").trim(), name: String(o.name || "Unnamed org").trim() }))
+            .filter((o) => o.id !== "")
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        );
+      })
+      .catch(() => setOrgOptions([]));
+  }, [isSuperAdmin]);
 
   useEffect(() => {
     void loadLinks();
@@ -296,6 +318,19 @@ export default function PaymentLinksPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {isSuperAdmin ? (
+            <Select value={selectedOrgId} onValueChange={setSelectedOrgId}>
+              <SelectTrigger className="w-[220px] bg-white">
+                <SelectValue placeholder="Organisation" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All organisations</SelectItem>
+                {orgOptions.map((o) => (
+                  <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
           <button
             type="button"
             onClick={() => setCreateOpen(true)}

@@ -1,29 +1,25 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
-import { phpList, inDateRange } from '@/lib/phpList';
-import { campaignCanRetry, emailSendOutcome, type CampaignSendStatus } from '@/lib/emailSendStatus';
+import { phpList } from '@/lib/phpList';
+import { campaignSendSummary, emailSendOutcome } from '@/lib/emailSendStatus';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
-import { useIsMobile } from '@/hooks/use-mobile';
 import {
   BarChart3, Mail, CheckCircle2, XCircle, Clock, Loader2,
-  Search, Filter, TrendingUp, ArrowLeft, PieChart, Activity
+  Filter, TrendingUp, ArrowLeft, PieChart, Activity
 } from 'lucide-react';
-import { format, subDays, startOfDay, endOfDay, startOfWeek, endOfWeek } from 'date-fns';
+import { format, subDays, startOfDay, endOfDay, startOfWeek, endOfWeek, differenceInCalendarDays } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 import {
   ChartContainer, ChartTooltip, ChartTooltipContent
 } from '@/components/ui/chart';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer,
-  PieChart as RechartsPie, Pie, Cell, LineChart, Line, Tooltip, Legend
+  PieChart as RechartsPie, Pie, Cell, LineChart, Line, Tooltip
 } from 'recharts';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -34,10 +30,32 @@ const STATUS_COLORS: Record<string, string> = {
   completed: '#10b981',
 };
 
-export default function EmailAnalytics({ embedded = false }: { embedded?: boolean }) {
-  const { user, role } = useAuth();
+function sendStamp(row: { sent_at?: string | null; created_at?: string | null }) {
+  return row.sent_at || row.created_at || '';
+}
+
+function sendInRange(row: { sent_at?: string | null; created_at?: string | null }, from: Date | null, to: Date | null) {
+  if (!from && !to) return true;
+  const stamp = sendStamp(row);
+  if (!stamp) return false;
+  const d = new Date(stamp);
+  if (Number.isNaN(d.getTime())) return false;
+  if (from && d < from) return false;
+  if (to && d > to) return false;
+  return true;
+}
+
+export default function EmailAnalytics({
+  embedded = false,
+  campaigns: campaignsFeed,
+  sends: sendsFeed,
+}: {
+  embedded?: boolean;
+  campaigns?: any[];
+  sends?: any[];
+}) {
+  const { role } = useAuth();
   const { toast } = useToast();
-  const isMobile = useIsMobile();
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
@@ -45,31 +63,29 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
   const [sends, setSends] = useState<any[]>([]);
   const [members, setMembers] = useState<any[]>([]);
 
-  const [dateFilter, setDateFilter] = useState('30days');
+  const [dateFilter, setDateFilter] = useState('all');
   const [memberFilter, setMemberFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [searchQuery, setSearchQuery] = useState('');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
-  const [activeTab, setActiveTab] = useState('overview');
-  const [retryingCampaignId, setRetryingCampaignId] = useState('');
 
   const isSuperAdmin = role === 'super_admin' || role === 'org';
-  // Portal roles see own campaigns only (not org-wide admin list).
   const isPortalMarketer = role === 'marketing' || role === 'operational_manager';
+  const mineOnly = role === 'marketing';
+  const hasFeed = Array.isArray(campaignsFeed) && Array.isArray(sendsFeed);
 
-  useEffect(() => { fetchData(); }, [dateFilter, memberFilter, customFrom, customTo]);
+  useEffect(() => { fetchData(); }, [memberFilter, hasFeed, campaignsFeed, sendsFeed]);
 
-  const getDateRange = () => {
+  const getDateRange = (): { from: Date | null; to: Date | null } => {
     const now = new Date();
     switch (dateFilter) {
+      case 'all': return { from: null, to: null };
       case 'today': return { from: startOfDay(now), to: endOfDay(now) };
       case '7days': return { from: subDays(now, 7), to: now };
       case '30days': return { from: subDays(now, 30), to: now };
       case 'this_week': return { from: startOfWeek(now, { weekStartsOn: 1 }), to: endOfWeek(now, { weekStartsOn: 1 }) };
       case 'custom':
-        return { from: customFrom ? new Date(customFrom) : subDays(now, 30), to: customTo ? new Date(customTo) : now };
-      default: return { from: subDays(now, 30), to: now };
+        return { from: customFrom ? new Date(customFrom) : null, to: customTo ? endOfDay(new Date(customTo)) : now };
+      default: return { from: null, to: null };
     }
   };
 
@@ -77,10 +93,8 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
     const silent = options?.silent === true;
     if (!silent) setLoading(true);
     try {
-      const { from, to } = getDateRange();
       let membersData: any[] = [];
 
-      // Members (for super admin)
       if (isSuperAdmin) {
         const teamData = await api.team.list();
         membersData = (teamData?.data || [])
@@ -98,9 +112,9 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
         setMembers([]);
       }
 
-      // Campaigns
-      let campData = phpList(await api.marketing.emailCampaigns(isPortalMarketer ? { mine: true } : undefined));
-      campData = campData.filter((c) => inDateRange(c, from, to));
+      let campData = hasFeed
+        ? [...campaignsFeed]
+        : phpList(await api.marketing.emailCampaigns(mineOnly ? { mine: true } : undefined));
       if (memberFilter !== 'all' && isSuperAdmin) {
         const member = membersData.find((m) => m.id === memberFilter);
         if (member) {
@@ -109,7 +123,10 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
       }
       setCampaigns(campData);
 
-      if (campData.length > 0) {
+      if (hasFeed) {
+        const allowed = new Set(campData.map((c) => String(c.id)));
+        setSends(sendsFeed.filter((row) => allowed.has(String(row.campaign_id || ''))));
+      } else if (campData.length > 0) {
         const sendsRes = await api.marketing.emailSends(campData.map((c) => c.id));
         setSends(phpList(sendsRes));
       } else {
@@ -133,76 +150,98 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
     return () => window.clearInterval(timer);
   }, [anyCampaignSending]);
 
-  const retryCampaign = async (campaignId: string) => {
-    if (!campaignId || retryingCampaignId) return;
-    setRetryingCampaignId(campaignId);
-    try {
-      const res = await api.marketing.retryEmailCampaign(campaignId);
-      const queued = Number(res?.queued ?? 0);
-      if (queued <= 0) {
-        throw new Error(res?.error || res?.message || 'No failed emails to retry');
-      }
-      toast({
-        title: res?.message || `Sending ${queued}. You can leave this page; they go out about every 3 seconds.`,
-      });
-      await fetchData({ silent: true });
-    } catch (err: any) {
-      toast({ variant: 'destructive', title: 'Retry failed', description: err.message });
-    } finally {
-      setRetryingCampaignId('');
+  const { from, to } = getDateRange();
+  const filteredSends = useMemo(
+    () => sends.filter((row) => sendInRange(row, from, to)),
+    [sends, dateFilter, customFrom, customTo],
+  );
+
+  const kpis = useMemo(() => {
+    const sum = campaignSendSummary(filteredSends);
+    return {
+      sent: sum.sent,
+      failed: sum.failed,
+      pending: sum.pending,
+      recipients: sum.total,
+    };
+  }, [filteredSends]);
+
+  const campaignIdsInRange = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of filteredSends) {
+      const id = String(row.campaign_id || '');
+      if (id) ids.add(id);
     }
-  };
+    return ids;
+  }, [filteredSends]);
 
-  // Stats
-  const totalCampaigns = campaigns.length;
-  const totalSent = campaigns.reduce((s, c) => s + (c.sent_count || 0), 0);
-  const totalFailed = campaigns.reduce((s, c) => s + (c.failed_count || 0), 0);
-  const totalPending = campaigns.reduce((s, c) => s + (c.pending_count || 0), 0);
-  const totalRecipients = campaigns.reduce((s, c) => s + (c.recipient_count || 0), 0);
-  const deliveryRate = totalRecipients > 0 ? ((totalSent / totalRecipients) * 100).toFixed(1) : '0';
+  const totalCampaigns = dateFilter === 'all' ? campaigns.length : campaignIdsInRange.size;
+  const totalSent = kpis.sent;
+  const totalFailed = kpis.failed;
+  const totalPending = kpis.pending;
+  const totalRecipients = kpis.recipients;
+  const deliveryBase = totalSent + totalFailed + totalPending;
+  const deliveryRate = deliveryBase > 0 ? ((totalSent / deliveryBase) * 100).toFixed(1) : '0';
 
-  // Chart data: status distribution
   const pieData = [
     { name: 'Sent', value: totalSent, color: STATUS_COLORS.sent },
     { name: 'Failed', value: totalFailed, color: STATUS_COLORS.failed },
     { name: 'Pending', value: totalPending, color: STATUS_COLORS.pending },
   ].filter(d => d.value > 0);
 
-  // Chart data: daily trend (last 7 or 30 days)
+  const trendDays = (() => {
+    if (dateFilter === '7days' || dateFilter === 'today' || dateFilter === 'this_week') return 7;
+    if (dateFilter === 'custom' && from && to) return Math.min(60, Math.max(1, differenceInCalendarDays(to, from) + 1));
+    if (dateFilter === 'all') {
+      const times = filteredSends
+        .map((row) => sendStamp(row))
+        .filter(Boolean)
+        .map((stamp) => new Date(stamp).getTime())
+        .filter((n) => Number.isFinite(n));
+      if (!times.length) return 30;
+      return Math.min(90, Math.max(7, differenceInCalendarDays(new Date(), new Date(Math.min(...times))) + 1));
+    }
+    return 30;
+  })();
+
   const dailyData = (() => {
-    const days = dateFilter === '7days' || dateFilter === 'today' || dateFilter === 'this_week' ? 7 : 30;
     const result: { date: string; sent: number; failed: number; pending: number }[] = [];
-    for (let i = days - 1; i >= 0; i--) {
+    for (let i = trendDays - 1; i >= 0; i--) {
       const d = subDays(new Date(), i);
       const dateStr = format(d, 'yyyy-MM-dd');
-      const dayCampaigns = campaigns.filter(c => format(new Date(c.created_at), 'yyyy-MM-dd') === dateStr);
-      result.push({
-        date: format(d, 'dd MMM'),
-        sent: dayCampaigns.reduce((s, c) => s + (c.sent_count || 0), 0),
-        failed: dayCampaigns.reduce((s, c) => s + (c.failed_count || 0), 0),
-        pending: dayCampaigns.reduce((s, c) => s + (c.pending_count || 0), 0),
-      });
+      let sent = 0;
+      let failed = 0;
+      let pending = 0;
+      for (const row of filteredSends) {
+        const stamp = sendStamp(row);
+        if (!stamp) continue;
+        if (format(new Date(stamp), 'yyyy-MM-dd') !== dateStr) continue;
+        const tone = emailSendOutcome(row).tone;
+        if (tone === 'sent') sent += 1;
+        else if (tone === 'failed') failed += 1;
+        else pending += 1;
+      }
+      result.push({ date: format(d, 'dd MMM'), sent, failed, pending });
     }
     return result;
   })();
 
-  // Filtered sends for log
-  const filteredSends = sends.filter(s => {
-    const outcome = emailSendOutcome(s);
-    if (statusFilter === 'sent' && outcome.tone !== 'sent') return false;
-    if (statusFilter === 'failed' && outcome.tone !== 'failed') return false;
-    if (statusFilter === 'pending' && outcome.tone !== 'pending') return false;
-    if (searchQuery && !s.recipient_email?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-    return true;
-  });
-
-  // Campaign-level chart
-  const campaignChartData = campaigns.slice(0, 10).map(c => ({
-    name: c.subject?.substring(0, 20) || 'No subject',
-    sent: c.sent_count || 0,
-    failed: c.failed_count || 0,
-    pending: c.pending_count || 0,
-  }));
+  const campaignChartData = campaigns
+    .map((c) => {
+      const rows = filteredSends.filter((row) => String(row.campaign_id) === String(c.id));
+      if (rows.length === 0) return null;
+      const sum = campaignSendSummary(rows);
+      return {
+        name: c.subject?.substring(0, 20) || 'No subject',
+        sent: sum.sent,
+        failed: sum.failed,
+        pending: sum.pending,
+        volume: sum.total,
+      };
+    })
+    .filter((row): row is NonNullable<typeof row> => row != null)
+    .sort((a, b) => b.volume - a.volume)
+    .slice(0, 10);
 
   const chartConfig = {
     sent: { label: 'Sent', color: STATUS_COLORS.sent },
@@ -231,7 +270,6 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
       </div>
       ) : null}
 
-      {/* Filters */}
       <Card>
         <CardContent className="py-3 px-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -248,6 +286,7 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
             <Select value={dateFilter} onValueChange={setDateFilter}>
               <SelectTrigger className="h-8 w-[130px] text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
+                <SelectItem value="all">All time</SelectItem>
                 <SelectItem value="today">Today</SelectItem>
                 <SelectItem value="7days">Last 7 Days</SelectItem>
                 <SelectItem value="30days">Last 30 Days</SelectItem>
@@ -266,20 +305,19 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
         </CardContent>
       </Card>
 
-      {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
         {[
-          { label: 'Campaigns', value: totalCampaigns, icon: BarChart3, color: 'primary', borderColor: 'border-l-primary' },
-          { label: 'Total Emails', value: totalRecipients, icon: Mail, color: 'blue-500', borderColor: 'border-l-blue-500' },
-          { label: 'Sent', value: totalSent, icon: CheckCircle2, color: 'emerald-500', borderColor: 'border-l-emerald-500' },
-          { label: 'Failed', value: totalFailed, icon: XCircle, color: 'red-500', borderColor: 'border-l-red-500' },
-          { label: 'Pending', value: totalPending, icon: Clock, color: 'amber-500', borderColor: 'border-l-amber-500' },
-          { label: 'Delivery %', value: `${deliveryRate}%`, icon: TrendingUp, color: 'purple-500', borderColor: 'border-l-purple-500' },
+          { label: 'Campaigns', value: totalCampaigns, icon: BarChart3, color: 'text-primary', borderColor: 'border-l-primary' },
+          { label: 'Total Emails', value: totalRecipients, icon: Mail, color: 'text-blue-500', borderColor: 'border-l-blue-500' },
+          { label: 'Sent', value: totalSent, icon: CheckCircle2, color: 'text-emerald-500', borderColor: 'border-l-emerald-500' },
+          { label: 'Failed', value: totalFailed, icon: XCircle, color: 'text-red-500', borderColor: 'border-l-red-500' },
+          { label: 'Pending', value: totalPending, icon: Clock, color: 'text-amber-500', borderColor: 'border-l-amber-500' },
+          { label: 'Delivery %', value: `${deliveryRate}%`, icon: TrendingUp, color: 'text-purple-500', borderColor: 'border-l-purple-500' },
         ].map(stat => (
           <Card key={stat.label} className={`border-l-4 ${stat.borderColor}`}>
             <CardContent className="p-3">
               <div className="flex items-center gap-1.5 mb-1">
-                <stat.icon className={`h-3.5 w-3.5 text-${stat.color}`} />
+                <stat.icon className={`h-3.5 w-3.5 ${stat.color}`} />
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">{stat.label}</span>
               </div>
               <p className="text-lg md:text-xl font-bold">{stat.value}</p>
@@ -288,211 +326,72 @@ export default function EmailAnalytics({ embedded = false }: { embedded?: boolea
         ))}
       </div>
 
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="w-full md:w-auto">
-          <TabsTrigger value="overview" className="text-xs gap-1"><PieChart className="h-3 w-3" />Overview</TabsTrigger>
-          <TabsTrigger value="trends" className="text-xs gap-1"><Activity className="h-3 w-3" />Trends</TabsTrigger>
-          <TabsTrigger value="campaigns" className="text-xs gap-1"><BarChart3 className="h-3 w-3" />Campaigns</TabsTrigger>
-          <TabsTrigger value="log" className="text-xs gap-1"><Mail className="h-3 w-3" />Email Log</TabsTrigger>
-        </TabsList>
-
-        {/* Overview - Pie + Summary */}
-        <TabsContent value="overview">
-          <div className="grid md:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader className="py-3 px-4">
-                <CardTitle className="text-sm flex items-center gap-2"><PieChart className="h-4 w-4" />Status Distribution</CardTitle>
-              </CardHeader>
-              <CardContent className="pb-4">
-                {pieData.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-8">No data for this period</p>
-                ) : (
-                  <div className="h-[250px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <RechartsPie>
-                        <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={4} dataKey="value" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
-                          {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                        </Pie>
-                        <Tooltip />
-                      </RechartsPie>
-                    </ResponsiveContainer>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="py-3 px-4">
-                <CardTitle className="text-sm flex items-center gap-2"><BarChart3 className="h-4 w-4" />Campaign Performance</CardTitle>
-              </CardHeader>
-              <CardContent className="pb-4">
-                {campaignChartData.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-8">No campaigns in this period</p>
-                ) : (
-                  <ChartContainer config={chartConfig} className="h-[250px]">
-                    <BarChart data={campaignChartData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                      <YAxis tick={{ fontSize: 10 }} />
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="sent" fill="var(--color-sent)" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="failed" fill="var(--color-failed)" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="pending" fill="var(--color-pending)" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ChartContainer>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        {/* Trends - Line Chart */}
-        <TabsContent value="trends">
+      <div className="space-y-4">
+        <div className="grid md:grid-cols-2 gap-4">
           <Card>
             <CardHeader className="py-3 px-4">
-              <CardTitle className="text-sm flex items-center gap-2"><Activity className="h-4 w-4" />Daily Email Trends</CardTitle>
+              <CardTitle className="text-sm flex items-center gap-2"><PieChart className="h-4 w-4" />Status Distribution</CardTitle>
             </CardHeader>
             <CardContent className="pb-4">
-              <ChartContainer config={chartConfig} className="h-[300px]">
-                <LineChart data={dailyData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 10 }} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Line type="monotone" dataKey="sent" stroke="var(--color-sent)" strokeWidth={2} dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="failed" stroke="var(--color-failed)" strokeWidth={2} dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="pending" stroke="var(--color-pending)" strokeWidth={2} dot={{ r: 3 }} />
-                </LineChart>
-              </ChartContainer>
+              {pieData.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">No data for this period</p>
+              ) : (
+                <div className="h-[250px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <RechartsPie>
+                      <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={90} paddingAngle={4} dataKey="value" label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                        {pieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                      </Pie>
+                      <Tooltip />
+                    </RechartsPie>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
-        </TabsContent>
-
-        {/* Campaigns Table */}
-        <TabsContent value="campaigns">
-          <Card>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-xs">Subject</TableHead>
-                      <TableHead className="text-xs">Date</TableHead>
-                      <TableHead className="text-xs text-center">Recipients</TableHead>
-                      <TableHead className="text-xs text-center">Sent</TableHead>
-                      <TableHead className="text-xs text-center">Failed</TableHead>
-                      <TableHead className="text-xs text-center">Pending</TableHead>
-                      <TableHead className="text-xs">Status</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {campaigns.length === 0 ? (
-                      <TableRow><TableCell colSpan={7} className="text-center text-sm text-muted-foreground py-8">No campaigns found</TableCell></TableRow>
-                    ) : campaigns.map(c => (
-                      <TableRow key={c.id}>
-                        <TableCell className="text-sm font-medium max-w-[200px] truncate">{c.subject}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{format(new Date(c.created_at), 'dd MMM yyyy HH:mm')}</TableCell>
-                        <TableCell className="text-center text-sm">{c.recipient_count}</TableCell>
-                        <TableCell className="text-center"><Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">{c.sent_count}</Badge></TableCell>
-                        <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{c.failed_count}</Badge></TableCell>
-                        <TableCell className="text-center"><Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200 text-xs">{c.pending_count}</Badge></TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Badge variant="outline" className={
-                              c.status === 'completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                              c.status === 'sending' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                              c.status === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
-                              'bg-amber-50 text-amber-700 border-amber-200'
-                            }>{c.status}</Badge>
-                            {campaignCanRetry({
-                              status: (['completed', 'partial', 'failed', 'scheduled', 'sending'].includes(String(c.status))
-                                ? String(c.status)
-                                : 'failed') as CampaignSendStatus,
-                              label: '',
-                              sent: Number(c.sent_count || 0),
-                              failed: Number(c.failed_count || 0),
-                              pending: Number(c.pending_count || 0),
-                              total: Number(c.recipient_count || 0),
-                            }) ? (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-2 text-xs"
-                                disabled={retryingCampaignId === String(c.id)}
-                                onClick={() => { void retryCampaign(String(c.id)); }}
-                              >
-                                {retryingCampaignId === String(c.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Retry'}
-                              </Button>
-                            ) : null}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Email Log */}
-        <TabsContent value="log">
           <Card>
             <CardHeader className="py-3 px-4">
-              <div className="flex flex-col sm:flex-row gap-2">
-                <div className="relative flex-1">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                  <Input placeholder="Search by email..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="pl-8 h-8 text-xs" />
-                </div>
-                <Select value={statusFilter} onValueChange={setStatusFilter}>
-                  <SelectTrigger className="h-8 w-[120px] text-xs"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Status</SelectItem>
-                    <SelectItem value="sent">Sent</SelectItem>
-                    <SelectItem value="failed">Failed</SelectItem>
-                    <SelectItem value="pending">Scheduled</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              <CardTitle className="text-sm flex items-center gap-2"><BarChart3 className="h-4 w-4" />Campaign Performance</CardTitle>
             </CardHeader>
-            <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="text-xs">Recipient</TableHead>
-                      <TableHead className="text-xs">Status</TableHead>
-                      <TableHead className="text-xs">Sent At</TableHead>
-                      <TableHead className="text-xs">Error</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredSends.length === 0 ? (
-                      <TableRow><TableCell colSpan={4} className="text-center text-sm text-muted-foreground py-8">No emails found</TableCell></TableRow>
-                    ) : filteredSends.map(s => {
-                      const outcome = emailSendOutcome(s);
-                      return (
-                      <TableRow key={s.id}>
-                        <TableCell className="text-sm">{s.recipient_email}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className={
-                            outcome.tone === 'sent' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                            outcome.tone === 'failed' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-amber-50 text-amber-700 border-amber-200'
-                          }>{outcome.label}</Badge>
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{outcome.tone === 'sent' && s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
-                        <TableCell className="text-xs text-red-600 max-w-[360px] whitespace-normal">{outcome.reason || '—'}</TableCell>
-                      </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
+            <CardContent className="pb-4">
+              {campaignChartData.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">No campaigns in this period</p>
+              ) : (
+                <ChartContainer config={chartConfig} className="h-[250px]">
+                  <BarChart data={campaignChartData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="sent" stackId="status" fill="var(--color-sent)" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="failed" stackId="status" fill="var(--color-failed)" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="pending" stackId="status" fill="var(--color-pending)" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ChartContainer>
+              )}
             </CardContent>
           </Card>
-        </TabsContent>
-      </Tabs>
+        </div>
+
+        <Card>
+          <CardHeader className="py-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2"><Activity className="h-4 w-4" />Daily Email Trends</CardTitle>
+          </CardHeader>
+          <CardContent className="pb-4">
+            <ChartContainer config={chartConfig} className="h-[300px]">
+              <LineChart data={dailyData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} />
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Line type="monotone" dataKey="sent" stroke="var(--color-sent)" strokeWidth={2} dot={{ r: 3 }} />
+                <Line type="monotone" dataKey="failed" stroke="var(--color-failed)" strokeWidth={2} dot={{ r: 3 }} />
+                <Line type="monotone" dataKey="pending" stroke="var(--color-pending)" strokeWidth={2} dot={{ r: 3 }} />
+              </LineChart>
+            </ChartContainer>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

@@ -15,7 +15,9 @@ require_once __DIR__ . '/helpers.php';
 syncpediaSecurityHeaders();
 
 $db = (new Database())->getConnection();
-retireGlobalBuiltinLeadForms($db);
+syncpediaRunSchemaCheckOnce('retire_global_builtin_lead_forms_v1', function () use ($db) {
+    retireGlobalBuiltinLeadForms($db);
+});
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     syncpediaRateLimitConsume('public_lead_get', 120, 900);
@@ -79,14 +81,67 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 
 syncpediaRateLimitConsume('public_lead_post', 20, 3600);
 
-ensureLeadsResumeColumn($db);
-ensureLeadsSourceColumnVarchar($db);
+syncpediaRunSchemaCheckOnce('ensure_leads_resume_column_v1', function () use ($db) {
+    ensureLeadsResumeColumn($db);
+});
+syncpediaRunSchemaCheckOnce('ensure_leads_source_varchar_v1', function () use ($db) {
+    ensureLeadsSourceColumnVarchar($db);
+});
 ensureUploadDirectoriesExist();
 
 $isMultipart = stripos((string) ($_SERVER['CONTENT_TYPE'] ?? ''), 'multipart/form-data') !== false;
 $input = $isMultipart ? $_POST : getInput();
 if (!is_array($input)) {
     $input = [];
+}
+
+if (trim((string) ($input['action'] ?? '')) === 'verify_form_payment') {
+    require_once __DIR__ . '/payment_link_store.php';
+    require_once __DIR__ . '/org_razorpay_service.php';
+    require_once __DIR__ . '/razorpay_service.php';
+    $orderId = trim((string) ($input['razorpay_order_id'] ?? ''));
+    $paymentId = trim((string) ($input['razorpay_payment_id'] ?? ''));
+    $signature = trim((string) ($input['razorpay_signature'] ?? ''));
+    if ($orderId === '' || $paymentId === '' || $signature === '') {
+        respond(['error' => 'Missing payment confirmation'], 400);
+    }
+    $row = paymentLinkFindByRazorpayId($orderId);
+    if (!is_array($row)) {
+        respond(['error' => 'Payment order not found'], 404);
+    }
+    $orgId = trim((string) ($row['org_id'] ?? ''));
+    if ($orgId !== '') {
+        razorpayUseOrgOrPlatform($db, $orgId);
+    }
+    if (paymentLinkIsFullyPaid(
+        (string) ($row['status'] ?? ''),
+        (int) ($row['amount'] ?? 0),
+        (int) ($row['amount_paid'] ?? 0),
+    )) {
+        respond(['success' => true, 'already_paid' => true]);
+    }
+    if (!razorpayVerifyPaymentSignature($orderId, $paymentId, $signature)) {
+        respond(['error' => 'Payment signature is invalid'], 400);
+    }
+    try {
+        $payment = razorpayFetchPayment($paymentId);
+    } catch (Throwable $e) {
+        respond(['error' => 'Could not confirm payment'], 502);
+    }
+    if (trim((string) ($payment['order_id'] ?? '')) !== $orderId) {
+        respond(['error' => 'Payment does not match this order'], 400);
+    }
+    $pstat = strtolower(trim((string) ($payment['status'] ?? '')));
+    if (!in_array($pstat, ['captured', 'authorized'], true)) {
+        respond(['error' => 'Payment is not complete'], 400);
+    }
+    try {
+        paymentLinkProcessLeadFormOrderPaid($orderId, is_array($payment) ? $payment : []);
+    } catch (Throwable $e) {
+        error_log('[verify_form_payment] ' . $e->getMessage());
+        respond(['error' => 'Payment received but could not update the lead'], 500);
+    }
+    respond(['success' => true, 'paid' => true]);
 }
 
 $name = trim((string) ($input['name'] ?? ''));
@@ -541,6 +596,19 @@ $publicLeadStartPayment = static function (string $leadId) use (
             ],
         ];
     }
+    if (!empty($pay['checkout']) && is_array($pay['checkout'])) {
+        return [
+            'checkout' => $pay['checkout'],
+            'payment_link_id' => $plinkId,
+            'payment_amount' => $amount,
+            'payment_breakdown' => [
+                'base' => $chargeBase,
+                'gst' => $gst,
+                'handling' => $handling,
+                'total' => $amount,
+            ],
+        ];
+    }
     return ['payment_error' => (string) ($pay['error'] ?? 'Could not start payment')];
 };
 
@@ -578,80 +646,95 @@ if ($routesToHr) {
     if ($dupPhoneDigits === '0000000000') {
         $dupPhoneDigits = '';
     }
-    $dupWhere = [];
-    $dupParams = [];
-    if ($dupEmail !== '') {
-        $dupWhere[] = '(email IS NOT NULL AND LOWER(TRIM(email)) = ?)';
-        $dupParams[] = $dupEmail;
-    }
-    if (strlen($dupPhoneDigits) >= 10) {
-        $dupWhere[] = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,' ',''),'-',''),'+',''),'(',''),')','') LIKE ?";
-        $dupParams[] = '%' . $dupPhoneDigits;
-    }
-    if ($dupWhere !== []) {
-        $dupSql = 'SELECT id FROM hr_leads WHERE deleted_at IS NULL AND (' . implode(' OR ', $dupWhere) . ')';
-        if ($hrLeadOrgId !== null) {
-            $dupSql .= ' AND org_id = ?';
-            $dupParams[] = $hrLeadOrgId;
-        }
-        $dupSql .= ' LIMIT 1';
-        $dupSt = $db->prepare($dupSql);
-        $dupSt->execute($dupParams);
-        $dupRow = $dupSt->fetch(PDO::FETCH_ASSOC);
-        if (is_array($dupRow)) {
-            respond([
-                'success' => true,
-                'hr_lead_id' => (int) $dupRow['id'],
-                'destination' => 'hr_leads',
-                'duplicate' => true,
-            ]);
-        }
+
+    // Serialize the duplicate-check + insert for this exact email/phone so two near-simultaneous
+    // submissions (double-click, or two PHP-FPM workers) cannot both pass the check before
+    // either INSERT commits. Never reconnects the DB connection while holding these locks.
+    $hrDupLocks = leadsAcquireDuplicateLocks($db, $hrLeadOrgId, $dupEmail, (string) $hrPhone);
+    if ($hrDupLocks === null) {
+        respond(['error' => 'Busy processing a similar submission, please retry in a few seconds.'], 503);
     }
     try {
-        $stmt = $db->prepare(
-            'INSERT INTO hr_leads (hr_id, assigned_by, full_name, phone, email, source, status, priority, notes, resume_path, is_assigned, org_id)
-             VALUES (?, ?, ?, ?, ?, ?, \'new\', \'medium\', ?, ?, 0, ?)',
-        );
-        $stmt->execute([
-            $hrUserId,
-            $assignedBy,
-            $name,
-            $hrPhone,
-            $email,
-            $hrSource,
-            $notes,
-            $resumePath,
-            $hrLeadOrgId,
-        ]);
-        $hrLeadId = (int) $db->lastInsertId();
-        if (is_array($formRow)) {
-            require_once __DIR__ . '/form_campaigns.php';
-            try {
-                formCampaignAutoSendForNewLead($db, $formRow, [
-                    'id' => $hrLeadId,
-                    'name' => $name,
-                    'email' => $email,
-                    'phone' => $hrPhone,
+        $dupWhere = [];
+        $dupParams = [];
+        if ($dupEmail !== '') {
+            $dupWhere[] = '(email IS NOT NULL AND LOWER(TRIM(email)) = ?)';
+            $dupParams[] = $dupEmail;
+        }
+        if (strlen($dupPhoneDigits) >= 10) {
+            $dupWhere[] = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone,' ',''),'-',''),'+',''),'(',''),')','') LIKE ?";
+            $dupParams[] = '%' . $dupPhoneDigits;
+        }
+        if ($dupWhere !== []) {
+            $dupSql = 'SELECT id FROM hr_leads WHERE deleted_at IS NULL AND (' . implode(' OR ', $dupWhere) . ')';
+            if ($hrLeadOrgId !== null) {
+                $dupSql .= ' AND org_id = ?';
+                $dupParams[] = $hrLeadOrgId;
+            }
+            $dupSql .= ' LIMIT 1';
+            $dupSt = $db->prepare($dupSql);
+            $dupSt->execute($dupParams);
+            $dupRow = $dupSt->fetch(PDO::FETCH_ASSOC);
+            if (is_array($dupRow)) {
+                respond([
+                    'success' => true,
+                    'hr_lead_id' => (int) $dupRow['id'],
+                    'destination' => 'hr_leads',
+                    'duplicate' => true,
                 ]);
-            } catch (Throwable $e) {
-                error_log('[form campaign auto hr] ' . $e->getMessage());
             }
         }
-        $publicLeadSendReceipt();
-        respond([
-            'success' => true,
-            'hr_lead_id' => $hrLeadId,
-            'destination' => 'hr_leads',
-        ]);
-    } catch (PDOException $e) {
-        respond(['error' => 'Failed to save HR lead'], 500);
+        try {
+            $stmt = $db->prepare(
+                'INSERT INTO hr_leads (hr_id, assigned_by, full_name, phone, email, source, status, priority, notes, resume_path, is_assigned, org_id)
+                 VALUES (?, ?, ?, ?, ?, ?, \'new\', \'medium\', ?, ?, 0, ?)',
+            );
+            $stmt->execute([
+                $hrUserId,
+                $assignedBy,
+                $name,
+                $hrPhone,
+                $email,
+                $hrSource,
+                $notes,
+                $resumePath,
+                $hrLeadOrgId,
+            ]);
+            $hrLeadId = (int) $db->lastInsertId();
+            if (is_array($formRow)) {
+                require_once __DIR__ . '/form_campaigns.php';
+                try {
+                    formCampaignAutoSendForNewLead($db, $formRow, [
+                        'id' => $hrLeadId,
+                        'name' => $name,
+                        'email' => $email,
+                        'phone' => $hrPhone,
+                    ]);
+                } catch (Throwable $e) {
+                    error_log('[form campaign auto hr] ' . $e->getMessage());
+                }
+            }
+            $publicLeadSendReceipt();
+            respond([
+                'success' => true,
+                'hr_lead_id' => $hrLeadId,
+                'destination' => 'hr_leads',
+            ]);
+        } catch (PDOException $e) {
+            if (isMysqlDuplicateKey($e)) {
+                respond(['error' => 'This lead was already submitted.', 'duplicate' => true], 200);
+            }
+            respond(['error' => 'Failed to save HR lead'], 500);
+        }
+    } finally {
+        leadsReleaseDuplicateLocks($db, $hrDupLocks);
     }
 }
 
 $dupOrgId = ($orgId !== null && $orgId !== '') ? $orgId : null;
 $publicLeadAutoDocsPaid = static function (array $payExtra): bool {
     // A still-open checkout (including a partial Razorpay balance) must not issue documents.
-    if (!empty($payExtra['payment_url']) || !empty($payExtra['payment_error']) || !empty($payExtra['payment_partial'])) {
+    if (!empty($payExtra['payment_url']) || !empty($payExtra['checkout']) || !empty($payExtra['payment_error']) || !empty($payExtra['payment_partial'])) {
         return false;
     }
     if (!empty($payExtra['payment_free']) || !empty($payExtra['payment_already_paid'])) {
@@ -663,95 +746,108 @@ $publicLeadAutoDocsPaid = static function (array $payExtra): bool {
         && !array_key_exists('payment_free', $payExtra)
         && !array_key_exists('payment_already_paid', $payExtra);
 };
-$dup = leadsFindDuplicateInOrg($db, $dupOrgId, (string) ($email ?? ''), (string) ($phone ?? ''));
-if (is_array($dup)) {
-    $publicLeadSendReceipt();
-    $payExtra = $publicLeadStartPayment((string) $dup['id']);
-    $isPaid = $publicLeadAutoDocsPaid($payExtra);
-    if (is_array($formRow)) {
-        require_once __DIR__ . '/form_campaigns.php';
-        try {
-            formCampaignAutoSendForNewLead($db, $formRow, [
-                'id' => $dup['id'],
-                'name' => $dup['name'] ?? $name,
-                'email' => $dup['email'] ?? $email,
-                'phone' => $dup['phone'] ?? $phone,
-            ]);
-        } catch (Throwable $e) {
-            error_log('[form campaign auto dup] ' . $e->getMessage());
-        }
-        try {
-            leadFormQueueAutoDocuments($db, $formRow, (string) $dup['id'], $isPaid);
-        } catch (Throwable $e) {
-            error_log('[leadFormQueueAutoDocuments dup] ' . $e->getMessage());
-        }
-    }
-    respond(array_merge([
-        'success' => true,
-        'lead_id' => $dup['id'],
-        'destination' => 'leads',
-        'duplicate' => true,
-    ], $payExtra));
+// Serialize the duplicate-check + insert for this exact email/phone so two near-simultaneous
+// submissions (double-click, or two PHP-FPM workers) cannot both pass the check before either
+// INSERT commits. Never reconnects the DB connection while holding these locks.
+$leadDupLocks = leadsAcquireDuplicateLocks($db, $dupOrgId, (string) ($email ?? ''), (string) ($phone ?? ''));
+if ($leadDupLocks === null) {
+    respond(['error' => 'Busy processing a similar submission, please retry in a few seconds.'], 503);
 }
-
-$id = generateUUID();
-
 try {
-    $stmt = $db->prepare(
-        'INSERT INTO leads (id, name, email, phone, college, year_of_study, course_interest, source, assigned_to, referred_by, status, notes, resume_path, tags, org_id, created_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'new\', ?, ?, ?, ?, ?, NOW(), NOW())',
-    );
-    $stmt->execute([
-        $id,
-        $name,
-        $email,
-        $phone,
-        $college,
-        $yearOfStudy,
-        $courseInterest,
-        $source,
-        $assignedTo,
-        $referredBy,
-        $notes,
-        $resumePath,
-        $tags,
-        $orgId !== '' ? $orgId : null,
-        $createdBy !== '' ? $createdBy : null,
-    ]);
-
-    if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
-        try {
-            leadsSetAssignee($db, $id, (string) $assignedTo);
-        } catch (Throwable $e) {
-            error_log('[public-lead] assignment sync: ' . $e->getMessage());
+    $dup = leadsFindDuplicateInOrg($db, $dupOrgId, (string) ($email ?? ''), (string) ($phone ?? ''));
+    if (is_array($dup)) {
+        $publicLeadSendReceipt();
+        $payExtra = $publicLeadStartPayment((string) $dup['id']);
+        $isPaid = $publicLeadAutoDocsPaid($payExtra);
+        if (is_array($formRow)) {
+            require_once __DIR__ . '/form_campaigns.php';
+            try {
+                formCampaignAutoSendForNewLead($db, $formRow, [
+                    'id' => $dup['id'],
+                    'name' => $dup['name'] ?? $name,
+                    'email' => $dup['email'] ?? $email,
+                    'phone' => $dup['phone'] ?? $phone,
+                ], $isPaid);
+            } catch (Throwable $e) {
+                error_log('[form campaign auto dup] ' . $e->getMessage());
+            }
+            try {
+                leadFormQueueAutoDocuments($db, $formRow, (string) $dup['id'], $isPaid);
+            } catch (Throwable $e) {
+                error_log('[leadFormQueueAutoDocuments dup] ' . $e->getMessage());
+            }
         }
+        respond(array_merge([
+            'success' => true,
+            'lead_id' => $dup['id'],
+            'destination' => 'leads',
+            'duplicate' => true,
+        ], $payExtra));
     }
 
-    if (is_array($formRow)) {
-        require_once __DIR__ . '/form_campaigns.php';
-        try {
-            formCampaignAutoSendForNewLead($db, $formRow, [
-                'id' => $id,
-                'name' => $name,
-                'email' => $email,
-                'phone' => $phone,
-            ]);
-        } catch (Throwable $e) {
-            error_log('[form campaign auto] ' . $e->getMessage());
-        }
-    }
+    $id = generateUUID();
 
-    $publicLeadSendReceipt();
-    $payExtra = $publicLeadStartPayment($id);
-    $isPaid = $publicLeadAutoDocsPaid($payExtra);
-    if (is_array($formRow)) {
-        try {
-            leadFormQueueAutoDocuments($db, $formRow, $id, $isPaid);
-        } catch (Throwable $e) {
-            error_log('[leadFormQueueAutoDocuments] ' . $e->getMessage());
+    try {
+        $stmt = $db->prepare(
+            'INSERT INTO leads (id, name, email, phone, college, year_of_study, course_interest, source, assigned_to, referred_by, status, notes, resume_path, tags, org_id, created_by, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \'new\', ?, ?, ?, ?, ?, NOW(), NOW())',
+        );
+        $stmt->execute([
+            $id,
+            $name,
+            $email,
+            $phone,
+            $college,
+            $yearOfStudy,
+            $courseInterest,
+            $source,
+            $assignedTo,
+            $referredBy,
+            $notes,
+            $resumePath,
+            $tags,
+            $orgId !== '' ? $orgId : null,
+            $createdBy !== '' ? $createdBy : null,
+        ]);
+
+        if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
+            try {
+                leadsSetAssignee($db, $id, (string) $assignedTo);
+            } catch (Throwable $e) {
+                error_log('[public-lead] assignment sync: ' . $e->getMessage());
+            }
         }
+
+        $publicLeadSendReceipt();
+        $payExtra = $publicLeadStartPayment($id);
+        $isPaid = $publicLeadAutoDocsPaid($payExtra);
+        if (is_array($formRow)) {
+            require_once __DIR__ . '/form_campaigns.php';
+            try {
+                formCampaignAutoSendForNewLead($db, $formRow, [
+                    'id' => $id,
+                    'name' => $name,
+                    'email' => $email,
+                    'phone' => $phone,
+                ], $isPaid);
+            } catch (Throwable $e) {
+                error_log('[form campaign auto] ' . $e->getMessage());
+            }
+        }
+        if (is_array($formRow)) {
+            try {
+                leadFormQueueAutoDocuments($db, $formRow, $id, $isPaid);
+            } catch (Throwable $e) {
+                error_log('[leadFormQueueAutoDocuments] ' . $e->getMessage());
+            }
+        }
+        respond(array_merge(['success' => true, 'lead_id' => $id, 'destination' => 'leads'], $payExtra));
+    } catch (PDOException $e) {
+        if (isMysqlDuplicateKey($e)) {
+            respond(['success' => true, 'destination' => 'leads', 'duplicate' => true], 200);
+        }
+        respond(['error' => 'Failed to save lead'], 500);
     }
-    respond(array_merge(['success' => true, 'lead_id' => $id, 'destination' => 'leads'], $payExtra));
-} catch (PDOException $e) {
-    respond(['error' => 'Failed to save lead'], 500);
+} finally {
+    leadsReleaseDuplicateLocks($db, $leadDupLocks);
 }

@@ -45,6 +45,92 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
+type LeadFormCheckout = {
+  key: string;
+  order_id: string;
+  amount: number;
+  currency: string;
+  name: string;
+  description?: string;
+  prefill?: { name?: string; email?: string; contact?: string };
+  theme?: { color?: string };
+};
+
+function loadRazorpayScript(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.reject(new Error('Razorpay unavailable'));
+  const w = window as Window & { Razorpay?: new (opts: Record<string, unknown>) => { open: () => void } };
+  if (w.Razorpay) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[src="https://checkout.razorpay.com/v1/checkout.js"]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('Could not load Razorpay')));
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Could not load Razorpay'));
+    document.body.appendChild(s);
+  });
+}
+
+async function openLeadFormCheckout(opts: {
+  checkout: LeadFormCheckout;
+  apiBase: string;
+  apiKey: string;
+  onPaid: () => void;
+}): Promise<'paid' | 'dismissed'> {
+  await loadRazorpayScript();
+  const Rz = (window as Window & { Razorpay?: new (o: Record<string, unknown>) => { open: () => void } }).Razorpay;
+  if (!Rz) throw new Error('Could not load Razorpay');
+  return new Promise((resolve, reject) => {
+    const rzp = new Rz({
+      key: opts.checkout.key,
+      amount: opts.checkout.amount,
+      currency: opts.checkout.currency || 'INR',
+      name: opts.checkout.name,
+      description: opts.checkout.description || '',
+      order_id: opts.checkout.order_id,
+      prefill: opts.checkout.prefill || {},
+      theme: opts.checkout.theme || { color: '#1D9E75' },
+      handler: (response: {
+        razorpay_order_id?: string;
+        razorpay_payment_id?: string;
+        razorpay_signature?: string;
+      }) => {
+        void (async () => {
+          try {
+            const headers: HeadersInit = { 'Content-Type': 'application/json' };
+            if (opts.apiKey) headers['X-Form-Api-Key'] = opts.apiKey;
+            const res = await fetch(`${opts.apiBase}/public-lead.php`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                action: 'verify_form_payment',
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(String(data?.error || 'Could not confirm payment'));
+            opts.onPaid();
+            resolve('paid');
+          } catch (err) {
+            reject(err);
+          }
+        })();
+      },
+      modal: {
+        ondismiss: () => resolve('dismissed'),
+      },
+    });
+    rzp.open();
+  });
+}
+
 const SPECIALIZATIONS = [
   { group: 'AI & Data', options: ['Artificial Intelligence', 'Machine Learning', 'Data Science & Analytics', 'n8n Workflow Automation'] },
   { group: 'Development', options: ['Full Stack Web Development', 'Web Development Fundamentals (JavaScript)', 'Cyber Security', 'Software Testing', 'Salesforce'] },
@@ -431,9 +517,23 @@ export default function Apply() {
           finishSubmit();
           return;
         }
+        if (data?.checkout && typeof data.checkout === 'object') {
+          const outcome = await openLeadFormCheckout({
+            checkout: data.checkout as LeadFormCheckout,
+            apiBase,
+            apiKey,
+            onPaid: finishSubmit,
+          });
+          if (outcome === 'dismissed') {
+            toast({
+              title: 'Application saved',
+              description: 'Payment shows as Not paid until you complete Razorpay checkout.',
+            });
+          }
+          return;
+        }
         const payUrl = String(data?.payment_url || '').trim();
         if (payUrl) {
-          // Lead is already created — send applicant to Razorpay for this submission.
           window.location.assign(payUrl);
           return;
         }
@@ -466,6 +566,21 @@ export default function Apply() {
       reportLeadFormConversion();
       if (data?.payment_already_paid || data?.payment_free) {
         finishSubmit();
+        return;
+      }
+      if (data?.checkout && typeof data.checkout === 'object') {
+        const outcome = await openLeadFormCheckout({
+          checkout: data.checkout as LeadFormCheckout,
+          apiBase,
+          apiKey,
+          onPaid: finishSubmit,
+        });
+        if (outcome === 'dismissed') {
+          toast({
+            title: 'Application saved',
+            description: 'Payment shows as Not paid until you complete Razorpay checkout.',
+          });
+        }
         return;
       }
       const payUrl = String(data?.payment_url || '').trim();

@@ -254,9 +254,24 @@ function syncpediaSmtpSendOnce(
     try {
         $mail->isSMTP();
         $mail->Host = $host;
-        // PHPMailer's default is 300s; a slow SMTP handshake would hold the PHP
-        // worker (and the user's request) for minutes. Fail fast and surface it.
-        $mail->Timeout = 20;
+        // Connect budget is short so a black-holed route returns JSON before the
+        // reverse proxy turns the request into an HTML 504. The SMTP conversation
+        // budget stays long enough to upload a certificate PDF.
+        $mail->Timeout = 10;
+        $smtp = $mail->getSMTPInstance();
+        $smtp->Timelimit = 35;
+        // Force IPv4. smtp.gmail.com publishes AAAA records; a VPS with broken
+        // IPv6 tries each of them for the full connect timeout and the gateway
+        // gives up (HTTP 504) before IPv4 is reached. TLS still checks the name.
+        $mail->SMTPOptions = [
+            'socket' => ['bindto' => '0.0.0.0:0'],
+            'ssl' => [
+                'peer_name' => $host,
+                'verify_peer' => true,
+                'verify_peer_name' => true,
+                'allow_self_signed' => false,
+            ],
+        ];
         $mail->SMTPAuth = true;
         $mail->AuthType = 'LOGIN';
         $mail->Username = $creds['user'];
@@ -353,8 +368,11 @@ function syncpediaSmtpTryResolvedAccount(
             return $res;
         }
         $lastError = (string) ($res['error'] ?? 'SMTP send failed');
-        // Only rotate host/port for auth-style failures; otherwise move to next account.
-        if (!preg_match('/authenticat|login|credentials|password|535|534|530/i', $lastError)) {
+        $authFailed = (bool) preg_match('/authenticat|login|credentials|password|535|534|530/i', $lastError);
+        $connectFailed = (bool) preg_match('/timed out|failed to connect|unable to connect|connection refused|network is unreachable|could not connect|connect\\(\\)/i', $lastError);
+        // A bad password will fail on every port. A blocked port should try the
+        // other profile (587 vs 465) before giving up.
+        if ($authFailed || !$connectFailed) {
             break;
         }
     }
@@ -430,6 +448,11 @@ function syncpediaSmtpSendWithOrgFailover(
         }
         $lastError = (string) ($res['error'] ?? 'SMTP send failed');
         error_log('[smtp] account failed (' . $user . '), trying next if available: ' . $lastError);
+        // Every mailbox uses the same Gmail host. If the network cannot reach it,
+        // walking the rest of the accounts only burns the gateway timeout.
+        if (preg_match('/timed out|failed to connect|unable to connect|connection refused|network is unreachable|could not connect|connect\\(\\)/i', $lastError)) {
+            break;
+        }
     }
 
     return [

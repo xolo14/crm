@@ -149,7 +149,7 @@ export default function FormLeads() {
   const [importingLeads, setImportingLeads] = useState(false);
 
   const isManager =
-    role === 'org' || role === 'super_admin' || role === 'manager';
+    role === 'org' || role === 'super_admin' || role === 'manager' || role === 'operational_manager';
   const hasEditAll = perms.canEditAll(role);
   const hasDelete = perms.canDelete(role);
   const hasBulkDelete = perms.canBulkDelete(role);
@@ -173,15 +173,8 @@ export default function FormLeads() {
     const gen = ++fetchDataGen.current;
     setLoading(true);
     try {
-      const [leadsData, profilesData, assignRes] = await Promise.all([
-        api.leads.list({ form_leads: true }),
-        api.profiles.list(),
-        api.leadAssignments.list().catch(() => ({ data: [] })),
-      ]);
-      if (gen !== fetchDataGen.current) return;
-      const allLeads = Array.isArray(leadsData) ? leadsData : leadsData.data || leadsData.leads || [];
       const myRef = profile?.referral_code || user?.referral_code || '';
-      setLeads(allLeads.filter((l: any) => {
+      const keepLead = (l: any) => {
         const src = String(l.source || '');
         const isFormLead =
           !!l.referred_by ||
@@ -193,7 +186,24 @@ export default function FormLeads() {
         if (l.assigned_to === user?.id || l.created_by === user?.id) return true;
         if (myRef && l.referred_by === myRef) return true;
         return false;
-      }));
+      };
+      const [leadsData, profilesData, assignRes] = await Promise.all([
+        api.leads.list({
+          form_leads: true,
+          lite: true,
+          limit: 2000,
+          onPage: (page) => {
+            if (gen !== fetchDataGen.current) return;
+            setLeads((page.data || []).filter(keepLead));
+            setLoading(false);
+          },
+        }),
+        api.profiles.list(),
+        api.leadAssignments.list().catch(() => ({ data: [] })),
+      ]);
+      if (gen !== fetchDataGen.current) return;
+      const allLeads = Array.isArray(leadsData) ? leadsData : leadsData.data || leadsData.leads || [];
+      setLeads(allLeads.filter(keepLead));
       setProfiles((Array.isArray(profilesData) ? profilesData : profilesData.profiles || profilesData.data || []).filter((p: any) => p.referral_code));
       const assignRows = Array.isArray(assignRes) ? assignRes : (assignRes as { data?: any[] })?.data || [];
       const map: Record<string, string[]> = {};
@@ -213,7 +223,9 @@ export default function FormLeads() {
     try {
       const [teamRes, marketingRes] = await Promise.allSettled([
         api.team.list(),
-        role === 'manager' ? Promise.resolve({ data: [] }) : api.marketing.members(),
+        role === 'manager' || role === 'operational_manager'
+          ? Promise.resolve({ data: [] })
+          : api.marketing.members(),
       ]);
 
       const teamRows =
@@ -329,12 +341,26 @@ export default function FormLeads() {
   };
   const canDeleteLead = () => hasDelete;
 
+  const recordLabelByUserId = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const lead of leads) {
+      const assignedId = String(lead?.assigned_to || '').trim();
+      const assignedLabel = String(lead?.assigned_to_name || '').trim();
+      if (assignedId && assignedLabel) map[assignedId] = assignedLabel;
+      const createdId = String(lead?.created_by || '').trim();
+      const createdLabel = String(lead?.created_by_name || '').trim();
+      if (createdId && createdLabel) map[createdId] = createdLabel;
+    }
+    return map;
+  }, [leads]);
+
   const getAssignedName = (id: string) => {
     if (user?.id && String(id) === String(user.id)) return 'Assigned to self';
     const member = teamMembers.find(m => m.id === id);
     if (member) return member.full_name;
     if (formAssigneeNameById[id]) return formAssigneeNameById[id];
-    return userIdToName[id] || '';
+    if (userIdToName[id]) return userIdToName[id];
+    return recordLabelByUserId[id] || '';
   };
 
   const filtered = useMemo(() => {
@@ -396,12 +422,18 @@ export default function FormLeads() {
 
   const getLeadAssignedNames = (lead: any) => {
     const name = getAssignedName(lead?.assigned_to);
-    return name ? [name] : [];
+    const fromApi = String(lead?.assigned_to_name || '').trim();
+    const fromId = String(lead?.assigned_to || '').trim();
+    const label = name || fromApi || (fromId ? recordLabelByUserId[fromId] : '') || '';
+    return label ? [label] : [];
   };
   const formatAssignedLabel = (lead: any) => {
     const names = getLeadAssignedNames(lead);
     if (names.length > 0) return names.join(', ');
-    if (lead?.assigned_to) return 'Assigned';
+    if (lead?.assigned_to) {
+      const id = String(lead.assigned_to);
+      return recordLabelByUserId[id] || String(lead.assigned_to_name || '').trim() || 'Assigned';
+    }
     return 'Unassigned';
   };
   const formAssigneeNameById = useMemo(() => {
@@ -661,7 +693,7 @@ export default function FormLeads() {
         if (fromApi) return fromApi;
         const id = String(lead?.created_by || '').trim();
         if (!id) return '';
-        return getAssignedName(id) || userIdToName[id] || '';
+        return getAssignedName(id) || userIdToName[id] || recordLabelByUserId[id] || '';
       },
     });
     if (result.ok) {
@@ -684,11 +716,36 @@ export default function FormLeads() {
     setExportCardsOpen(false);
   };
 
-  const openDetail = (lead: any) => { setDetailLead(lead); setDetailOpen(true); };
+  const hydrateFormLead = useCallback(async (lead: any) => {
+    if (!lead?.id) return lead;
+    try {
+      const res = await api.leads.list({
+        id: String(lead.id),
+        form_leads: true,
+        all: false,
+        limit: 1,
+      });
+      const full = Array.isArray(res?.data) ? res.data[0] : null;
+      return full ? { ...lead, ...full } : lead;
+    } catch {
+      return lead;
+    }
+  }, []);
+
+  const openDetail = (lead: any) => {
+    setDetailLead(lead);
+    setDetailOpen(true);
+    void hydrateFormLead(lead).then((full) => {
+      setDetailLead((prev: any) => (prev?.id === full.id ? { ...prev, ...full } : prev));
+    });
+  };
   // When viewing a source/form card full page, keep detail inline (no sheet).
   const openDetailFromCard = (lead: any) => {
     setDetailLead(lead);
     setDetailOpen(false);
+    void hydrateFormLead(lead).then((full) => {
+      setDetailLead((prev: any) => (prev?.id === full.id ? { ...prev, ...full } : prev));
+    });
   };
   const closeSourceCard = () => {
     setSourceDialogKey(null);
@@ -872,7 +929,7 @@ export default function FormLeads() {
         <FormSubmissionDetails notes={detailLead.notes} resumePath={detailLead.resume_path} />
         <LeadActivityTimeline
           leadId={detailLead.id}
-          getProfileName={(uid) => getAssignedName(uid) || userIdToName[uid] || 'Unknown'}
+          getProfileName={(uid) => getAssignedName(uid) || userIdToName[uid] || recordLabelByUserId[uid] || 'Unknown'}
         />
       </div>
     ) : null;
@@ -948,6 +1005,13 @@ export default function FormLeads() {
           onCloseDetail={closeInlineDetail}
           backLabel="Back to Form Leads"
           showPaymentColumn
+          getCreatedByName={(lead) => {
+            const fromApi = String(lead?.created_by_name || '').trim();
+            if (fromApi) return fromApi;
+            const id = String(lead?.created_by || '').trim();
+            if (!id) return '';
+            return getAssignedName(id) || userIdToName[id] || recordLabelByUserId[id] || '';
+          }}
           canExport={canExportLeads}
           onExport={(rows) => downloadLeadsCsv(rows, sourceDialogLabel || String(sourceDialogKey || 'form-leads'))}
         />
@@ -1264,7 +1328,7 @@ export default function FormLeads() {
                 {/* Activity History */}
                 <LeadActivityTimeline
                   leadId={detailLead.id}
-                  getProfileName={(uid) => getAssignedName(uid) || userIdToName[uid] || 'Unknown'}
+                  getProfileName={(uid) => getAssignedName(uid) || userIdToName[uid] || recordLabelByUserId[uid] || 'Unknown'}
                 />
 
                 {/* Actions */}

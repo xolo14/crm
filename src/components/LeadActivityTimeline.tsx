@@ -155,8 +155,8 @@ export function LeadActivityTimeline({ leadId, getProfileName }: Props) {
                 <div className={`pb-4 flex-1 min-w-0 ${isLast ? '' : ''}`}>
                   <div className="flex items-center gap-2 flex-wrap">
                     <Badge variant="secondary" className="text-[10px] capitalize">{act.type?.replace(/_/g, ' ')}</Badge>
-                    {getProfileName && act.user_id && (
-                      <span className="text-[10px] text-primary font-medium">{getProfileName(act.user_id)}</span>
+                    {(act.user_name || (getProfileName && act.user_id)) && (
+                      <span className="text-[10px] text-primary font-medium">{act.user_name || getProfileName?.(act.user_id)}</span>
                     )}
                   </div>
                   <p className="text-sm mt-1 leading-relaxed">{act.description}</p>

@@ -76,8 +76,8 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
     role === 'manager' ||
     role === 'operational_manager';
   const isSalesRep = role === 'sales_representative';
-  /** Sales reps and managers can submit their own daily update. */
-  const canSubmit = isSalesRep || role === 'manager';
+  /** Sales reps, managers, and OMs can submit their own daily update. */
+  const canSubmit = isSalesRep || role === 'manager' || role === 'operational_manager';
 
   const fetchReports = useCallback(async () => {
     setLoading(true);

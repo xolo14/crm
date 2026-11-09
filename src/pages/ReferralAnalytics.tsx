@@ -50,13 +50,17 @@ export default function ReferralAnalytics() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      try {
-        await callLogsApi.syncDailyReportsFromCallLogs(730);
-      } catch {
-        /* non-blocking */
-      }
       const [profilesData, leadsData, reportsData] = await Promise.all([
-        api.profiles.list(), api.leads.list({ lite: true }), api.dailyReports.list()
+        api.profiles.list(),
+        api.leads.list({
+          lite: true,
+          limit: 2000,
+          onPage: (page) => {
+            setAllLeads(page.data || []);
+            setLoading(false);
+          },
+        }),
+        api.dailyReports.list(),
       ]);
       const parsedProfiles = Array.isArray(profilesData)
         ? profilesData
@@ -72,6 +76,20 @@ export default function ReferralAnalytics() {
       );
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
+    void callLogsApi.syncDailyReportsFromCallLogs(90).then(async () => {
+      try {
+        const refreshed = await api.dailyReports.list();
+        setDailyReports(
+          Array.isArray(refreshed)
+            ? refreshed
+            : Array.isArray(refreshed?.data)
+              ? refreshed.data
+              : refreshed?.reports || [],
+        );
+      } catch {
+        /* keep the reports already shown */
+      }
+    });
   };
 
   const userIdToName = useMemo(() => {

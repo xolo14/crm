@@ -53,6 +53,8 @@ function certEnsureTables(PDO $db): void {
               attachment_url TEXT DEFAULT NULL,
               message_id VARCHAR(120) DEFAULT NULL,
               sent_at TIMESTAMP DEFAULT NULL,
+              status VARCHAR(20) NOT NULL DEFAULT 'sent',
+              error_message TEXT DEFAULT NULL,
               org_id CHAR(36) DEFAULT NULL,
               sent_by CHAR(36) DEFAULT NULL,
               created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -62,6 +64,10 @@ function certEnsureTables(PDO $db): void {
     } catch (Throwable $e) {
         error_log('[certificates] email_logs table: ' . $e->getMessage());
     }
+    if (function_exists('syncpediaDocumentEnsureColumn')) {
+        syncpediaDocumentEnsureColumn($db, 'certificate_email_logs', 'status', "VARCHAR(20) NOT NULL DEFAULT 'sent'");
+        syncpediaDocumentEnsureColumn($db, 'certificate_email_logs', 'error_message', 'TEXT DEFAULT NULL');
+    }
     if (function_exists('syncpediaEnsureIndex')) {
         syncpediaEnsureIndex($db, 'idx_cert_email_logs_certificate', 'certificate_email_logs', 'certificate_id');
         syncpediaEnsureIndex($db, 'idx_cert_email_logs_org', 'certificate_email_logs', 'org_id');
@@ -70,6 +76,12 @@ function certEnsureTables(PDO $db): void {
         syncpediaDocumentEnsureColumn($db, 'certificate_issue_artifacts', 'gcs_object', 'TEXT DEFAULT NULL');
     } catch (Throwable $e) {
         error_log('[certificates] gcs_object column: ' . $e->getMessage());
+    }
+    try {
+        // Single issue used to send "single-<uuid>" (43 chars) into CHAR(36).
+        $db->exec('ALTER TABLE certificate_issue_artifacts MODIFY recipient_id VARCHAR(80) DEFAULT NULL');
+    } catch (Throwable $e) {
+        error_log('[certificates] recipient_id width: ' . $e->getMessage());
     }
 
     $done = true;
@@ -82,6 +94,73 @@ function certStorageDir(): string {
 function certDecodePdfBase64(string $raw): ?string {
     $decoded = syncpediaDecodePdfBase64($raw);
     return (!empty($decoded['ok']) && isset($decoded['bytes'])) ? (string) $decoded['bytes'] : null;
+}
+
+/**
+ * Persist a certificate email attempt (sent or failed) for the Issued tab.
+ *
+ * @param array{certificate_id:string,to:string,cc?:string,bcc?:string,subject?:string,body?:string,attachment_url?:string,message_id?:string|null,sent_at?:string|null,status:string,error_message?:string|null,org_id?:string|null,sent_by?:string|null} $row
+ */
+function certLogEmailAttempt(PDO $db, array $row): void
+{
+    $status = strtolower(trim((string) ($row['status'] ?? 'sent')));
+    if ($status !== 'failed') {
+        $status = 'sent';
+    }
+    $error = trim((string) ($row['error_message'] ?? ''));
+    if ($error !== '') {
+        $error = substr($error, 0, 500);
+    } else {
+        $error = null;
+    }
+    try {
+        $hasStatus = function_exists('syncpediaColumnExists') && syncpediaColumnExists($db, 'certificate_email_logs', 'status');
+        if ($hasStatus) {
+            $stmt = $db->prepare("
+                INSERT INTO certificate_email_logs
+                (id, certificate_id, to_email, cc_email, bcc_email, subject, body, attachment_url, message_id, sent_at, status, error_message, org_id, sent_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ");
+            $stmt->execute([
+                generateUUID(),
+                (string) ($row['certificate_id'] ?? ''),
+                (string) ($row['to'] ?? ''),
+                (string) ($row['cc'] ?? ''),
+                (string) ($row['bcc'] ?? ''),
+                (string) ($row['subject'] ?? ''),
+                (string) ($row['body'] ?? ''),
+                (string) ($row['attachment_url'] ?? ''),
+                $row['message_id'] ?? null,
+                $row['sent_at'] ?? null,
+                $status,
+                $error,
+                $row['org_id'] ?? null,
+                $row['sent_by'] ?? null,
+            ]);
+            return;
+        }
+        $stmt = $db->prepare("
+            INSERT INTO certificate_email_logs
+            (id, certificate_id, to_email, cc_email, bcc_email, subject, body, attachment_url, message_id, sent_at, org_id, sent_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([
+            generateUUID(),
+            (string) ($row['certificate_id'] ?? ''),
+            (string) ($row['to'] ?? ''),
+            (string) ($row['cc'] ?? ''),
+            (string) ($row['bcc'] ?? ''),
+            (string) ($row['subject'] ?? ''),
+            (string) ($row['body'] ?? ''),
+            (string) ($row['attachment_url'] ?? ''),
+            $row['message_id'] ?? null,
+            $row['sent_at'] ?? null,
+            $row['org_id'] ?? null,
+            $row['sent_by'] ?? null,
+        ]);
+    } catch (Throwable $e) {
+        error_log('[certificates] email log: ' . $e->getMessage());
+    }
 }
 
 try {
@@ -164,8 +243,11 @@ if ($method === 'POST' && $action === 'issue') {
             if ($studentEmail === '') $studentEmail = trim((string) ($row['email'] ?? ''));
         }
     }
-    if ($studentName === '' || $studentEmail === '') {
-        respond(['error' => 'Student details not found'], 404);
+    if ($studentName === '') {
+        respond(['error' => 'Recipient name is required before composing the email'], 400);
+    }
+    if ($studentEmail === '' || !filter_var($studentEmail, FILTER_VALIDATE_EMAIL)) {
+        respond(['error' => 'Recipient email is required. Pick a lead with an email, or enter the email before issuing.'], 400);
     }
 
     $tplOrg = orgFilter($tokenData, 'ct', $db);
@@ -189,8 +271,15 @@ if ($method === 'POST' && $action === 'issue') {
         }
         $prefix = $claimed['prefix'];
     }
-    if ($prefix === null || !certIsValidIssuedId($syncId, $prefix, $certType)) {
-        respond(['error' => 'Certificate number must be PREFIX-TYPE-XXXXXX for this organization (e.g. SP-CS-482193)'], 400);
+    if ($prefix === null) {
+        respond(['error' => 'Organization prefix is required before issuing certificates.'], 400);
+    }
+    if (!certIsValidIssuedId($syncId, $prefix, $certType)) {
+        try {
+            $syncId = certResolveIssuedId($db, $syncId, $prefix, $certType);
+        } catch (Throwable $e) {
+            respond(['error' => 'Could not allocate a unique certificate number'], 500);
+        }
     }
 
     $courseName = trim((string) ($input['courseName'] ?? ''));
@@ -224,6 +313,16 @@ if ($method === 'POST' && $action === 'issue') {
         ? $saved['local_abs']
         : (syncpediaDocumentStorageResolvePath($pdfPathRel) ?: (certStorageDir() . DIRECTORY_SEPARATOR . syncpediaDocumentSafeFilename($pdfName)));
     $gcsObject = isset($saved['gcs_object']) && is_string($saved['gcs_object']) ? $saved['gcs_object'] : null;
+
+    $recipientStored = $recipientId;
+    if ($recipientStored === '' || strncmp($recipientStored, 'single-', 7) === 0 || strlen($recipientStored) > 36) {
+        $recipientStored = null;
+    }
+    $orgStored = $writeOrgId !== '' ? $writeOrgId : null;
+    $issuedByStored = trim((string) $userId) !== '' ? $userId : null;
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $issueDate)) {
+        $issueDate = date('Y-m-d');
+    }
 
     $artifactId = generateUUID();
     $upsert = syncpediaUpsertClause(
@@ -259,7 +358,7 @@ if ($method === 'POST' && $action === 'issue') {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             {$upsert}
         ");
-        $ins->execute([$artifactId, $recipientId, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPathRel, $gcsObject, $writeOrgId, $userId]);
+        $ins->execute([$artifactId, $recipientStored, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPathRel, $gcsObject, $orgStored, $issuedByStored]);
     } catch (Throwable $e) {
         // Older DBs without gcs_object column
         $upsertLegacy = syncpediaUpsertClause(
@@ -286,13 +385,18 @@ if ($method === 'POST' && $action === 'issue') {
                 '`issued_by` = VALUES(`issued_by`)',
             ],
         );
-        $ins = $db->prepare("
-            INSERT INTO certificate_issue_artifacts
-            (id, recipient_id, template_id, sync_id, student_name, student_email, course_name, issue_date, verify_token, pdf_path, org_id, issued_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            {$upsertLegacy}
-        ");
-        $ins->execute([$artifactId, $recipientId, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPathRel, $writeOrgId, $userId]);
+        try {
+            $ins = $db->prepare("
+                INSERT INTO certificate_issue_artifacts
+                (id, recipient_id, template_id, sync_id, student_name, student_email, course_name, issue_date, verify_token, pdf_path, org_id, issued_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                {$upsertLegacy}
+            ");
+            $ins->execute([$artifactId, $recipientStored, $templateId, $syncId, $studentName, $studentEmail, $courseName, $issueDate, $verifyToken, $pdfPathRel, $orgStored, $issuedByStored]);
+        } catch (Throwable $e2) {
+            error_log('[certificates] issue insert: ' . $e2->getMessage());
+            respond(['error' => 'Could not save the certificate. Refresh and try Issue & Compose Email again.'], 500);
+        }
     }
 
     $pdfUrl = '/api/certificates.php?action=pdf&certificate_id=' . rawurlencode($syncId);
@@ -347,7 +451,7 @@ if ($method === 'POST' && $action === 'send_email') {
     } elseif ($pdfPath !== '' && is_file($pdfPath)) {
         $attachPath = $pdfPath;
     } elseif ($gcsObject !== '' && function_exists('syncpediaGcsDownloadObject')) {
-        $dl = syncpediaGcsDownloadObject($gcsObject);
+        $dl = syncpediaGcsDownloadObject($gcsObject, 12);
         if (!empty($dl['ok']) && isset($dl['bytes']) && is_string($dl['bytes'])) {
             $tmp = certStorageDir() . DIRECTORY_SEPARATOR . 'mail_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $certificateId) . '.pdf';
             if (@file_put_contents($tmp, $dl['bytes']) !== false) {
@@ -356,7 +460,33 @@ if ($method === 'POST' && $action === 'send_email') {
             }
         }
     }
+    $cc = trim((string) ($input['cc'] ?? ''));
+    $bcc = trim((string) ($input['bcc'] ?? ''));
+    $artifactOrgId = trim((string) ($artifact['org_id'] ?? ''));
+    $logOrgId = $artifactOrgId !== '' ? $artifactOrgId : resolveWriteOrgId($db, $tokenData);
+    $pdfUrlForLog = $attachmentUrl !== ''
+        ? $attachmentUrl
+        : '/api/certificates.php?action=pdf&certificate_id=' . rawurlencode($certificateId);
+
     if ($attachPath === null || !is_file($attachPath)) {
+        try {
+            $db = syncpediaCreatePdo();
+            certLogEmailAttempt($db, [
+                'certificate_id' => $certificateId,
+                'to' => $to,
+                'cc' => $cc,
+                'bcc' => $bcc,
+                'subject' => $subject,
+                'body' => $body,
+                'attachment_url' => $pdfUrlForLog,
+                'status' => 'failed',
+                'error_message' => 'Certificate PDF not found on server',
+                'org_id' => $logOrgId,
+                'sent_by' => $userId,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[certificates] email fail log: ' . $e->getMessage());
+        }
         respond(['error' => 'Certificate PDF not found on server'], 404);
     }
 
@@ -365,10 +495,10 @@ if ($method === 'POST' && $action === 'send_email') {
     if ($attachmentName === '') {
         $attachmentName = 'Certificate_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $studentName) . '_' . preg_replace('/[^A-Za-z0-9_-]/', '_', $syncId) . '.pdf';
     }
+    $pdfUrlForLog = $attachmentUrl !== ''
+        ? $attachmentUrl
+        : '/api/certificates.php?action=pdf&certificate_id=' . rawurlencode($syncId);
 
-    $cc = trim((string) ($input['cc'] ?? ''));
-    $bcc = trim((string) ($input['bcc'] ?? ''));
-    $artifactOrgId = trim((string) ($artifact['org_id'] ?? ''));
     syncpediaSetMailContext($artifactOrgId !== '' ? $artifactOrgId : null, 'certificates');
     $send = syncpediaSendCertificateEmail(
         $to,
@@ -382,7 +512,26 @@ if ($method === 'POST' && $action === 'send_email') {
         if ($tempDownloaded && is_file($attachPath)) {
             @unlink($attachPath);
         }
-        respond(['error' => $send['error'] ?? 'Unable to send certificate email'], 500);
+        $failMsg = trim((string) ($send['error'] ?? 'Unable to send certificate email'));
+        try {
+            $db = syncpediaCreatePdo();
+            certLogEmailAttempt($db, [
+                'certificate_id' => $certificateId,
+                'to' => $to,
+                'cc' => $cc,
+                'bcc' => $bcc,
+                'subject' => $subject,
+                'body' => $body,
+                'attachment_url' => $pdfUrlForLog,
+                'status' => 'failed',
+                'error_message' => $failMsg !== '' ? $failMsg : 'Unable to send certificate email',
+                'org_id' => $logOrgId,
+                'sent_by' => $userId,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[certificates] email fail log: ' . $e->getMessage());
+        }
+        respond(['error' => $failMsg !== '' ? $failMsg : 'Unable to send certificate email'], 500);
     }
 
     // Free disk when GCS has the durable copy
@@ -398,27 +547,27 @@ if ($method === 'POST' && $action === 'send_email') {
     $fromAddr = (string) ($send['from'] ?? syncpediaSupportMailAddress());
     $messageId = 'mail_' . uniqid('', true);
     $sentAt = date('Y-m-d H:i:s');
-    $logId = generateUUID();
-    $logOrgId = resolveWriteOrgId($db, $tokenData);
-    $stmt = $db->prepare("
-        INSERT INTO certificate_email_logs
-        (id, certificate_id, to_email, cc_email, bcc_email, subject, body, attachment_url, message_id, sent_at, org_id, sent_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ");
-    $stmt->execute([
-        $logId,
-        $certificateId,
-        $to,
-        $cc,
-        $bcc,
-        $subject,
-        $body,
-        $attachmentUrl !== '' ? $attachmentUrl : '/api/certificates.php?action=pdf&certificate_id=' . rawurlencode($syncId),
-        $messageId,
-        $sentAt,
-        $logOrgId,
-        $userId,
-    ]);
+    // SMTP can outlive the MySQL connection opened at the start of the request.
+    try {
+        $db = syncpediaCreatePdo();
+        $logOrgId = resolveWriteOrgId($db, $tokenData) ?: $logOrgId;
+        certLogEmailAttempt($db, [
+            'certificate_id' => $certificateId,
+            'to' => $to,
+            'cc' => $cc,
+            'bcc' => $bcc,
+            'subject' => $subject,
+            'body' => $body,
+            'attachment_url' => $pdfUrlForLog,
+            'message_id' => $messageId,
+            'sent_at' => $sentAt,
+            'status' => 'sent',
+            'org_id' => $logOrgId,
+            'sent_by' => $userId,
+        ]);
+    } catch (Throwable $e) {
+        error_log('[certificates] email log after send: ' . $e->getMessage());
+    }
 
     respond([
         'success' => true,
