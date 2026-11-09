@@ -479,6 +479,16 @@ function isCertFreeTextLayer(type: string | undefined): boolean {
   return CERT_FREE_TEXT_LAYER_TYPES.has(String(type || ""));
 }
 
+/**
+ * Layer types that stay movable/resizable while "Lock layout" is on: every free-text
+ * layer (CERT_FREE_TEXT_LAYER_TYPES) plus images. Everything else — including the
+ * built-in Date / Cert ID / QR boxes and any future/unknown layer type — locks with
+ * the rest of the layout, matching the toolbar hint shown to the admin.
+ */
+export function isCertLayerMovableWhenLocked(type: string | undefined): boolean {
+  return isCertFreeTextLayer(type) || type === "image";
+}
+
 /** Optional typed fields (prefer <<placeholders>> inside text boxes instead). */
 const TYPED_CERT_FIELD_TYPES: Array<{
   type: Extract<CertLayerType, "company" | "name" | "domain" | "date" | "certID">;
@@ -1137,8 +1147,9 @@ function CertificatePreview({
   const isLayerPositionLocked = (layer: CertLayer) => {
     if (layer.locked) return true;
     if (!layoutLocked) return false;
-    // Free text/image + built-in Date / Cert ID / QR stay movable when layout is locked
-    return !["text", "image", "date", "certID", "qr"].includes(layer.type);
+    // Free text (incl. Name/Domain/Company) + images stay movable when layout is locked.
+    // Built-ins (Date / Cert ID / QR) and any other layer type lock with the layout.
+    return !isCertLayerMovableWhenLocked(layer.type);
   };
 
   const resolveLayerContent = (layer: CertLayer) => {
@@ -2337,7 +2348,7 @@ function TemplateBuilderModal({
                     <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-md border bg-muted/30 px-2 py-1.5 text-[11px] text-muted-foreground">
                       <Type className="h-3.5 w-3.5" />
                       {layoutLocked
-                        ? "Layout locked · unlock to move built-in fields · text/image still movable"
+                        ? "Layout locked · Date / Cert ID / QR stay put · unlock to move them · text, image, name, domain, company still movable"
                         : "Add Text box, click it, and type · drag Date / Cert ID / QR to place"}
                       <Button
                         type="button"
