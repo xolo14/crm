@@ -26,7 +26,7 @@ if ($method === 'GET') {
 
     if (!empty($_GET['search'])) {
         $where .= ' AND (s.name LIKE ? OR s.email LIKE ? OR s.phone LIKE ? OR l.college LIKE ? OR l.course_interest LIKE ? OR o.name LIKE ? OR l.name LIKE ? OR c.name LIKE ? OR b.name LIKE ? OR au.full_name LIKE ?)';
-        $s = '%' . $_GET['search'] . '%';
+        $s = '%' . sqlLikeEscape((string) $_GET['search']) . '%';
         $params = array_merge($params, array_fill(0, 10, $s));
     }
 

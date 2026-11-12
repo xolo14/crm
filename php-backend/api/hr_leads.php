@@ -294,7 +294,7 @@ if ($action === 'all_leads' && $method === 'GET') {
     if (isset($_GET['is_assigned']) && $_GET['is_assigned'] !== '') { $where .= " AND a.is_assigned = ?"; $params[] = (int) $_GET['is_assigned']; }
     if (!empty($_GET['status']) && $_GET['status'] !== 'all') { $where .= " AND a.status = ?"; $params[] = $_GET['status']; }
     if (!empty($_GET['source']) && $_GET['source'] !== 'all') { $where .= " AND a.source = ?"; $params[] = $_GET['source']; }
-    if (!empty($_GET['search'])) { $where .= " AND (a.full_name LIKE ? OR a.phone LIKE ? OR a.email LIKE ?)"; $s = '%' . $_GET['search'] . '%'; $params[] = $s; $params[] = $s; $params[] = $s; }
+    if (!empty($_GET['search'])) { $where .= " AND (a.full_name LIKE ? OR a.phone LIKE ? OR a.email LIKE ?)"; $s = '%' . sqlLikeEscape((string) $_GET['search']) . '%'; $params[] = $s; $params[] = $s; $params[] = $s; }
     $dateFrom = trim((string) ($_GET['date_from'] ?? ''));
     $dateTo = trim((string) ($_GET['date_to'] ?? ''));
     if ($dateFrom !== '') {

@@ -169,6 +169,10 @@ function syncpediaDecodeAssocJson($raw): array {
     return is_array($tmp) ? $tmp : [];
 }
 
+function sqlLikeEscape(string $value): string {
+    return addcslashes($value, '%_\\');
+}
+
 function generateUUID() {
     $bytes = random_bytes(16);
     $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
