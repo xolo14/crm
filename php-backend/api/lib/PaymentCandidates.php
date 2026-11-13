@@ -1227,6 +1227,38 @@ function paymentCandidatesComputeTotals(PDO $db, array $candidate): array
     ];
 }
 
+/**
+ * Org-wide "collected" total, computed candidate-by-candidate with the exact same
+ * manual + Razorpay-link logic as the Payment Records page (paymentCandidatesComputeTotals)
+ * — so the Organizations / Dashboard revenue card can never drift from what Payment Records
+ * shows. A raw SUM(payment_links.amount_paid) undercounts: Payment Records' own figure comes
+ * from the per-installment ledger (payment_candidate_link_payments), capped by amount_paid,
+ * not amount_paid directly.
+ */
+function paymentCandidatesOrgRevenue(PDO $db, string $orgId): float {
+    $orgId = trim($orgId);
+    if ($orgId === '') {
+        return 0.0;
+    }
+    try {
+        $st = $db->prepare('SELECT * FROM payment_candidates WHERE org_id = ?');
+        $st->execute([$orgId]);
+        $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (Throwable $e) {
+        return 0.0;
+    }
+    $total = 0.0;
+    foreach ($rows as $candidate) {
+        try {
+            $totals = paymentCandidatesComputeTotals($db, $candidate);
+            $total += (float) ($totals['total_paid'] ?? 0);
+        } catch (Throwable $e) {
+            // skip a single bad row rather than failing the whole org total
+        }
+    }
+    return round($total, 2);
+}
+
 /** True when candidate is linked to an enrolled student or enrolled lead. */
 function paymentCandidatesIsEnrolled(PDO $db, array $candidate): bool
 {

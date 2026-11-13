@@ -124,6 +124,10 @@ if ($tplId !== '') {
     $tpl = $tstmt->fetch(PDO::FETCH_ASSOC);
     if ($tpl) {
         $styleJson = syncpediaDecodeAssocJson($tpl['style_json'] ?? null);
+        // mail_subject / mail_body are the admin's internal issue-email template text —
+        // never needed to render the public certificate visual, so they're dropped here
+        // rather than handed to anyone who can open a /verify/{id} link.
+        unset($styleJson['mail_subject'], $styleJson['mail_body']);
         $fieldsJson = syncpediaDecodeAssocJson($tpl['fields_json'] ?? null);
         $layersJson = syncpediaDecodeAssocJson($tpl['layers_json'] ?? null);
         $template = [
