@@ -54,7 +54,7 @@ if (!empty($_GET['date'])) {
 }
 if (!empty($_GET['search'])) {
     $where[] = '(user_name LIKE ? OR details LIKE ? OR entity_type LIKE ? OR entity_id LIKE ?)';
-    $s = '%' . $_GET['search'] . '%';
+    $s = '%' . sqlLikeEscape((string) $_GET['search']) . '%';
     $params[] = $s;
     $params[] = $s;
     $params[] = $s;

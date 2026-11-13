@@ -66,11 +66,30 @@ function waitForImages(doc: Document, timeoutMs = 8000): Promise<void> {
   });
 }
 
+/**
+ * Strip <script> tags and inline event-handler / javascript: URL attributes.
+ * This HTML is written into a same-origin window via document.write() for printing
+ * (not a sandboxed iframe), so any <script> in a stored/imported template would run
+ * with full access to the signed-in user's session and cookies.
+ */
+function stripExecutableHtml(html: string): string {
+  let out = String(html || "").replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "");
+  out = out.replace(/<script\b[^>]*\/?>(?!<\/script)/gi, "");
+  // Inline event handlers (onclick=, onerror=, …) — quoted or unquoted attribute values.
+  out = out.replace(/\son\w+\s*=\s*"(?:[^"\\]|\\.)*"/gi, "");
+  out = out.replace(/\son\w+\s*=\s*'(?:[^'\\]|\\.)*'/gi, "");
+  out = out.replace(/\son\w+\s*=\s*[^\s"'>]+/gi, "");
+  // javascript: URLs in href/src/action.
+  out = out.replace(/((?:href|src|action)\s*=\s*)(["'])\s*javascript:[^"']*\2/gi, '$1$2#$2');
+  return out;
+}
+
 /** One printable HTML document with real page breaks (for window.print). */
 export function buildMultiPagePrintableHtml(html: string): string {
-  const pages = splitOfferHtmlPages(html);
+  const safeHtml = stripExecutableHtml(html);
+  const pages = splitOfferHtmlPages(safeHtml);
   if (pages.length <= 1) {
-    return ensureHtmlDocument(pages[0] || html);
+    return ensureHtmlDocument(pages[0] || safeHtml);
   }
 
   const styleParts = pages.map(extractStyleBlocks).filter(Boolean);

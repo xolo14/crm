@@ -235,7 +235,8 @@ if ($action === 'list' || $action === '') {
  if ($periodScoped) {
  $periodPaid = (float) ($totals['total_paid'] ?? 0);
  $periodPitch = (float) ($totals['pitch_price'] ?? 0);
- $kpi['total_remaining'] += (float) max(0, round($periodPitch - $periodPaid, 2));
+ // Not clamped to 0 — an overpayment should show as negative, not vanish from the total.
+ $kpi['total_remaining'] += (float) round($periodPitch - $periodPaid, 2);
  if ($periodPaid + 0.001 >= $periodPitch && $periodPitch > 0) {
  $kpi['cleared_count']++;
  }

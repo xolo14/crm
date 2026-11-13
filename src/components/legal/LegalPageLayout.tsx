@@ -17,7 +17,7 @@ export default function LegalPageLayout({
       <header className="border-b bg-background">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
           <Link to="/login" className="flex items-center gap-3">
-            <img src={syncpediaLogo} alt={LEGAL_SITE_NAME} className="h-8 object-contain" width={128} height={32} />
+            <img src={syncpediaLogo} alt={LEGAL_SITE_NAME} className="h-10 w-auto max-w-[220px] object-contain" width={220} height={40} />
           </Link>
           <nav className="flex gap-4 text-sm text-muted-foreground">
             <Link to={PRIVACY_POLICY_PATH} className="hover:text-foreground">

@@ -169,6 +169,10 @@ function syncpediaDecodeAssocJson($raw): array {
     return is_array($tmp) ? $tmp : [];
 }
 
+function sqlLikeEscape(string $value): string {
+    return addcslashes($value, '%_\\');
+}
+
 function generateUUID() {
     $bytes = random_bytes(16);
     $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
@@ -5940,10 +5944,9 @@ function savePaymentProofUpload(?array $file): ?string
     if ($baseDir === false) {
         respond(['error' => 'Upload directory unavailable'], 500);
     }
-    // Extension is forced from the sniffed MIME type, not the client-supplied filename.
-    $origBase = pathinfo(basename((string) ($file['name'] ?? 'proof')), PATHINFO_FILENAME);
-    $origBase = preg_replace('/[^a-zA-Z0-9._-]/', '_', $origBase) ?: 'proof';
-    $filename = uniqid('mp_', true) . '_' . $origBase . '.' . $ext;
+    // Filename is a random token, not derived from time or the client-supplied name:
+    // these proofs often show bank/UPI details and must not be guessable.
+    $filename = 'mp_' . bin2hex(random_bytes(16)) . '.' . $ext;
     $destFs = $baseDir . DIRECTORY_SEPARATOR . $filename;
     if (!move_uploaded_file($tmp, $destFs)) {
         respond(['error' => 'Failed to save proof file'], 500);

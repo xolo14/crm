@@ -78,6 +78,58 @@ curl -s https://crm.syncpedia.in/api/ping.php; echo
 Both pings should return `"status":"ok"`. Compare the entry script in
 `/var/www/crm/index.html` (`assets/index-*.js`) with the local `dist/index.html`.
 
+## 5. Required nginx hardening (uploads + security headers)
+
+**This step is mandatory, not optional.** Every `.htaccess` file shipped in this repo
+(`public/.htaccess`, `public/uploads/*/.htaccess`, `public/storage/*/.htaccess`) is
+Apache-only syntax — **nginx ignores `.htaccess` entirely.** On this VPS, the host
+nginx site is the only thing actually serving requests, so without the block below:
+- The security headers (CSP, X-Frame-Options, HSTS, etc.) are never sent.
+- `/uploads/payment_proofs/...`, `/uploads/resumes/...`, `/uploads/call_recordings/...`,
+  `/uploads/form_attachments/...`, `/uploads/hr_resumes/...`, `/uploads/assessment_answers/...`,
+  `/uploads/video_intros/...`, `/storage/...` are all directly downloadable by anyone who has
+  (or guesses/leaks) the URL — no login required — even though `api/files.php` enforces
+  per-request ownership checks for the *intended* path through the app.
+
+Add this to the host nginx server block for `crm.syncpedia.in`
+(`/etc/nginx/sites-available/crm.syncpedia.in`, inside the existing `server { ... }`):
+
+```nginx
+# Security headers — mirrors public/.htaccess, which nginx does not read.
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+add_header Content-Security-Policy "default-src 'self'; script-src 'self' https://connect.facebook.net https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https: blob:; connect-src 'self' https: wss:; frame-src https://www.facebook.com https://web.facebook.com https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; upgrade-insecure-requests" always;
+
+# Private uploads — deny direct access; everything here must go through
+# api/files.php (resumes, call recordings, payment proofs, form attachments, …),
+# which checks the caller's auth and ownership before streaming the file.
+location ~ ^/uploads/(resumes|call_recordings|recordings|form_attachments|form_leads|hr_resumes|assessment_answers|video_intros|payment_proofs)/ {
+    deny all;
+}
+
+# Private app storage — served only through authenticated endpoints
+# (payment-links.php?action=invoice, video-intros.php?action=media).
+location ^~ /storage/ {
+    deny all;
+}
+location ^~ /private/ {
+    deny all;
+}
+
+# Explicitly public upload folders (branding/logos/avatars/certificate backgrounds
+# shown as <img> on the public site) — never execute PHP from inside /uploads.
+location ~ ^/uploads/.*\.(php|phtml|phar|cgi|pl|py|sh)$ {
+    deny all;
+}
+```
+
+Reload after editing: `nginx -t && systemctl reload nginx`, then confirm a direct hit on
+a known private file 404s/403s (not 200) — e.g.
+`curl -i https://crm.syncpedia.in/uploads/payment_proofs/<any-filename>` should **not** return the file.
+
 ## Troubleshooting
 
 - **Public URL shows a Next.js 404 or `{"ok":false,"error":"Not found"}`**: the request is not

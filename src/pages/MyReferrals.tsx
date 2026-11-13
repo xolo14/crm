@@ -56,7 +56,9 @@ export default function MyReferrals() {
         api.leads.list({
           lite: true,
           limit: 2000,
-          maxRows: 5000,
+          // No maxRows cap: Sales Tracker must show the same total lead count as
+          // Rep Performance (which has no cap) — a 5000-row cap here silently
+          // truncated totals once an org passed 5000 leads.
           onPage: (page) => {
             setAllLeads(page.data || []);
             setLoading(false);

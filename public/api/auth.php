@@ -1120,7 +1120,11 @@ if ($method === 'POST') {
             }
         }
         $db->prepare('DELETE FROM email_change_otps WHERE user_id = ?')->execute([$userId]);
-        syncpediaAuditLog($db, $tokenData, 'updated_profile', 'user', $userId, 'Verified email change');
+        $auditDetail = 'Verified email change';
+        if (is_array($loginEmails) && normalizeRoleForPortal((string) ($me['role'] ?? '')) === 'super_admin') {
+            $auditDetail .= ' — Super Admin login emails set to: ' . (empty($cleaned) ? '(none)' : implode(', ', $cleaned));
+        }
+        syncpediaAuditLog($db, $tokenData, 'updated_profile', 'user', $userId, $auditDetail);
         $list = [];
         if (normalizeRoleForPortal((string) ($me['role'] ?? '')) === 'super_admin') {
             ensureSuperAdminEmailLoginTables($db);

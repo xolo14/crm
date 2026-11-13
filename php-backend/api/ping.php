@@ -94,31 +94,35 @@ if ($gcsEnabled && !$gcsSaOk) {
 
 $debug = defined('APP_DEBUG') && APP_DEBUG === true;
 http_response_code($dbOk ? 200 : 503);
+
+// This endpoint is unauthenticated by design (pre-setup deploy check), so infrastructure
+// details (DB/SMTP/GCS status, storage paths, service-account filename) are only ever
+// included when APP_DEBUG is on — otherwise it's a bare health check.
 $payload = [
     'status' => $dbOk ? 'ok' : 'error',
     'api' => 'reachable',
-    'database' => $dbOk ? 'connected' : 'failed',
-    'smtp' => $smtpReady ? 'ready' : 'not_ready',
-    'gcs' => [
+];
+if ($debug) {
+    $payload['php'] = PHP_VERSION;
+    $payload['database'] = $dbOk ? 'connected' : 'failed';
+    $payload['smtp'] = $smtpReady ? 'ready' : 'not_ready';
+    $payload['smtp_detail'] = $smtpHint;
+    $payload['gcs'] = [
         'enabled' => $gcsEnabled,
         'bucket_set' => $gcsBucket !== '',
         'sa_json_readable' => $gcsSaOk,
         'sa_path_set' => $gcsSaPath !== '',
         'sa_exists' => $gcsSaExists,
         'sa_basename' => $gcsSaPath !== '' ? basename($gcsSaPath) : null,
+        'sa_path' => $gcsSaPath,
         'ready' => $gcsEnabled && $gcsBucket !== '' && $gcsSaOk,
         'hint' => $gcsHint,
-    ],
-    'storage' => [
+        'open_basedir' => (string) ini_get('open_basedir'),
+    ];
+    $payload['storage'] = [
         'payment_invoices' => $invoiceStorage['writable'] ? 'writable' : 'not_writable',
         'certificates' => $certStorage['writable'] ? 'writable' : 'not_writable',
-    ],
-];
-if ($debug) {
-    $payload['php'] = PHP_VERSION;
-    $payload['smtp_detail'] = $smtpHint;
-    $payload['gcs']['sa_path'] = $gcsSaPath;
-    $payload['gcs']['open_basedir'] = (string) ini_get('open_basedir');
+    ];
     $payload['message'] = $dbOk ? 'Syncpedia CRM API is ready' : $dbMessage;
 }
 echo json_encode($payload, JSON_UNESCAPED_UNICODE);

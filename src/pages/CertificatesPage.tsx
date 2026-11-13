@@ -923,7 +923,10 @@ function exportTemplateImage(template: CertTemplate) {
 
 function printTemplatePdf(template: CertTemplate) {
   const svg = templateToSvg(template);
-  const html = `<!doctype html><html><head><title>${template.name}</title><style>body{margin:0;padding:16px;background:#fff}img{width:100%;height:auto;display:block}</style></head><body><img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}" alt="Certificate"/></body></html>`;
+  // escapeXml: template.name is admin-entered text written straight into this
+  // same-origin print window (not a sandboxed iframe) — unescaped, a title like
+  // `</title><script>...` would execute with the signed-in user's session.
+  const html = `<!doctype html><html><head><title>${escapeXml(template.name || "")}</title><style>body{margin:0;padding:16px;background:#fff}img{width:100%;height:auto;display:block}</style></head><body><img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}" alt="Certificate"/></body></html>`;
   const w = window.open("", "_blank", "noopener,noreferrer,width=1200,height=900");
   if (!w) return;
   w.document.open();

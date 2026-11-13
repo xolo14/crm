@@ -100,7 +100,8 @@ function trashRestoreRow(PDO $db, array $trashRow, array $typeMap): void {
 
 if ($method === 'GET') {
     requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
-    $purged = trashPurgeExpired($db, 30);
+    // Permanent 30-day purge moved to cron_trash_purge.php — a GET (viewing the page)
+    // must never be the trigger for an unconfirmed, permanent delete.
 
     if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
         if (!empty($_GET['org_id']) && $_GET['org_id'] !== 'all') {
@@ -144,7 +145,7 @@ if ($method === 'GET') {
             'summary' => $label !== '' ? $label : ('ID ' . substr((string) ($r['entity_id'] ?? ''), 0, 8) . '…'),
         ];
     }
-    respond(['data' => $out, 'purged_expired' => $purged]);
+    respond(['data' => $out]);
 }
 
 if ($method === 'POST') {

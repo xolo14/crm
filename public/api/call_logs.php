@@ -385,8 +385,10 @@ if (!callLogsAllowedRole($rawRole)) {
 
 $tokenOrgId = $tokenData['org_id'] ?? null;
 
-// ---------- GET sync_daily_reports — backfill/refresh daily_reports from call_logs ----------
-if ($method === 'GET' && $action === 'sync_daily_reports') {
+// ---------- POST sync_daily_reports — backfill/refresh daily_reports from call_logs ----------
+// POST, not GET: this writes to daily_reports, and a GET endpoint that mutates data can be
+// triggered by a top-level cross-site navigation even with a SameSite=Lax session cookie.
+if ($method === 'POST' && $action === 'sync_daily_reports') {
     // Allow up to ~2 years so Sales Tracker "All Time" can backfill history.
     $days = max(1, min(730, (int) ($_GET['days'] ?? 60)));
     $from = (new DateTimeImmutable('today'))->modify('-' . ($days - 1) . ' days')->format('Y-m-d');
@@ -506,6 +508,32 @@ if ($method === 'GET' && $action === 'daily_report_metrics') {
         ],
         'date' => $date,
     ]);
+}
+
+/** Ensure call_logs.device_call_id exists with a per-rep unique key (idempotent mobile uploads). */
+function callLogsEnsureDeviceCallId(PDO $db): bool
+{
+    static $ok = null;
+    if ($ok !== null) {
+        return $ok;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'call_logs', 'device_call_id')) {
+            $db->exec('ALTER TABLE call_logs ADD COLUMN device_call_id VARCHAR(64) DEFAULT NULL');
+        }
+        try {
+            $idx = $db->query("SHOW INDEX FROM call_logs WHERE Key_name = 'uq_calllog_rep_device'");
+            if (!($idx && $idx->fetch(PDO::FETCH_ASSOC))) {
+                $db->exec('ALTER TABLE call_logs ADD UNIQUE KEY uq_calllog_rep_device (sales_rep_id, device_call_id)');
+            }
+        } catch (Throwable $ignored) {
+        }
+        $ok = true;
+    } catch (Throwable $e) {
+        error_log('[call_logs] device_call_id column: ' . $e->getMessage());
+        $ok = false;
+    }
+    return $ok;
 }
 
 // ---------- POST add_log ----------
@@ -629,6 +657,19 @@ if ($method === 'POST' && $action === 'add_log') {
         $dupTime .= ':00';
     }
 
+    $deviceCallId = substr(trim((string) ($input['device_call_id'] ?? '')), 0, 64);
+    $hasDeviceKey = $deviceCallId !== '' && callLogsEnsureDeviceCallId($db);
+    if ($hasDeviceKey) {
+        $devSt = $db->prepare('SELECT id FROM call_logs WHERE sales_rep_id = ? AND device_call_id = ? LIMIT 1');
+        $devSt->execute([$repId, $deviceCallId]);
+        $existingId = $devSt->fetchColumn();
+        if ($existingId) {
+            $q0 = $db->prepare('SELECT cl.*, u.full_name AS sales_rep_name, l.name AS lead_name, l.status AS lead_status FROM call_logs cl LEFT JOIN users u ON u.id = cl.sales_rep_id LEFT JOIN leads l ON l.id = cl.lead_id WHERE cl.id = ?');
+            $q0->execute([$existingId]);
+            respond(['success' => true, 'duplicate' => true, 'log' => $q0->fetch(PDO::FETCH_ASSOC)]);
+        }
+    }
+
     $db->beginTransaction();
     $id = 0;
     try {
@@ -700,6 +741,15 @@ if ($method === 'POST' && $action === 'add_log') {
         }
 
         $id = (int) $db->lastInsertId();
+
+        if ($hasDeviceKey && $id > 0) {
+            try {
+                $db->prepare('UPDATE call_logs SET device_call_id = ? WHERE id = ?')->execute([$deviceCallId, $id]);
+            } catch (PDOException $dupDev) {
+                $db->rollBack();
+                respond(['success' => true, 'duplicate' => true]);
+            }
+        }
 
         // Pipeline status must succeed in the same transaction as the call insert.
         if ($leadStatusIn !== '') {

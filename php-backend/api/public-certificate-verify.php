@@ -92,6 +92,13 @@ $hasPdf = ($pdfPath !== '' && syncpediaDocumentStorageFileExists($pdfPath))
     || ($gcsObject !== '');
 
 if ($format === 'pdf') {
+    // The 6-digit cert id alone is guessable (1 in ~1,000,000) and the QR/verify page
+    // above intentionally works without a token for convenience — but downloading the
+    // actual PDF is a stronger action than showing name/course/date, so it requires the
+    // long random verify_token (already hash_equals-checked above when present).
+    if (!$hasTokenCol || $token === '') {
+        respond(['error' => 'A verification token is required to download the PDF'], 403);
+    }
     if (!$hasPdf) {
         respond(['error' => 'PDF not found'], 404);
     }

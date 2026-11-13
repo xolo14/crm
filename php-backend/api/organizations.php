@@ -52,13 +52,15 @@ if ($method === 'GET') {
         
         if ($action === 'stats') {
             try {
-                $stmt = $db->query("SELECT 
+                $stmt = $db->query("SELECT
                     o.id, o.name, o.slug, o.logo_url, o.plan, o.max_users, o.is_active, o.created_at, o.industry,
                     (SELECT COUNT(*) FROM users WHERE org_id = o.id AND is_active = 1) as user_count,
                     (SELECT COUNT(*) FROM leads WHERE org_id = o.id) as leads_count,
                     (SELECT COUNT(*) FROM leads WHERE org_id = o.id AND status = 'enrolled') as converted_count,
                     (SELECT COUNT(*) FROM students WHERE org_id = o.id) as students_count,
-                    (SELECT COALESCE(SUM(CASE WHEN status='paid' THEN amount ELSE 0 END), 0) FROM payments WHERE org_id = o.id) as revenue
+                    (SELECT COALESCE(SUM(CASE WHEN status='paid' THEN amount ELSE 0 END), 0) FROM payments WHERE org_id = o.id)
+                    + (SELECT COALESCE(SUM(CASE WHEN status='approved' THEN amount ELSE 0 END), 0) FROM manual_payments WHERE org_id = o.id)
+                    + (SELECT COALESCE(SUM(amount_paid), 0) / 100 FROM payment_links WHERE org_id = o.id AND status IN ('paid', 'partially_paid')) as revenue
                     FROM organizations o ORDER BY o.created_at DESC");
                 respond(['data' => $stmt->fetchAll()]);
             } catch (Exception $e) {

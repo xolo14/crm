@@ -411,7 +411,7 @@ export default function PublicVideoIntroPage() {
           <img
             src={headerLogo}
             alt={invite?.org_name || ""}
-            className="h-8 w-auto max-w-[7rem] object-contain"
+            className="h-10 w-auto max-w-[220px] object-contain"
             onError={() => setLogoFailed(true)}
           />
           <div>

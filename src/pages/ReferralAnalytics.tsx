@@ -38,6 +38,8 @@ export default function ReferralAnalytics() {
   const isMobile = useIsMobile();
   const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
+  /** False until every lead page has arrived — totals below keep climbing until then. */
+  const [leadsFullyLoaded, setLeadsFullyLoaded] = useState(false);
   const [profiles, setProfiles] = useState<any[]>([]);
   const [allLeads, setAllLeads] = useState<any[]>([]);
   const [dailyReports, setDailyReports] = useState<any[]>([]);
@@ -49,6 +51,7 @@ export default function ReferralAnalytics() {
 
   const fetchData = async () => {
     setLoading(true);
+    setLeadsFullyLoaded(false);
     try {
       const [profilesData, leadsData, reportsData] = await Promise.all([
         api.profiles.list(),
@@ -74,6 +77,7 @@ export default function ReferralAnalytics() {
             ? reportsData.data
             : reportsData?.reports || [],
       );
+      setLeadsFullyLoaded(true);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
     void callLogsApi.syncDailyReportsFromCallLogs(90).then(async () => {
@@ -189,7 +193,8 @@ export default function ReferralAnalytics() {
   const inPipeline = filteredLeads.filter(l => ['interested', 'demo_scheduled', 'demo_attended'].includes(l.status)).length;
   const totalCalls = filteredReports.reduce((s, r) => s + (Number(r.total_calls) || 0), 0);
   const totalFollowups = filteredReports.reduce((s, r) => s + (Number(r.total_followups) || 0), 0);
-  const convRate = totalLeads > 0 ? Math.round((converted / totalLeads) * 100) : 0;
+  // One decimal place: a flat 0%/1% hid real values like 0.48% at low lead volumes.
+  const convRate = totalLeads > 0 ? (converted / totalLeads) * 100 : 0;
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
@@ -199,6 +204,12 @@ export default function ReferralAnalytics() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Rep Performance</h1>
           <p className="text-sm text-muted-foreground mt-1">Detailed analytics for {selectedRepName}</p>
+          {!leadsFullyLoaded && (
+            <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Still loading the full lead set — totals below will keep rising
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Select value={selectedRep} onValueChange={setSelectedRep}>
@@ -218,7 +229,7 @@ export default function ReferralAnalytics() {
           { label: 'Total Leads', value: totalLeads, icon: UserPlus, color: 'text-blue-600', bg: 'bg-blue-500/10' },
           { label: 'In Pipeline', value: inPipeline, icon: Users, color: 'text-amber-600', bg: 'bg-amber-500/10' },
           { label: 'Enroll', value: converted, icon: CheckCircle, color: 'text-green-600', bg: 'bg-green-500/10' },
-          { label: 'Conv. Rate', value: `${convRate}%`, icon: TrendingUp, color: 'text-teal-600', bg: 'bg-teal-500/10' },
+          { label: 'Conv. Rate', value: `${convRate.toFixed(1)}%`, icon: TrendingUp, color: 'text-teal-600', bg: 'bg-teal-500/10' },
           { label: 'Total Calls', value: totalCalls, icon: Phone, color: 'text-indigo-600', bg: 'bg-indigo-500/10' },
           { label: 'Follow-ups', value: totalFollowups, icon: ClipboardList, color: 'text-purple-600', bg: 'bg-purple-500/10' },
         ].map(card => (

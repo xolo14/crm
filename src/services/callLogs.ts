@@ -102,10 +102,15 @@ export const callLogsApi = {
       })}`,
     ),
 
-  /** Backfill/refresh daily_reports from call_logs (days capped server-side at 730). */
+  /**
+   * Backfill/refresh daily_reports from call_logs (days capped server-side at 730).
+   * POST, not GET: this mutates data, and a GET endpoint that writes can be triggered
+   * by a top-level navigation from another site even with a SameSite=Lax cookie.
+   */
   syncDailyReportsFromCallLogs: (days = 60) =>
     request<{ success: true; synced_dates: number }>(
       `/call_logs.php?action=sync_daily_reports${toQuery({ days })}`,
+      { method: "POST" },
     ),
 
   addLog: (body: CreateCallLogInput) =>

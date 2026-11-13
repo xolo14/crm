@@ -385,8 +385,10 @@ if (!callLogsAllowedRole($rawRole)) {
 
 $tokenOrgId = $tokenData['org_id'] ?? null;
 
-// ---------- GET sync_daily_reports — backfill/refresh daily_reports from call_logs ----------
-if ($method === 'GET' && $action === 'sync_daily_reports') {
+// ---------- POST sync_daily_reports — backfill/refresh daily_reports from call_logs ----------
+// POST, not GET: this writes to daily_reports, and a GET endpoint that mutates data can be
+// triggered by a top-level cross-site navigation even with a SameSite=Lax session cookie.
+if ($method === 'POST' && $action === 'sync_daily_reports') {
     // Allow up to ~2 years so Sales Tracker "All Time" can backfill history.
     $days = max(1, min(730, (int) ($_GET['days'] ?? 60)));
     $from = (new DateTimeImmutable('today'))->modify('-' . ($days - 1) . ' days')->format('Y-m-d');

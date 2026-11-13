@@ -75,7 +75,7 @@ const PayslipPrintTemplate = forwardRef<HTMLDivElement, PayslipPrintTemplateProp
             <img
               src={syncpediaIcon}
               alt="SYNCPedia"
-              style={{ width: 56, height: 56, objectFit: "contain", borderRadius: 6 }}
+              style={{ width: 210, height: 64, objectFit: "contain" }}
               crossOrigin="anonymous"
             />
             <div style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>

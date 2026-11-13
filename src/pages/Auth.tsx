@@ -143,7 +143,7 @@ function SuperAdminAuth() {
             <img
               src={superAdminMark}
               alt="Syncpedia"
-              className="h-24 w-24 rounded-2xl object-cover mx-auto mb-6 shadow-lg ring-1 ring-white/20"
+              className="h-16 w-auto max-w-xs object-contain mx-auto mb-6"
               decoding="async"
             />
             <h1 className="text-4xl font-extrabold text-white mb-3 tracking-tight">{SUPER_ADMIN_PORTAL.label}</h1>
@@ -159,7 +159,7 @@ function SuperAdminAuth() {
               <img
                 src={superAdminMark}
                 alt="Syncpedia"
-                className="h-14 w-14 rounded-2xl object-cover shadow-lg ring-1 ring-border"
+                className="h-12 w-auto max-w-[240px] object-contain"
                 decoding="async"
               />
               <div className="text-center">

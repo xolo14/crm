@@ -1199,7 +1199,10 @@ function paymentCandidatesComputeTotals(PDO $db, array $candidate): array
     $linkCount = (int) ($linkSum['count'] ?? 0);
 
     $totalPaid = round($manualPaid + $linkPaid, 2);
-    $remaining = $pitch > 0 ? max(0, round($pitch - $totalPaid, 2)) : 0;
+    // Negative when overpaid — clamping to 0 here silently broke the
+    // pitch - collected = remaining identity on the aggregate cards and hid
+    // overpayments that should be flagged, not zeroed out.
+    $remaining = $pitch > 0 ? round($pitch - $totalPaid, 2) : 0;
     $installments = $manualCount + $manualPending + $linkCount;
     $enrolled = paymentCandidatesIsEnrolled($db, $candidate);
 
@@ -1603,7 +1606,8 @@ function studentsAttachPaymentSummaries(PDO $db, array &$rows): void
             // Use stored pitch on list (skip per-row link-sum queries).
             $pitch = round((float) ($cand['pitch_price'] ?? 0), 2);
             $paid = round((float) ($paidById[$cid] ?? 0), 2);
-            $remaining = $pitch > 0 ? max(0, round($pitch - $paid, 2)) : 0.0;
+            // Negative when overpaid — see note in paymentCandidatesSummaryFor() above.
+            $remaining = $pitch > 0 ? round($pitch - $paid, 2) : 0.0;
             $rows[$idx]['payment_summary'] = [
                 'candidate_id' => $cid,
                 'pitch_price' => $pitch,
