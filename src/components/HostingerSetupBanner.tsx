@@ -34,7 +34,11 @@ export function HostingerSetupBanner() {
           );
           return;
         }
-        if (data.status === "ok" && data.database === "connected") {
+        // ping.php's `status` already encodes DB connectivity ($dbOk); the separate
+        // `database` field is only included when APP_DEBUG is on, so requiring it here
+        // made this banner permanently show "Database not connected" in production
+        // even with a perfectly healthy database.
+        if (data.status === "ok") {
           setState("ok");
           return;
         }
