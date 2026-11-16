@@ -170,6 +170,7 @@ function syncpediaFresherInterestTopics(): array
 function syncpediaBasicsDomainCatalog(): array
 {
     return [
+        'javascript' => 'JavaScript',
         'cyber_sec' => 'Cyber Security & Ethical Hacking',
         'data_analytics' => 'Data Analytics (DA)',
         'ai' => 'Artificial Intelligence (AI)',
