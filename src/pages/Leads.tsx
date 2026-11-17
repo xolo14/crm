@@ -28,7 +28,7 @@ import { LeadEnrollDialog } from '@/components/leads/LeadEnrollDialog';
 import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails';
 import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
 import * as perms from '@/lib/permissions';
-import { isL1OperationalRole, isL2Role, isMarketingFamilyRole, isSalesRepRole } from '@/lib/roleUtils';
+import { isL1OperationalRole, isL2Role, isMarketingFamilyRole, isOperationalManagerRole, isSalesRepRole } from '@/lib/roleUtils';
 import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import {
   downloadLeadImportTemplate,
@@ -311,8 +311,9 @@ export default function Leads() {
   const canGrantCardAccess = normalizedLeadRole === 'org' || normalizedLeadRole === 'super_admin';
   /** Source-card folders: admin/org + L2 (create / view granted folders). */
   const canUseLeadFolders = canGrantCardAccess || isL2LeadRole;
-  /** Leads export: super_admin / admin only (not manager / org / L1). */
-  const canExportLeads = normalizedLeadRole === 'super_admin' || normalizedLeadRole === 'org';
+  /** Leads export: super_admin / org / operational manager (not plain manager / L1). */
+  const canExportLeads =
+    normalizedLeadRole === 'super_admin' || normalizedLeadRole === 'org' || isOperationalManagerRole(role);
   const [exportCardsOpen, setExportCardsOpen] = useState(false);
   const [exportCardKeys, setExportCardKeys] = useState<Set<string>>(new Set());
   /** Sales rep / exec: hub lists all org-visible rows from API; My Leads shows only referral-link form submissions. */
