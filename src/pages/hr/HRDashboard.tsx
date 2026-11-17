@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { UserPlus } from "lucide-react";
 import { getCurrentWeekKeyIST } from "@/lib/hrLeadsWeek";
-import AssignedAssignmentsCard from "@/components/assignments/AssignedAssignmentsCard";
 const WEEKLY_TARGET = 20;
 
 export default function HRDashboard() {
@@ -26,7 +25,6 @@ export default function HRDashboard() {
         <h1 className="text-2xl font-semibold">HR Dashboard</h1>
         <p className="text-sm text-muted-foreground">Overview of your leads, tasks and holidays.</p>
       </div>
-      <AssignedAssignmentsCard />
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
