@@ -329,7 +329,7 @@ export default function Leads() {
     ? viewOrgId
       ? `Scope: ${viewOrgs.find((o) => o.id === viewOrgId)?.name || 'selected organisation'}`
       : 'Scope: select an organisation'
-    : normalizedLeadRole === 'org' || normalizedLeadRole === 'org' || normalizedLeadRole === 'manager'
+    : normalizedLeadRole === 'org' || normalizedLeadRole === 'manager' || isOperationalManagerRole(role)
       ? 'Scope: organization leads'
       : isSalesRepMyLeadsPage
           ? 'Scope: your referral forms only'

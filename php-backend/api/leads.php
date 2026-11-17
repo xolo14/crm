@@ -304,7 +304,7 @@ if ($method === 'GET') {
     };
 
     $sourceBucket = isset($_GET['source_bucket']) ? trim((string) $_GET['source_bucket']) : '';
-    $managerCardFilter = in_array(syncpediaNormalizeRoleKey((string) $role), ['manager', 'operational_manager'], true)
+    $managerCardFilter = syncpediaNormalizeRoleKey((string) $role) === 'manager'
         && function_exists('syncpediaFilterLeadsForManagerCardAccess');
     $rows = [];
     $fetched = 0;

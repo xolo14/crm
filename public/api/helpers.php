@@ -8594,7 +8594,8 @@ function syncpediaLeadSourceCardFieldsFlushChunk(PDO $db, array $items): void
 function syncpediaLeadSourceCardManagerContext(PDO $db, array $tokenData): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    $isManager = in_array($role, ['manager', 'operational_manager'], true);
+    // Only plain managers are card-gated; operational managers see every source card in their org.
+    $isManager = $role === 'manager';
     $userId = trim((string) ($tokenData['user_id'] ?? ''));
     $granted = [];
     if ($isManager && $userId !== '') {
@@ -9034,7 +9035,8 @@ function syncpediaLeadFormOrAssessmentSourceKey(array $row): ?string
 function syncpediaFilterLeadsForManagerCardAccess(PDO $db, array $tokenData, array $rows): array
 {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
- if (!in_array($role, ['manager', 'operational_manager'])) {
+    // Operational managers see every lead in their org; only plain managers are card-gated.
+    if ($role !== 'manager') {
         $out = [];
         foreach ($rows as $row) {
             if (is_array($row)) {
