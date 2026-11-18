@@ -64,7 +64,7 @@ export default function ManageEmployees({ employees, onEdit, onDelete, onViewPay
               placeholder="Name, ID, or designation"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="h-10 rounded-lg focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
+              className="h-10 rounded-lg focus-visible:ring-brand-500 focus-visible:ring-offset-1"
             />
           </div>
           <div className="w-full md:w-56 space-y-1.5">
@@ -82,7 +82,7 @@ export default function ManageEmployees({ employees, onEdit, onDelete, onViewPay
               </SelectContent>
             </Select>
           </div>
-          <Button type="button" className="h-10 rounded-lg bg-[#2ed573] font-semibold text-[#0f2318] md:ml-auto" onClick={onRequestAdd}>
+          <Button type="button" className="h-10 rounded-lg bg-lime-400 font-semibold text-brand-900 md:ml-auto" onClick={onRequestAdd}>
             + Add Employee
           </Button>
         </div>
@@ -91,12 +91,12 @@ export default function ManageEmployees({ employees, onEdit, onDelete, onViewPay
           {filtered.map((e) => (
             <div key={e.id} className="flex flex-col rounded-xl border border-gray-200 bg-white p-4 shadow-sm transition-shadow hover:shadow-md">
               <div className="flex items-start gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#e6faf0] text-sm font-bold text-[#0f5230]">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand-100 text-sm font-bold text-[#0f5230]">
                   {initials(e.name)}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="truncate font-bold text-[#0f2318]">{e.name}</h3>
+                    <h3 className="truncate font-bold text-brand-900">{e.name}</h3>
                     <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
                       {e.employeeCode}
                     </Badge>
@@ -113,14 +113,14 @@ export default function ManageEmployees({ employees, onEdit, onDelete, onViewPay
                 <div>
                   <span className="font-medium text-gray-500">Phone:</span> {e.phone}
                 </div>
-                <div className="font-semibold text-[#0f2318]">
+                <div className="font-semibold text-brand-900">
                   CTC: ₹ {formatINR(e.ctc)} <span className="font-normal text-gray-500">per annum</span>
                 </div>
                 <div className="flex flex-wrap gap-2 pt-1">
-                  <Badge className={e.pfApplicable ? "bg-[#2ed573] text-[#0f2318]" : "bg-gray-100 text-gray-600"}>
+                  <Badge className={e.pfApplicable ? "bg-lime-400 text-brand-900" : "bg-gray-100 text-gray-600"}>
                     PF: {e.pfApplicable ? "On" : "Off"}
                   </Badge>
-                  <Badge className={e.ptApplicable ? "bg-[#2ed573] text-[#0f2318]" : "bg-gray-100 text-gray-600"}>
+                  <Badge className={e.ptApplicable ? "bg-lime-400 text-brand-900" : "bg-gray-100 text-gray-600"}>
                     PT: {e.ptApplicable ? "On" : "Off"}
                   </Badge>
                 </div>

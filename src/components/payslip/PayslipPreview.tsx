@@ -19,10 +19,10 @@ export default function PayslipPreview({ payslip, scale = 0.55 }: PayslipPreview
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="relative inline-flex h-2.5 w-2.5">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#2ed573] opacity-75" />
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#2ed573]" />
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-lime-400 opacity-75" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-lime-400" />
           </span>
-          <span className="text-sm font-semibold text-[#0f2318]">Live Preview</span>
+          <span className="text-sm font-semibold text-brand-900">Live Preview</span>
         </div>
         <span className="text-[10px] uppercase tracking-wide text-gray-400">A4 · scaled {(scale * 100).toFixed(0)}%</span>
       </div>

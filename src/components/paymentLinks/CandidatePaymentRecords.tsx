@@ -79,12 +79,12 @@ interface Props {
 }
 
 const inputCls =
-  "rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#2ed573]/40 focus:border-[#2ed573]";
+  "rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500";
 
 function fmtInr(amount: number): string {
   return `₹${amount.toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   })}`;
 }
 
@@ -105,7 +105,7 @@ function fmtPitchCell(pitch: number) {
 function statusBadge(status: string) {
   if (status === "cleared") {
     return (
-      <span className="inline-flex rounded-full bg-[#e6faf0] text-[#0f5230] text-[10px] font-semibold px-2 py-0.5">
+      <span className="inline-flex rounded-full bg-brand-100 text-[#0f5230] text-[10px] font-semibold px-2 py-0.5">
         Cleared
       </span>
     );
@@ -387,7 +387,7 @@ export default function CandidatePaymentRecords({
                 type="button"
                 size="sm"
                 onClick={() => setUpdateOpen(true)}
-                className="gap-1.5 bg-[#2ed573] hover:bg-[#25c066] text-[#0f2318]"
+                className="gap-1.5 bg-lime-400 hover:bg-[#25c066] text-brand-900"
               >
                 <Plus size={14} />
                 Update payments
@@ -723,8 +723,8 @@ export default function CandidatePaymentRecords({
                   >
                     <td className="px-4 py-3 min-w-[12rem]">
                       <div className="flex items-center gap-2">
-                        <div className="h-9 w-9 rounded-full bg-[#e6faf0] flex items-center justify-center shrink-0">
-                          <User size={16} className="text-[#0f2318]" />
+                        <div className="h-9 w-9 rounded-full bg-brand-100 flex items-center justify-center shrink-0">
+                          <User size={16} className="text-brand-900" />
                         </div>
                         <div className="min-w-0">
                           <p className="font-semibold text-gray-900 truncate">

@@ -64,7 +64,7 @@ const STATUS_BADGE: Record<PaymentLinkStatus, { label: string; cls: string }> =
     },
     paid: {
       label: "Paid",
-      cls: "bg-[#e6faf0] text-[#0f5230] border-[#bdebd0]",
+      cls: "bg-brand-100 text-[#0f5230] border-[#bdebd0]",
     },
     partially_paid: {
       label: "Partial",
@@ -92,7 +92,7 @@ function fmtDateTime(unix?: number | null): string {
 }
 
 function fmtInr(paise: number): string {
-  return `₹${(paise / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `₹${(paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 }
 
 function shortId(id: string): string {
@@ -100,7 +100,7 @@ function shortId(id: string): string {
 }
 
 const inputCls =
-  "rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2ed573]/40 focus:border-[#2ed573]";
+  "rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500";
 
 const initialFilters: TableFilters = {
   status: "",
@@ -345,7 +345,7 @@ export default function PaymentLinksTable({
                       <button
                         type="button"
                         onClick={onCreate}
-                        className="mt-4 inline-flex items-center gap-2 bg-[#2ed573] text-[#0f2318] font-semibold px-4 py-2 rounded-xl text-sm"
+                        className="mt-4 inline-flex items-center gap-2 bg-lime-400 text-brand-900 font-semibold px-4 py-2 rounded-xl text-sm"
                       >
                         Create Payment Link
                       </button>
@@ -367,7 +367,7 @@ export default function PaymentLinksTable({
                         <button
                           type="button"
                           onClick={() => handleCopyText(l.id, l.id)}
-                          className="font-mono text-[11px] text-gray-700 hover:text-[#0f2318] text-left"
+                          className="font-mono text-[11px] text-gray-700 hover:text-brand-900 text-left"
                           title={l.id}
                         >
                           {shortId(l.id)}
@@ -433,7 +433,7 @@ export default function PaymentLinksTable({
                       </td>
                       <td className="px-3 py-3">
                         {referral ? (
-                          <span className="font-mono text-[11px] text-[#0f2318] bg-[#e6faf0] px-1.5 py-0.5 rounded">
+                          <span className="font-mono text-[11px] text-brand-900 bg-brand-100 px-1.5 py-0.5 rounded">
                             {referral}
                           </span>
                         ) : (

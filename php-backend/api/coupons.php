@@ -566,6 +566,16 @@ if ($method === 'POST') {
 
     $id = generateUUID();
     $minAmount = couponsGetOrgMinAmount($db, (string) $orgId);
+    // A discount at or above the minimum bill would make the order free (or negative).
+    $effectiveMin = $minAmount;
+    if (couponsCanEditMinAmount($tokenData) && array_key_exists('min_amount', $input) && $input['min_amount'] !== '' && $input['min_amount'] !== null) {
+        $effectiveMin = (float) $input['min_amount'];
+    }
+    if (is_finite($effectiveMin) && $effectiveMin > 0 && $discount >= $effectiveMin) {
+        respond([
+            'error' => 'Discount must be less than the minimum order amount (₹' . number_format($effectiveMin, 0) . ')',
+        ], 400);
+    }
     if (couponsCanEditMinAmount($tokenData) && array_key_exists('min_amount', $input) && $input['min_amount'] !== '' && $input['min_amount'] !== null) {
         $requestedMin = (float) $input['min_amount'];
         if (!is_finite($requestedMin) || $requestedMin < 0) {

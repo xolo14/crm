@@ -420,7 +420,7 @@ export default function Batches() {
  <Input name="seats" type="number" min={1} defaultValue={30} />
  </div>
  <p className="text-xs text-muted-foreground">
- Status updates automatically: Upcoming (before start), Active (during), Completed (after end).
+ Status updates automatically: Upcoming (before start), Running (during), Completed (after end).
  </p>
  <Button
  type="submit"

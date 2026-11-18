@@ -20,7 +20,7 @@ export function ToggleSwitch({ enabled, onChange, label, size = "md" }: ToggleSw
     >
       <span
         className={`relative inline-flex ${dimensions} items-center rounded-full transition-all duration-200 ease-in-out ${
-          enabled ? "bg-[#2ed573]" : "bg-gray-300"
+          enabled ? "bg-lime-400" : "bg-gray-300"
         }`}
       >
         <span

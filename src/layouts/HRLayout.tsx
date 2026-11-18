@@ -100,7 +100,7 @@ function NavLinks({
           <item.icon className="h-4 w-4 shrink-0" />
           <span className="flex-1 truncate">{item.label}</span>
           {item.to === "/hr/notifications" && unreadCount > 0 && (
-            <Badge className="bg-[#2ed573] text-[#0f2318] shrink-0">{unreadCount}</Badge>
+            <Badge className="bg-lime-400 text-brand-900 shrink-0">{unreadCount}</Badge>
           )}
         </NavLink>
       ))}

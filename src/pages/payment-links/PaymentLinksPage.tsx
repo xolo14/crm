@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useOrgScope } from "@/hooks/useOrgScope";
 import { useSearchParams } from "react-router-dom";
 import { Plus } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
@@ -46,7 +47,7 @@ export default function PaymentLinksPage() {
   const { profile, role } = useAuth();
   const isSuperAdmin = normalizeAppRole(role) === "super_admin";
   const [orgOptions, setOrgOptions] = useState<{ id: string; name: string }[]>([]);
-  const [selectedOrgId, setSelectedOrgId] = useState("all");
+  const [selectedOrgId, setSelectedOrgId] = useOrgScope();
   const [searchParams, setSearchParams] = useSearchParams();
   const referralCode = profile?.referral_code?.trim() ?? "";
   const pollInFlight = useRef(false);
@@ -312,7 +313,7 @@ export default function PaymentLinksPage() {
               <>
                 {" "}
                 · Staff ID:{" "}
-                <span className="font-semibold text-[#2ed573] font-mono">
+                <span className="font-semibold text-brand-500 font-mono">
                   {referralCode}
                 </span>
               </>
@@ -341,7 +342,7 @@ export default function PaymentLinksPage() {
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
-            className="inline-flex items-center gap-2 bg-[#2563EB] text-white font-semibold px-5 py-2.5 rounded-xl text-sm hover:bg-blue-700 transition-colors shadow-sm"
+            className="inline-flex items-center gap-2 bg-primary text-white font-semibold px-5 py-2.5 rounded-xl text-sm hover:bg-brand-700 transition-colors shadow-sm"
           >
             <Plus size={16} />
             Create Payment Link

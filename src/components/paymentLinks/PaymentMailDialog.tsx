@@ -136,7 +136,7 @@ export default function PaymentMailDialog({ link, onClose, onReminder }: Props) 
                   type="button"
                   onClick={() => void handleReminder()}
                   disabled={!canRemind || sending !== null || !link?.customer?.email}
-                  className="mt-3 inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="mt-3 inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {sending === "reminder" && <Loader2 className="h-4 w-4 animate-spin" />}
                   Send reminder

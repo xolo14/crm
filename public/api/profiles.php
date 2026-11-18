@@ -292,7 +292,7 @@ if ($method === 'GET') {
         }
     }
 
-    $stmt = $db->prepare("SELECT u.id as user_id, u.id, u.full_name, u.email, u.phone, u.avatar_url, u.referral_code, u.role, u.created_at, u.updated_at FROM users u WHERE $where ORDER BY u.full_name");
+    $stmt = $db->prepare("SELECT u.id as user_id, u.id, u.full_name, u.email, u.phone, u.avatar_url, u.referral_code, u.role, u.is_active, u.created_at, u.updated_at FROM users u WHERE $where ORDER BY u.full_name");
     $stmt->execute($params);
     respond(['data' => $stmt->fetchAll()]);
 }

@@ -31,7 +31,7 @@ export function PhaseTimeline({ current }: PhaseTimelineProps) {
               className={cn(
                 "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-medium transition-all duration-300 sm:text-xs",
                 done && "border-emerald-500/40 bg-emerald-500/10 text-emerald-800",
-                active && !done && "border-[#2ed573]/50 bg-[#2ed573]/10 text-[#0f2318] shadow-sm",
+                active && !done && "border-brand-500/50 bg-lime-400/10 text-brand-900 shadow-sm",
                 !done && !active && "border-border text-muted-foreground",
               )}
               style={active ? { borderColor: `${color}66`, color } : undefined}

@@ -52,7 +52,7 @@ export function PhaseInputBlock({
         </div>
         <div className="shrink-0 text-right">
           <p className="text-[10px] text-muted-foreground">Target</p>
-          <p className="font-mono text-sm text-[#0f2318]">₹{target.toLocaleString("en-IN")}</p>
+          <p className="font-mono text-sm text-brand-900">₹{target.toLocaleString("en-IN")}</p>
         </div>
       </div>
       <div className="mt-3 space-y-1">

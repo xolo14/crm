@@ -128,13 +128,43 @@ if ($method === 'GET') {
         }));
     }
 
+    // Resolve who deleted each row (display name) in one query.
+    $deleterNames = [];
+    $deleterIds = array_values(array_unique(array_filter(array_map(static function ($r) {
+        return is_array($r) ? trim((string) ($r['deleted_by'] ?? '')) : '';
+    }, $rows))));
+    if ($deleterIds) {
+        try {
+            $ph = implode(',', array_fill(0, count($deleterIds), '?'));
+            $us = $db->prepare("SELECT id, COALESCE(NULLIF(TRIM(full_name), ''), email) AS n FROM users WHERE id IN ($ph)");
+            $us->execute($deleterIds);
+            foreach ($us->fetchAll(PDO::FETCH_ASSOC) as $u) {
+                $deleterNames[(string) $u['id']] = (string) $u['n'];
+            }
+        } catch (Throwable $e) {
+            error_log('[trash] deleter names: ' . $e->getMessage());
+        }
+    }
+
     $out = [];
     foreach ($rows as $r) {
         $label = '';
         $p = json_decode((string) ($r['payload'] ?? ''), true);
         if (is_array($p)) {
-            $label = (string) ($p['name'] ?? $p['title'] ?? $p['subject'] ?? $p['email'] ?? '');
+            foreach (['name', 'full_name', 'title', 'customer_name', 'subject', 'email', 'phone', 'code'] as $k) {
+                $v = trim(preg_replace('/[\x{200B}-\x{200F}\x{2060}\x{FEFF}]/u', '', (string) ($p[$k] ?? '')));
+                // Skip one-letter junk names (e.g. "w", "h") in favour of a better field.
+                if (mb_strlen($v) >= 2) {
+                    $label = $v;
+                    break;
+                }
+            }
+            if ($label !== '' && !empty($p['email']) && $label !== $p['email'] && strpos($label, '@') === false) {
+                $label .= ' · ' . (string) $p['email'];
+            }
         }
+        $deletedTs = strtotime((string) ($r['deleted_at'] ?? '')) ?: time();
+        $daysLeft = max(0, 30 - (int) floor((time() - $deletedTs) / 86400));
         $out[] = [
             'id' => $r['id'],
             'entity_type' => $r['entity_type'],
@@ -142,6 +172,8 @@ if ($method === 'GET') {
             'org_id' => $r['org_id'],
             'deleted_by' => $r['deleted_by'],
             'deleted_at' => $r['deleted_at'],
+            'deleted_by_name' => $deleterNames[(string) ($r['deleted_by'] ?? '')] ?? null,
+            'days_until_purge' => $daysLeft,
             'summary' => $label !== '' ? $label : ('ID ' . substr((string) ($r['entity_id'] ?? ''), 0, 8) . '…'),
         ];
     }

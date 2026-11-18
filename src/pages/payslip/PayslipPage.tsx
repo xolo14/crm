@@ -28,7 +28,7 @@ function AccessDenied() {
       <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-gray-100">
         <Lock className="h-7 w-7 text-gray-500" />
       </div>
-      <h1 className="text-lg font-bold text-[#0f2318]">Access denied</h1>
+      <h1 className="text-lg font-bold text-brand-900">Access denied</h1>
       <p className="mt-2 max-w-sm text-sm text-gray-600">You don&apos;t have permission to view this page.</p>
     </div>
   );
@@ -132,12 +132,12 @@ export default function PayslipPage() {
     <div className="space-y-6 bg-[#f9fafb] pb-8">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-[#0f2318] md:text-3xl">Payslip Generator</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-brand-900 md:text-3xl">Payslip Generator</h1>
           <p className="mt-1 text-sm text-gray-600">Generate and manage employee payslips</p>
         </div>
         <Button
           type="button"
-          className="h-11 shrink-0 rounded-lg bg-[#2ed573] font-semibold text-[#0f2318] hover:bg-[#26c968]"
+          className="h-11 shrink-0 rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
           onClick={() => {
             setEditingEmp(null);
             setAddEmpOpen(true);
@@ -150,7 +150,7 @@ export default function PayslipPage() {
 
       {isLoading ? (
         <div className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-6 text-sm text-gray-600 shadow-sm">
-          <Loader2 className="h-4 w-4 animate-spin text-[#2ed573]" />
+          <Loader2 className="h-4 w-4 animate-spin text-brand-500" />
           Loading payslip data…
         </div>
       ) : null}
@@ -165,13 +165,13 @@ export default function PayslipPage() {
         className="w-full"
       >
         <TabsList className="grid h-auto w-full max-w-2xl grid-cols-3 rounded-xl bg-white p-1 shadow-sm ring-1 ring-gray-200">
-          <TabsTrigger value="generate" className="rounded-lg data-[state=active]:bg-[#0f2318] data-[state=active]:text-white">
+          <TabsTrigger value="generate" className="rounded-lg data-[state=active]:bg-brand-900 data-[state=active]:text-white">
             Generate
           </TabsTrigger>
-          <TabsTrigger value="history" className="rounded-lg data-[state=active]:bg-[#0f2318] data-[state=active]:text-white">
+          <TabsTrigger value="history" className="rounded-lg data-[state=active]:bg-brand-900 data-[state=active]:text-white">
             History
           </TabsTrigger>
-          <TabsTrigger value="employees" className="rounded-lg data-[state=active]:bg-[#0f2318] data-[state=active]:text-white">
+          <TabsTrigger value="employees" className="rounded-lg data-[state=active]:bg-brand-900 data-[state=active]:text-white">
             Employees
           </TabsTrigger>
         </TabsList>

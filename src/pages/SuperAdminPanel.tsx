@@ -14,7 +14,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Building2, Users, TrendingUp, IndianRupee, Plus, Settings, Eye, Loader2, Shield, KeyRound, BarChart3 } from 'lucide-react';
+import { Building2, Users, TrendingUp, IndianRupee, Plus, Settings, Eye, Loader2, Shield, KeyRound, BarChart3, MoreHorizontal, Power, Trash2 } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import {
@@ -266,6 +267,59 @@ export default function SuperAdminPanel() {
     setDeleteConfirmText('');
   };
 
+  /** One primary action (View) + a kebab menu; destructive items sit apart at the bottom. */
+  const renderOrgActions = (o: any, variant: 'mobile' | 'desktop') => {
+    const busy = statusUpdatingOrgId === o.id || deletingOrgId === o.id;
+    return (
+      <div className={variant === 'mobile' ? 'flex gap-2' : 'flex items-center justify-end gap-1.5'}>
+        <Button
+          size="sm"
+          variant="outline"
+          className={variant === 'mobile' ? 'h-8 flex-1 gap-1 text-xs' : 'h-7 gap-1 text-xs'}
+          onClick={() => openOrgView(o)}
+        >
+          <Eye className="h-3 w-3" />
+          View
+        </Button>
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="sm"
+              variant="ghost"
+              className={variant === 'mobile' ? 'h-8 w-8 p-0' : 'h-7 w-7 p-0'}
+              aria-label={`More actions for ${o.name}`}
+              disabled={busy}
+            >
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MoreHorizontal className="h-4 w-4" />}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuItem onSelect={() => openFeatures(o.id)}>
+              <Settings className="mr-2 h-3.5 w-3.5" />
+              Features
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => openProvisionAdmin(o)}>
+              <KeyRound className="mr-2 h-3.5 w-3.5" />
+              Admin sign-in
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => toggleOrgStatus(o)}>
+              <Power className="mr-2 h-3.5 w-3.5" />
+              {o.is_active ? 'Disable organization' : 'Enable organization'}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={() => requestDeleteOrg(o)}
+            >
+              <Trash2 className="mr-2 h-3.5 w-3.5" />
+              Delete…
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    );
+  };
+
   const handleDeleteOrg = async () => {
     if (!deleteConfirmOrg) return;
     setDeletingOrgId(deleteConfirmOrg.id);
@@ -291,7 +345,7 @@ export default function SuperAdminPanel() {
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200 text-xs"><Shield className="h-3 w-3 mr-1" />Super Admin</Badge>
           </div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight mt-1">Control Panel</h1>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight mt-1">Organizations</h1>
           <p className="text-xs sm:text-sm text-muted-foreground">
             {orgs.length} organizations · {activeCount} active · {disabledCount} disabled
           </p>
@@ -459,17 +513,7 @@ export default function SuperAdminPanel() {
                       <div><p className="text-sm font-bold">{o.students_count}</p><p className="text-[9px] text-muted-foreground">Students</p></div>
                       <div><p className="text-sm font-bold">{fmt(parseFloat(o.revenue) || 0)}</p><p className="text-[9px] text-muted-foreground">Revenue</p></div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button size="sm" variant="outline" className="flex-1 min-w-[4.5rem] h-8 text-xs gap-1" onClick={() => openOrgView(o)}><Eye className="h-3 w-3" />View</Button>
-                      <Button size="sm" variant="outline" className="flex-1 min-w-[4.5rem] h-8 text-xs gap-1" onClick={() => openFeatures(o.id)}><Settings className="h-3 w-3" />Features</Button>
-                      <Button size="sm" variant="outline" className="flex-1 min-w-[4.5rem] h-8 text-xs gap-1" title="Change organization admin sign-in (email, name, password)" onClick={() => openProvisionAdmin(o)}><KeyRound className="h-3 w-3" />Admin</Button>
-                      <Button size="sm" variant={o.is_active ? 'destructive' : 'default'} className="h-8 text-xs" onClick={() => toggleOrgStatus(o)} disabled={statusUpdatingOrgId === o.id || deletingOrgId === o.id}>
-                        {statusUpdatingOrgId === o.id ? <Loader2 className="h-3 w-3 animate-spin" /> : (o.is_active ? 'Disable' : 'Enable')}
-                      </Button>
-                      <Button size="sm" variant="destructive" className="h-8 text-xs" onClick={() => requestDeleteOrg(o)} disabled={statusUpdatingOrgId === o.id || deletingOrgId === o.id}>
-                        {deletingOrgId === o.id ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Delete'}
-                      </Button>
-                    </div>
+                    {renderOrgActions(o, 'mobile')}
                   </div>
               ))}
             </div>
@@ -502,17 +546,7 @@ export default function SuperAdminPanel() {
                       <TableCell className="text-center font-semibold">{fmt(parseFloat(o.revenue) || 0)}</TableCell>
                       <TableCell><Badge variant={o.is_active ? 'default' : 'secondary'} className="text-xs">{o.is_active ? 'Active' : 'Disabled'}</Badge></TableCell>
                       <TableCell className="text-right">
-                        <div className="flex flex-wrap gap-1.5 justify-end">
-                          <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => openOrgView(o)}><Eye className="h-3 w-3" />View</Button>
-                          <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => openFeatures(o.id)}><Settings className="h-3 w-3" />Features</Button>
-                          <Button size="sm" variant="outline" className="h-7 text-xs gap-1" title="Change organization admin sign-in (email, name, password)" onClick={() => openProvisionAdmin(o)}><KeyRound className="h-3 w-3" />Admin</Button>
-                          <Button size="sm" variant={o.is_active ? 'destructive' : 'default'} className="h-7 text-xs" onClick={() => toggleOrgStatus(o)} disabled={statusUpdatingOrgId === o.id || deletingOrgId === o.id}>
-                            {statusUpdatingOrgId === o.id ? <Loader2 className="h-3 w-3 animate-spin" /> : (o.is_active ? 'Disable' : 'Enable')}
-                          </Button>
-                          <Button size="sm" variant="destructive" className="h-7 text-xs" onClick={() => requestDeleteOrg(o)} disabled={statusUpdatingOrgId === o.id || deletingOrgId === o.id}>
-                            {deletingOrgId === o.id ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Delete'}
-                          </Button>
-                        </div>
+                        {renderOrgActions(o, 'desktop')}
                       </TableCell>
                     </TableRow>
                 ))}

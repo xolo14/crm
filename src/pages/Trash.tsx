@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { useToast } from '@/hooks/use-toast';
 import { RotateCcw, Trash2, Loader2 } from 'lucide-react';
 import * as perms from '@/lib/permissions';
+import { fmtDateTime } from '@/lib/formatMetric';
 
 const ENTITY_LABELS: Record<string, string> = {
   lead: 'Lead',
@@ -101,7 +102,7 @@ export default function Trash() {
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             Items you delete from Leads, Students, Contacts, Deals, Tasks, Courses, Batches, Payments, Holidays, and lead assignments appear here.
-            Records older than <strong>30 days</strong> are removed automatically when you open this page. Use <strong>Clear trash</strong> to remove everything now.
+            Records older than <strong>30 days</strong> are permanently removed by a nightly job. Use <strong>Clear trash</strong> to remove everything now.
           </p>
           {lastPurged !== null && lastPurged > 0 && (
             <p className="text-xs text-muted-foreground mt-2">Just cleared {lastPurged} expired item(s) (older than 30 days).</p>
@@ -140,8 +141,10 @@ export default function Trash() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Type</TableHead>
-                  <TableHead>Summary</TableHead>
+                  <TableHead>Record</TableHead>
+                  <TableHead>Deleted by</TableHead>
                   <TableHead>Deleted</TableHead>
+                  <TableHead>Purge in</TableHead>
                   <TableHead className="w-[120px]">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -154,8 +157,16 @@ export default function Trash() {
                     <TableCell className="max-w-[280px] truncate" title={r.summary}>
                       {r.summary}
                     </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{r.deleted_by_name || '—'}</TableCell>
                     <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
-                      {r.deleted_at ? new Date(r.deleted_at).toLocaleString() : '—'}
+                      {r.deleted_at ? fmtDateTime(r.deleted_at) : '—'}
+                    </TableCell>
+                    <TableCell className="text-sm whitespace-nowrap tabular-nums">
+                      {typeof r.days_until_purge === 'number' ? (
+                        <span className={r.days_until_purge <= 3 ? 'font-semibold text-destructive' : 'text-muted-foreground'}>
+                          {r.days_until_purge === 0 ? 'Tonight' : `${r.days_until_purge} day${r.days_until_purge === 1 ? '' : 's'}`}
+                        </span>
+                      ) : '—'}
                     </TableCell>
                     <TableCell>
                       {canRestore ? (

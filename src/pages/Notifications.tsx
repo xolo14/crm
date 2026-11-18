@@ -86,6 +86,17 @@ const typeBadgeColors: Record<string, string> = {
   warning: 'bg-warning/10 text-warning border-warning/20',
 };
 
+function notificationBucket(createdAt: string): string {
+  const d = new Date(createdAt);
+  if (Number.isNaN(d.getTime())) return 'Earlier';
+  const today = startOfDay(new Date());
+  if (!isBefore(d, today)) return 'Today';
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 6);
+  if (!isBefore(d, weekAgo)) return 'This week';
+  return 'Earlier';
+}
+
 export default function Notifications() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -117,7 +128,22 @@ export default function Notifications() {
     return () => clearInterval(interval);
   }, [user?.id, fetchNotifications]);
 
-  const filtered = notifications.filter(n => {
+  // Collapse duplicates (same title + message + link on the same day) and drop the stale
+  // "(2 days ago)" suffix older alerts stored in their text; age is shown from created_at.
+  const deduped = (() => {
+    const seen = new Set<string>();
+    const out: typeof notifications = [];
+    for (const n of notifications) {
+      const day = String(n.created_at || '').slice(0, 10);
+      const key = `${n.type}|${n.title}|${n.message ?? ''}|${(n as { link?: string }).link ?? ''}|${day}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...n, message: n.message ? n.message.replace(/\s*\(\d+ days? ago\)\.?$/, '.') : n.message });
+    }
+    return out;
+  })();
+
+  const filtered = deduped.filter(n => {
     if (typeFilter !== 'all' && n.type !== typeFilter) return false;
     if (readFilter === 'unread' && n.is_read) return false;
     if (readFilter === 'read' && !n.is_read) return false;
@@ -278,11 +304,18 @@ export default function Notifications() {
             <p className="text-sm text-muted-foreground">No notifications found</p>
           </div>
         ) : (
-          filtered.map(n => {
+          filtered.map((n, idx) => {
             const Icon = typeIcons[n.type] || Info;
+            const bucket = notificationBucket(n.created_at);
+            const prevBucket = idx > 0 ? notificationBucket(filtered[idx - 1].created_at) : '';
             return (
+              <div key={n.id}>
+              {bucket !== prevBucket ? (
+                <div className="bg-muted/40 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {bucket}
+                </div>
+              ) : null}
               <div
-                key={n.id}
                 className={cn(
                   "flex items-start gap-3 px-4 py-3 hover:bg-muted/50 transition-colors",
                   !n.is_read && "bg-primary/5"
@@ -311,7 +344,7 @@ export default function Notifications() {
                   </div>
                   {n.message && <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{n.message}</p>}
                   <p className="text-[10px] text-muted-foreground mt-1">
-                    {format(new Date(n.created_at), 'MMM d, yyyy h:mm a')} · {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
+                    {format(new Date(n.created_at), 'd MMM yyyy, h:mm a')} · {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
                   </p>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -324,6 +357,7 @@ export default function Notifications() {
                     <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
                   </button>
                 </div>
+              </div>
               </div>
             );
           })

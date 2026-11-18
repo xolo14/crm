@@ -2614,7 +2614,7 @@ export default function OfferLetters() {
                   <Button
                     onClick={generatePdfAndSend}
                     disabled={sending}
-                    className="gap-1.5 rounded-lg bg-[#2ed573] font-semibold text-[#0f2318] hover:bg-[#26c968]"
+                    className="gap-1.5 rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
                   >
                     {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                     {sending ? 'Sending…' : 'Send Offer Letter Mail'}

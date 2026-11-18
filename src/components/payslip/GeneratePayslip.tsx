@@ -85,7 +85,7 @@ function MoneyInput({
         value={value}
         onFocus={(event) => event.currentTarget.select()}
         onChange={(event) => onChange(Math.max(0, Number(event.target.value) || 0))}
-        className="h-9 rounded-lg pl-7 text-right focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
+        className="h-9 rounded-lg pl-7 text-right focus-visible:ring-brand-500 focus-visible:ring-offset-1"
       />
     </div>
   );
@@ -430,12 +430,12 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
       <Card className="rounded-xl border border-gray-200 bg-white shadow-sm">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base text-[#0f2318]">Generate Payslip</CardTitle>
+          <CardTitle className="text-base text-brand-900">Generate Payslip</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
           {/* Employee */}
           <div className="space-y-3">
-            <Label className="text-[#0f2318]">Employee</Label>
+            <Label className="text-brand-900">Employee</Label>
             <Select
               value={employeeId}
               onValueChange={(value) => {
@@ -460,7 +460,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
                 );
               }}
             >
-              <SelectTrigger className="h-11 rounded-lg focus-visible:ring-[#2ed573] focus-visible:ring-offset-1">
+              <SelectTrigger className="h-11 rounded-lg focus-visible:ring-brand-500 focus-visible:ring-offset-1">
                 <SelectValue placeholder="Select employee" />
               </SelectTrigger>
               <SelectContent>
@@ -495,7 +495,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
           {/* Pay period */}
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-2 sm:col-span-1">
-              <Label htmlFor="pay-month" className="text-[#0f2318]">
+              <Label htmlFor="pay-month" className="text-brand-900">
                 Pay Month
               </Label>
               <Input
@@ -503,11 +503,11 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
                 type="month"
                 value={payMonth}
                 onChange={(e) => setPayMonth(e.target.value)}
-                className="h-11 rounded-lg focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
+                className="h-11 rounded-lg focus-visible:ring-brand-500 focus-visible:ring-offset-1"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="wd" className="text-[#0f2318]">
+              <Label htmlFor="wd" className="text-brand-900">
                 Working Days
               </Label>
               <Input
@@ -516,11 +516,11 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
                 min={1}
                 value={workingDays}
                 onChange={(e) => setWorkingDays(Math.max(1, Number(e.target.value) || 1))}
-                className="h-11 rounded-lg focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
+                className="h-11 rounded-lg focus-visible:ring-brand-500 focus-visible:ring-offset-1"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="pd" className="text-[#0f2318]">
+              <Label htmlFor="pd" className="text-brand-900">
                 Paid Days
               </Label>
               <Input
@@ -530,7 +530,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
                 max={workingDays}
                 value={paidDays}
                 onChange={(e) => setPaidDays(Math.min(workingDays, Math.max(0, Number(e.target.value) || 0)))}
-                className="h-11 rounded-lg focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
+                className="h-11 rounded-lg focus-visible:ring-brand-500 focus-visible:ring-offset-1"
               />
             </div>
           </div>
@@ -550,8 +550,8 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-xl border border-gray-200 bg-white p-4 border-l-4 border-l-[#2ed573]">
-              <div className="mb-3 text-xs font-bold uppercase tracking-wide text-[#0f2318]">Earnings</div>
+            <div className="rounded-xl border border-gray-200 bg-white p-4 border-l-4 border-l-brand-500">
+              <div className="mb-3 text-xs font-bold uppercase tracking-wide text-brand-900">Earnings</div>
               <div className="space-y-3 text-sm">
                 {[
                   ["basic", "Basic Salary"],
@@ -569,7 +569,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
                   </div>
                 ))}
                 <div className="my-2 border-t border-gray-200" />
-                <div className="flex justify-between text-base font-bold text-[#0f2318]">
+                <div className="flex justify-between text-base font-bold text-brand-900">
                   <span>Gross Earnings</span>
                   <span>₹ {formatINR(components.grossEarnings)}</span>
                 </div>
@@ -577,7 +577,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
             </div>
 
             <div className="rounded-xl border border-gray-200 bg-white p-4 border-l-4 border-l-red-400">
-              <div className="mb-3 text-xs font-bold uppercase tracking-wide text-[#0f2318]">Deductions</div>
+              <div className="mb-3 text-xs font-bold uppercase tracking-wide text-brand-900">Deductions</div>
               <div className="space-y-3 text-sm">
                 {[
                   ["pfEmployee", "PF (Employee)"],
@@ -595,7 +595,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
                   </div>
                 ))}
                 <div className="my-2 border-t border-gray-200" />
-                <div className="flex justify-between text-base font-bold text-[#0f2318]">
+                <div className="flex justify-between text-base font-bold text-brand-900">
                   <span>Total Deductions</span>
                   <span>₹ {formatINR(components.totalDeductions)}</span>
                 </div>
@@ -604,8 +604,8 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
           </div>
 
           {/* Net pay */}
-          <div className="rounded-xl border-2 border-[#2ed573] bg-[#e6faf0] p-4">
-            <div className="text-2xl font-extrabold text-[#0f2318]">Net Pay: ₹ {formatINR(components.netPay)}</div>
+          <div className="rounded-xl border-2 border-brand-500 bg-brand-100 p-4">
+            <div className="text-2xl font-extrabold text-brand-900">Net Pay: ₹ {formatINR(components.netPay)}</div>
             <div className="mt-1 text-sm italic text-gray-700">Amount in Words: {amountInWords(components.netPay)}</div>
             {components.totalDeductions > components.grossEarnings ? (
               <p className="mt-2 text-sm font-semibold text-red-700">Reduce deductions—they cannot exceed gross earnings.</p>
@@ -615,10 +615,10 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
           {/* PF / PT badges */}
           {employee && (
             <div className="flex flex-wrap gap-2">
-              <Badge className={employee.pfApplicable ? "bg-[#2ed573] text-[#0f2318]" : "bg-gray-100 text-gray-600"}>
+              <Badge className={employee.pfApplicable ? "bg-lime-400 text-brand-900" : "bg-gray-100 text-gray-600"}>
                 PF: {employee.pfApplicable ? "Applicable ✓" : "Not Applicable"}
               </Badge>
-              <Badge className={employee.ptApplicable ? "bg-[#2ed573] text-[#0f2318]" : "bg-gray-100 text-gray-600"}>
+              <Badge className={employee.ptApplicable ? "bg-lime-400 text-brand-900" : "bg-gray-100 text-gray-600"}>
                 PT: {employee.ptApplicable ? "Applicable ✓" : "Not Applicable"}
               </Badge>
             </div>
@@ -633,7 +633,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
             </Button>
             <Button
               type="button"
-              className="rounded-lg bg-[#2ed573] font-semibold text-[#0f2318] hover:bg-[#26c968]"
+              className="rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
               onClick={handleGenerate}
               disabled={submitting || !employee}
             >
@@ -689,7 +689,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
             </Button>
             <Button
               type="button"
-              className="rounded-lg bg-[#2ed573] font-semibold text-[#0f2318] hover:bg-[#26c968]"
+              className="rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
               onClick={openComposeMail}
               disabled={mailSent || !lastGenerated}
             >
@@ -799,7 +799,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
             {!mailSent ? (
               <Button
                 type="button"
-                className="rounded-lg bg-[#2ed573] font-semibold text-[#0f2318] hover:bg-[#26c968]"
+                className="rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
                 onClick={() => void handleSendPayslipMail()}
                 disabled={sendingMail}
               >

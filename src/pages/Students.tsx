@@ -128,6 +128,8 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
   const { role, organization } = useAuth();
   const isMobile = useIsMobile();
   const [search, setSearch] = useState('');
+  /** Registered = paid the registration fee but no course and no batch yet; Enrolled = has either. */
+  const [stage, setStage] = useState<'all' | 'registered' | 'enrolled'>('all');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<any>(null);
@@ -211,14 +213,17 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
   };
 
   const q = search.toLowerCase();
+  const isRegisteredOnly = (s: any) => !String(s.course_id || '').trim() && !String(s.batch_id || '').trim();
+  const registeredCount = students.filter(isRegisteredOnly).length;
   const filtered = students.filter(s =>
-    !search
+    (stage === 'all' || (stage === 'registered' ? isRegisteredOnly(s) : !isRegisteredOnly(s)))
+    && (!search
     || s.name?.toLowerCase().includes(q)
     || s.email?.toLowerCase().includes(q)
     || s.organization_name?.toLowerCase().includes(q)
     || String(s.course_name || s.course || '').toLowerCase().includes(q)
     || String(s.batch_name || s.batch || '').toLowerCase().includes(q)
-    || String(s.enrolled_by_name || '').toLowerCase().includes(q)
+    || String(s.enrolled_by_name || '').toLowerCase().includes(q))
   );
 
   const statusColor = (status: string) => {
@@ -353,6 +358,32 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
             </Dialog>
           )}
         </div>
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-2" role="tablist" aria-label="Student stage">
+        {([
+          ['all', `All (${students.length})`],
+          ['registered', `Registered (${registeredCount})`],
+          ['enrolled', `Enrolled (${students.length - registeredCount})`],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={stage === key}
+            onClick={() => setStage(key)}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+              stage === key
+                ? 'border-brand-900 bg-brand-900 text-white'
+                : 'border-border bg-card text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+        {stage === 'registered' ? (
+          <span className="self-center text-xs text-muted-foreground">Paid the registration fee; no course or batch assigned yet.</span>
+        ) : null}
       </div>
 
       <div className="mb-4 max-w-sm relative">

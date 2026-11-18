@@ -110,7 +110,7 @@ export default function PaymentLinkSuccess({ open, link, onClose }: Props) {
               type="button"
               onClick={() => void sendEmail()}
               disabled={!canSendEmail || sending || emailSent}
-              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#0f2318] text-white text-sm font-medium hover:bg-[#1a3528] disabled:opacity-50"
+              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-brand-900 text-white text-sm font-medium hover:bg-[#1a3528] disabled:opacity-50"
             >
               {sending ? (
                 <Loader2 size={16} className="animate-spin" />
@@ -128,7 +128,7 @@ export default function PaymentLinkSuccess({ open, link, onClose }: Props) {
           <button
             type="button"
             onClick={onClose}
-            className="mt-4 w-full py-2.5 rounded-lg bg-[#2563EB] text-white text-sm font-semibold hover:bg-blue-700"
+            className="mt-4 w-full py-2.5 rounded-lg bg-primary text-white text-sm font-semibold hover:bg-brand-700"
           >
             Done
           </button>

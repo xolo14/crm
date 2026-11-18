@@ -914,6 +914,11 @@ export const api = {
       request('/notifications.php?action=org_bulk', { method: 'POST', body: JSON.stringify(data) }),
   },
 
+  // One definition for dashboard headline numbers (leads, enrolled, collected, …)
+  metrics: {
+    summary: (orgId?: string) =>
+      request(`/metrics.php?action=summary${orgId ? `&org_id=${encodeURIComponent(orgId)}` : ""}`),
+  },
   // Organizations (Super Admin)
   organizations: {
     list: () => request('/organizations.php'),

@@ -108,7 +108,7 @@ function phaseStatusBadge(member: FresherMember): { label: string; className: st
   }
   return {
     label: "Active",
-    className: "border border-emerald-200 bg-[#e6faf0] text-[#0f5230]",
+    className: "border border-emerald-200 bg-brand-100 text-[#0f5230]",
   };
 }
 
@@ -632,8 +632,8 @@ function FresherSalaryAdminTracker() {
             </div>
             <div className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm transition-all duration-150 ease-out hover:-translate-y-px hover:shadow-md">
               <div className="flex items-start justify-between">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#e6faf0]">
-                  <Target className="h-4 w-4 text-[#2ed573]" strokeWidth={2} />
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-brand-100">
+                  <Target className="h-4 w-4 text-brand-500" strokeWidth={2} />
                 </div>
               </div>
               <p className="mt-3 text-3xl font-bold text-gray-900">
@@ -645,7 +645,7 @@ function FresherSalaryAdminTracker() {
               </p>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-gray-100">
                 <div
-                  className="h-1.5 rounded-full bg-[#2ed573] transition-[width] duration-[600ms] ease-out"
+                  className="h-1.5 rounded-full bg-lime-400 transition-[width] duration-[600ms] ease-out"
                   style={{ width: `${pipelineBarPct}%` }}
                 />
               </div>
@@ -690,7 +690,7 @@ function FresherSalaryAdminTracker() {
                   placeholder="Search members…"
                   value={teamSearch}
                   onChange={(e) => setTeamSearch(e.target.value)}
-                  className="h-9 rounded-lg border border-gray-200 pl-8 text-sm focus-visible:ring-2 focus-visible:ring-[#2ed573]/30"
+                  className="h-9 rounded-lg border border-gray-200 pl-8 text-sm focus-visible:ring-2 focus-visible:ring-brand-500/30"
                 />
               </div>
             </div>
@@ -742,7 +742,7 @@ function FresherSalaryAdminTracker() {
                         >
                           <td className="px-6 py-4 text-sm text-gray-700">
                             <div className="flex items-center gap-3">
-                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#e6faf0] text-xs font-bold text-[#0f5230]">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-[#0f5230]">
                                 {initials}
                               </div>
                               <div className="min-w-0">
@@ -768,7 +768,7 @@ function FresherSalaryAdminTracker() {
                             </span>
                             <div className="mt-1 h-1 w-24 overflow-hidden rounded-full bg-gray-100">
                               <div
-                                className="h-1 rounded-full bg-[#2ed573] transition-[width] duration-[600ms] ease-out"
+                                className="h-1 rounded-full bg-lime-400 transition-[width] duration-[600ms] ease-out"
                                 style={{ width: `${Math.min(cp.pct, 100)}%` }}
                               />
                             </div>
@@ -841,9 +841,9 @@ function FresherSalaryAdminTracker() {
               onClick={() => setEmailLogOpen((o) => !o)}
             >
               <span className="flex items-center gap-2">
-                <Mail className="h-4 w-4 shrink-0 text-[#2ed573]" aria-hidden />
+                <Mail className="h-4 w-4 shrink-0 text-brand-500" aria-hidden />
                 <span className="text-sm font-semibold text-gray-700">Email Notifications</span>
-                <span className="ml-1 rounded-full bg-[#e6faf0] px-2 py-0.5 text-xs font-semibold text-[#0f5230]">
+                <span className="ml-1 rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-[#0f5230]">
                   {emailLogRecords.filter((r) => r.success).length} sent
                 </span>
               </span>

@@ -999,7 +999,7 @@ export default function AssessmentsAdminPage() {
                 <div className="space-y-1.5">
                   <Label>Questions per attempt</Label>
                   <Input type="number" readOnly value={30} />
-                  <p className="text-[11px] text-muted-foreground">15 beginner MCQs + 1 practical task · untimed</p>
+                  <p className="text-[11px] text-muted-foreground">30 questions drawn from the selected domains · untimed</p>
                 </div>
               ) : (
                 <div className="space-y-1.5">

@@ -51,7 +51,7 @@ export function MemberDetail({
   return (
     <>
       <DialogHeader className="space-y-1 pr-8 text-left">
-        <DialogTitle className="text-2xl font-bold tracking-tight text-[#0f2318]">{member.name}</DialogTitle>
+        <DialogTitle className="text-2xl font-bold tracking-tight text-brand-900">{member.name}</DialogTitle>
         <DialogDescription className="text-sm">
           {member.role} · Joined {member.joiningDate}
           {dayLine ? <span className="mt-1 block text-xs text-[#0f5230]">{dayLine.label}</span> : null}
@@ -84,7 +84,7 @@ export function MemberDetail({
         <PhaseTimeline current={member.currentPhase} />
 
         <div className={cn(glass, "mt-4 border-border p-3 text-[11px] text-muted-foreground")}>
-          <p className="mb-1 text-xs font-semibold text-[#0f2318]">Progress snapshot</p>
+          <p className="mb-1 text-xs font-semibold text-brand-900">Progress snapshot</p>
           <p className="leading-relaxed">{evaluateMember(member).summaryHeadline}</p>
         </div>
 

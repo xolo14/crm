@@ -13,6 +13,25 @@ const API_BASE = getApiBase();
 
 export const EMAIL_TRIGGER_STORAGE_KEY = "syncpedia_email_triggers";
 
+/** True when sent (or already sent by someone else); `alreadySent` suppresses the toast. */
+export async function sendPhaseEmailDetailed(payload: PhaseEmailPayload): Promise<{ ok: boolean; alreadySent: boolean }> {
+  try {
+    const res = await fetch(`${API_BASE}/email.php?action=phase_update`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ payload }),
+    });
+    const text = await res.text();
+    const data = text.trim() ? (JSON.parse(text) as { success?: boolean; already_sent?: boolean }) : {};
+    return { ok: data.success === true, alreadySent: data.already_sent === true };
+  } catch (err) {
+    console.error("[EMAIL TRIGGER ERROR]", err);
+    return { ok: false, alreadySent: false };
+  }
+}
+
 export async function sendPhaseEmail(payload: PhaseEmailPayload): Promise<boolean> {
   try {
     const headers: Record<string, string> = {
@@ -187,7 +206,7 @@ export async function checkAndSendPhaseEmails(
       sentAt: now,
     };
 
-    const ok = await sendPhaseEmail(payload);
+    const { ok, alreadySent } = await sendPhaseEmailDetailed(payload);
     writeRecord({
       memberId: member.id,
       memberName: member.name,
@@ -197,6 +216,6 @@ export async function checkAndSendPhaseEmails(
       sentAt: now,
       success: ok,
     });
-    if (ok && onSent) onSent(member.name);
+    if (ok && !alreadySent && onSent) onSent(member.name);
   }
 }

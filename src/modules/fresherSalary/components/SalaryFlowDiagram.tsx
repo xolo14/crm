@@ -186,7 +186,7 @@ export function SalaryFlowDiagram({
       <Collapsible open={open} onOpenChange={setOpen} className="group">
         <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-gray-50/80 sm:px-5">
           <span className="flex min-w-0 items-center gap-2">
-            <BookOpen className="h-4 w-4 shrink-0 text-[#2ed573]" aria-hidden />
+            <BookOpen className="h-4 w-4 shrink-0 text-brand-500" aria-hidden />
             <span className="min-w-0">
               <span className="block text-sm font-semibold text-gray-800">Salary rules</span>
               <span className="mt-0.5 block truncate text-xs text-gray-500">{summaryLine}</span>

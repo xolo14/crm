@@ -180,7 +180,7 @@ export function PayslipComposeEmailDialog({
           </Button>
           <Button
             type="button"
-            className="rounded-lg bg-[#2ed573] font-semibold text-[#0f2318] hover:bg-[#26c968]"
+            className="rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
             disabled={sending || !payslip}
             onClick={() => void handleSend()}
           >

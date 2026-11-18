@@ -33,7 +33,7 @@ const STATUS_BADGE: Record<PaymentLinkStatus, { label: string; cls: string }> =
     },
     paid: {
       label: "Paid",
-      cls: "bg-[#e6faf0] text-[#0f5230] border-[#bdebd0]",
+      cls: "bg-brand-100 text-[#0f5230] border-[#bdebd0]",
     },
     partially_paid: {
       label: "Partial",
@@ -296,7 +296,7 @@ export default function LinkDetailModal({
                   )
                   .finally(() => setDownloadingInvoice(false));
               }}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#2ed573]/40 bg-[#e6faf0] text-sm font-medium text-[#0f2318] hover:bg-[#d4f5e3] disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-brand-500/40 bg-brand-100 text-sm font-medium text-brand-900 hover:bg-emerald-200 disabled:opacity-50"
             >
               <Download size={14} />
               {downloadingInvoice ? "Loading…" : "Download Invoice"}

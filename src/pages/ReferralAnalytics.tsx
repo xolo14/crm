@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { isReportableUser } from '@/lib/reportableUsers';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { callLogsApi } from '@/services/callLogs';
@@ -9,7 +10,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, Legend, LabelList } from 'recharts';
+import { chartSeries } from '@/lib/chartTheme';
+import { fmtPercent } from '@/lib/formatMetric';
 import { Users, TrendingUp, UserPlus, Award, Loader2, Filter, Phone, ClipboardList, Eye, CheckCircle, XCircle } from 'lucide-react';
 import { DateRangeFilter, DateRange } from '@/components/DateRangeFilter';
 import { parseServerDateTime } from '@/lib/dateTime';
@@ -58,10 +61,6 @@ export default function ReferralAnalytics() {
         api.leads.list({
           lite: true,
           limit: 2000,
-          onPage: (page) => {
-            setAllLeads(page.data || []);
-            setLoading(false);
-          },
         }),
         api.dailyReports.list(),
       ]);
@@ -175,22 +174,27 @@ export default function ReferralAnalytics() {
 
   // Daily activity trend from reports
   const activityTrend = useMemo(() => {
-    const map: Record<string, { date: string; calls: number; followups: number; demos: number; conversions: number }> = {};
+    // Keyed by sortable day so the axis runs oldest -> newest (labels sorted as text ran backwards).
+    const map: Record<string, { key: number; date: string; calls: number; followups: number; demos: number; conversions: number }> = {};
     for (const r of filteredReports) {
-      const day = new Date(r.report_date).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' });
-      if (!map[day]) map[day] = { date: day, calls: 0, followups: 0, demos: 0, conversions: 0 };
+      const dt = new Date(r.report_date);
+      if (Number.isNaN(dt.getTime())) continue;
+      const dayKey = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()).getTime();
+      const day = String(dayKey);
+      if (!map[day]) map[day] = { key: dayKey, date: dt.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }), calls: 0, followups: 0, demos: 0, conversions: 0 };
       map[day].calls += Number(r.total_calls) || 0;
       map[day].followups += Number(r.total_followups) || 0;
       map[day].demos += Number(r.total_demos) || 0;
       map[day].conversions += Number(r.total_conversions) || 0;
     }
-    return Object.values(map);
+    return Object.values(map).sort((a, b) => a.key - b.key);
   }, [filteredReports]);
 
   // KPIs
   const totalLeads = filteredLeads.length;
   const converted = filteredLeads.filter(l => l.status === 'converted' || l.status === 'enrolled').length;
-  const inPipeline = filteredLeads.filter(l => ['interested', 'demo_scheduled', 'demo_attended'].includes(l.status)).length;
+  // Same definition as Leads: every non-terminal status except New.
+  const inPipeline = filteredLeads.filter(l => !['new', 'enrolled', 'converted', 'lost', 'not_interested'].includes(String(l.status || 'new'))).length;
   const totalCalls = filteredReports.reduce((s, r) => s + (Number(r.total_calls) || 0), 0);
   const totalFollowups = filteredReports.reduce((s, r) => s + (Number(r.total_followups) || 0), 0);
   // One decimal place: a flat 0%/1% hid real values like 0.48% at low lead volumes.
@@ -216,7 +220,7 @@ export default function ReferralAnalytics() {
             <SelectTrigger className="w-full sm:w-[220px]"><Filter className="h-4 w-4 mr-2" /><SelectValue placeholder="All Reps" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Representatives</SelectItem>
-              {profiles.map(p => <SelectItem key={p.user_id} value={p.user_id}>{p.full_name || p.email}</SelectItem>)}
+              {profiles.filter(isReportableUser).map(p => <SelectItem key={p.user_id} value={p.user_id}>{p.full_name || p.email}</SelectItem>)}
             </SelectContent>
           </Select>
           <DateRangeFilter value={dateRange} onChange={setDateRange} />
@@ -228,9 +232,9 @@ export default function ReferralAnalytics() {
         {[
           { label: 'Total Leads', value: totalLeads, icon: UserPlus, color: 'text-blue-600', bg: 'bg-blue-500/10' },
           { label: 'In Pipeline', value: inPipeline, icon: Users, color: 'text-amber-600', bg: 'bg-amber-500/10' },
-          { label: 'Enroll', value: converted, icon: CheckCircle, color: 'text-green-600', bg: 'bg-green-500/10' },
-          { label: 'Conv. Rate', value: `${convRate.toFixed(1)}%`, icon: TrendingUp, color: 'text-teal-600', bg: 'bg-teal-500/10' },
-          { label: 'Total Calls', value: totalCalls, icon: Phone, color: 'text-indigo-600', bg: 'bg-indigo-500/10' },
+          { label: 'Enrolled', value: converted, icon: CheckCircle, color: 'text-green-600', bg: 'bg-green-500/10' },
+          { label: 'Conv. Rate', value: fmtPercent(convRate), icon: TrendingUp, color: 'text-teal-600', bg: 'bg-teal-500/10' },
+          { label: 'Calls (self-reported)', value: totalCalls, icon: Phone, color: 'text-indigo-600', bg: 'bg-indigo-500/10' },
           { label: 'Follow-ups', value: totalFollowups, icon: ClipboardList, color: 'text-purple-600', bg: 'bg-purple-500/10' },
         ].map(card => (
           <Card key={card.label} className="border-border/50 shadow-none">
@@ -247,7 +251,7 @@ export default function ReferralAnalytics() {
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <Card className="border-border/50 shadow-none">
-          <CardHeader><CardTitle className="text-base font-semibold">Lead Status Funnel</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base font-semibold">Leads by current status (CRM)</CardTitle></CardHeader>
           <CardContent>
             {funnelData.length === 0 ? <p className="text-sm text-muted-foreground text-center py-8">No data</p> : (
               <ResponsiveContainer width="100%" height={isMobile ? 200 : 280}>
@@ -256,14 +260,16 @@ export default function ReferralAnalytics() {
                   <XAxis dataKey="name" tick={{ fontSize: isMobile ? 8 : 10 }} stroke="hsl(var(--muted-foreground))" />
                   <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
                   <Tooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 10, fontSize: 12 }} />
-                  <Bar dataKey="value" fill="hsl(162, 63%, 41%)" radius={[6, 6, 0, 0]} />
+                  <Bar dataKey="value" fill={chartSeries()[0]} radius={[4, 4, 0, 0]}>
+                    <LabelList dataKey="value" position="top" style={{ fontSize: 11, fill: 'hsl(var(--foreground))' }} />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             )}
           </CardContent>
         </Card>
         <Card className="border-border/50 shadow-none">
-          <CardHeader><CardTitle className="text-base font-semibold">Daily Activity Trend</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base font-semibold">Daily activity (self-reported)</CardTitle></CardHeader>
           <CardContent>
             {activityTrend.length === 0 ? <p className="text-sm text-muted-foreground text-center py-8">No data</p> : (
               <ResponsiveContainer width="100%" height={isMobile ? 200 : 280}>
@@ -272,9 +278,10 @@ export default function ReferralAnalytics() {
                   <XAxis dataKey="date" tick={{ fontSize: isMobile ? 8 : 10 }} stroke="hsl(var(--muted-foreground))" />
                   <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
                   <Tooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 10, fontSize: 12 }} />
-                  <Line type="monotone" dataKey="calls" stroke="hsl(200, 70%, 50%)" strokeWidth={2} name="Calls" />
-                  <Line type="monotone" dataKey="followups" stroke="hsl(280, 70%, 50%)" strokeWidth={2} name="Follow-ups" />
-                  <Line type="monotone" dataKey="conversions" stroke="hsl(140, 70%, 45%)" strokeWidth={2} name="Enroll" />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Line type="monotone" dataKey="calls" stroke={chartSeries()[2]} strokeWidth={2} dot={false} name="Calls" />
+                  <Line type="monotone" dataKey="followups" stroke={chartSeries()[3]} strokeWidth={2} dot={false} name="Follow-ups" />
+                  <Line type="monotone" dataKey="conversions" stroke={chartSeries()[0]} strokeWidth={2} dot={false} name="Enrolled (reported)" />
                 </LineChart>
               </ResponsiveContainer>
             )}

@@ -36,20 +36,20 @@ export function SalarySummary({ member, fixedSalary, orgPolicy, className }: Sal
 
   return (
     <div className={cn(GLASS_PANEL, "space-y-3 p-4", className)}>
-      <h3 className="flex items-center gap-2 text-sm font-semibold text-[#0f2318]">
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-brand-900">
         <Wallet className="h-4 w-4 text-emerald-600" /> Estimated earnings (₹)
       </h3>
       <div className="space-y-2 text-xs">
         {rows.map(([lab, amt, note]) => (
           <div key={lab} className="flex justify-between border-b border-border/60 py-1.5">
             <span className="text-muted-foreground">{lab}</span>
-            <span className="font-mono text-[#0f2318]">
+            <span className="font-mono text-brand-900">
               ₹{amt.toLocaleString("en-IN")}
               <span className="ml-2 text-[10px] text-muted-foreground">{note}</span>
             </span>
           </div>
         ))}
-        <div className="flex justify-between pt-2 font-semibold text-[#0f2318]">
+        <div className="flex justify-between pt-2 font-semibold text-brand-900">
           <span>Total (illustrative)</span>
           <span>₹{est.total.toLocaleString("en-IN")}</span>
         </div>

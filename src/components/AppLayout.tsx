@@ -32,6 +32,10 @@ import { useFresherSalaryAccess } from '@/hooks/useFresherSalaryAccess';
 import { useQuery } from '@tanstack/react-query';
 import { assessmentsApi } from '@/services/assessments';
 import type { PageAccess } from '@/lib/orgAccess';
+import { OrgScopeSwitcher } from '@/components/OrgScopeSwitcher';
+import { CommandPalette, type CommandPage } from '@/components/CommandPalette';
+import { syncOrgScopeToUrl } from '@/hooks/useOrgScope';
+import { Search } from 'lucide-react';
 
 /** Shell pages not stored in org_features — always on for admins; managers need page grants. */
 const ORG_SHELL_FEATURES = new Set(['team', 'settings', 'trash']);
@@ -258,6 +262,50 @@ const navItems: NavItem[] = [
   { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
 ];
 
+type NavGroupKey = 'overview' | 'sales' | 'academics' | 'revenue' | 'people' | 'admin';
+
+const NAV_GROUPS: { key: NavGroupKey; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'sales', label: 'Sales' },
+  { key: 'academics', label: 'Academics' },
+  { key: 'revenue', label: 'Revenue' },
+  { key: 'people', label: 'People & HR' },
+  { key: 'admin', label: 'Admin' },
+];
+
+/** Sidebar sections, in display order. Paths not listed fall into Overview. */
+const NAV_GROUP_ORDER: Record<NavGroupKey, string[]> = {
+  overview: ['/', '/marketing/dashboard', '/notifications', '/tasks'],
+  sales: [
+    '/leads', '/leads-management', '/my-leads', '/marketing/form-leads', '/marketing/imported-leads',
+    '/my-referrals', '/daily-reports', '/communications',
+    '/marketing-admin', '/marketing/portal', '/marketing/whatsapp', '/marketing/meta-ads',
+  ],
+  academics: ['/students', '/courses', '/batches', '/live-classes', '/timetables', '/assessments', '/certificates'],
+  revenue: ['/payments/records', '/payments', '/coupons'],
+  people: ['/team', '/offer-letters', '/video-intros', '/payslip', '/fresher-salary-tracker', '/holidays'],
+  admin: ['/organizations', '/form-management', '/settings', '/trash'],
+};
+
+function navGroupOf(path: string): { key: NavGroupKey; rank: number } {
+  for (const g of NAV_GROUPS) {
+    const idx = NAV_GROUP_ORDER[g.key].indexOf(path);
+    if (idx >= 0) return { key: g.key, rank: idx };
+  }
+  return { key: 'overview', rank: 99 };
+}
+
+const NAV_COLLAPSED_GROUPS_KEY = 'crm_nav_collapsed_groups';
+
+function readCollapsedGroups(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(NAV_COLLAPSED_GROUPS_KEY) || '[]');
+    return new Set(Array.isArray(raw) ? raw.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 function SidebarNavItem({ item, collapsed, role, organization, pageAccess, currentPath, onNavigate, showNewBadge, fresherEnrolled, hasAssignedAssignments }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; pageAccess?: PageAccess | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean; fresherEnrolled?: boolean; hasAssignedAssignments?: boolean }) {
   const hasChildren = item.children && item.children.length > 0;
   const filteredChildren = hasChildren
@@ -278,14 +326,14 @@ function SidebarNavItem({ item, collapsed, role, organization, pageAccess, curre
             className={cn(
               "flex-1 flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
               isActive && !isChildActive
-                ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-md shadow-sidebar-primary/20"
-                : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                ? "bg-sidebar-primary text-sidebar-primary-foreground font-semibold"
+                : "text-sidebar-foreground/[0.72] hover:bg-sidebar-accent hover:text-sidebar-foreground"
             )}
           >
             <item.icon className="h-4 w-4 shrink-0" />
             <span className="flex-1">{item.label}</span>
             {item.to === "/certificates" && showNewBadge && (
-              <span className="ml-auto text-[9px] font-bold px-[7px] py-[2px] rounded-full bg-[#2ed573] text-[#0f2318]">
+              <span className="ml-auto text-[9px] font-bold px-[7px] py-[2px] rounded-full bg-lime-400 text-brand-900">
                 NEW
               </span>
             )}
@@ -307,7 +355,7 @@ function SidebarNavItem({ item, collapsed, role, organization, pageAccess, curre
                 className={({ isActive: active }) => cn(
                   "flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-all duration-150",
                   active
-                    ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm shadow-sidebar-primary/20"
+                    ? "bg-sidebar-primary text-sidebar-primary-foreground font-semibold"
                     : "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
                 )}
               >
@@ -326,11 +374,13 @@ function SidebarNavItem({ item, collapsed, role, organization, pageAccess, curre
       to={item.to}
       end
       onClick={onNavigate}
+      title={collapsed ? item.label : undefined}
+      aria-label={collapsed ? item.label : undefined}
       className={({ isActive: active }) => cn(
         "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
         active
-          ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-md shadow-sidebar-primary/20"
-          : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground",
+          ? "bg-sidebar-primary text-sidebar-primary-foreground font-semibold"
+          : "text-sidebar-foreground/[0.72] hover:bg-sidebar-accent hover:text-sidebar-foreground",
         collapsed && "justify-center px-2"
       )}
     >
@@ -339,7 +389,7 @@ function SidebarNavItem({ item, collapsed, role, organization, pageAccess, curre
         <>
           <span>{item.label}</span>
           {item.to === "/certificates" && showNewBadge && (
-            <span className="ml-auto text-[9px] font-bold px-[7px] py-[2px] rounded-full bg-[#2ed573] text-[#0f2318]">
+            <span className="ml-auto text-[9px] font-bold px-[7px] py-[2px] rounded-full bg-lime-400 text-brand-900">
               NEW
             </span>
           )}
@@ -429,6 +479,7 @@ function SidebarContent({
   organization,
   pageAccess,
   onNavigate,
+  enableCommandPalette = false,
 }: {
   collapsed: boolean;
   role: AppRole | null;
@@ -441,6 +492,7 @@ function SidebarContent({
   } | null;
   pageAccess?: PageAccess | null;
   onNavigate?: () => void;
+  enableCommandPalette?: boolean;
 }) {
   const location = useLocation();
   const currentPath = location.pathname;
@@ -460,6 +512,50 @@ function SidebarContent({
     : navItems.filter((item) =>
         navItemAllowed(item, role, organization, pageAccess, fresherAccess.enrolled, hasAssignedAssignments),
       );
+  const groupedNav = React.useMemo(() => {
+    const buckets = new Map<NavGroupKey, { item: NavItem; rank: number; idx: number }[]>();
+    filteredNav.forEach((item, idx) => {
+      const g = navGroupOf(item.to);
+      const list = buckets.get(g.key) ?? [];
+      list.push({ item, rank: g.rank, idx });
+      buckets.set(g.key, list);
+    });
+    return NAV_GROUPS.filter((g) => buckets.has(g.key)).map((g) => ({
+      group: g,
+      items: buckets
+        .get(g.key)!
+        .sort((a, b) => a.rank - b.rank || a.idx - b.idx)
+        .map((x) => x.item),
+    }));
+  }, [filteredNav]);
+  const commandPages = React.useMemo<CommandPage[]>(() => {
+    const out: CommandPage[] = [];
+    for (const { group, items } of groupedNav) {
+      for (const it of items) {
+        out.push({ to: it.to, label: it.label, icon: it.icon, group: group.label });
+        for (const c of it.children ?? []) {
+          if (navItemAllowed(c, role, organization, pageAccess, fresherAccess.enrolled, hasAssignedAssignments)) {
+            out.push({ to: c.to, label: c.label, icon: c.icon, group: group.label });
+          }
+        }
+      }
+    }
+    return out;
+  }, [groupedNav, role, organization, pageAccess, fresherAccess.enrolled, hasAssignedAssignments]);
+  const [collapsedGroups, setCollapsedGroups] = React.useState<Set<string>>(() => readCollapsedGroups());
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try {
+        localStorage.setItem(NAV_COLLAPSED_GROUPS_KEY, JSON.stringify([...next]));
+      } catch {
+        /* storage unavailable: keep in-memory state */
+      }
+      return next;
+    });
+  };
   const [showNewBadge, setShowNewBadge] = React.useState<boolean>(
     !localStorage.getItem("cert_nav_seen")
   );
@@ -516,16 +612,36 @@ function SidebarContent({
         )}
       </div>
 
-      {!collapsed && (
-        <div className="px-4 pt-3 pb-1">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/40">Menu</span>
-        </div>
-      )}
-
-      <nav className="flex-1 py-1 px-2 space-y-0.5 overflow-y-auto pb-3">
-        {filteredNav.map(item => (
-          <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} fresherEnrolled={fresherAccess.enrolled} hasAssignedAssignments={hasAssignedAssignments} />
-        ))}
+      {enableCommandPalette ? <CommandPalette pages={commandPages} /> : null}
+      <nav className="flex-1 py-2 px-2 overflow-y-auto pb-3" aria-label="Main navigation">
+        {groupedNav.map(({ group, items }, gi) => {
+          const containsActive = items.some(
+            (it) => currentPath === it.to || (it.to !== '/' && currentPath.startsWith(it.to + '/')),
+          );
+          const isClosed = !collapsed && collapsedGroups.has(group.key) && !containsActive;
+          return (
+            <div key={group.key} className={cn(gi > 0 && (collapsed ? 'mt-2 pt-2 border-t border-sidebar-border' : 'mt-3'))}>
+              {!collapsed && (
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.key)}
+                  aria-expanded={!isClosed}
+                  className="flex w-full items-center justify-between rounded-md px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/45 hover:text-sidebar-foreground/80"
+                >
+                  <span>{group.label}</span>
+                  <ChevronDown className={cn('h-3 w-3 transition-transform', isClosed && '-rotate-90')} />
+                </button>
+              )}
+              {!isClosed && (
+                <div className="space-y-0.5">
+                  {items.map((item) => (
+                    <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} fresherEnrolled={fresherAccess.enrolled} hasAssignedAssignments={hasAssignedAssignments} />
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </nav>
     </div>
   );
@@ -541,6 +657,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const showOrgViewingBadge = role === 'super_admin' && !!organization && location.pathname === '/org-crm';
   const resultsOnly = normalizeAppRole(role) === "assessment_viewer";
+  const isSuperAdminShell = normalizeAppRole(role) === "super_admin";
+
+  useEffect(() => {
+    if (isSuperAdminShell) syncOrgScopeToUrl();
+  }, [location.pathname, isSuperAdminShell]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("crm-compact", compactMode);
@@ -570,9 +691,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <aside className={cn(
         "hidden md:flex flex-col transition-all duration-200 relative shrink-0",
         resultsOnly && "md:hidden",
-        collapsed ? "w-16" : "w-60"
+        collapsed ? "w-[72px]" : "w-[248px]"
       )}>
-        <SidebarContent collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} />
+        <SidebarContent collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} enableCommandPalette />
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="absolute -right-3 z-10 h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground transition-all hidden md:flex shadow-sm"
@@ -639,6 +760,19 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           style={{ height: "var(--crm-desktop-topbar-height)" }}
         >
           <div className="flex items-center gap-2">
+            {isSuperAdminShell && !resultsOnly ? <OrgScopeSwitcher /> : null}
+            {!resultsOnly ? (
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new Event("crm-open-command-palette"))}
+                className="inline-flex h-8 w-[220px] items-center gap-2 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground hover:border-brand-500/40 hover:text-foreground"
+                aria-label="Search pages (Ctrl+K)"
+              >
+                <Search className="h-3.5 w-3.5" />
+                <span className="flex-1 text-left">Search pages…</span>
+                <kbd className="rounded border border-border bg-muted px-1.5 font-mono text-[10px]">Ctrl K</kbd>
+              </button>
+            ) : null}
             {showOrgViewingBadge && (
               <div className="inline-flex items-center gap-1.5 rounded-md border border-primary/20 bg-primary/5 px-2 py-1">
                 <span className="text-[10px] text-muted-foreground">Viewing</span>

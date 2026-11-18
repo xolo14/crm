@@ -41,7 +41,7 @@ export function batchScheduleStatus(
 }
 
 export function batchStatusLabel(status: string): string {
-  if (status === 'active') return 'Active';
+  if (status === 'active') return 'Running';
   if (status === 'completed') return 'Completed';
   return 'Upcoming';
 }
@@ -49,7 +49,7 @@ export function batchStatusLabel(status: string): string {
 /** Safe locale date for tables; blank / 0000-00-00 / invalid → null. */
 export function formatBatchDate(value?: string | null): string | null {
   const d = parseScheduleDate(value);
-  return d ? d.toLocaleDateString() : null;
+  return d ? d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : null;
 }
 
 /** L1 sales reps: view-only list of upcoming + all active batches (for enrollment). */

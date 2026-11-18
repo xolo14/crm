@@ -7946,7 +7946,8 @@ function syncpediaDispatchDueReminders(PDO $db, array $tokenData): void {
             }
             $who = trim((string) ($row['recipient_name'] ?? 'a candidate'));
             $link = '/offer-letters#followup-' . $oid;
-            $msg = 'Follow up on offer letter sent to ' . $who . ' (2 days ago).';
+            // Absolute date: a stored "(2 days ago)" goes stale as soon as the alert ages.
+            $msg = 'Follow up on offer letter sent to ' . $who . ' (sent ' . date('j M Y', strtotime('-2 days')) . ').';
             syncpediaNotifyUserOnce($db, $sender, 'Offer letter follow-up', $msg, 'follow_up', $link, $orgId, false, '');
             $mgr = syncpediaManagerIdOfUser($db, $sender);
             if ($mgr) {
@@ -7968,7 +7969,7 @@ function syncpediaDispatchDueReminders(PDO $db, array $tokenData): void {
             }
             $who = trim((string) ($row['recipient_name'] ?? 'a recipient'));
             $link = '/certificates#followup-' . $cid;
-            $msg = 'Follow up on certificate issued to ' . $who . ' (2 days ago).';
+            $msg = 'Follow up on certificate issued to ' . $who . ' (issued ' . date('j M Y', strtotime('-2 days')) . ').';
             syncpediaNotifyUserOnce($db, $issuer, 'Certificate follow-up', $msg, 'follow_up', $link, $orgId, false, '');
             $mgr = syncpediaManagerIdOfUser($db, $issuer);
             if ($mgr) {

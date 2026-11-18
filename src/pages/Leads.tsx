@@ -58,12 +58,14 @@ import {
 } from '@/lib/leadSources';
 import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { ORG_SCOPE_ALL, useOrgScope } from '@/hooks/useOrgScope';
+import { pct } from '@/lib/formatMetric';
 
 const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
 
 const formatLeadStatus = (s?: string | null) => {
   if (!s) return 'New';
-  if (s === 'enrolled' || s === 'converted') return 'Enroll';
+  if (s === 'enrolled' || s === 'converted') return 'Enrolled';
   if (s === 'considering') return 'Interested';
   if (s === 'not_interested') return 'Lost';
   if (s === 'not_answered') return 'Not answered';
@@ -240,7 +242,17 @@ export default function Leads() {
   const [accessBusy, setAccessBusy] = useState(false);
   const [cardManagerGrants, setCardManagerGrants] = useState<Record<string, string[]>>({});
   /** Super-admin: which org's source cards + folders to show */
-  const [viewOrgId, setViewOrgId] = useState('');
+  const [viewOrgId, setViewOrgIdLocal] = useState('');
+  // Super admin: the Leads view follows the header organization scope, and picking an
+  // org here updates that shared scope (persisted across pages and refreshes).
+  const [orgScope, setOrgScopeGlobal] = useOrgScope();
+  const setViewOrgId = useCallback(
+    (v: string) => {
+      setViewOrgIdLocal(v);
+      if (v) setOrgScopeGlobal(v);
+    },
+    [setOrgScopeGlobal],
+  );
   const [viewOrgs, setViewOrgs] = useState<{ id: string; name: string }[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
@@ -349,10 +361,15 @@ export default function Leads() {
           .sort((a, b) => a.name.localeCompare(b.name));
         setViewOrgs(opts);
         setImportOrgs(opts);
-        setViewOrgId((prev) => {
-          const preferred = String(organization?.id || prev || '').trim();
-          if (preferred && opts.some((o) => o.id === preferred)) return preferred;
-          return opts[0]?.id || '';
+        setViewOrgIdLocal((prev) => {
+          // Leads always needs one org (an unscoped list is too heavy). Prefer the header
+          // scope, then the current org, then the main Syncpedia org — never just the
+          // alphabetically-first org (which landed super admins on an empty tenant).
+          const scoped = orgScope !== ORG_SCOPE_ALL ? orgScope : '';
+          for (const cand of [scoped, String(organization?.id || '').trim(), prev]) {
+            if (cand && opts.some((o) => o.id === cand)) return cand;
+          }
+          return opts.find((o) => /syncpedia/i.test(o.name))?.id || opts[0]?.id || '';
         });
         setImportOrgId((prev) => {
           const preferred = String(organization?.id || prev || '').trim();
@@ -363,7 +380,16 @@ export default function Leads() {
         setViewOrgs([]);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- orgScope handled by the effect below
   }, [isSuperAdmin, organization?.id]);
+
+  useEffect(() => {
+    if (!isSuperAdmin || orgScope === ORG_SCOPE_ALL) return;
+    if (viewOrgs.some((o) => o.id === orgScope)) {
+      setViewOrgIdLocal(orgScope);
+      setImportOrgId(orgScope);
+    }
+  }, [isSuperAdmin, orgScope, viewOrgs]);
 
   const leadScope = useMemo(
     () => ({
@@ -1171,11 +1197,12 @@ export default function Leads() {
 
   const totalLeads = leadKpi?.total ?? leads.length;
   const newLeads = leadKpi?.new ?? leads.filter(l => l.status === 'new').length;
-  const inPipeline = leadKpi?.pipeline ?? leads.filter(l => ['qualified', 'interested', 'demo_scheduled', 'demo_attended', 'considering'].includes(l.status)).length;
   const enrollLeads = leadKpi?.enrolled ?? leads.filter(l => l.status === 'enrolled' || l.status === 'converted').length;
   const lostLeads = leadKpi?.lost ?? leads.filter(l => l.status === 'lost' || l.status === 'not_interested').length;
   const unassignedCount = leadKpi?.unassigned ?? leads.filter(l => !l.assigned_to).length;
-  const convRate = totalLeads > 0 ? Math.round((enrollLeads / totalLeads) * 100) : 0;
+  // In Pipeline = every non-terminal status except New, so New + In Pipeline + Enrolled + Lost = Total.
+  const inPipeline = Math.max(0, totalLeads - newLeads - enrollLeads - lostLeads);
+  const convRate = pct(enrollLeads, totalLeads);
 
   const normalizeLeadStatusForApi = (status: string) => {
     if (status === 'converted') return 'enrolled';
@@ -2051,10 +2078,10 @@ export default function Leads() {
       {/* KPI Cards */}
       <div className={`grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-6 gap-2 sm:gap-3 mb-5`}>
         {[
-          { label: 'Total Leads', value: totalLeads, icon: Users, color: 'text-blue-600', bg: 'bg-blue-500/10', sub: 'Imported' },
+          { label: 'Total Leads', value: totalLeads, icon: Users, color: 'text-blue-600', bg: 'bg-blue-500/10', sub: 'All sources' },
           { label: 'New', value: newLeads, icon: Clock, color: 'text-sky-600', bg: 'bg-sky-500/10', sub: 'Untouched' },
-          { label: 'In Pipeline', value: inPipeline, icon: Target, color: 'text-amber-600', bg: 'bg-amber-500/10', sub: 'Active' },
-          { label: 'Enroll', value: enrollLeads, icon: GraduationCap, color: 'text-teal-700', bg: 'bg-teal-500/10', sub: `${convRate}% won` },
+          { label: 'In Pipeline', value: inPipeline, icon: Target, color: 'text-amber-600', bg: 'bg-amber-500/10', sub: 'Contacted to demo' },
+          { label: 'Enrolled', value: enrollLeads, icon: GraduationCap, color: 'text-teal-700', bg: 'bg-teal-500/10', sub: `${convRate} of total` },
           { label: 'Lost', value: lostLeads, icon: XCircle, color: 'text-red-600', bg: 'bg-red-500/10', sub: 'Dropped' },
           { label: 'Unassigned', value: unassignedCount, icon: UserPlus, color: 'text-amber-600', bg: 'bg-amber-500/10', sub: 'Need action' },
         ].map(c => (
@@ -2071,7 +2098,7 @@ export default function Leads() {
             } else {
               setUnassignedOnly(false);
               if (c.label === 'New') setStatusFilter('new');
-              else if (c.label === 'Enroll') setStatusFilter('enrolled');
+              else if (c.label === 'Enrolled') setStatusFilter('enrolled');
               else if (c.label === 'Lost') setStatusFilter('lost');
               else setStatusFilter('all');
             }

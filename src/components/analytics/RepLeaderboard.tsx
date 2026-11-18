@@ -37,7 +37,7 @@ export function RepLeaderboard({ byRep }: Props) {
                     {i + 1}
                   </div>
                 )}
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#e6faf0] text-xs font-bold text-[#0f5230]">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-100 text-xs font-bold text-[#0f5230]">
                   {rep.rep.slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">

@@ -49,11 +49,11 @@ interface Props {
 const PAGE_SIZE = 20;
 
 function fmtInr(paise: number): string {
-  return `₹${(paise / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `₹${(paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 }
 
 const inputCls =
-  "rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#2ed573]/40 focus:border-[#2ed573]";
+  "rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500";
 
 export default function PaymentRecordsTable({
   team,
@@ -350,7 +350,7 @@ export default function PaymentRecordsTable({
             </tbody>
             {!loading && memberRows.length > 0 ? (
               <tfoot>
-                <tr className="bg-[#f0fdf4] border-t-2 border-[#bdebd0] font-semibold text-[#0f2318]">
+                <tr className="bg-[#f0fdf4] border-t-2 border-[#bdebd0] font-semibold text-brand-900">
                   <td className="px-4 py-3">Total</td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     {totals.links}
@@ -442,8 +442,8 @@ function MemberSummaryRow({
     >
       <td className="px-4 py-3 min-w-[12rem]">
         <div className="flex items-center gap-2">
-          <div className="h-9 w-9 rounded-full bg-[#e6faf0] flex items-center justify-center shrink-0">
-            <User size={16} className="text-[#0f2318]" />
+          <div className="h-9 w-9 rounded-full bg-brand-100 flex items-center justify-center shrink-0">
+            <User size={16} className="text-brand-900" />
           </div>
           <div className="min-w-0">
             <p className="font-semibold text-gray-900 truncate">
@@ -455,7 +455,7 @@ function MemberSummaryRow({
               </p>
             ) : null}
             {ref ? (
-              <p className="text-[10px] font-mono text-[#2ed573] mt-0.5">
+              <p className="text-[10px] font-mono text-brand-500 mt-0.5">
                 {ref}
               </p>
             ) : null}
@@ -466,7 +466,7 @@ function MemberSummaryRow({
         {row.totalLinks}
       </td>
       <td className="px-4 py-3 text-right tabular-nums">
-        <span className="inline-flex min-w-[1.5rem] justify-center rounded-full bg-[#e6faf0] text-[#0f5230] text-xs font-semibold px-2 py-0.5">
+        <span className="inline-flex min-w-[1.5rem] justify-center rounded-full bg-brand-100 text-[#0f5230] text-xs font-semibold px-2 py-0.5">
           {row.paidCount}
         </span>
       </td>

@@ -56,7 +56,7 @@ function roleDisplayLabel(roleKey: string): string {
 }
 
 const inputClass =
-  "w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm transition-shadow focus-visible:border-[#2ed573] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2ed573]/30";
+  "w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm transition-shadow focus-visible:border-brand-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/30";
 
 export function AddMemberForm({
   name,
@@ -176,7 +176,7 @@ export function AddMemberForm({
                             className={cn(
                               "mt-0.5 h-4 w-4 shrink-0",
                               selectedId === m.id
-                                ? "opacity-100 text-[#2ed573]"
+                                ? "opacity-100 text-brand-500"
                                 : "opacity-0",
                             )}
                           />
@@ -231,7 +231,7 @@ export function AddMemberForm({
         <Button
           type="button"
           className={cn(
-            "h-[42px] rounded-xl bg-[#2ed573] px-5 text-sm font-semibold text-[#0f2318] transition-colors hover:bg-[#22c265] min-w-[160px]",
+            "h-[42px] rounded-xl bg-lime-400 px-5 text-sm font-semibold text-brand-900 transition-colors hover:bg-[#22c265] min-w-[160px]",
             !canSubmit && "cursor-not-allowed opacity-50",
           )}
           onClick={() => onSubmit(normalizeFresherPolicy(terms))}

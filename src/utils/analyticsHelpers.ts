@@ -75,7 +75,7 @@ export function aggregateByRep(data: SalesReport[]): RepSummary[] {
       lost: p.lost + r.lost,
       conversionRate: 0,
     };
-    u.conversionRate = u.calls > 0 ? Math.round((u.enrolled / u.calls) * 100) : 0;
+    u.conversionRate = u.calls > 0 ? Math.round((u.enrolled / u.calls) * 1000) / 10 : 0;
     map.set(r.rep, u);
   });
   return Array.from(map.values()).sort((a, b) => b.enrolled - a.enrolled);

@@ -16,8 +16,8 @@ export function ProgressBar({ value, className, thin, variant = "default" }: Pro
       value={v}
       className={cn(
         thin ? "h-1.5" : "h-2",
-        variant === "card" && "bg-muted [&>div]:bg-[#2ed573]",
-        variant === "default" && "bg-muted [&>div]:bg-[#2ed573]",
+        variant === "card" && "bg-muted [&>div]:bg-lime-400",
+        variant === "default" && "bg-muted [&>div]:bg-lime-400",
         className,
       )}
     />

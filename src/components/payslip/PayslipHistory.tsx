@@ -29,7 +29,7 @@ import PayslipPrintTemplate from "./PayslipPrintTemplate";
 import { PayslipComposeEmailDialog } from "./PayslipComposeEmailDialog";
 
 const ID_SEGMENTS = [
-  { key: "prefix" as const, className: "bg-[#e6faf0] text-[#0f5230]" },
+  { key: "prefix" as const, className: "bg-brand-100 text-[#0f5230]" },
   { key: "type" as const, className: "bg-[#e6f0fb] text-[#0c447c]" },
   { key: "period" as const, className: "bg-[#faeeda] text-[#633806]" },
   { key: "suffix" as const, className: "bg-[#eeedfe] text-[#3c3489]" },
@@ -46,7 +46,7 @@ function PayslipIdCell({ id, onCopy }: { id: string; onCopy: () => void }) {
             void navigator.clipboard.writeText(id);
             onCopy();
           }}
-          className="inline-flex flex-wrap items-center gap-0.5 rounded-md text-left font-mono text-[11px] font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
+          className="inline-flex flex-wrap items-center gap-0.5 rounded-md text-left font-mono text-[11px] font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1"
         >
           {parts ? (
             ID_SEGMENTS.map((seg) => (
@@ -66,7 +66,7 @@ function PayslipIdCell({ id, onCopy }: { id: string; onCopy: () => void }) {
 
 function statusBadge(status: PayslipStatus) {
   if (status === "draft") return <Badge variant="secondary">Draft</Badge>;
-  if (status === "generated") return <Badge className="bg-[#2ed573] font-semibold text-[#0f2318]">Generated</Badge>;
+  if (status === "generated") return <Badge className="bg-lime-400 font-semibold text-brand-900">Generated</Badge>;
   return <Badge className="bg-blue-600 text-white hover:bg-blue-600">Sent</Badge>;
 }
 
@@ -172,7 +172,7 @@ export default function PayslipHistory({
               placeholder="Name or Payslip ID"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="h-10 rounded-lg focus-visible:ring-[#2ed573] focus-visible:ring-offset-1"
+              className="h-10 rounded-lg focus-visible:ring-brand-500 focus-visible:ring-offset-1"
             />
           </div>
           <div className="w-44 space-y-1.5">
@@ -217,7 +217,7 @@ export default function PayslipHistory({
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-200 bg-[#f9fafb] py-16 text-center">
             <p className="text-sm font-medium text-gray-600">No payslips generated yet</p>
-            <Button type="button" className="mt-4 rounded-lg bg-[#2ed573] font-semibold text-[#0f2318]" onClick={onGoToGenerate}>
+            <Button type="button" className="mt-4 rounded-lg bg-lime-400 font-semibold text-brand-900" onClick={onGoToGenerate}>
               Generate First Payslip
             </Button>
           </div>
@@ -334,7 +334,7 @@ export default function PayslipHistory({
             </Button>
             <Button
               type="button"
-              className="rounded-lg bg-[#2ed573] font-semibold text-[#0f2318]"
+              className="rounded-lg bg-lime-400 font-semibold text-brand-900"
               onClick={() => viewing && void exportPayslipPDF(viewRef, viewing.id)}
             >
               <Download className="mr-2 h-4 w-4" />
@@ -343,7 +343,7 @@ export default function PayslipHistory({
             <Button
               type="button"
               variant="outline"
-              className="rounded-lg border-[#2ed573]/50 text-[#0f2318] hover:bg-[#2ed573]/10"
+              className="rounded-lg border-brand-500/50 text-brand-900 hover:bg-lime-400/10"
               onClick={openResendMail}
               disabled={!viewing}
             >

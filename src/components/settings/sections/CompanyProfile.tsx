@@ -522,7 +522,7 @@ export function CompanyProfile() {
             value={fields.tagline}
             rows={3}
             onChange={(e) => patchField("tagline", e.target.value)}
-            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-[#2ed573] focus:ring-offset-1"
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1"
           />
         </SettingsRow>
         <SettingsRow label="Website URL">
@@ -590,7 +590,7 @@ export function CompanyProfile() {
             <input
               value={fields.linkedIn}
               onChange={(e) => patchField("linkedIn", e.target.value)}
-              className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-sm transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-[#2ed573] focus:ring-offset-1"
+              className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-sm transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1"
             />
           </div>
         </SettingsRow>
@@ -600,7 +600,7 @@ export function CompanyProfile() {
             <input
               value={fields.twitter}
               onChange={(e) => patchField("twitter", e.target.value)}
-              className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-sm transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-[#2ed573] focus:ring-offset-1"
+              className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-sm transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1"
             />
           </div>
         </SettingsRow>
@@ -610,7 +610,7 @@ export function CompanyProfile() {
             <input
               value={fields.instagram}
               onChange={(e) => patchField("instagram", e.target.value)}
-              className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-sm transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-[#2ed573] focus:ring-offset-1"
+              className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-sm transition-all duration-150 ease-in-out focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1"
             />
           </div>
         </SettingsRow>

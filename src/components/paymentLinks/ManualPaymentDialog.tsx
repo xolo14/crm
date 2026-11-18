@@ -413,11 +413,11 @@ export default function ManualPaymentDialog({
                                 type="button"
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={() => selectLead(l)}
-                                className={`w-full text-left px-3 py-2 text-sm hover:bg-[#e6faf0] ${
-                                  leadId === l.id ? "bg-[#e6faf0]/80" : ""
+                                className={`w-full text-left px-3 py-2 text-sm hover:bg-brand-100 ${
+                                  leadId === l.id ? "bg-brand-100/80" : ""
                                 }`}
                               >
-                                <span className="font-medium text-[#0f2318] block truncate">
+                                <span className="font-medium text-brand-900 block truncate">
                                   {l.name}
                                 </span>
                                 {(l.email || l.phone) && (
@@ -604,7 +604,7 @@ export default function ManualPaymentDialog({
             <Button
               type="submit"
               disabled={saving}
-              className="bg-[#2ed573] hover:bg-[#25c066] text-[#0f2318]"
+              className="bg-lime-400 hover:bg-[#25c066] text-brand-900"
             >
               {saving ? (
                 <>

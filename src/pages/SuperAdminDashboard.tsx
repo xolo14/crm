@@ -1,25 +1,26 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Building2,
-  Users,
-  TrendingUp,
-  IndianRupee,
-  Loader2,
-  CalendarDays,
-  Plus,
+  AlertTriangle,
   ArrowRight,
-  Activity,
+  Building2,
+  CheckCircle2,
+  IndianRupee,
+  Plus,
+  RefreshCw,
   Shield,
-  MessageSquare,
-  ClipboardList,
-  ClipboardCheck,
-  Settings,
+  Table2,
+  TrendingUp,
+  UserX,
+  Users,
+  BarChart3,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -29,417 +30,562 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  PieChart,
-  Pie,
-  Cell,
+  LabelList,
 } from "recharts";
-import { useToast } from "@/hooks/use-toast";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { ORG_SCOPE_ALL, orgScopeParam, useOrgScope } from "@/hooks/useOrgScope";
+import { chartAxis, chartGrid, chartSeries, chartTooltip } from "@/lib/chartTheme";
+import { cleanName, fmtCount, fmtDateTime, fmtINR, fmtINRCompact, pct } from "@/lib/formatMetric";
 import { cn } from "@/lib/utils";
 
-const PLAN_COLORS = [
-  "hsl(162, 63%, 41%)",
-  "hsl(200, 70%, 50%)",
-  "hsl(38, 92%, 50%)",
-  "hsl(215, 25%, 45%)",
-];
-
-const STATUS_COLORS = {
-  active: "hsl(162, 63%, 41%)",
-  inactive: "hsl(215, 16%, 65%)",
-};
-
-function fmtMoney(v: number) {
-  if (v >= 100000) return `₹${(v / 100000).toFixed(1)}L`;
-  if (v >= 1000) return `₹${(v / 1000).toFixed(1)}K`;
-  return `₹${Math.round(v)}`;
+interface MetricsSummary {
+  scope: string;
+  as_of: string;
+  leads_total: number;
+  by_status: Record<string, number>;
+  new: number;
+  in_pipeline: number;
+  enrolled: number;
+  lost: number;
+  unassigned: number;
+  unassigned_aging: { "0_2d": number; "3_7d": number; "8_30d": number; "30d_plus": number };
+  by_source: { source: string; count: number }[];
+  leads_by_week: { week_start: string; count: number }[];
+  students_total: number;
+  registered: number;
+  students_enrolled: number;
+  collected: number;
+  outstanding: number;
+  pending_approvals: number;
+  active_users: number;
 }
 
-function formatDate(value?: string) {
-  if (!value) return "—";
-  const dt = new Date(value);
-  if (Number.isNaN(dt.getTime())) return "—";
-  return dt.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+interface OrgRow {
+  id: string;
+  name: string;
+  plan?: string;
+  is_active?: boolean | number | string;
+  user_count?: number | string;
+  leads_count?: number | string;
+  converted_count?: number | string;
+  revenue?: number | string;
+}
+
+/** Funnel stages from current CRM status: "reached at least this stage". */
+const FUNNEL: { label: string; statuses: string[] }[] = [
+  { label: "New", statuses: [] }, // everyone who is not lost
+  { label: "Contacted", statuses: ["contacted", "not_answered", "messaged", "qualified", "interested", "demo_scheduled", "demo_attended", "enrolled"] },
+  { label: "Interested", statuses: ["qualified", "interested", "demo_scheduled", "demo_attended", "enrolled"] },
+  { label: "Demo", statuses: ["demo_scheduled", "demo_attended", "enrolled"] },
+  { label: "Enrolled", statuses: ["enrolled"] },
+];
+
+function prettySource(s: string): string {
+  const t = cleanName(s);
+  if (/^\d{10,}$/.test(t)) return `Meta ad ${t.slice(-6)}`;
+  return t.replace(/^form_/, "Form: ").replace(/_/g, " ");
+}
+
+function KpiTile({
+  label,
+  value,
+  sub,
+  icon: Icon,
+  to,
+  loading,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  icon: typeof Users;
+  to?: string;
+  loading?: boolean;
+}) {
+  const body = (
+    <Card className="h-full border-border shadow-none transition-shadow hover:shadow-sm">
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-xs font-medium text-muted-foreground">{label}</p>
+          <span className="rounded-lg bg-brand-100 p-1.5 text-brand-700 dark:bg-brand-500/15 dark:text-lime-400">
+            <Icon className="h-4 w-4" />
+          </span>
+        </div>
+        {loading ? (
+          <Skeleton className="mt-2 h-8 w-24" />
+        ) : (
+          <p className="mt-1 text-[28px] font-bold leading-tight tabular-nums text-foreground">{value}</p>
+        )}
+        {sub ? <p className="mt-1 text-xs text-muted-foreground">{sub}</p> : null}
+      </CardContent>
+    </Card>
+  );
+  return to ? (
+    <Link to={to} className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {body}
+    </Link>
+  ) : (
+    body
+  );
+}
+
+function ChartCard({
+  title,
+  question,
+  children,
+  table,
+}: {
+  title: string;
+  question: string;
+  children: React.ReactNode;
+  table: React.ReactNode;
+}) {
+  const [asTable, setAsTable] = useState(false);
+  return (
+    <Card className="border-border shadow-none">
+      <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-2">
+        <div>
+          <CardTitle className="text-base font-semibold">{title}</CardTitle>
+          <CardDescription className="text-xs">{question}</CardDescription>
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 px-2 text-xs"
+          onClick={() => setAsTable((v) => !v)}
+          aria-pressed={asTable}
+        >
+          {asTable ? <BarChart3 className="h-3.5 w-3.5" /> : <Table2 className="h-3.5 w-3.5" />}
+          {asTable ? "Chart" : "Table"}
+        </Button>
+      </CardHeader>
+      <CardContent>{asTable ? table : children}</CardContent>
+    </Card>
+  );
+}
+
+function MiniTable({ rows, cols }: { rows: (string | number)[][]; cols: string[] }) {
+  return (
+    <div className="max-h-[260px] overflow-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs text-muted-foreground">
+            {cols.map((c, i) => (
+              <th key={c} className={cn("py-1.5 font-medium", i > 0 && "text-right")}>
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {rows.map((r, ri) => (
+            <tr key={ri}>
+              {r.map((v, i) => (
+                <td key={i} className={cn("py-1.5", i > 0 && "text-right tabular-nums")}>
+                  {v}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 export default function SuperAdminDashboard() {
   const { profile } = useAuth();
-  const { toast } = useToast();
-  const isMobile = useIsMobile();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(true);
-  const [orgs, setOrgs] = useState<any[]>([]);
+  const [scope] = useOrgScope();
+  const orgId = orgScopeParam(scope);
 
-  useEffect(() => {
-    void fetchStats();
-  }, []);
+  const metricsQ = useQuery({
+    queryKey: ["metrics_summary", orgId ?? ORG_SCOPE_ALL],
+    queryFn: async () => ((await api.metrics.summary(orgId)) as { data: MetricsSummary }).data,
+    staleTime: 60_000,
+  });
+  const orgsQ = useQuery({
+    queryKey: ["org_stats"],
+    queryFn: async () => (((await api.organizations.stats()) as { data?: OrgRow[] }).data ?? []) as OrgRow[],
+    staleTime: 60_000,
+  });
 
-  const fetchStats = async () => {
-    setLoading(true);
-    try {
-      const data = await api.organizations.stats();
-      const rows = data.data || [];
-      setOrgs(
-        rows.map((o: any) => ({
-          ...o,
-          is_active: o?.is_active === true || o?.is_active === 1 || o?.is_active === "1",
-        })),
-      );
-    } catch (err: any) {
-      toast({ variant: "destructive", title: "Error", description: err.message });
-    } finally {
-      setLoading(false);
+  const m = metricsQ.data;
+  const loading = metricsQ.isLoading;
+  const series = chartSeries();
+  const orgs = orgsQ.data ?? [];
+  const scopeName =
+    scope === ORG_SCOPE_ALL ? "All organizations" : cleanName(orgs.find((o) => o.id === scope)?.name) || "Selected organization";
+
+  const funnel = useMemo(() => {
+    if (!m) return [];
+    const bs = m.by_status || {};
+    const notLost = m.leads_total - (m.lost || 0);
+    return FUNNEL.map((stage, i) => {
+      const value = i === 0 ? notLost : stage.statuses.reduce((s, k) => s + (bs[k] || 0), 0);
+      return { stage: stage.label, value };
+    }).map((row, i, arr) => ({
+      ...row,
+      conv: i === 0 ? "" : pct(row.value, arr[i - 1].value),
+    }));
+  }, [m]);
+
+  const sources = useMemo(
+    () => (m?.by_source ?? []).map((s) => ({ name: prettySource(s.source), value: s.count })),
+    [m],
+  );
+
+  const weekly = useMemo(
+    () =>
+      (m?.leads_by_week ?? []).map((w) => ({
+        week: new Date(w.week_start).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+        value: w.count,
+      })),
+    [m],
+  );
+
+  const attention = useMemo(() => {
+    if (!m) return [];
+    const items: { label: string; detail: string; to: string; tone: "danger" | "warning" | "info" }[] = [];
+    if (m.unassigned > 0) {
+      const stale = m.unassigned_aging["8_30d"] + m.unassigned_aging["30d_plus"];
+      items.push({
+        label: `${fmtCount(m.unassigned)} unassigned leads`,
+        detail: stale > 0 ? `${fmtCount(stale)} have waited more than a week` : "Assign an owner to start follow-up",
+        to: "/leads",
+        tone: stale > 0 ? "danger" : "warning",
+      });
     }
-  };
-
-  const totals = useMemo(
-    () =>
-      orgs.reduce(
-        (acc, o) => ({
-          users: acc.users + (parseInt(o.user_count) || 0),
-          leads: acc.leads + (parseInt(o.leads_count) || 0),
-          students: acc.students + (parseInt(o.students_count) || 0),
-          revenue: acc.revenue + (parseFloat(o.revenue) || 0),
-        }),
-        { users: 0, leads: 0, students: 0, revenue: 0 },
-      ),
-    [orgs],
-  );
-
-  const activeCount = orgs.filter((o) => !!o.is_active).length;
-  const inactiveCount = orgs.length - activeCount;
-
-  const statusData = useMemo(
-    () => [
-      { name: "Active", value: activeCount, fill: STATUS_COLORS.active },
-      { name: "Disabled", value: inactiveCount, fill: STATUS_COLORS.inactive },
-    ].filter((d) => d.value > 0),
-    [activeCount, inactiveCount],
-  );
-
-  const planData = useMemo(() => {
-    const map: Record<string, number> = {};
-    orgs.forEach((o) => {
-      const k = String(o.plan || "starter");
-      map[k] = (map[k] || 0) + 1;
-    });
-    return Object.entries(map)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value);
-  }, [orgs]);
-
-  const topOrgs = useMemo(
-    () =>
-      [...orgs]
-        .sort((a, b) => (parseFloat(b.revenue) || 0) - (parseFloat(a.revenue) || 0))
-        .slice(0, 6),
-    [orgs],
-  );
-
-  const growth = useMemo(() => {
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const startOfWeek = new Date(startOfToday);
-    startOfWeek.setDate(startOfWeek.getDate() - 6);
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-    let today = 0;
-    let week = 0;
-    let month = 0;
-
-    orgs.forEach((o) => {
-      const created = o?.created_at ? new Date(o.created_at) : null;
-      if (!created || Number.isNaN(created.getTime())) return;
-      if (created >= startOfToday) today += 1;
-      if (created >= startOfWeek) week += 1;
-      if (created >= startOfMonth) month += 1;
-    });
-
-    return { today, week, month };
-  }, [orgs]);
-
-  const recentOrgs = useMemo(
-    () =>
-      [...orgs]
-        .filter((o) => o?.created_at)
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-        .slice(0, 6),
-    [orgs],
-  );
+    if (m.pending_approvals > 0) {
+      items.push({
+        label: `${fmtCount(m.pending_approvals)} payment approval${m.pending_approvals === 1 ? "" : "s"} pending`,
+        detail: "Manual payments waiting for review",
+        to: "/payments/records",
+        tone: "warning",
+      });
+    }
+    if (m.outstanding > 0) {
+      items.push({
+        label: `${fmtINR(m.outstanding)} outstanding`,
+        detail: "Balance still due from payment candidates",
+        to: "/payments/records",
+        tone: "info",
+      });
+    }
+    if (m.registered > 0) {
+      items.push({
+        label: `${fmtCount(m.registered)} registered, not enrolled`,
+        detail: "Paid the registration fee but have no course or batch yet",
+        to: "/students",
+        tone: "info",
+      });
+    }
+    return items;
+  }, [m]);
 
   const firstName = profile?.full_name?.split(" ")[0] || "Admin";
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  const kpis = [
-    { label: "Organizations", value: orgs.length, icon: Building2, tone: "text-sky-700 bg-sky-500/10" },
-    { label: "Users", value: totals.users, icon: Users, tone: "text-emerald-700 bg-emerald-500/10" },
-    { label: "Leads", value: totals.leads, icon: TrendingUp, tone: "text-amber-700 bg-amber-500/10" },
-    { label: "Revenue", value: fmtMoney(totals.revenue), icon: IndianRupee, tone: "text-teal-700 bg-teal-500/10" },
-  ];
-
-  const shortcuts = [
-    { label: "Organizations", desc: "Manage tenants & admins", to: "/organizations", icon: Building2 },
-    { label: "Add organization", desc: "Provision a new tenant", to: "/organizations?create=1", icon: Plus },
-    { label: "Form management", desc: "Forms & public links", to: "/form-management", icon: ClipboardList },
-    { label: "Communications", desc: "WhatsApp & dialer hub", to: "/communications", icon: MessageSquare },
-    { label: "Assignments", desc: "Manage & assign assessments", to: "/assessments", icon: ClipboardCheck },
-    { label: "Settings", desc: "System & platform preferences", to: "/settings", icon: Settings },
-  ];
-
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-8">
-      {/* Hero */}
-      <section className="relative overflow-hidden rounded-2xl border border-border/60 bg-gradient-to-br from-teal-50 via-background to-sky-50 dark:from-teal-950/30 dark:via-background dark:to-sky-950/20 px-5 py-6 sm:px-7 sm:py-8">
-        <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-teal-400/10 blur-2xl" />
-        <div className="pointer-events-none absolute -bottom-20 left-1/3 h-40 w-40 rounded-full bg-sky-400/10 blur-2xl" />
-        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div className="min-w-0 space-y-2">
-            <Badge variant="outline" className="bg-amber-500/10 text-amber-700 border-amber-200/80 gap-1">
+      {/* Slim greeting + scope */}
+      <section className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="gap-1 border-brand-500/30 bg-brand-100 text-brand-900 dark:bg-brand-500/15 dark:text-lime-400">
               <Shield className="h-3 w-3" />
               Super Admin
             </Badge>
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-              Welcome back, {firstName}
-            </h1>
-            <p className="text-sm text-muted-foreground max-w-xl">
-              Platform overview across all organizations — {activeCount} active
-              {inactiveCount > 0 ? `, ${inactiveCount} disabled` : ""}.
-            </p>
+            <span className="text-xs text-muted-foreground">{scopeName}</span>
           </div>
-          <div className="flex flex-wrap gap-2 shrink-0">
-            <Button size="sm" className="gap-1.5" onClick={() => navigate("/organizations?create=1")}>
-              <Plus className="h-3.5 w-3.5" />
-              Add organization
-            </Button>
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={() => navigate("/organizations")}>
-              Manage orgs
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
+          <h1 className="mt-1 truncate text-2xl font-bold tracking-tight">Welcome back, {firstName}</h1>
+          <p className="text-xs text-muted-foreground">
+            {m?.as_of ? `Figures as of ${fmtDateTime(m.as_of)}` : "Loading figures…"}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => void metricsQ.refetch()} disabled={metricsQ.isFetching}>
+            <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", metricsQ.isFetching && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button size="sm" onClick={() => navigate("/organizations?create=1")}>
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            Add organization
+          </Button>
         </div>
       </section>
 
-      {/* KPIs */}
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {kpis.map((c) => (
-          <Card key={c.label} className="border-border/50 shadow-none">
-            <CardContent className="pt-4 pb-3 px-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{c.label}</p>
-                  <p className="text-2xl font-bold tracking-tight mt-1 truncate">{c.value}</p>
-                </div>
-                <div className={cn("h-9 w-9 rounded-xl flex items-center justify-center shrink-0", c.tone)}>
-                  <c.icon className="h-4 w-4" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </section>
+      {metricsQ.isError ? (
+        <Card className="border-destructive/30 bg-destructive/5 shadow-none">
+          <CardContent className="flex items-center justify-between gap-3 p-4 text-sm">
+            <span>Could not load dashboard figures.</span>
+            <Button size="sm" variant="outline" onClick={() => void metricsQ.refetch()}>
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
-      {/* Growth + shortcuts */}
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-        <Card className="border-border/50 shadow-none lg:col-span-1">
+      {/* Needs attention */}
+      {!loading && attention.length > 0 ? (
+        <Card className="border-border shadow-none">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <CalendarDays className="h-4 w-4 text-muted-foreground" />
-              New organizations
+            <CardTitle className="flex items-center gap-2 text-base font-semibold">
+              <AlertTriangle className="h-4 w-4 text-warning" />
+              Needs attention
             </CardTitle>
-            <CardDescription className="text-xs">Signup momentum</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-2.5">
-            {[
-              { label: "Today", value: growth.today },
-              { label: "Last 7 days", value: growth.week },
-              { label: "This month", value: growth.month },
-            ].map((g) => (
-              <div key={g.label} className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2.5">
-                <span className="text-sm text-muted-foreground">{g.label}</span>
-                <span className="text-lg font-bold tabular-nums">{g.value}</span>
-              </div>
+          <CardContent className="grid gap-2 sm:grid-cols-2">
+            {attention.map((a) => (
+              <Link
+                key={a.label}
+                to={a.to}
+                className="group flex items-start gap-3 rounded-lg border border-border p-3 transition-colors hover:border-brand-500/40 hover:bg-brand-100/40"
+              >
+                <span
+                  className={cn(
+                    "mt-1 h-2 w-2 shrink-0 rounded-full",
+                    a.tone === "danger" ? "bg-destructive" : a.tone === "warning" ? "bg-warning" : "bg-info",
+                  )}
+                  aria-hidden
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold">{a.label}</span>
+                  <span className="block text-xs text-muted-foreground">{a.detail}</span>
+                </span>
+                <ArrowRight className="mt-0.5 h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+              </Link>
             ))}
           </CardContent>
         </Card>
+      ) : null}
 
-        <Card className="border-border/50 shadow-none lg:col-span-2">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Activity className="h-4 w-4 text-muted-foreground" />
-              Quick actions
-            </CardTitle>
-            <CardDescription className="text-xs">Jump into common platform tasks</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {shortcuts.map((s) => (
-                <button
-                  key={s.to}
-                  type="button"
-                  onClick={() => navigate(s.to)}
-                  className="flex items-start gap-3 rounded-xl border border-border/50 bg-muted/20 px-3 py-3 text-left transition-colors hover:bg-muted/50 hover:border-border"
-                >
-                  <div className="h-9 w-9 rounded-lg bg-background border border-border/60 flex items-center justify-center shrink-0">
-                    <s.icon className="h-4 w-4 text-foreground/80" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold">{s.label}</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">{s.desc}</p>
-                  </div>
-                </button>
+      {/* KPI row */}
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <KpiTile label="Leads" value={fmtCount(m?.leads_total)} sub={m ? `${fmtCount(m.new)} new` : undefined} icon={TrendingUp} to="/leads" loading={loading} />
+        <KpiTile
+          label="Enrolled"
+          value={fmtCount(m?.enrolled)}
+          sub={m ? `${pct(m.enrolled, m.leads_total)} of leads` : undefined}
+          icon={CheckCircle2}
+          to="/students"
+          loading={loading}
+        />
+        <KpiTile label="Collected" value={m ? fmtINRCompact(m.collected) : "—"} sub={m ? fmtINR(m.collected) : undefined} icon={IndianRupee} to="/payments/records" loading={loading} />
+        <KpiTile label="Outstanding" value={m ? fmtINRCompact(m.outstanding) : "—"} sub={m ? fmtINR(m.outstanding) : undefined} icon={IndianRupee} to="/payments/records" loading={loading} />
+        <KpiTile
+          label="Unassigned"
+          value={fmtCount(m?.unassigned)}
+          sub={m ? `${pct(m.unassigned, m.leads_total)} of leads` : undefined}
+          icon={UserX}
+          to="/leads"
+          loading={loading}
+        />
+      </section>
+
+      {/* Decision charts */}
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <ChartCard
+          title="Lead funnel"
+          question="Where do leads stall? (current CRM status; lost leads excluded)"
+          table={
+            <MiniTable
+              cols={["Stage", "Leads", "From previous"]}
+              rows={funnel.map((f) => [f.stage, fmtCount(f.value), f.conv || "—"])}
+            />
+          }
+        >
+          {loading ? (
+            <Skeleton className="h-[240px] w-full" />
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={funnel} layout="vertical" margin={{ left: 8, right: 64 }}>
+                <CartesianGrid {...chartGrid} horizontal={false} vertical />
+                <XAxis type="number" {...chartAxis} />
+                <YAxis type="category" dataKey="stage" width={80} {...chartAxis} />
+                <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "Leads"]} />
+                <Bar dataKey="value" fill={series[0]} radius={[0, 4, 4, 0]} barSize={22}>
+                  <LabelList
+                    dataKey="value"
+                    position="right"
+                    formatter={(v: number) => fmtCount(v)}
+                    style={{ fontSize: 12, fill: "hsl(var(--foreground))" }}
+                  />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+          {!loading && funnel.length > 1 ? (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {funnel.slice(1).map((f) => (
+                <span key={f.stage}>
+                  → {f.stage}: <span className="font-semibold text-foreground">{f.conv}</span>
+                </span>
               ))}
             </div>
-          </CardContent>
-        </Card>
-      </section>
+          ) : null}
+        </ChartCard>
 
-      {/* Charts */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <Card className="border-border/50 shadow-none">
-          <CardHeader className="pb-1">
-            <CardTitle className="text-sm font-semibold">Organizations by plan</CardTitle>
-            <CardDescription className="text-xs">Plan mix across the platform</CardDescription>
-          </CardHeader>
-          <CardContent className="px-2 sm:px-4 pb-4">
-            {planData.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-16">No data yet</p>
-            ) : (
-              <ResponsiveContainer width="100%" height={isMobile ? 200 : 240}>
-                <BarChart data={planData} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis allowDecimals={false} domain={[0, (dataMax: number) => Math.max(1, Math.ceil(dataMax))]} stroke="hsl(var(--muted-foreground))" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    cursor={{ fill: "hsl(var(--muted) / 0.4)" }}
-                    contentStyle={{ borderRadius: 8, border: "1px solid hsl(var(--border))", fontSize: 12 }}
-                  />
-                  <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                    {planData.map((_, i) => (
-                      <Cell key={i} fill={PLAN_COLORS[i % PLAN_COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/50 shadow-none">
-          <CardHeader className="pb-1">
-            <CardTitle className="text-sm font-semibold">Organization status</CardTitle>
-            <CardDescription className="text-xs">
-              {activeCount} active · {inactiveCount} disabled
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="px-2 sm:px-4 pb-4">
-            {statusData.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-16">No organizations yet</p>
-            ) : (
-              <ResponsiveContainer width="100%" height={isMobile ? 200 : 240}>
-                <PieChart>
-                  <Pie
-                    data={statusData}
+        <ChartCard
+          title="Leads by source"
+          question="Which channels bring leads? (top 8, rest in Other)"
+          table={<MiniTable cols={["Source", "Leads"]} rows={sources.map((s) => [s.name, fmtCount(s.value)])} />}
+        >
+          {loading ? (
+            <Skeleton className="h-[240px] w-full" />
+          ) : (
+            <ResponsiveContainer width="100%" height={Math.max(160, sources.length * 30)}>
+              <BarChart data={sources} layout="vertical" margin={{ left: 8, right: 56 }}>
+                <CartesianGrid {...chartGrid} horizontal={false} vertical />
+                <XAxis type="number" {...chartAxis} />
+                <YAxis type="category" dataKey="name" width={130} {...chartAxis} />
+                <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "Leads"]} />
+                <Bar dataKey="value" fill={series[1]} radius={[0, 4, 4, 0]} barSize={18}>
+                  <LabelList
                     dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={isMobile ? 42 : 58}
-                    outerRadius={isMobile ? 72 : 88}
-                    paddingAngle={3}
-                  >
-                    {statusData.map((d) => (
-                      <Cell key={d.name} fill={d.fill} />
-                    ))}
-                  </Pie>
-                  <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid hsl(var(--border))", fontSize: 12 }} />
-                </PieChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
+                    position="right"
+                    formatter={(v: number) => fmtCount(v)}
+                    style={{ fontSize: 12, fill: "hsl(var(--foreground))" }}
+                  />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </ChartCard>
+
+        <ChartCard
+          title="New leads per week"
+          question="Is lead flow growing? (last 12 weeks, oldest on the left)"
+          table={<MiniTable cols={["Week of", "New leads"]} rows={weekly.map((w) => [w.week, fmtCount(w.value)])} />}
+        >
+          {loading ? (
+            <Skeleton className="h-[220px] w-full" />
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={weekly} margin={{ top: 16, right: 8 }}>
+                <CartesianGrid {...chartGrid} />
+                <XAxis dataKey="week" {...chartAxis} />
+                <YAxis {...chartAxis} width={44} />
+                <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "New leads"]} />
+                <Bar dataKey="value" fill={series[0]} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </ChartCard>
+
+        <ChartCard
+          title="Unassigned leads by age"
+          question="How long are leads waiting for an owner?"
+          table={
+            <MiniTable
+              cols={["Waiting", "Leads"]}
+              rows={
+                m
+                  ? [
+                      ["0–2 days", fmtCount(m.unassigned_aging["0_2d"])],
+                      ["3–7 days", fmtCount(m.unassigned_aging["3_7d"])],
+                      ["8–30 days", fmtCount(m.unassigned_aging["8_30d"])],
+                      ["30+ days", fmtCount(m.unassigned_aging["30d_plus"])],
+                    ]
+                  : []
+              }
+            />
+          }
+        >
+          {loading || !m ? (
+            <Skeleton className="h-[220px] w-full" />
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
+                data={[
+                  { bucket: "0–2d", value: m.unassigned_aging["0_2d"] },
+                  { bucket: "3–7d", value: m.unassigned_aging["3_7d"] },
+                  { bucket: "8–30d", value: m.unassigned_aging["8_30d"] },
+                  { bucket: "30d+", value: m.unassigned_aging["30d_plus"] },
+                ]}
+                margin={{ top: 20, right: 8 }}
+              >
+                <CartesianGrid {...chartGrid} />
+                <XAxis dataKey="bucket" {...chartAxis} />
+                <YAxis {...chartAxis} width={44} />
+                <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "Leads"]} />
+                <Bar dataKey="value" fill={series[2]} radius={[4, 4, 0, 0]}>
+                  <LabelList
+                    dataKey="value"
+                    position="top"
+                    formatter={(v: number) => fmtCount(v)}
+                    style={{ fontSize: 12, fill: "hsl(var(--foreground))" }}
+                  />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </ChartCard>
       </section>
 
-      {/* Lists */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <Card className="border-border/50 shadow-none">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between gap-2">
-            <div>
-              <CardTitle className="text-sm font-semibold">Top by revenue</CardTitle>
-              <CardDescription className="text-xs">Highest earning organizations</CardDescription>
+      {/* Organizations table */}
+      <Card className="border-border shadow-none">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-base font-semibold">
+              <Building2 className="h-4 w-4 text-brand-500" />
+              Organizations
+            </CardTitle>
+            <CardDescription className="text-xs">
+              {fmtCount(orgs.length)} total · {fmtCount(m?.active_users)} active users{scope === ORG_SCOPE_ALL ? "" : " in scope"}
+            </CardDescription>
+          </div>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/organizations">
+              Manage <ArrowRight className="ml-1 h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {orgsQ.isLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : orgs.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">No organizations yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                    <th className="py-2 font-medium">Organization</th>
+                    <th className="py-2 font-medium">Plan</th>
+                    <th className="py-2 text-right font-medium">Users</th>
+                    <th className="py-2 text-right font-medium">Leads</th>
+                    <th className="py-2 text-right font-medium">Conv.</th>
+                    <th className="py-2 text-right font-medium">Revenue</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {orgs.map((o) => {
+                    const leads = Number(o.leads_count) || 0;
+                    const conv = Number(o.converted_count) || 0;
+                    const active = o.is_active === true || o.is_active === 1 || o.is_active === "1";
+                    return (
+                      <tr key={o.id}>
+                        <td className="py-2">
+                          <span className="font-medium">{cleanName(o.name)}</span>
+                          {!active ? (
+                            <Badge variant="outline" className="ml-2 border-destructive/30 text-[10px] text-destructive">
+                              Disabled
+                            </Badge>
+                          ) : null}
+                        </td>
+                        <td className="py-2 capitalize text-muted-foreground">{o.plan || "starter"}</td>
+                        <td className="py-2 text-right tabular-nums">{fmtCount(Number(o.user_count))}</td>
+                        <td className="py-2 text-right tabular-nums">{fmtCount(leads)}</td>
+                        <td className="py-2 text-right tabular-nums">{pct(conv, leads)}</td>
+                        <td className="py-2 text-right tabular-nums">{fmtINR(Number(o.revenue))}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => navigate("/organizations")}>
-              View all
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {topOrgs.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">No organizations yet</p>
-            ) : (
-              topOrgs.map((o, idx) => (
-                <div
-                  key={o.id}
-                  className="flex items-center gap-3 rounded-xl border border-border/50 px-3 py-2.5"
-                >
-                  <span className="text-xs font-bold text-muted-foreground w-4 tabular-nums">{idx + 1}</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{o.name}</p>
-                    <p className="text-[11px] text-muted-foreground font-mono truncate">{o.slug}</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-semibold tabular-nums">{fmtMoney(parseFloat(o.revenue) || 0)}</p>
-                    <p className="text-[11px] text-muted-foreground">{parseInt(o.user_count) || 0} users</p>
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/50 shadow-none">
-          <CardHeader className="pb-2 flex flex-row items-center justify-between gap-2">
-            <div>
-              <CardTitle className="text-sm font-semibold">Recently created</CardTitle>
-              <CardDescription className="text-xs">Latest tenants on the platform</CardDescription>
-            </div>
-            <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => navigate("/organizations?create=1")}>
-              Add new
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {recentOrgs.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">No recent organizations</p>
-            ) : (
-              recentOrgs.map((o) => (
-                <div
-                  key={o.id}
-                  className="flex items-center gap-3 rounded-xl border border-border/50 px-3 py-2.5"
-                >
-                  <div className="h-9 w-9 rounded-lg bg-muted/60 flex items-center justify-center shrink-0">
-                    <Building2 className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{o.name}</p>
-                    <p className="text-[11px] text-muted-foreground font-mono truncate">{o.slug}</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-xs font-medium">{formatDate(o.created_at)}</p>
-                    <Badge variant={o.is_active ? "default" : "secondary"} className="text-[10px] mt-0.5">
-                      {o.is_active ? "Active" : "Disabled"}
-                    </Badge>
-                  </div>
-                </div>
-              ))
-            )}
-          </CardContent>
-        </Card>
-      </section>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

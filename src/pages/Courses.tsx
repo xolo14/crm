@@ -218,7 +218,7 @@ function CrmCoursesAdmin() {
  </div>
  <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{course.description || '—'}</p>
  <div className="flex items-center gap-2 flex-wrap">
- <span className="font-semibold text-sm">₹{Number(course.price).toLocaleString('en-IN')}</span>
+ {Number(course.price) > 0 ? <span className="font-semibold text-sm">₹{Number(course.price).toLocaleString('en-IN')}</span> : <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-[#9A5B00]">Set price</span>}
  {course.duration_weeks && <span className="text-xs text-muted-foreground">{course.duration_weeks} weeks</span>}
  <Badge variant={course.is_active ? 'default' : 'secondary'} className="text-xs">{course.is_active ? 'Active' : 'Inactive'}</Badge>
  </div>
@@ -264,7 +264,7 @@ function CrmCoursesAdmin() {
  <TableCell className="font-medium">{i + 1}</TableCell>
  <TableCell className="font-medium">{course.name}</TableCell>
  <TableCell className="text-muted-foreground line-clamp-1">{course.description || '—'}</TableCell>
- <TableCell>₹{Number(course.price).toLocaleString('en-IN')}</TableCell>
+ <TableCell>{Number(course.price) > 0 ? `₹${Number(course.price).toLocaleString('en-IN')}` : <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-[#9A5B00]">Set price</span>}</TableCell>
  <TableCell>{course.duration_weeks ? course.duration_weeks + ' weeks' : '—'}</TableCell>
  <TableCell><Badge variant={course.is_active ? 'default' : 'secondary'}>{course.is_active ? 'Active' : 'Inactive'}</Badge></TableCell>
  <TableCell>

@@ -22,8 +22,8 @@ interface Props {
 
 function fmtInr(rupees: number): string {
   return `₹${rupees.toLocaleString("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   })}`;
 }
 
@@ -297,7 +297,7 @@ export default function ManualPaymentApprovalsTab({
                             <Button
                               size="sm"
                               disabled={busy}
-                              className="h-8 bg-[#2ed573] hover:bg-[#25c066] text-[#0f2318]"
+                              className="h-8 bg-lime-400 hover:bg-[#25c066] text-brand-900"
                               onClick={() => void review(row.id, "approve")}
                             >
                               {busy ? (

@@ -345,21 +345,21 @@ export default function CreatePaymentLinkModal({
   if (!open) return null;
 
   const inputCls =
-    "w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-[#0f2318] placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#2ed573]/40 focus:border-[#2ed573] disabled:opacity-60";
+    "w-full rounded-xl border border-gray-200 bg-white px-3 py-2.5 text-sm text-brand-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 disabled:opacity-60";
   const selectCls = `${inputCls} mt-1.5 cursor-pointer`;
   const readonlyCls =
     "w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-700 focus:outline-none";
   const hintCls = "text-[11px] text-gray-500 mt-1";
-  const labelCls = "text-sm font-semibold text-[#0f2318]";
-  const sectionTitleCls = "text-sm font-bold text-[#0f2318]";
+  const labelCls = "text-sm font-semibold text-brand-900";
+  const sectionTitleCls = "text-sm font-bold text-brand-900";
   const errCls = "text-xs text-red-600 mt-1";
   const checkCls =
-    "h-4 w-4 rounded border-gray-300 text-[#2ed573] focus:ring-[#2ed573]";
+    "h-4 w-4 rounded border-gray-300 text-brand-500 focus:ring-brand-500";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0f2318]/50 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-brand-900/50 p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-[480px] max-h-[min(92dvh,100%)] flex flex-col border border-gray-100">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0 bg-[#0f2318] rounded-t-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0 bg-brand-900 rounded-t-2xl">
           <div>
             <h2 className="text-lg font-semibold text-white">
               Standard Payment Link
@@ -385,7 +385,7 @@ export default function CreatePaymentLinkModal({
         >
           {loadingOptions && (
             <div className="flex items-center gap-2 text-xs text-gray-600 bg-white border border-gray-100 rounded-xl px-3 py-2">
-              <Loader2 size={14} className="animate-spin text-[#2ed573]" />
+              <Loader2 size={14} className="animate-spin text-brand-500" />
               Loading batches and leads…
             </div>
           )}
@@ -525,11 +525,11 @@ export default function CreatePaymentLinkModal({
                             type="button"
                             onMouseDown={(e) => e.preventDefault()}
                             onClick={() => selectLead(l)}
-                            className={`w-full text-left px-3 py-2 text-sm hover:bg-[#e6faf0] ${
-                              form.leadId === l.id ? "bg-[#e6faf0]/80" : ""
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-brand-100 ${
+                              form.leadId === l.id ? "bg-brand-100/80" : ""
                             }`}
                           >
-                            <span className="font-medium text-[#0f2318] block truncate">
+                            <span className="font-medium text-brand-900 block truncate">
                               {l.name}
                             </span>
                             {(l.email || l.phone) && (
@@ -595,7 +595,7 @@ export default function CreatePaymentLinkModal({
               <select
                 value={form.countryCode}
                 onChange={(e) => patch({ countryCode: e.target.value })}
-                className="w-[110px] shrink-0 rounded-xl border border-gray-200 bg-white px-2 py-2.5 text-sm text-[#0f2318] focus:outline-none focus:ring-2 focus:ring-[#2ed573]/40"
+                className="w-[110px] shrink-0 rounded-xl border border-gray-200 bg-white px-2 py-2.5 text-sm text-brand-900 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
               >
                 <option value="+91">🇮🇳 +91</option>
                 <option value="+1">🇺🇸 +1</option>
@@ -710,7 +710,7 @@ export default function CreatePaymentLinkModal({
                   href={RAZORPAY_REMINDER_URL}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-[#0f2318] font-medium underline"
+                  className="text-brand-900 font-medium underline"
                 >
                   here
                 </a>
@@ -791,7 +791,7 @@ export default function CreatePaymentLinkModal({
                 type="button"
                 onClick={addNote}
                 disabled={form.notes.length >= MAX_NOTES}
-                className="inline-flex items-center gap-1 text-xs font-semibold text-[#0f2318] border border-[#2ed573] rounded-lg px-2.5 py-1 hover:bg-[#2ed573]/10 disabled:opacity-40"
+                className="inline-flex items-center gap-1 text-xs font-semibold text-brand-900 border border-brand-500 rounded-lg px-2.5 py-1 hover:bg-lime-400/10 disabled:opacity-40"
               >
                 <Plus size={14} />
                 Add New
@@ -851,7 +851,7 @@ export default function CreatePaymentLinkModal({
             type="submit"
             form="standard-pl-form"
             disabled={!canSubmit || loading}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-[#0f2318] bg-[#2ed573] hover:bg-[#22c265] disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors shadow-sm"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-brand-900 bg-lime-400 hover:bg-[#22c265] disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors shadow-sm"
           >
             {loading && <Loader2 size={16} className="animate-spin" />}
             {loading ? "Creating..." : "Create Payment Link"}

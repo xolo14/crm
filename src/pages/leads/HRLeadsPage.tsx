@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useOrgScope } from "@/hooks/useOrgScope";
 import { AlertCircle, CheckCircle, ChevronLeft, ChevronRight, Clock, Download, Eye, FileText, MoreHorizontal, PhoneCall, Plus, Search, Shuffle, TrendingUp, UserCheck, Users, XCircle } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -63,7 +64,7 @@ export default function HRLeadsPage() {
   const [status, setStatus] = useState("all");
   const [source, setSource] = useState("all");
   const [hrId, setHrId] = useState("all");
-  const [orgId, setOrgId] = useState("all");
+  const [orgId, setOrgId] = useOrgScope();
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [dateFromManual, setDateFromManual] = useState("");
   const [dateToManual, setDateToManual] = useState("");

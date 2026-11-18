@@ -6,102 +6,125 @@
 @tailwind utilities;
 
 @layer base {
+  /*
+   * Syncpedia brand tokens (sampled from the logo): forest #00381F + lime #A0F858.
+   * Rule: lime only on forest surfaces or as a fill with forest text — never as
+   * text on white. Raw hex lives here and in src/lib/chartTheme.ts only.
+   */
   :root {
-    --background: 150 10% 98%;
-    --foreground: 200 20% 10%;
+    /* Brand scale (HSL triplets for Tailwind's hsl(var(--x)) pattern) */
+    --brand-950: 161 100% 7%;   /* #00261A sidebar, hero band */
+    --brand-900: 153 100% 11%;  /* #00381F logo forest, primary button */
+    --brand-700: 151 73% 20%;   /* #0E5A35 primary hover, links */
+    --brand-500: 153 74% 29%;   /* #13804E chart 1, positive delta, focus */
+    --brand-100: 144 37% 92%;   /* #E3F2E9 selected row, soft badge */
+    --lime-400: 93 92% 66%;     /* #A0F858 logo lime, active nav pill */
+    --lime-300: 92 93% 79%;     /* #C6FB97 lime hover on dark */
+    --lime-50: 93 89% 96%;      /* #F4FEEB "new" surfaces */
+    --ink-900: 150 30% 8%;      /* #0E1A14 headings, numbers */
+    --ink-600: 150 10% 32%;     /* #4A5A52 body */
+    --ink-400: 150 8% 40%;      /* #5E6E66 captions, axis */
+
+    --background: 120 14% 97%;  /* canvas #F6F8F6 */
+    --foreground: 150 30% 8%;
 
     --card: 0 0% 100%;
-    --card-foreground: 200 20% 10%;
+    --card-foreground: 150 30% 8%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 200 20% 10%;
+    --popover-foreground: 150 30% 8%;
 
-    --primary: 162 63% 41%;
+    --primary: 153 100% 11%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 160 20% 95%;
-    --secondary-foreground: 200 20% 10%;
+    --secondary: 144 20% 95%;
+    --secondary-foreground: 150 30% 8%;
 
-    --muted: 160 10% 95%;
-    --muted-foreground: 200 10% 46%;
+    --muted: 140 14% 95%;
+    --muted-foreground: 150 8% 40%;
 
-    --accent: 162 40% 92%;
-    --accent-foreground: 162 63% 25%;
+    --accent: 144 37% 92%;
+    --accent-foreground: 151 73% 20%;
 
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 0 61% 52%;   /* #D03B3B */
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 160 10% 90%;
-    --input: 160 10% 90%;
-    --ring: 162 63% 41%;
+    --border: 140 12% 90%;      /* line #E3E9E5 */
+    --input: 140 12% 90%;
+    --ring: 153 74% 29%;
 
-    --radius: 0.625rem;
+    --radius: 0.75rem;          /* cards 12px; controls derive 8–10px */
 
-    --success: 152 69% 40%;
+    --success: 120 86% 34%;     /* #0CA30C */
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
+    --warning: 38 100% 43%;     /* #D98A00 (text #9A5B00) */
     --warning-foreground: 0 0% 100%;
-    --info: 217 91% 60%;
+    --info: 213 67% 50%;        /* #2A78D6 */
     --info-foreground: 0 0% 100%;
 
-    --sidebar-background: 162 40% 12%;
-    --sidebar-foreground: 160 15% 85%;
-    --sidebar-primary: 162 63% 50%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 162 30% 18%;
-    --sidebar-accent-foreground: 160 15% 90%;
-    --sidebar-border: 162 20% 20%;
-    --sidebar-ring: 162 63% 50%;
+    --sidebar-background: 161 100% 7%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 93 92% 66%;
+    --sidebar-primary-foreground: 153 100% 11%;
+    --sidebar-accent: 153 60% 13%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 153 45% 14%;
+    --sidebar-ring: 93 92% 66%;
 
     /* Sidebar brand band */
     --crm-brand-header-height: 4rem;
-    --crm-desktop-topbar-height: 2.75rem;
+    --crm-desktop-topbar-height: 3.25rem;
   }
 
   .dark {
-    --background: 200 15% 6%;
-    --foreground: 0 0% 96%;
+    --brand-500: 149 56% 42%;   /* #2FA86A */
+    --ink-900: 143 21% 93%;
+    --ink-600: 148 10% 69%;
+    --ink-400: 148 10% 69%;
 
-    --card: 200 15% 8%;
-    --card-foreground: 0 0% 96%;
+    --background: 155 35% 7%;   /* #0B1712 */
+    --foreground: 143 21% 93%;  /* #E8F0EB */
 
-    --popover: 200 15% 8%;
-    --popover-foreground: 0 0% 96%;
+    --card: 154 35% 9%;         /* #0F1F18 */
+    --card-foreground: 143 21% 93%;
 
-    --primary: 162 63% 45%;
+    --popover: 154 35% 9%;
+    --popover-foreground: 143 21% 93%;
+
+    --primary: 149 56% 42%;     /* #2FA86A */
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 200 10% 14%;
-    --secondary-foreground: 0 0% 96%;
+    --secondary: 152 28% 13%;
+    --secondary-foreground: 143 21% 93%;
 
-    --muted: 200 10% 14%;
-    --muted-foreground: 200 8% 60%;
+    --muted: 152 28% 13%;
+    --muted-foreground: 148 10% 69%;
 
-    --accent: 162 25% 16%;
-    --accent-foreground: 162 63% 60%;
+    --accent: 152 30% 15%;
+    --accent-foreground: 93 92% 66%;
 
-    --destructive: 0 63% 35%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 0 61% 52%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 200 10% 16%;
-    --input: 200 10% 16%;
-    --ring: 162 63% 45%;
+    --border: 149 26% 16%;      /* #1E3328 */
+    --input: 149 26% 16%;
+    --ring: 149 56% 42%;
 
-    --success: 152 69% 40%;
+    --success: 120 70% 40%;
     --success-foreground: 0 0% 100%;
-    --warning: 38 92% 50%;
+    --warning: 38 100% 43%;
     --warning-foreground: 0 0% 100%;
-    --info: 217 91% 60%;
+    --info: 213 76% 56%;
     --info-foreground: 0 0% 100%;
 
-    --sidebar-background: 200 15% 5%;
-    --sidebar-foreground: 200 10% 80%;
-    --sidebar-primary: 162 63% 50%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 200 10% 10%;
-    --sidebar-accent-foreground: 200 10% 90%;
-    --sidebar-border: 200 10% 12%;
-    --sidebar-ring: 162 63% 50%;
+    --sidebar-background: 160 60% 5%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 93 92% 66%;
+    --sidebar-primary-foreground: 153 100% 11%;
+    --sidebar-accent: 153 40% 11%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 153 30% 12%;
+    --sidebar-ring: 93 92% 66%;
   }
 }
 
@@ -124,6 +147,17 @@
     -webkit-tap-highlight-color: transparent;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Numbers line up in tables and KPI tiles */
+  table, .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Visible keyboard focus everywhere (brand-500) */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
   }
 
   /*

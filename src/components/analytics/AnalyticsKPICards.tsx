@@ -1,6 +1,7 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { ANALYTICS_CARD_CLASS, type RepSummary, type SalesReport } from "@/utils/analyticsHelpers";
 import { BarChart2, Monitor, Phone, TrendingUp, UserCheck } from "lucide-react";
+import { fmtPercent } from "@/lib/formatMetric";
 
 interface Props {
   data: SalesReport[];
@@ -11,17 +12,17 @@ export function AnalyticsKPICards({ data, byRep }: Props) {
   const totalCalls = data.reduce((s, r) => s + r.calls, 0);
   const totalDemos = data.reduce((s, r) => s + r.demos, 0);
   const totalEnrolled = data.reduce((s, r) => s + r.enrolled, 0);
-  const convRate = totalCalls > 0 ? `${((totalEnrolled / totalCalls) * 100).toFixed(1)}%` : "0%";
+  const convRate = totalCalls > 0 ? fmtPercent((totalEnrolled / totalCalls) * 100) : "0%";
   const avgDemos = byRep.length > 0 ? (totalDemos / byRep.length).toFixed(1) : "0";
 
   const cards = [
     { label: "Total Calls", value: String(totalCalls), icon: Phone, bg: "bg-[#eff6ff]", iconColor: "text-[#3b82f6]" },
     { label: "Total Demos", value: String(totalDemos), icon: Monitor, bg: "bg-[#f5f3ff]", iconColor: "text-[#8b5cf6]" },
-    { label: "Total Enrolled", value: String(totalEnrolled), icon: UserCheck, bg: "bg-[#f0fdf4]", iconColor: "text-[#22c55e]" },
+    { label: "Enrolled (reported)", value: String(totalEnrolled), icon: UserCheck, bg: "bg-[#f0fdf4]", iconColor: "text-[#22c55e]" },
     {
-      label: "Conversion Rate",
+      label: "Enrolled per call",
       value: convRate,
-      sub: "Enrolled ÷ Calls",
+      sub: "Reported by reps; CRM enrollments are on Leads",
       icon: TrendingUp,
       bg: "bg-[#fffbeb]",
       iconColor: "text-[#f59e0b]",

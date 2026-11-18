@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { isReportableUser } from '@/lib/reportableUsers';
 import { format, endOfDay } from 'date-fns';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -59,10 +60,6 @@ export default function MyReferrals() {
           // No maxRows cap: Sales Tracker must show the same total lead count as
           // Rep Performance (which has no cap) — a 5000-row cap here silently
           // truncated totals once an org passed 5000 leads.
-          onPage: (page) => {
-            setAllLeads(page.data || []);
-            setLoading(false);
-          },
         }),
         api.profiles.list(),
         api.dailyReports.list(),
@@ -121,7 +118,8 @@ export default function MyReferrals() {
 
   // Sales reps for Team Overview and tracker filters
   const salesReps = useMemo(() => {
-    const reps = teamMembers.filter((member: any) => SALES_ROLES.includes(member.role));
+    // Inactive and test accounts never appear as reps (their leads still count in totals).
+    const reps = teamMembers.filter((member: any) => SALES_ROLES.includes(member.role) && isReportableUser(member));
     return reps.length > 0 ? reps : teamMembers;
   }, [teamMembers]);
 

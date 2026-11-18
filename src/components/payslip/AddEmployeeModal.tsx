@@ -280,7 +280,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
 
         <div className="space-y-6 py-2">
           <section className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wide text-[#0f2318]">Personal details</h4>
+            <h4 className="text-xs font-bold uppercase tracking-wide text-brand-900">Personal details</h4>
 
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
@@ -304,7 +304,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Type the employee's full name"
-                  className="rounded-lg focus-visible:ring-[#2ed573]"
+                  className="rounded-lg focus-visible:ring-brand-500"
                 />
               ) : (
                 <Popover open={memberPickerOpen} onOpenChange={setMemberPickerOpen}>
@@ -361,11 +361,11 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
                                 <Check
                                   className={cn(
                                     "mt-0.5 h-4 w-4 shrink-0",
-                                    selectedMemberId === m.id ? "opacity-100 text-[#2ed573]" : "opacity-0",
+                                    selectedMemberId === m.id ? "opacity-100 text-brand-500" : "opacity-0",
                                   )}
                                 />
                                 <div className="min-w-0 flex-1">
-                                  <div className="truncate text-sm font-medium text-[#0f2318]">{m.full_name || m.email}</div>
+                                  <div className="truncate text-sm font-medium text-brand-900">{m.full_name || m.email}</div>
                                   <div className="truncate text-[11px] text-gray-500">
                                     {m.email}
                                     {meta ? ` · ${meta}` : ""}
@@ -397,7 +397,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
                   readOnly={!manualEntry && !!selectedMemberId}
                   onChange={(e) => setEmail(e.target.value)}
                   className={cn(
-                    "rounded-lg focus-visible:ring-[#2ed573]",
+                    "rounded-lg focus-visible:ring-brand-500",
                     !manualEntry && !!selectedMemberId && "bg-gray-50 text-gray-700",
                   )}
                 />
@@ -411,7 +411,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
                   readOnly={!manualEntry && !!selectedMemberId}
                   onChange={(e) => setPhone(e.target.value)}
                   className={cn(
-                    "rounded-lg focus-visible:ring-[#2ed573]",
+                    "rounded-lg focus-visible:ring-brand-500",
                     !manualEntry && !!selectedMemberId && "bg-gray-50 text-gray-700",
                   )}
                 />
@@ -423,7 +423,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
                   type="date"
                   value={joiningDate}
                   onChange={(e) => setJoiningDate(e.target.value)}
-                  className="rounded-lg focus-visible:ring-[#2ed573]"
+                  className="rounded-lg focus-visible:ring-brand-500"
                 />
                 {errors.joiningDate && <p className="text-xs text-red-600">{errors.joiningDate}</p>}
               </div>
@@ -431,11 +431,11 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
           </section>
 
           <section className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wide text-[#0f2318]">Job details</h4>
+            <h4 className="text-xs font-bold uppercase tracking-wide text-brand-900">Job details</h4>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>Designation *</Label>
-                <Input value={designation} onChange={(e) => setDesignation(e.target.value)} className="rounded-lg focus-visible:ring-[#2ed573]" />
+                <Input value={designation} onChange={(e) => setDesignation(e.target.value)} className="rounded-lg focus-visible:ring-brand-500" />
                 {errors.designation && <p className="text-xs text-red-600">{errors.designation}</p>}
               </div>
               <div className="space-y-1.5">
@@ -480,7 +480,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
                     setEmployeeCode(e.target.value.toUpperCase().slice(0, 30));
                     setEmployeeCodeTouched(true);
                   }}
-                  className="rounded-lg font-mono text-sm focus-visible:ring-[#2ed573]"
+                  className="rounded-lg font-mono text-sm focus-visible:ring-brand-500"
                   placeholder={suggestedCode || "SYNC-EMP-001"}
                   maxLength={30}
                 />
@@ -496,16 +496,16 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
           </section>
 
           <section className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wide text-[#0f2318]">Compensation</h4>
+            <h4 className="text-xs font-bold uppercase tracking-wide text-brand-900">Compensation</h4>
             <div className="space-y-1.5">
               <Label>Annual CTC (₹) *</Label>
-              <Input type="number" min={0} value={ctc || ""} onChange={(e) => setCtc(Number(e.target.value) || 0)} className="rounded-lg focus-visible:ring-[#2ed573]" />
+              <Input type="number" min={0} value={ctc || ""} onChange={(e) => setCtc(Number(e.target.value) || 0)} className="rounded-lg focus-visible:ring-brand-500" />
               {errors.ctc && <p className="text-xs text-red-600">{errors.ctc}</p>}
             </div>
             {ctc > 0 && (
               <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
                 <div>
-                  Monthly: <span className="font-semibold text-[#0f2318]">₹ {formatINR(Math.round(monthly))}</span>
+                  Monthly: <span className="font-semibold text-brand-900">₹ {formatINR(Math.round(monthly))}</span>
                 </div>
                 <div className="mt-1 text-xs">
                   Basic (40%): ₹ {formatINR(previewBasic)} · HRA (20%): ₹ {formatINR(previewHra)}
@@ -517,38 +517,38 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
                 <div className="text-sm font-medium">PF applicable</div>
                 <div className="text-xs text-gray-500">12% of basic (employee + employer)</div>
               </div>
-              <Switch checked={pfApplicable} onCheckedChange={setPfApplicable} className="data-[state=checked]:bg-[#2ed573]" />
+              <Switch checked={pfApplicable} onCheckedChange={setPfApplicable} className="data-[state=checked]:bg-lime-400" />
             </div>
             <div className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2">
               <div>
                 <div className="text-sm font-medium">PT applicable</div>
                 <div className="text-xs text-gray-500">₹200 / month when applicable</div>
               </div>
-              <Switch checked={ptApplicable} onCheckedChange={setPtApplicable} className="data-[state=checked]:bg-[#2ed573]" />
+              <Switch checked={ptApplicable} onCheckedChange={setPtApplicable} className="data-[state=checked]:bg-lime-400" />
             </div>
           </section>
 
           <section className="space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wide text-[#0f2318]">Tax & bank</h4>
+            <h4 className="text-xs font-bold uppercase tracking-wide text-brand-900">Tax & bank</h4>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>PAN *</Label>
                 <Input
                   value={panNumber}
                   onChange={(e) => setPanNumber(e.target.value.toUpperCase().slice(0, 10))}
-                  className="rounded-lg font-mono focus-visible:ring-[#2ed573]"
+                  className="rounded-lg font-mono focus-visible:ring-brand-500"
                   maxLength={10}
                 />
                 {errors.panNumber && <p className="text-xs text-red-600">{errors.panNumber}</p>}
               </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>Bank name *</Label>
-                <Input value={bankName} onChange={(e) => setBankName(e.target.value)} className="rounded-lg focus-visible:ring-[#2ed573]" />
+                <Input value={bankName} onChange={(e) => setBankName(e.target.value)} className="rounded-lg focus-visible:ring-brand-500" />
                 {errors.bankName && <p className="text-xs text-red-600">{errors.bankName}</p>}
               </div>
               <div className="space-y-1.5 sm:col-span-2">
                 <Label>Account number *</Label>
-                <Input value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} className="rounded-lg focus-visible:ring-[#2ed573]" />
+                <Input value={accountNumber} onChange={(e) => setAccountNumber(e.target.value)} className="rounded-lg focus-visible:ring-brand-500" />
                 {errors.accountNumber && <p className="text-xs text-red-600">{errors.accountNumber}</p>}
               </div>
               <div className="space-y-1.5 sm:col-span-2">
@@ -556,7 +556,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
                 <Input
                   value={ifscCode}
                   onChange={(e) => setIfscCode(e.target.value.toUpperCase().slice(0, 11))}
-                  className="rounded-lg font-mono focus-visible:ring-[#2ed573]"
+                  className="rounded-lg font-mono focus-visible:ring-brand-500"
                   maxLength={11}
                 />
                 {errors.ifscCode && <p className="text-xs text-red-600">{errors.ifscCode}</p>}
@@ -569,7 +569,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
           <Button type="button" variant="outline" className="rounded-lg border-gray-200" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button type="button" className="rounded-lg bg-[#2ed573] font-semibold text-[#0f2318]" onClick={handleSave} disabled={saving}>
+          <Button type="button" className="rounded-lg bg-lime-400 font-semibold text-brand-900" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : "Save employee"}
           </Button>
         </DialogFooter>

@@ -26,7 +26,7 @@ export default function PaymentLinkStats({ stats, loading }: Props) {
     },
     {
       label: "TOTAL COLLECTED",
-      value: `₹${stats.totalCollected.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`,
+      value: `₹${stats.totalCollected.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`,
       Icon: IndianRupee,
       bg: "#f0fdf4",
       fg: "#22c55e",

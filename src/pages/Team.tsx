@@ -1135,7 +1135,7 @@ export default function Team() {
               </Button>
               <Button
                 type="button"
-                className="gap-2 bg-[#2ed573] text-[#0f2318] hover:bg-[#26c968]"
+                className="gap-2 bg-lime-400 text-brand-900 hover:bg-[#26c968]"
                 disabled={sendWelcomeLoading || !createdMemberId}
                 onClick={() => void handleSendWelcomeEmail()}
               >

@@ -411,6 +411,9 @@ export default function CouponsPage() {
     if (!isSuperAdmin || createOrgId.trim()) {
       const min = Number(minAmount);
       if (minAmount.trim() === "" || !Number.isFinite(min) || min < 0) e.min_amount = "Min amount is required";
+      else if (min > 0 && Number.isFinite(disc) && disc >= min) {
+        e.discount = `Discount must be less than the minimum order (₹${min.toLocaleString("en-IN")})`;
+      }
     }
     const c = code.trim().replace(/[^A-Za-z0-9_-]/g, "");
     if (!c) e.code = "Coupon code is required";
@@ -592,7 +595,7 @@ export default function CouponsPage() {
   const visibilityHint = isSuperAdmin
     ? organization?.id
       ? "Showing coupons for the selected organization."
-      : "Showing coupons across all organizations. Switch org in the header to filter."
+      : "Showing coupons across all organizations."
     : normalizedRole === "org" || normalizedRole === "operational_manager"
       ? "Showing every coupon in this organization."
       : normalizedRole === "manager"

@@ -266,7 +266,7 @@ export function MetaAdsSetup() {
           {!connected ? (
             <Button
               type="button"
-              className="gap-1.5 bg-[#2ed573] hover:bg-[#25c066] text-[#0f2318]"
+              className="gap-1.5 bg-lime-400 hover:bg-[#25c066] text-brand-900"
               disabled={!status.configured || connecting}
               onClick={() => void onConnect()}
             >
