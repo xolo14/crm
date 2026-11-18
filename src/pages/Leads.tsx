@@ -982,7 +982,7 @@ export default function Leads() {
     try {
       const isExcel = /\.(xlsx|xls)$/i.test(file.name);
       const rows = await parseLeadImportFile(file);
-      const importSetTag = `${IMPORT_SET_PREFIX}${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`;
+      const importSetTag = `${IMPORT_SET_PREFIX}${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}-${Math.random().toString(36).slice(2, 6)}`;
       const { leads: mapped, skipped, errors } = mapCsvRowsToLeads(rows, {
         importSetTag,
         fileType: isExcel ? 'excel' : 'csv',
