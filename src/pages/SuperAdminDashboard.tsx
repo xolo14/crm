@@ -364,12 +364,19 @@ export default function SuperAdminDashboard() {
           {loading ? (
             <Skeleton className="h-[240px] w-full" />
           ) : (
-            <ResponsiveContainer width="100%" height={Math.max(160, sources.length * 30)}>
+            <ResponsiveContainer width="100%" height={Math.max(180, sources.length * 36)}>
               <BarChart data={sources} layout="vertical" margin={{ left: 8, right: 56 }}>
                 <CartesianGrid {...chartGrid} horizontal={false} vertical />
                 <XAxis type="number" {...chartAxis} />
-                <YAxis type="category" dataKey="name" width={130} {...chartAxis} />
-                <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "Leads"]} />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={170}
+                  interval={0}
+                  {...chartAxis}
+                  tickFormatter={(v: string) => (v.length > 24 ? `${v.slice(0, 23)}…` : v)}
+                />
+                <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "Leads"]} labelFormatter={(l: string) => l} />
                 <Bar dataKey="value" fill={series[1]} radius={[0, 4, 4, 0]} barSize={18}>
                   <LabelList
                     dataKey="value"

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { fmtCount } from '@/lib/formatMetric';
-import { isReportableUser } from '@/lib/reportableUsers';
+import { isInactiveUser, isTestAccount } from '@/lib/reportableUsers';
 import { format, endOfDay } from 'date-fns';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -118,8 +118,9 @@ export default function MyReferrals() {
 
   // Sales reps for Team Overview and tracker filters
   const salesReps = useMemo(() => {
-    // Inactive and test accounts never appear as reps (their leads still count in totals).
-    const reps = teamMembers.filter((member: any) => SALES_ROLES.includes(member.role) && isReportableUser(member));
+    // Test accounts never appear. Deactivated reps stay (marked inactive) so their past
+    // assigned leads, calls and enrollments still count in historical totals.
+    const reps = teamMembers.filter((member: any) => SALES_ROLES.includes(member.role) && !isTestAccount(member));
     return reps.length > 0 ? reps : teamMembers;
   }, [teamMembers]);
 
@@ -167,7 +168,7 @@ export default function MyReferrals() {
 
     for (const p of salesReps) {
       stats[p.user_id] = {
-        name: p.full_name || p.email || 'Unknown',
+        name: `${p.full_name || p.email || 'Unknown'}${isInactiveUser(p) ? ' (inactive)' : ''}`,
         email: p.email || '',
         userId: p.user_id,
         totalAssigned: 0, formGenerated: 0, converted: 0, lost: 0, contacted: 0, newLeads: 0,
@@ -192,11 +193,11 @@ export default function MyReferrals() {
     }
 
     const excludedIds = new Set(
-      teamMembers.filter((m: any) => !isReportableUser(m)).map((m: any) => String(m.user_id)),
+      teamMembers.filter((m: any) => isTestAccount(m)).map((m: any) => String(m.user_id)),
     );
     for (const report of dateFilteredReports) {
       if (!report.user_id) continue;
-      // Inactive / test accounts never get a rep row from their old daily reports.
+      // Test accounts never get a rep row from their daily reports.
       if (excludedIds.has(String(report.user_id))) continue;
       if (!stats[report.user_id]) {
         stats[report.user_id] = {

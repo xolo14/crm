@@ -600,7 +600,13 @@ export default function Team() {
   };
 
   // Same "active" definition as Dashboard and Organizations (src/lib/reportableUsers.ts).
-  const stats = { total: visibleTeam.length, active: visibleTeam.filter((m) => isReportableUser(m)).length };
+  // "active" matches the badges in the list below; "in reports" is the Dashboard /
+  // Organizations definition (active, excluding super admins and test accounts).
+  const stats = {
+    total: visibleTeam.length,
+    active: visibleTeam.filter((m) => m.is_active).length,
+    reportable: visibleTeam.filter((m) => isReportableUser(m)).length,
+  };
 
   const activeManagers = team.filter((m) => m.is_active && normalizeRole(m.role) === 'manager');
 
@@ -664,7 +670,7 @@ export default function Team() {
         <div>
           <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">Team Management</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {stats.total} members · {stats.active} active
+            {stats.total} members · {stats.active} active{stats.reportable !== stats.active ? ` (${stats.reportable} counted in reports)` : ''}
             {isManagerViewer && (
               <span className="ml-2 inline-flex items-center rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 border border-blue-200">
                 Your team

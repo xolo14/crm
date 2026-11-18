@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { isReportableUser } from '@/lib/reportableUsers';
+import { isInactiveUser, isTestAccount } from '@/lib/reportableUsers';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { callLogsApi } from '@/services/callLogs';
@@ -103,9 +103,14 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
     try {
       const data = await api.team.list();
       const all = (data.data || []) as { id: string; full_name: string; role?: string; is_active?: unknown; email?: string }[];
-      // Inactive / test accounts drop out of the rep picker and the analytics leaderboard.
-      setExcludedUserIds(new Set(all.filter((m) => !isReportableUser(m)).map((m) => String(m.id))));
-      setTeamMembers(all.filter((m) => m.role === 'sales_representative' && isReportableUser(m)));
+      // Test accounts drop out entirely. Deactivated reps keep their past reports in the
+      // totals and leaderboard, and stay selectable (marked inactive) in the rep picker.
+      setExcludedUserIds(new Set(all.filter((m) => isTestAccount(m)).map((m) => String(m.id))));
+      setTeamMembers(
+        all
+          .filter((m) => m.role === 'sales_representative' && !isTestAccount(m))
+          .map((m) => (isInactiveUser(m) ? { ...m, full_name: `${m.full_name} (inactive)` } : m)),
+      );
     } catch {
       /* ignore */
     }

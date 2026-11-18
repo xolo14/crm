@@ -15,3 +15,15 @@ export function isReportableUser(p: { is_active?: unknown; email?: unknown; role
   if (email && TEST_ACCOUNT_RE.test(email)) return false;
   return true;
 }
+
+/** Test / review accounts (reviewer@…, test@…): never shown in any report. */
+export function isTestAccount(p: { email?: unknown } | null | undefined): boolean {
+  const email = String(p?.email ?? "").trim();
+  return Boolean(email && TEST_ACCOUNT_RE.test(email));
+}
+
+/** Deactivated users still own their past leads, calls and reports. */
+export function isInactiveUser(p: { is_active?: unknown } | null | undefined): boolean {
+  const active = p?.is_active;
+  return active === 0 || active === "0" || active === false;
+}

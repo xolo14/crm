@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { isReportableUser } from '@/lib/reportableUsers';
+import { isInactiveUser, isTestAccount } from '@/lib/reportableUsers';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { callLogsApi } from '@/services/callLogs';
@@ -218,7 +218,7 @@ export default function ReferralAnalytics() {
             <SelectTrigger className="w-full sm:w-[220px]"><Filter className="h-4 w-4 mr-2" /><SelectValue placeholder="All Reps" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Representatives</SelectItem>
-              {profiles.filter(isReportableUser).map(p => <SelectItem key={p.user_id} value={p.user_id}>{p.full_name || p.email}</SelectItem>)}
+              {profiles.filter((p) => !isTestAccount(p)).map(p => <SelectItem key={p.user_id} value={p.user_id}>{p.full_name || p.email}{isInactiveUser(p) ? ' (inactive)' : ''}</SelectItem>)}
             </SelectContent>
           </Select>
           <DateRangeFilter value={dateRange} onChange={setDateRange} />

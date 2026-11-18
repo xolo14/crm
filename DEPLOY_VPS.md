@@ -80,6 +80,15 @@ Both pings should return `"status":"ok"`. Compare the entry script in
 
 ## 5. Required nginx hardening (uploads + security headers)
 
+> **Use `deploy/nginx-crm-security.conf`** (shipped in the deploy zip as
+> `nginx-crm-security.conf`). It supersedes the block below: its CSP allows Razorpay
+> checkout, Google sign-in, the Facebook SDK and YouTube/Vimeo/Drive embeds, keeps
+> camera/microphone for video intros, and ships the full CSP as Report-Only first.
+> Copy it to `/etc/nginx/snippets/crm-security.conf`, add
+> `include /etc/nginx/snippets/crm-security.conf;` inside the `crm.syncpedia.in`
+> server block, set `server_tokens off;` in the `http { }` block of
+> `/etc/nginx/nginx.conf`, then `nginx -t && systemctl reload nginx`.
+
 **This step is mandatory, not optional.** Every `.htaccess` file shipped in this repo
 (`public/.htaccess`, `public/uploads/*/.htaccess`, `public/storage/*/.htaccess`) is
 Apache-only syntax — **nginx ignores `.htaccess` entirely.** On this VPS, the host

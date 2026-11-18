@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { dedupeNotifications } from '@/lib/dedupeNotifications';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
@@ -50,7 +51,7 @@ export function NotificationBell() {
     queryKey: ['notifications', user?.id],
     queryFn: async () => {
       const res = await api.notifications.list();
-      return Array.isArray(res) ? (res as Notification[]) : [];
+      return Array.isArray(res) ? dedupeNotifications(res as Notification[]) : [];
     },
     enabled: Boolean(user?.id),
     refetchInterval: 30000,
