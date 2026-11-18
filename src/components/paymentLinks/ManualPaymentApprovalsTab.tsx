@@ -297,7 +297,7 @@ export default function ManualPaymentApprovalsTab({
                             <Button
                               size="sm"
                               disabled={busy}
-                              className="h-8 bg-lime-400 hover:bg-[#25c066] text-brand-900"
+                              className="h-8 bg-primary hover:bg-brand-700 text-primary-foreground"
                               onClick={() => void review(row.id, "approve")}
                             >
                               {busy ? (

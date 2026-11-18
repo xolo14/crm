@@ -135,7 +135,9 @@ export default function Notifications() {
     const out: typeof notifications = [];
     for (const n of notifications) {
       const day = String(n.created_at || '').slice(0, 10);
-      const key = `${n.type}|${n.title}|${n.message ?? ''}|${(n as { link?: string }).link ?? ''}|${day}`;
+      // Same entity (link) + type + day = one alert, even when the wording differs slightly.
+      const link = (n as { link?: string }).link ?? '';
+      const key = link ? `${n.type}|${link}|${day}` : `${n.type}|${n.title}|${n.message ?? ''}|${day}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({ ...n, message: n.message ? n.message.replace(/\s*\(\d+ days? ago\)\.?$/, '.') : n.message });

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { fmtCount, pct } from "@/lib/formatMetric";
 import { useOrgScope } from "@/hooks/useOrgScope";
 import { AlertCircle, CheckCircle, ChevronLeft, ChevronRight, Clock, Download, Eye, FileText, MoreHorizontal, PhoneCall, Plus, Search, Shuffle, TrendingUp, UserCheck, Users, XCircle } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -161,7 +162,7 @@ export default function HRLeadsPage() {
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">HR Leads</h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
-            {total} leads · {unassigned > 0 && <span className="font-medium text-teal-600">{unassigned} unassigned</span>}
+            {fmtCount(total)} leads{unassigned > 0 ? <> · <span className="font-medium text-teal-600">{fmtCount(unassigned)} unassigned</span></> : null}
           </p>
           <p className="text-[11px] text-muted-foreground mt-0.5">
             {isSuperAdmin ? "Scope: all leads" : isAdmin ? "Scope: organization leads" : "Scope: your organization's HR leads"}
@@ -198,13 +199,13 @@ export default function HRLeadsPage() {
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2 sm:gap-3 mb-5">
         {[
-          { label: "TOTAL LEADS", value: stats.total || 0, icon: Users, sub: "All HR Added" },
-          { label: "NEW", value: stats.by_status?.new || 0, icon: Clock, sub: "Untouched" },
-          { label: "CONTACTED", value: stats.by_status?.contacted || 0, icon: PhoneCall, sub: "Reached" },
-          { label: "INTERESTED", value: stats.by_status?.interested || 0, icon: TrendingUp, sub: "Warm" },
-          { label: "ENROLL", value: stats.by_status?.converted || 0, icon: CheckCircle, sub: `${stats.total ? Math.round(((stats.by_status?.converted || 0) / stats.total) * 100) : 0}% won` },
-          { label: "LOST", value: stats.by_status?.lost || 0, icon: XCircle, sub: "Dropped" },
-          { label: "UNASSIGNED", value: stats.unassigned || unassigned, icon: AlertCircle, sub: "Need action" },
+          { label: "Total leads", value: stats.total || 0, icon: Users, sub: "Added by HR" },
+          { label: "New", value: stats.by_status?.new || 0, icon: Clock, sub: "Untouched" },
+          { label: "Contacted", value: stats.by_status?.contacted || 0, icon: PhoneCall, sub: "Reached" },
+          { label: "Interested", value: stats.by_status?.interested || 0, icon: TrendingUp, sub: "Warm" },
+          { label: "Enrolled", value: ((stats.by_status as Record<string, number> | undefined)?.enrolled || 0) + (stats.by_status?.converted || 0), icon: CheckCircle, sub: `${pct(((stats.by_status as Record<string, number> | undefined)?.enrolled || 0) + (stats.by_status?.converted || 0), stats.total || 0)} of total` },
+          { label: "Lost", value: stats.by_status?.lost || 0, icon: XCircle, sub: "Dropped" },
+          { label: "Unassigned", value: stats.unassigned || unassigned, icon: AlertCircle, sub: "Need action" },
         ].map((c) => (
           <Card key={c.label} className="border-border/50 shadow-none">
             <CardContent className="pt-3 pb-2.5 px-3">
@@ -212,7 +213,7 @@ export default function HRLeadsPage() {
                 <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{c.label}</span>
                 <c.icon className="h-3.5 w-3.5 text-muted-foreground" />
               </div>
-              <div className="text-lg font-bold">{c.value}</div>
+              <div className="text-lg font-bold">{fmtCount(c.value)}</div>
               <p className="text-[10px] text-muted-foreground">{c.sub}</p>
             </CardContent>
           </Card>

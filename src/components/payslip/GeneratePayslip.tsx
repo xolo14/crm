@@ -633,7 +633,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
             </Button>
             <Button
               type="button"
-              className="rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
+              className="rounded-lg bg-primary font-semibold text-primary-foreground hover:bg-brand-700"
               onClick={handleGenerate}
               disabled={submitting || !employee}
             >
@@ -689,7 +689,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
             </Button>
             <Button
               type="button"
-              className="rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
+              className="rounded-lg bg-primary font-semibold text-primary-foreground hover:bg-brand-700"
               onClick={openComposeMail}
               disabled={mailSent || !lastGenerated}
             >
@@ -799,7 +799,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
             {!mailSent ? (
               <Button
                 type="button"
-                className="rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
+                className="rounded-lg bg-primary font-semibold text-primary-foreground hover:bg-brand-700"
                 onClick={() => void handleSendPayslipMail()}
                 disabled={sendingMail}
               >

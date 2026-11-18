@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { fmtCount } from '@/lib/formatMetric';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
@@ -508,9 +509,9 @@ export default function SuperAdminPanel() {
                       <Badge variant={o.is_active ? 'default' : 'secondary'} className="text-[10px]">{o.is_active ? 'Active' : 'Inactive'}</Badge>
                     </div>
                     <div className="grid grid-cols-4 gap-2 text-center">
-                      <div><p className="text-sm font-bold">{o.user_count}</p><p className="text-[9px] text-muted-foreground">Users</p></div>
-                      <div><p className="text-sm font-bold">{o.leads_count}</p><p className="text-[9px] text-muted-foreground">Leads</p></div>
-                      <div><p className="text-sm font-bold">{o.students_count}</p><p className="text-[9px] text-muted-foreground">Students</p></div>
+                      <div><p className="text-sm font-bold">{fmtCount(Number(o.user_count) || 0)}</p><p className="text-[9px] text-muted-foreground">Users</p></div>
+                      <div><p className="text-sm font-bold">{fmtCount(Number(o.leads_count) || 0)}</p><p className="text-[9px] text-muted-foreground">Leads</p></div>
+                      <div><p className="text-sm font-bold">{fmtCount(Number(o.students_count) || 0)}</p><p className="text-[9px] text-muted-foreground">Students</p></div>
                       <div><p className="text-sm font-bold">{fmt(parseFloat(o.revenue) || 0)}</p><p className="text-[9px] text-muted-foreground">Revenue</p></div>
                     </div>
                     {renderOrgActions(o, 'mobile')}
@@ -540,9 +541,9 @@ export default function SuperAdminPanel() {
                         <div><p className="font-medium">{o.name}</p><p className="text-xs text-muted-foreground font-mono">{o.slug}</p></div>
                       </TableCell>
                       <TableCell><Badge variant="outline" className="capitalize text-xs">{o.plan}</Badge></TableCell>
-                      <TableCell className="text-center font-medium">{o.user_count}</TableCell>
-                      <TableCell className="text-center">{o.leads_count} <span className="text-emerald-600 text-xs">({o.converted_count} conv.)</span></TableCell>
-                      <TableCell className="text-center">{o.students_count}</TableCell>
+                      <TableCell className="text-center font-medium">{fmtCount(Number(o.user_count) || 0)}</TableCell>
+                      <TableCell className="text-center">{fmtCount(Number(o.leads_count) || 0)} <span className="text-emerald-600 text-xs">({fmtCount(Number(o.converted_count) || 0)} conv.)</span></TableCell>
+                      <TableCell className="text-center">{fmtCount(Number(o.students_count) || 0)}</TableCell>
                       <TableCell className="text-center font-semibold">{fmt(parseFloat(o.revenue) || 0)}</TableCell>
                       <TableCell><Badge variant={o.is_active ? 'default' : 'secondary'} className="text-xs">{o.is_active ? 'Active' : 'Disabled'}</Badge></TableCell>
                       <TableCell className="text-right">

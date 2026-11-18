@@ -13,7 +13,7 @@ export function SaveButton({ onClick, loading = false, label = "Save Changes", d
       type="button"
       onClick={onClick}
       disabled={loading || disabled}
-      className="inline-flex items-center gap-2 rounded-lg bg-lime-400 px-5 py-2 text-sm font-semibold text-brand-900 transition-all duration-150 ease-in-out hover:bg-[#22c265] disabled:cursor-not-allowed disabled:opacity-70"
+      className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground transition-all duration-150 ease-in-out hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-70"
     >
       {loading && <Loader2 className="h-4 w-4 animate-spin" />}
       {label}

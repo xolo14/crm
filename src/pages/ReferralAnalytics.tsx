@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, Legend, LabelList } from 'recharts';
 import { chartSeries } from '@/lib/chartTheme';
-import { fmtPercent } from '@/lib/formatMetric';
+import { fmtCount, fmtPercent } from '@/lib/formatMetric';
 import { Users, TrendingUp, UserPlus, Award, Loader2, Filter, Phone, ClipboardList, Eye, CheckCircle, XCircle } from 'lucide-react';
 import { DateRangeFilter, DateRange } from '@/components/DateRangeFilter';
 import { parseServerDateTime } from '@/lib/dateTime';
@@ -20,7 +20,8 @@ import { parseServerDateTime } from '@/lib/dateTime';
 const STATUS_LABELS: Record<string, string> = {
   new: 'New', contacted: 'Contacted', interested: 'Interested',
   demo_scheduled: 'Demo Scheduled', demo_attended: 'Demo Attended',
-  considering: 'Considering', enrolled: 'Enroll', converted: 'Enroll', lost: 'Lost',
+  considering: 'Considering', enrolled: 'Enrolled', converted: 'Enrolled', lost: 'Lost',
+  not_answered: 'Not answered', messaged: 'Messaged', qualified: 'Qualified', registered: 'Registered',
 };
 
 const statusColors: Record<string, string> = {
@@ -79,20 +80,8 @@ export default function ReferralAnalytics() {
       setLeadsFullyLoaded(true);
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
-    void callLogsApi.syncDailyReportsFromCallLogs(90).then(async () => {
-      try {
-        const refreshed = await api.dailyReports.list();
-        setDailyReports(
-          Array.isArray(refreshed)
-            ? refreshed
-            : Array.isArray(refreshed?.data)
-              ? refreshed.data
-              : refreshed?.reports || [],
-        );
-      } catch {
-        /* keep the reports already shown */
-      }
-    });
+    // Daily reports are rebuilt from call logs by the nightly cron_sync_daily_reports.php
+    // job (and on every logged call); viewing this page no longer writes anything.
   };
 
   const userIdToName = useMemo(() => {
@@ -164,12 +153,21 @@ export default function ReferralAnalytics() {
   const funnelData = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const l of filteredLeads) {
-      let s = l.status || 'new';
+      let s = String(l.status || 'new');
       if (s === 'converted') s = 'enrolled';
+      if (s === 'considering') s = 'interested';
+      if (s === 'not_interested') s = 'lost';
       counts[s] = (counts[s] || 0) + 1;
     }
-    const order = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'considering', 'enrolled', 'lost'];
-    return order.filter(s => counts[s]).map(s => ({ name: STATUS_LABELS[s] || s, value: counts[s] || 0 }));
+    // Every status, so the bars always sum to the lead total (Not answered / Messaged were missing).
+    const order = ['new', 'contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'];
+    const known = new Set(order);
+    const otherCount = Object.entries(counts).filter(([k]) => !known.has(k)).reduce((a, [, v]) => a + v, 0);
+    const rows = order
+      .filter((s) => counts[s] || ['new', 'contacted', 'not_answered', 'interested', 'enrolled', 'lost'].includes(s))
+      .map((s) => ({ name: STATUS_LABELS[s] || s, value: counts[s] || 0 }));
+    if (otherCount > 0) rows.push({ name: 'Other', value: otherCount });
+    return rows;
   }, [filteredLeads]);
 
   // Daily activity trend from reports
@@ -241,7 +239,7 @@ export default function ReferralAnalytics() {
             <CardContent className="pt-4 pb-3">
               <div className="flex items-center gap-2">
                 <div className={`h-8 w-8 rounded-lg ${card.bg} flex items-center justify-center`}><card.icon className={`h-4 w-4 ${card.color}`} /></div>
-                <div><p className="text-lg font-bold leading-none">{card.value}</p><p className="text-[10px] text-muted-foreground mt-0.5">{card.label}</p></div>
+                <div><p className="text-lg font-bold leading-none">{typeof card.value === "number" ? fmtCount(card.value) : card.value}</p><p className="text-[10px] text-muted-foreground mt-0.5">{card.label}</p></div>
               </div>
             </CardContent>
           </Card>
@@ -257,7 +255,7 @@ export default function ReferralAnalytics() {
               <ResponsiveContainer width="100%" height={isMobile ? 200 : 280}>
                 <BarChart data={funnelData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="name" tick={{ fontSize: isMobile ? 8 : 10 }} stroke="hsl(var(--muted-foreground))" />
+                  <XAxis dataKey="name" interval={0} angle={-30} textAnchor="end" height={56} tick={{ fontSize: isMobile ? 8 : 10 }} stroke="hsl(var(--muted-foreground))" />
                   <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
                   <Tooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 10, fontSize: 12 }} />
                   <Bar dataKey="value" fill={chartSeries()[0]} radius={[4, 4, 0, 0]}>

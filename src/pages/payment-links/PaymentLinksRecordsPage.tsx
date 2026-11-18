@@ -230,25 +230,12 @@ export default function PaymentLinksRecordsPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
-          {isSuperAdmin ? (
-            <Select value={selectedOrgId} onValueChange={setSelectedOrgId}>
-              <SelectTrigger className="w-[220px] bg-white">
-                <SelectValue placeholder="Organisation" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All organisations</SelectItem>
-                {orgOptions.map((o) => (
-                  <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
           <PaymentBankDetailsChip />
           {showPaymentsBtn ? (
             <Button
               type="button"
               onClick={() => setDialogOpen(true)}
-              className="shrink-0 gap-1.5 bg-lime-400 hover:bg-[#25c066] text-brand-900"
+              className="shrink-0 gap-1.5 bg-primary hover:bg-brand-700 text-primary-foreground"
             >
               <Plus size={16} />
               Payments

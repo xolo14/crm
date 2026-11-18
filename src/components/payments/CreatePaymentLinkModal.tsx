@@ -851,7 +851,7 @@ export default function CreatePaymentLinkModal({
             type="submit"
             form="standard-pl-form"
             disabled={!canSubmit || loading}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-brand-900 bg-lime-400 hover:bg-[#22c265] disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors shadow-sm"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-primary-foreground bg-primary hover:bg-brand-700 disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed transition-colors shadow-sm"
           >
             {loading && <Loader2 size={16} className="animate-spin" />}
             {loading ? "Creating..." : "Create Payment Link"}

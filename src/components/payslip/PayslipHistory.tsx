@@ -66,7 +66,7 @@ function PayslipIdCell({ id, onCopy }: { id: string; onCopy: () => void }) {
 
 function statusBadge(status: PayslipStatus) {
   if (status === "draft") return <Badge variant="secondary">Draft</Badge>;
-  if (status === "generated") return <Badge className="bg-lime-400 font-semibold text-brand-900">Generated</Badge>;
+  if (status === "generated") return <Badge className="bg-primary font-semibold text-primary-foreground hover:bg-brand-700">Generated</Badge>;
   return <Badge className="bg-blue-600 text-white hover:bg-blue-600">Sent</Badge>;
 }
 
@@ -217,7 +217,7 @@ export default function PayslipHistory({
         {filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-200 bg-[#f9fafb] py-16 text-center">
             <p className="text-sm font-medium text-gray-600">No payslips generated yet</p>
-            <Button type="button" className="mt-4 rounded-lg bg-lime-400 font-semibold text-brand-900" onClick={onGoToGenerate}>
+            <Button type="button" className="mt-4 rounded-lg bg-primary font-semibold text-primary-foreground hover:bg-brand-700" onClick={onGoToGenerate}>
               Generate First Payslip
             </Button>
           </div>
@@ -334,7 +334,7 @@ export default function PayslipHistory({
             </Button>
             <Button
               type="button"
-              className="rounded-lg bg-lime-400 font-semibold text-brand-900"
+              className="rounded-lg bg-primary font-semibold text-primary-foreground hover:bg-brand-700"
               onClick={() => viewing && void exportPayslipPDF(viewRef, viewing.id)}
             >
               <Download className="mr-2 h-4 w-4" />

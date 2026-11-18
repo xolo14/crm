@@ -117,11 +117,10 @@ export function paymentLinkInvoiceLabel(link: RazorpayPaymentLink): string {
 export function paymentLinkReferralCode(
   link: RazorpayPaymentLink,
 ): string {
-  return (
-    link.notes?.crm_referral ??
-    link.notes?.referral_code ??
-    ""
-  );
+  // Some stored codes carry a trailing separator ("SYP0000-"); show the code itself.
+  return String(link.notes?.crm_referral ?? link.notes?.referral_code ?? "")
+    .trim()
+    .replace(/[ _-]+$/, "");
 }
 
 export function paymentLinkSalespersonId(

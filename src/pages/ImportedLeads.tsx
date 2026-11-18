@@ -15,7 +15,7 @@ import * as perms from '@/lib/permissions';
 import { Search, Loader2, Phone, Mail, Users, Target, CheckCircle2, Clock, Eye, Building2, GraduationCap, StickyNote, ArrowUpRight, XCircle, ChevronLeft, ChevronRight, Download, Upload, FileDown } from 'lucide-react';
 import { format } from 'date-fns';
 
-const LEAD_STATUSES = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
+const LEAD_STATUSES = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'] as const;
 
 const formatLeadStatus = (s?: string | null) => {
   if (!s) return '';

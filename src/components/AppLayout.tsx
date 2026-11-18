@@ -262,7 +262,7 @@ const navItems: NavItem[] = [
   { to: '/settings', icon: Settings, label: 'Settings', roles: ['super_admin', 'org', 'manager', 'sales_representative', 'marketing', 'operational_manager'] },
 ];
 
-type NavGroupKey = 'overview' | 'sales' | 'academics' | 'revenue' | 'people' | 'admin';
+type NavGroupKey = 'overview' | 'sales' | 'academics' | 'revenue' | 'people' | 'other';
 
 const NAV_GROUPS: { key: NavGroupKey; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -270,12 +270,12 @@ const NAV_GROUPS: { key: NavGroupKey; label: string }[] = [
   { key: 'academics', label: 'Academics' },
   { key: 'revenue', label: 'Revenue' },
   { key: 'people', label: 'People & HR' },
-  { key: 'admin', label: 'Admin' },
+  { key: 'other', label: 'Other' },
 ];
 
 /** Sidebar sections, in display order. Paths not listed fall into Overview. */
 const NAV_GROUP_ORDER: Record<NavGroupKey, string[]> = {
-  overview: ['/', '/marketing/dashboard', '/notifications', '/tasks'],
+  overview: ['/', '/marketing/dashboard', '/organizations', '/form-management'],
   sales: [
     '/leads', '/leads-management', '/my-leads', '/marketing/form-leads', '/marketing/imported-leads',
     '/my-referrals', '/daily-reports', '/communications',
@@ -284,7 +284,7 @@ const NAV_GROUP_ORDER: Record<NavGroupKey, string[]> = {
   academics: ['/students', '/courses', '/batches', '/live-classes', '/timetables', '/assessments', '/certificates'],
   revenue: ['/payments/records', '/payments', '/coupons'],
   people: ['/team', '/offer-letters', '/video-intros', '/payslip', '/fresher-salary-tracker', '/holidays'],
-  admin: ['/organizations', '/form-management', '/settings', '/trash'],
+  other: ['/notifications', '/tasks', '/settings', '/trash'],
 };
 
 function navGroupOf(path: string): { key: NavGroupKey; rank: number } {

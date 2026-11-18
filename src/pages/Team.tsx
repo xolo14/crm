@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { isReportableUser } from '@/lib/reportableUsers';
+import { useOrgScope } from '@/hooks/useOrgScope';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api } from '@/lib/api';
@@ -148,7 +150,8 @@ export default function Team() {
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [orgOptions, setOrgOptions] = useState<OrgOption[]>([]);
   /** Super Admin: filter roster to one tenant; `all` = every org (default). */
-  const [selectedOrgId, setSelectedOrgId] = useState<string>('all');
+  // Organization comes from the header scope switcher (shared across pages).
+  const [selectedOrgId] = useOrgScope();
   const [addOpen, setAddOpen] = useState(false);
   const [addReviewOpen, setAddReviewOpen] = useState(false);
   const [addMemberLoading, setAddMemberLoading] = useState(false);
@@ -596,7 +599,8 @@ export default function Team() {
     }
   };
 
-  const stats = { total: visibleTeam.length, active: visibleTeam.filter(m => m.is_active).length };
+  // Same "active" definition as Dashboard and Organizations (src/lib/reportableUsers.ts).
+  const stats = { total: visibleTeam.length, active: visibleTeam.filter((m) => isReportableUser(m)).length };
 
   const activeManagers = team.filter((m) => m.is_active && normalizeRole(m.role) === 'manager');
 
@@ -698,21 +702,6 @@ export default function Team() {
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" /><Input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} className="pl-9" /></div>
-        {isSuperAdmin && (
-          <Select value={selectedOrgId} onValueChange={setSelectedOrgId}>
-            <SelectTrigger className="w-full sm:w-[220px]">
-              <SelectValue placeholder="Organisation" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All organisations</SelectItem>
-              {orgOptions.map((o) => (
-                <SelectItem key={o.id} value={o.id}>
-                  {o.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
         <Select value={roleFilter} onValueChange={setRoleFilter}>
           <SelectTrigger className="w-full sm:w-[180px]"><SelectValue placeholder="Filter by role" /></SelectTrigger>
           <SelectContent><SelectItem value="all">All Roles</SelectItem>{TEAM_ROLE_GROUPS.filter((r) => r.level <= currentLevel).map((r) => <SelectItem key={r.key} value={r.key}>{r.label}</SelectItem>)}</SelectContent>
@@ -1135,7 +1124,7 @@ export default function Team() {
               </Button>
               <Button
                 type="button"
-                className="gap-2 bg-lime-400 text-brand-900 hover:bg-[#26c968]"
+                className="gap-2 bg-primary text-primary-foreground hover:bg-brand-700"
                 disabled={sendWelcomeLoading || !createdMemberId}
                 onClick={() => void handleSendWelcomeEmail()}
               >

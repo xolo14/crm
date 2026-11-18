@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { isReportableUser } from '@/lib/reportableUsers';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { callLogsApi } from '@/services/callLogs';
@@ -69,6 +70,7 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [teamMembers, setTeamMembers] = useState<{ id: string; full_name: string; role?: string }[]>([]);
+  const [excludedUserIds, setExcludedUserIds] = useState<Set<string>>(new Set());
 
   const isManager =
     role === 'org' ||
@@ -93,30 +95,17 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
     } finally {
       setLoading(false);
     }
-    // Background backfill (90 days keeps Hostinger load reasonable; list already painted).
-    void callLogsApi
-      .syncDailyReportsFromCallLogs(90)
-      .then(async () => {
-        try {
-          const params: { user_id?: string } = {};
-          if (isSalesRep && user?.id) params.user_id = user.id;
-          const data = await api.dailyReports.list(params);
-          setReports(Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : []);
-        } catch {
-          /* ignore refresh errors */
-        }
-      })
-      .catch(() => {
-        /* non-blocking */
-      });
+    // Daily reports are rebuilt from call logs by the nightly cron_sync_daily_reports.php
+    // job (and on every logged call); viewing this page no longer writes anything.
   }, [isSalesRep, user?.id]);
 
   const fetchTeam = useCallback(async () => {
     try {
       const data = await api.team.list();
-      setTeamMembers(
-        (data.data || []).filter((m: { role?: string }) => m.role === 'sales_representative'),
-      );
+      const all = (data.data || []) as { id: string; full_name: string; role?: string; is_active?: unknown; email?: string }[];
+      // Inactive / test accounts drop out of the rep picker and the analytics leaderboard.
+      setExcludedUserIds(new Set(all.filter((m) => !isReportableUser(m)).map((m) => String(m.id))));
+      setTeamMembers(all.filter((m) => m.role === 'sales_representative' && isReportableUser(m)));
     } catch {
       /* ignore */
     }
@@ -129,10 +118,11 @@ export function useDailyReportsList(opts?: { initialTimeline?: DailyReportsTimel
 
   const filteredReports = useMemo(() => {
     return reports.filter((r) => {
+      if (excludedUserIds.has(String(r.user_id))) return false;
       if (selectedRep !== 'all' && r.user_id !== selectedRep) return false;
       return reportInTimeline(r, timeline, customFrom, customTo);
     });
-  }, [reports, selectedRep, timeline, customFrom, customTo]);
+  }, [reports, selectedRep, timeline, customFrom, customTo, excludedUserIds]);
 
   const salesReports = useMemo(() => mapToSalesReports(filteredReports), [filteredReports]);
   const byRep = useMemo(() => aggregateByRep(salesReports), [salesReports]);

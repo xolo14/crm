@@ -15,7 +15,7 @@ import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
 import { openProtectedUpload } from '@/lib/resumeHref';
 import { formatFormFieldLabel, parseFormLeadNotes } from '@/lib/parseFormLeadNotes';
 
-const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
+const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'] as const;
 const SOURCE_CARD_PAGE_SIZES = [50, 100, 200] as const;
 
 const formatLeadStatus = (s?: string | null) => {

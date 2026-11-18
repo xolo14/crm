@@ -604,7 +604,7 @@ export default function ManualPaymentDialog({
             <Button
               type="submit"
               disabled={saving}
-              className="bg-lime-400 hover:bg-[#25c066] text-brand-900"
+              className="bg-primary hover:bg-brand-700 text-primary-foreground"
             >
               {saving ? (
                 <>

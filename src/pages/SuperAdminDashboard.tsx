@@ -8,7 +8,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  AlertTriangle,
   ArrowRight,
   Building2,
   CheckCircle2,
@@ -49,7 +48,7 @@ interface MetricsSummary {
   unassigned: number;
   unassigned_aging: { "0_2d": number; "3_7d": number; "8_30d": number; "30d_plus": number };
   by_source: { source: string; count: number }[];
-  leads_by_week: { week_start: string; count: number }[];
+  leads_by_week: { week_start: string; count: number; partial?: boolean }[];
   students_total: number;
   registered: number;
   students_enrolled: number;
@@ -71,18 +70,21 @@ interface OrgRow {
 }
 
 /** Funnel stages from current CRM status: "reached at least this stage". */
+/**
+ * Funnel from current CRM status: each stage counts leads at or beyond it.
+ * No Demo stage — leads can enroll without a recorded demo, which made Demo → Enrolled
+ * read as if most demos converted.
+ */
 const FUNNEL: { label: string; statuses: string[] }[] = [
-  { label: "New", statuses: [] }, // everyone who is not lost
-  { label: "Contacted", statuses: ["contacted", "not_answered", "messaged", "qualified", "interested", "demo_scheduled", "demo_attended", "enrolled"] },
-  { label: "Interested", statuses: ["qualified", "interested", "demo_scheduled", "demo_attended", "enrolled"] },
-  { label: "Demo", statuses: ["demo_scheduled", "demo_attended", "enrolled"] },
+  { label: "Active leads", statuses: [] }, // every lead that is not lost
+  { label: "Contacted", statuses: ["contacted", "not_answered", "messaged", "qualified", "interested", "demo_scheduled", "demo_attended", "registered", "enrolled"] },
+  { label: "Interested", statuses: ["qualified", "interested", "demo_scheduled", "demo_attended", "registered", "enrolled"] },
+  { label: "Registered", statuses: ["registered", "enrolled"] },
   { label: "Enrolled", statuses: ["enrolled"] },
 ];
 
 function prettySource(s: string): string {
-  const t = cleanName(s);
-  if (/^\d{10,}$/.test(t)) return `Meta ad ${t.slice(-6)}`;
-  return t.replace(/^form_/, "Form: ").replace(/_/g, " ");
+  return cleanName(s);
 }
 
 function KpiTile({
@@ -237,50 +239,13 @@ export default function SuperAdminDashboard() {
   const weekly = useMemo(
     () =>
       (m?.leads_by_week ?? []).map((w) => ({
-        week: new Date(w.week_start).toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+        week:
+          new Date(`${w.week_start}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short" }) +
+          (w.partial ? " (so far)" : ""),
         value: w.count,
       })),
     [m],
   );
-
-  const attention = useMemo(() => {
-    if (!m) return [];
-    const items: { label: string; detail: string; to: string; tone: "danger" | "warning" | "info" }[] = [];
-    if (m.unassigned > 0) {
-      const stale = m.unassigned_aging["8_30d"] + m.unassigned_aging["30d_plus"];
-      items.push({
-        label: `${fmtCount(m.unassigned)} unassigned leads`,
-        detail: stale > 0 ? `${fmtCount(stale)} have waited more than a week` : "Assign an owner to start follow-up",
-        to: "/leads",
-        tone: stale > 0 ? "danger" : "warning",
-      });
-    }
-    if (m.pending_approvals > 0) {
-      items.push({
-        label: `${fmtCount(m.pending_approvals)} payment approval${m.pending_approvals === 1 ? "" : "s"} pending`,
-        detail: "Manual payments waiting for review",
-        to: "/payments/records",
-        tone: "warning",
-      });
-    }
-    if (m.outstanding > 0) {
-      items.push({
-        label: `${fmtINR(m.outstanding)} outstanding`,
-        detail: "Balance still due from payment candidates",
-        to: "/payments/records",
-        tone: "info",
-      });
-    }
-    if (m.registered > 0) {
-      items.push({
-        label: `${fmtCount(m.registered)} registered, not enrolled`,
-        detail: "Paid the registration fee but have no course or batch yet",
-        to: "/students",
-        tone: "info",
-      });
-    }
-    return items;
-  }, [m]);
 
   const firstName = profile?.full_name?.split(" ")[0] || "Admin";
 
@@ -324,47 +289,14 @@ export default function SuperAdminDashboard() {
         </Card>
       ) : null}
 
-      {/* Needs attention */}
-      {!loading && attention.length > 0 ? (
-        <Card className="border-border shadow-none">
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-base font-semibold">
-              <AlertTriangle className="h-4 w-4 text-warning" />
-              Needs attention
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-2 sm:grid-cols-2">
-            {attention.map((a) => (
-              <Link
-                key={a.label}
-                to={a.to}
-                className="group flex items-start gap-3 rounded-lg border border-border p-3 transition-colors hover:border-brand-500/40 hover:bg-brand-100/40"
-              >
-                <span
-                  className={cn(
-                    "mt-1 h-2 w-2 shrink-0 rounded-full",
-                    a.tone === "danger" ? "bg-destructive" : a.tone === "warning" ? "bg-warning" : "bg-info",
-                  )}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-semibold">{a.label}</span>
-                  <span className="block text-xs text-muted-foreground">{a.detail}</span>
-                </span>
-                <ArrowRight className="mt-0.5 h-4 w-4 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-              </Link>
-            ))}
-          </CardContent>
-        </Card>
-      ) : null}
 
       {/* KPI row */}
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <KpiTile label="Leads" value={fmtCount(m?.leads_total)} sub={m ? `${fmtCount(m.new)} new` : undefined} icon={TrendingUp} to="/leads" loading={loading} />
         <KpiTile
           label="Enrolled"
-          value={fmtCount(m?.enrolled)}
-          sub={m ? `${pct(m.enrolled, m.leads_total)} of leads` : undefined}
+          value={fmtCount(m?.students_enrolled)}
+          sub={m ? `${pct(m.students_enrolled, m.leads_total)} of leads · ${fmtCount(m.registered)} registered` : undefined}
           icon={CheckCircle2}
           to="/students"
           loading={loading}
@@ -453,7 +385,7 @@ export default function SuperAdminDashboard() {
 
         <ChartCard
           title="New leads per week"
-          question="Is lead flow growing? (last 12 weeks, oldest on the left)"
+          question="Is lead flow growing? (12 weeks starting Monday, oldest on the left; this week is partial)"
           table={<MiniTable cols={["Week of", "New leads"]} rows={weekly.map((w) => [w.week, fmtCount(w.value)])} />}
         >
           {loading ? (

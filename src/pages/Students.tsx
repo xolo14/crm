@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { fmtDate } from '@/lib/formatMetric';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api } from '@/lib/api';
@@ -515,7 +516,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                     <StudentPaymentProgress summary={student.payment_summary} />
                   </TableCell>
                   <TableCell><Badge variant="outline" className={statusColor(student.status) + ' capitalize text-xs'}>{student.status}</Badge></TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{student.enrollment_date ? new Date(student.enrollment_date).toLocaleDateString() : '—'}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{student.enrollment_date ? fmtDate(student.enrollment_date) : '—'}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-0.5">
                       {student.source_lead_id && (
@@ -556,7 +557,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                 <p><span className="text-muted-foreground">Phone:</span> {detailStudent.phone || '—'}</p>
                 <p><span className="text-muted-foreground">College:</span> {detailStudent.college || '—'}</p>
                 <p><span className="text-muted-foreground">Year:</span> {detailStudent.year_of_study || '—'}</p>
-                <p><span className="text-muted-foreground">Enrolled:</span> {detailStudent.enrollment_date ? new Date(detailStudent.enrollment_date).toLocaleDateString() : '—'}</p>
+                <p><span className="text-muted-foreground">Enrolled:</span> {detailStudent.enrollment_date ? fmtDate(detailStudent.enrollment_date) : '—'}</p>
                 <p><span className="text-muted-foreground">Enrolled by:</span> {detailStudent.enrolled_by_name || '—'}</p>
                 <p><span className="text-muted-foreground">Course:</span> {detailStudent.course_name || detailStudent.course || '—'}</p>
                 <p><span className="text-muted-foreground">Batch:</span> {detailStudent.batch_name || detailStudent.batch || '—'}</p>

@@ -42,7 +42,7 @@ const MARKETING_RESUME_TYPES = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ] as const;
 
-const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
+const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'] as const;
 
 const formatLeadStatus = (s?: string | null) => {
   if (!s) return 'New';
@@ -412,7 +412,7 @@ export default function FormLeads() {
     return filterLeadsBySourceBucket(cardLeads, sourceDialogKey);
   }, [cardLeads, sourceDialogKey]);
 
-  const SOURCE_STATUS_CHIP_ORDER = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'];
+  const SOURCE_STATUS_CHIP_ORDER = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'];
 
   const openSourceDialog = (key: string, label: string, status: string = 'all') => {
     setSourceDialogKey(key);

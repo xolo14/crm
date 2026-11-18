@@ -569,7 +569,7 @@ export default function AddEmployeeModal({ open, employee, existingEmployees, on
           <Button type="button" variant="outline" className="rounded-lg border-gray-200" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
-          <Button type="button" className="rounded-lg bg-lime-400 font-semibold text-brand-900" onClick={handleSave} disabled={saving}>
+          <Button type="button" className="rounded-lg bg-primary font-semibold text-primary-foreground hover:bg-brand-700" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : "Save employee"}
           </Button>
         </DialogFooter>

@@ -58,7 +58,7 @@ function StatCard({
   className?: string;
 }) {
   return (
-    <div className={cn("bg-muted/40 rounded-lg p-4 min-w-[152px] shrink-0 snap-start", className)}>
+    <div className={cn("bg-muted/40 rounded-lg p-4 min-w-0", className)}>
       <div className="text-2xl font-bold tabular-nums">{value}</div>
       <div className={cn("flex items-center gap-1 text-sm mt-1", labelClass)}>
         <Icon className="h-4 w-4 shrink-0" />
@@ -74,9 +74,11 @@ function StatsGrid({ stats, periodTitle }: { stats: CallLogStats; periodTitle: s
       <div className="flex flex-wrap items-baseline gap-2">
         <span className="text-lg font-bold">{periodTitle}</span>
         <span className="text-sm text-muted-foreground">{stats.period_label}</span>
+        <span className="text-xs text-muted-foreground">Logged calls come from the call log. Daily reports show reported calls separately.</span>
       </div>
-      <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 snap-x snap-mandatory scrollbar-thin">
-        <StatCard value={stats.total_calls} label="Total Calls" icon={Phone} />
+      {/* Wrapping grid: tiles no longer scroll sideways. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <StatCard value={stats.total_calls} label="Logged calls" icon={Phone} />
         <StatCard value={stats.call_duration} label="Call Duration" icon={Clock} />
         <StatCard value={stats.incoming} label="Incoming" icon={PhoneIncoming} labelClass="text-green-500" />
         <StatCard value={stats.incoming_duration} label="Incoming Duration" icon={PhoneIncoming} labelClass="text-green-500" />

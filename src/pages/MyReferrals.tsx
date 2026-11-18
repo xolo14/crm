@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { fmtCount } from '@/lib/formatMetric';
 import { isReportableUser } from '@/lib/reportableUsers';
 import { format, endOfDay } from 'date-fns';
 import { useAuth } from '@/hooks/useAuth';
@@ -37,6 +38,7 @@ export default function MyReferrals() {
   const isMobile = useIsMobile();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [allLeads, setAllLeads] = useState<any[]>([]);
   const [dailyReports, setDailyReports] = useState<any[]>([]);
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
@@ -53,17 +55,31 @@ export default function MyReferrals() {
     try {
       // List first — awaiting syncDailyReports(730) blocked this page for minutes
       // (org/manager syncs every sales rep × up to 730 dates before the spinner clears).
-      const [leadsData, profilesData, reportsData] = await Promise.all([
+      // allSettled: one failed request (e.g. a single lead page) must not wipe every
+      // rep to zero. Pages accumulate into `pagedLeads` so a late failure keeps what loaded.
+      let pagedLeads: any[] = [];
+      const [leadsRes, profilesRes, reportsRes] = await Promise.allSettled([
         api.leads.list({
           lite: true,
           limit: 2000,
           // No maxRows cap: Sales Tracker must show the same total lead count as
           // Rep Performance (which has no cap) — a 5000-row cap here silently
           // truncated totals once an org passed 5000 leads.
+          onPage: (page) => {
+            pagedLeads = page.data || [];
+          },
         }),
         api.profiles.list(),
         api.dailyReports.list(),
       ]);
+      const failed: string[] = [];
+      if (leadsRes.status === 'rejected') failed.push('leads');
+      if (profilesRes.status === 'rejected') failed.push('team');
+      if (reportsRes.status === 'rejected') failed.push('daily reports');
+      setLoadError(failed.length ? `Could not load ${failed.join(', ')}. Figures may be incomplete; refresh to retry.` : null);
+      const leadsData: any = leadsRes.status === 'fulfilled' ? leadsRes.value : { data: pagedLeads };
+      const profilesData: any = profilesRes.status === 'fulfilled' ? profilesRes.value : [];
+      const reportsData: any = reportsRes.status === 'fulfilled' ? reportsRes.value : [];
       const leads = Array.isArray(leadsData) ? leadsData : leadsData.data || leadsData.leads || [];
       const profiles = Array.isArray(profilesData)
         ? profilesData
@@ -78,24 +94,8 @@ export default function MyReferrals() {
       setTeamMembers(profiles.filter((p: any) => p.user_id));
     } catch (err) { console.error(err); }
     finally { setLoading(false); }
-    void callLogsApi
-      .syncDailyReportsFromCallLogs(90)
-      .then(async () => {
-        try {
-          const reportsData = await api.dailyReports.list();
-          const reports = Array.isArray(reportsData)
-            ? reportsData
-            : Array.isArray(reportsData?.data)
-              ? reportsData.data
-              : reportsData?.reports || [];
-          setDailyReports(reports);
-        } catch {
-          /* ignore */
-        }
-      })
-      .catch(() => {
-        /* ignore */
-      });
+    // Daily reports are rebuilt from call logs by the nightly cron_sync_daily_reports.php
+    // job (and on every logged call); viewing this page no longer writes anything.
   };
 
   const userIdToName = useMemo(() => {
@@ -191,8 +191,13 @@ export default function MyReferrals() {
       }
     }
 
+    const excludedIds = new Set(
+      teamMembers.filter((m: any) => !isReportableUser(m)).map((m: any) => String(m.user_id)),
+    );
     for (const report of dateFilteredReports) {
       if (!report.user_id) continue;
+      // Inactive / test accounts never get a rep row from their old daily reports.
+      if (excludedIds.has(String(report.user_id))) continue;
       if (!stats[report.user_id]) {
         stats[report.user_id] = {
           name: report.user_name || report.user_email || userIdToName[report.user_id] || 'Unknown',
@@ -267,6 +272,14 @@ export default function MyReferrals() {
 
   return (
     <div>
+      {loadError ? (
+        <div className="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+          {loadError}{' '}
+          <button type="button" className="font-medium underline" onClick={() => void fetchData()}>
+            Retry
+          </button>
+        </div>
+      ) : null}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Sales Rep Tracker</h1>
@@ -299,7 +312,7 @@ export default function MyReferrals() {
             <CardContent className="pt-4 pb-3">
               <div className="flex items-center gap-2.5">
                 <div className={`h-8 w-8 rounded-lg ${card.bg} flex items-center justify-center`}><card.icon className={`h-4 w-4 ${card.color}`} /></div>
-                <div><p className="text-xl font-bold leading-none">{card.value}</p><p className="text-[11px] text-muted-foreground mt-0.5">{card.label}</p></div>
+                <div><p className="text-xl font-bold leading-none">{typeof card.value === "number" ? fmtCount(card.value) : card.value}</p><p className="text-[11px] text-muted-foreground mt-0.5">{card.label}</p></div>
               </div>
             </CardContent>
           </Card>

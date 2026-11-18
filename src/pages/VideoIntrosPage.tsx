@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { fmtDateTime } from "@/lib/formatMetric";
+import { useOrgScope } from "@/hooks/useOrgScope";
 import { Link, useNavigate } from "react-router-dom";
 import { Copy, Loader2, Mail, Plus, Search, Trash2, Video } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -52,7 +54,7 @@ function fmtWhen(raw?: string | null): string {
   if (!raw) return "—";
   const d = new Date(raw.includes("T") ? raw : raw.replace(" ", "T"));
   if (Number.isNaN(d.getTime())) return String(raw).slice(0, 16);
-  return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return fmtDateTime(d);
 }
 
 function statusBadge(status: string) {
@@ -81,7 +83,9 @@ export default function VideoIntrosPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
-  const [orgId, setOrgId] = useState(isSa ? "all" : "");
+  // Super admin: organization comes from the header scope switcher.
+  const [headerScope] = useOrgScope();
+  const orgId = isSa ? headerScope : "";
   const [createOpen, setCreateOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [linkInvite, setLinkInvite] = useState<VideoIntroInvitation | null>(null);
@@ -325,21 +329,6 @@ export default function VideoIntrosPage() {
             ))}
           </SelectContent>
         </Select>
-        {isSa ? (
-          <Select value={orgId} onValueChange={setOrgId}>
-            <SelectTrigger className="w-full lg:w-56" aria-label="Filter organisation">
-              <SelectValue placeholder="Organisation" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All organisations</SelectItem>
-              {orgs.map((o) => (
-                <SelectItem key={o.id} value={o.id}>
-                  {o.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : null}
       </div>
 
       {isLoading ? (

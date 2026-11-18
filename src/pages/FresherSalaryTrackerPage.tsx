@@ -338,15 +338,26 @@ function FresherSalaryAdminTracker() {
     return () => window.clearTimeout(t);
   }, [members, rosterLoading, toast]);
 
-  /** Email notification trigger — fires once per page load when roster is ready. */
-  useEffect(() => {
-    if (rosterLoading || members.length === 0) return;
-    checkAndSendPhaseEmails(members, (memberName) => {
+  /**
+   * Progress emails (days 10, 15 and 30 of each phase) are sent on request, not on page
+   * view: opening a page must only read. The server sends each email at most once.
+   */
+  const [sendingDueEmails, setSendingDueEmails] = useState(false);
+  const sendDueEmails = async () => {
+    if (rosterLoading || members.length === 0 || sendingDueEmails) return;
+    setSendingDueEmails(true);
+    let sent = 0;
+    try {
+      await checkAndSendPhaseEmails(members, (memberName) => {
+        sent += 1;
+        toast({ title: `Progress email sent to ${memberName}` });
+      });
+    } finally {
       setEmailLogRecords(getEmailTriggerRecords());
-      toast({ title: `📧 Progress email sent to ${memberName}` });
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rosterLoading]);
+      setSendingDueEmails(false);
+      if (sent === 0) toast({ title: "No progress emails are due right now" });
+    }
+  };
 
   const addMemberSubmit = async (salaryTerms: FresherOrgPolicy) => {
     const nameTrim = name.trim();
@@ -853,9 +864,21 @@ function FresherSalaryAdminTracker() {
             </button>
             {emailLogOpen && (
               <div className="border-t border-gray-100 px-5 pb-5 pt-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-gray-500">Due on days 10, 15 and 30 of each phase. Each email is sent only once.</p>
+                  <button
+                    type="button"
+                    onClick={() => void sendDueEmails()}
+                    disabled={sendingDueEmails || rosterLoading || members.length === 0}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-brand-700 disabled:opacity-50"
+                  >
+                    <Mail className="h-3.5 w-3.5" aria-hidden />
+                    {sendingDueEmails ? "Sending…" : "Send due progress emails"}
+                  </button>
+                </div>
                 {emailLogRecords.length === 0 ? (
                   <p className="py-4 text-center text-sm text-gray-400">
-                    No emails sent yet. Emails trigger automatically on days 10, 15, and 30 of each phase.
+                    No emails sent yet.
                   </p>
                 ) : (
                   <div className="overflow-x-auto">

@@ -82,7 +82,7 @@ export default function ManageEmployees({ employees, onEdit, onDelete, onViewPay
               </SelectContent>
             </Select>
           </div>
-          <Button type="button" className="h-10 rounded-lg bg-lime-400 font-semibold text-brand-900 md:ml-auto" onClick={onRequestAdd}>
+          <Button type="button" className="h-10 rounded-lg bg-primary font-semibold text-primary-foreground md:ml-auto hover:bg-brand-700" onClick={onRequestAdd}>
             + Add Employee
           </Button>
         </div>

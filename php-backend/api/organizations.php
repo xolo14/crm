@@ -54,7 +54,7 @@ if ($method === 'GET') {
             try {
                 $stmt = $db->query("SELECT
                     o.id, o.name, o.slug, o.logo_url, o.plan, o.max_users, o.is_active, o.created_at, o.industry,
-                    (SELECT COUNT(*) FROM users WHERE org_id = o.id AND is_active = 1) as user_count,
+                    (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id AND " . syncpediaActiveUserSql("u") . ") as user_count,
                     (SELECT COUNT(*) FROM leads WHERE org_id = o.id) as leads_count,
                     (SELECT COUNT(*) FROM leads WHERE org_id = o.id AND status = 'enrolled') as converted_count,
                     (SELECT COUNT(*) FROM students WHERE org_id = o.id) as students_count,
@@ -78,7 +78,7 @@ if ($method === 'GET') {
                     // Backward-compatible fallback for older schemas (e.g. missing industry/revenue columns)
                     $stmt = $db->query("SELECT 
                         o.id, o.name, o.slug, o.logo_url, o.plan, o.max_users, o.is_active, o.created_at, '' as industry,
-                        (SELECT COUNT(*) FROM users WHERE org_id = o.id AND is_active = 1) as user_count,
+                        (SELECT COUNT(*) FROM users u WHERE u.org_id = o.id AND " . syncpediaActiveUserSql("u") . ") as user_count,
                         (SELECT COUNT(*) FROM leads WHERE org_id = o.id) as leads_count,
                         (SELECT COUNT(*) FROM leads WHERE org_id = o.id AND status = 'enrolled') as converted_count,
                         (SELECT COUNT(*) FROM students WHERE org_id = o.id) as students_count,

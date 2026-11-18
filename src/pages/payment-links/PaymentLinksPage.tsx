@@ -326,19 +326,6 @@ export default function PaymentLinksPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {isSuperAdmin ? (
-            <Select value={selectedOrgId} onValueChange={setSelectedOrgId}>
-              <SelectTrigger className="w-[220px] bg-white">
-                <SelectValue placeholder="Organisation" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All organisations</SelectItem>
-                {orgOptions.map((o) => (
-                  <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
           <button
             type="button"
             onClick={() => setCreateOpen(true)}

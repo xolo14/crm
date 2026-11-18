@@ -345,7 +345,7 @@ export default function PaymentLinksTable({
                       <button
                         type="button"
                         onClick={onCreate}
-                        className="mt-4 inline-flex items-center gap-2 bg-lime-400 text-brand-900 font-semibold px-4 py-2 rounded-xl text-sm"
+                        className="mt-4 inline-flex items-center gap-2 bg-primary text-primary-foreground font-semibold px-4 py-2 rounded-xl text-sm hover:bg-brand-700"
                       >
                         Create Payment Link
                       </button>

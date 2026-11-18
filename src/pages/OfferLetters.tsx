@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { fmtDate } from '@/lib/formatMetric';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { searchAccessibleLeads } from '@/lib/searchAccessibleLeads';
@@ -2256,7 +2257,7 @@ export default function OfferLetters() {
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-xs text-muted-foreground mb-3">Updated {format(new Date(t.updated_at), 'MMM dd, yyyy')}</p>
+                    <p className="text-xs text-muted-foreground mb-3">Updated {fmtDate(t.updated_at)}</p>
                     <div className="flex flex-wrap gap-1.5">
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openPreview(t)}><Eye className="h-3 w-3" />Preview</Button>
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openEditTemplate(t)}><Edit className="h-3 w-3" />Edit</Button>
@@ -2331,7 +2332,7 @@ export default function OfferLetters() {
                           <TableCell className="text-sm text-muted-foreground">{s.recipient_email}</TableCell>
                           <TableCell><Badge variant="outline" className="text-[10px]">{s.role_title}</Badge></TableCell>
                           <TableCell><Badge variant={s.status === 'sent' ? 'default' : 'secondary'} className="text-[10px]">{s.status}</Badge></TableCell>
-                          <TableCell className="text-xs text-muted-foreground">{format(new Date(s.sent_at), 'MMM dd, yyyy')}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground">{fmtDate(s.sent_at)}</TableCell>
                           <TableCell>
                             <div className="flex gap-1">
                               <Button variant="ghost" size="sm" className="h-7 text-xs" title="Preview PDF" onClick={() => void openSentLetterPdf(s)}><Eye className="h-3 w-3" /></Button>
@@ -2614,7 +2615,7 @@ export default function OfferLetters() {
                   <Button
                     onClick={generatePdfAndSend}
                     disabled={sending}
-                    className="gap-1.5 rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
+                    className="gap-1.5 rounded-lg bg-primary font-semibold text-primary-foreground hover:bg-brand-700"
                   >
                     {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                     {sending ? 'Sending…' : 'Send Offer Letter Mail'}

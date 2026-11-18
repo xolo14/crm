@@ -2960,9 +2960,15 @@ function leadsAllowedStatuses(): array {
         'interested',
         'demo_scheduled',
         'demo_attended',
+        'registered', // paid the registration fee; no course or batch yet (has a student row)
         'enrolled',
         'lost',
     ];
+}
+
+/** Statuses that own a students row (registration or full enrollment). */
+function leadsStudentStatuses(): array {
+    return ['registered', 'enrolled', 'converted'];
 }
 
 /**
@@ -3005,16 +3011,17 @@ function leadsAssertStatusTransition(?string $fromStatus, string $toStatus): ?st
 
     // Ops-friendly: forward, small rewind, lost/reopen. Enrolled only → lost (or stay).
     $allowed = [
-        'new' => ['contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
-        'contacted' => ['new', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
-        'not_answered' => ['new', 'contacted', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
-        'messaged' => ['new', 'contacted', 'not_answered', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
-        'qualified' => ['contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
-        'interested' => ['contacted', 'not_answered', 'messaged', 'qualified', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'],
-        'demo_scheduled' => ['interested', 'qualified', 'demo_attended', 'enrolled', 'lost', 'contacted'],
-        'demo_attended' => ['demo_scheduled', 'interested', 'enrolled', 'lost'],
-        'enrolled' => ['lost'],
-        'lost' => ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'qualified', 'demo_scheduled', 'enrolled'],
+        'new' => ['contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'],
+        'contacted' => ['new', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'],
+        'not_answered' => ['new', 'contacted', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'],
+        'messaged' => ['new', 'contacted', 'not_answered', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'],
+        'qualified' => ['contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'],
+        'interested' => ['contacted', 'not_answered', 'messaged', 'qualified', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'],
+        'demo_scheduled' => ['interested', 'qualified', 'demo_attended', 'registered', 'enrolled', 'lost', 'contacted'],
+        'demo_attended' => ['demo_scheduled', 'interested', 'registered', 'enrolled', 'lost'],
+        'registered' => ['enrolled', 'lost'],
+        'enrolled' => ['registered', 'lost'],
+        'lost' => ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'qualified', 'demo_scheduled', 'registered', 'enrolled'],
     ];
     $ok = $allowed[$from] ?? [];
     if (!in_array($to, $ok, true)) {
@@ -3481,10 +3488,10 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
     if ($transitionErr !== null) {
         return $transitionErr;
     }
-    if ($newStatus === 'enrolled') {
+    if (in_array($newStatus, ['enrolled', 'registered'], true)) {
         $em = trim((string) ($leadRow['email'] ?? ''));
         if ($em === '') {
-            return 'Lead must have an email before Enroll status';
+            return 'Lead must have an email before Registered or Enrolled status';
         }
     }
     $prevStatus = leadsNormalizeStatus((string) ($leadRow['status'] ?? ''));
@@ -3506,7 +3513,7 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
     } catch (Throwable $e) {
         return 'Could not update lead status';
     }
-    if ($newStatus === 'enrolled') {
+    if (in_array($newStatus, ['enrolled', 'registered'], true)) {
         ensureStudentsLeadIdUnique($db);
         try {
             leadsTryAttachStudentForEnrollment($db, $tokenData, $leadId);
@@ -3527,8 +3534,8 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
             }
             return 'Could not create student for enrollment';
         }
-    } elseif ($prevStatus === 'enrolled' || $prevStatus === 'converted') {
-        // Only drop students when leaving enrolled — never on unrelated status edits.
+    } elseif (in_array($prevStatus, leadsStudentStatuses(), true)) {
+        // Only drop students when leaving registered/enrolled — never on unrelated status edits.
         leadsDropStudentForLead($db, $leadId);
     }
 
@@ -5222,7 +5229,7 @@ function ensureLeadsStatusColumn(PDO $db, bool $force = false): void {
                 $db->exec(
                     "ALTER TABLE leads MODIFY COLUMN status ENUM(
                         'new','contacted','not_answered','messaged','qualified','interested',
-                        'demo_scheduled','demo_attended','enrolled','lost','converted','considering','not_interested'
+                        'demo_scheduled','demo_attended','registered','enrolled','lost','converted','considering','not_interested'
                     ) NOT NULL DEFAULT 'new'"
                 );
             } catch (PDOException $e2) {
@@ -9183,3 +9190,16 @@ register_shutdown_function(static function () {
     echo $json !== false ? $json : '{"error":"Internal server error"}';
 });
 
+
+/**
+ * The one "active user" definition used by Dashboard, Organizations and Team:
+ * is_active = 1, not a platform super admin, and not a test/review account.
+ * Keep in sync with src/lib/reportableUsers.ts.
+ */
+function syncpediaActiveUserSql(string $alias = ''): string
+{
+    $c = $alias !== '' ? "{$alias}." : '';
+    return "{$c}is_active = 1"
+        . " AND LOWER(TRIM(COALESCE({$c}role, ''))) NOT IN ('super_admin', 'superadmin')"
+        . " AND LOWER(COALESCE({$c}email, '')) NOT REGEXP '^(reviewer|test|demo|qa)[._+-]?[a-z0-9]*@'";
+}

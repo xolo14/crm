@@ -1022,7 +1022,7 @@ if ($method === 'PUT') {
         }
     }
 
-    if (isset($input['status']) && $input['status'] === 'enrolled') {
+    if (isset($input['status']) && in_array($input['status'], ['enrolled', 'registered'], true)) {
         $stmt = $db->prepare("SELECT id, name, email, phone, college, year_of_study, org_id FROM leads WHERE id = ? LIMIT 1");
         $stmt->execute([$id]);
         $leadRow = $stmt->fetch();
@@ -1070,7 +1070,7 @@ if ($method === 'PUT') {
     $updateSql = 'UPDATE leads SET ' . implode(', ', $fields) . ' WHERE id = ?';
     $stmt = $db->prepare($updateSql);
 
-    if (isset($input['status']) && $input['status'] === 'enrolled') {
+    if (isset($input['status']) && in_array($input['status'], ['enrolled', 'registered'], true)) {
         ensureStudentsLeadIdUnique($db);
         try {
             $db->beginTransaction();
@@ -1328,9 +1328,10 @@ if ($method === 'PUT') {
     }
 
     // Only drop students when leaving enrolled — never because an orphan student row exists.
+    // registered <-> enrolled keeps the student row; leaving both drops it.
     $clearStudentOnUnenroll = array_key_exists('status', $input)
-        && $input['status'] !== 'enrolled'
-        && ($prevStatus === 'enrolled' || $prevStatus === 'converted');
+        && !in_array($input['status'], ['enrolled', 'registered'], true)
+        && in_array($prevStatus, leadsStudentStatuses(), true);
 
     // Optimistic status lock: reject stale concurrent status overwrites.
     $statusLockPrev = null;

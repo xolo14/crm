@@ -387,7 +387,7 @@ export default function CandidatePaymentRecords({
                 type="button"
                 size="sm"
                 onClick={() => setUpdateOpen(true)}
-                className="gap-1.5 bg-lime-400 hover:bg-[#25c066] text-brand-900"
+                className="gap-1.5 bg-primary hover:bg-brand-700 text-primary-foreground"
               >
                 <Plus size={14} />
                 Update payments

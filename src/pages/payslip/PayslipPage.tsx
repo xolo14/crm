@@ -137,7 +137,7 @@ export default function PayslipPage() {
         </div>
         <Button
           type="button"
-          className="h-11 shrink-0 rounded-lg bg-lime-400 font-semibold text-brand-900 hover:bg-[#26c968]"
+          className="h-11 shrink-0 rounded-lg bg-primary font-semibold text-primary-foreground hover:bg-brand-700"
           onClick={() => {
             setEditingEmp(null);
             setAddEmpOpen(true);

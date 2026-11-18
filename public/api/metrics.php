@@ -41,10 +41,60 @@ if ($role === 'super_admin') {
     }
 }
 
-/** @return array{0: string, 1: array<int, string>} */
+/**
+ * Scope clause. "All organizations" still only counts rows whose org exists, so the
+ * all-org total always equals the sum of the per-org rows on Organizations.
+ *
+ * @return array{0: string, 1: array<int, string>}
+ */
 function metricsOrgWhere(?string $orgId, string $col = 'org_id'): array
 {
-    return $orgId === null ? ['1=1', []] : ["{$col} = ?", [$orgId]];
+    return $orgId === null
+        ? ["{$col} IN (SELECT id FROM organizations)", []]
+        : ["{$col} = ?", [$orgId]];
+}
+
+/** Human label for a raw leads.source key. */
+function metricsSourceLabel(PDO $db, string $key, array &$cache): string
+{
+    $k = trim($key);
+    if (isset($cache[$k])) {
+        return $cache[$k];
+    }
+    $lower = strtolower($k);
+    $label = $k;
+    if ($lower === '' || $lower === 'unknown') {
+        $label = 'Unknown';
+    } elseif (in_array($lower, ['other', 'import', 'imported', 'csv', 'bulk_import'], true)) {
+        $label = 'Imports';
+    } elseif (in_array($lower, ['facebook', 'meta', 'meta_ads', 'fb', 'instagram'], true) || preg_match('/^\d{10,}$/', $k)) {
+        $label = 'Meta Ads';
+    } elseif (strpos($lower, 'form_') === 0) {
+        $slug = substr($k, 5);
+        $name = '';
+        try {
+            $st = $db->prepare('SELECT name FROM lead_forms WHERE slug = ? LIMIT 1');
+            $st->execute([$slug]);
+            $name = trim((string) $st->fetchColumn());
+        } catch (Throwable $e) {
+        }
+        $label = 'Form · ' . ($name !== '' ? $name : ucwords(str_replace(['-', '_'], ' ', $slug)));
+    } elseif (strpos($lower, 'peaklyy:') === 0) {
+        $id = substr($k, 8);
+        $title = '';
+        try {
+            $st = $db->prepare('SELECT title FROM peaklyy_assessments WHERE id = ? LIMIT 1');
+            $st->execute([$id]);
+            $title = trim((string) $st->fetchColumn());
+        } catch (Throwable $e) {
+        }
+        $label = 'Assignment · ' . ($title !== '' ? $title : 'Peaklyy');
+    } else {
+        $label = ucwords(str_replace(['_', '-'], ' ', $k));
+    }
+    $label = trim((string) preg_replace('/[\x{200B}-\x{200F}\x{2060}\x{FEFF}]/u', '', $label));
+    $cache[$k] = $label;
+    return $label;
 }
 
 function metricsCount(PDO $db, string $sql, array $params): int
@@ -88,6 +138,7 @@ $leadsTotal = array_sum($byStatus);
 $enrolled = (int) ($byStatus['enrolled'] ?? 0);
 $lost = (int) ($byStatus['lost'] ?? 0);
 $new = (int) ($byStatus['new'] ?? 0);
+$registeredLeads = (int) ($byStatus['registered'] ?? 0);
 $unassigned = metricsCount(
     $db,
     "SELECT COUNT(*) FROM leads WHERE {$w} AND (assigned_to IS NULL OR assigned_to = '')",
@@ -126,16 +177,24 @@ try {
     );
     $st->execute($p);
     $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $labelCache = [];
+    $merged = [];
+    foreach ($rows as $r) {
+        $label = metricsSourceLabel($db, (string) $r['src'], $labelCache);
+        $merged[$label] = ($merged[$label] ?? 0) + (int) $r['c'];
+    }
+    arsort($merged);
     $other = 0;
-    foreach ($rows as $i => $r) {
-        if ($i < 8) {
-            $bySource[] = ['source' => (string) $r['src'], 'count' => (int) $r['c']];
+    $i = 0;
+    foreach ($merged as $label => $c) {
+        if ($i++ < 8) {
+            $bySource[] = ['source' => (string) $label, 'count' => (int) $c];
         } else {
-            $other += (int) $r['c'];
+            $other += (int) $c;
         }
     }
     if ($other > 0) {
-        $bySource[] = ['source' => 'Other', 'count' => $other];
+        $bySource[] = ['source' => 'All other sources', 'count' => $other];
     }
 } catch (Throwable $e) {
     error_log('[metrics] by_source: ' . $e->getMessage());
@@ -144,14 +203,21 @@ try {
 // New leads per week, oldest → newest (last 12 weeks)
 $leadsByWeek = [];
 try {
+    $thisMonday = new DateTimeImmutable('monday this week');
+    $firstMonday = $thisMonday->modify('-11 weeks');
+    $counts = [];
     $st = $db->prepare(
-        "SELECT YEARWEEK(created_at, 3) AS yw, MIN(DATE(created_at)) AS d, COUNT(*) AS c
-           FROM leads WHERE {$w} AND created_at >= DATE_SUB(CURDATE(), INTERVAL 12 WEEK)
-          GROUP BY yw ORDER BY yw ASC"
+        "SELECT DATE_SUB(DATE(created_at), INTERVAL WEEKDAY(created_at) DAY) AS wk, COUNT(*) AS c
+           FROM leads WHERE {$w} AND created_at >= ?
+          GROUP BY wk"
     );
-    $st->execute($p);
+    $st->execute(array_merge($p, [$firstMonday->format('Y-m-d 00:00:00')]));
     foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
-        $leadsByWeek[] = ['week_start' => (string) $r['d'], 'count' => (int) $r['c']];
+        $counts[(string) $r['wk']] = (int) $r['c'];
+    }
+    for ($i = 0; $i < 12; $i++) {
+        $wk = $firstMonday->modify("+{$i} weeks")->format('Y-m-d');
+        $leadsByWeek[] = ['week_start' => $wk, 'count' => $counts[$wk] ?? 0, 'partial' => $i === 11];
     }
 } catch (Throwable $e) {
     error_log('[metrics] by_week: ' . $e->getMessage());
@@ -168,6 +234,7 @@ $studentsTotal = metricsCount($db, "SELECT COUNT(*) FROM students WHERE {$w}", $
 
 // ── Payments (identical math to Payment Records) ────────────────────────
 $collected = 0.0;
+$pitchTotal = 0.0;
 $outstanding = 0.0;
 $candidates = 0;
 try {
@@ -179,7 +246,7 @@ try {
         try {
             $t = paymentCandidatesComputeTotals($db, $cand);
             $collected += (float) ($t['total_paid'] ?? 0);
-            $outstanding += max(0.0, (float) ($t['remaining'] ?? 0));
+            $pitchTotal += (float) ($t['pitch_price'] ?? 0);
         } catch (Throwable $e) {
             // skip one bad row rather than failing the summary
         }
@@ -187,6 +254,9 @@ try {
 } catch (Throwable $e) {
     error_log('[metrics] payments: ' . $e->getMessage());
 }
+
+// Same identity Payment Records shows: Remaining = total pitch − total collected.
+$outstanding = $pitchTotal - $collected;
 
 $pendingApprovals = metricsCount(
     $db,
@@ -197,9 +267,7 @@ $pendingApprovals = metricsCount(
 // ── Users ───────────────────────────────────────────────────────────────
 $activeUsers = metricsCount(
     $db,
-    "SELECT COUNT(*) FROM users WHERE {$w} AND is_active = 1
-        AND LOWER(COALESCE(email, '')) NOT LIKE 'reviewer@%'
-        AND LOWER(TRIM(COALESCE(role, ''))) <> 'super_admin'",
+    "SELECT COUNT(*) FROM users WHERE {$w} AND " . syncpediaActiveUserSql(),
     $p,
 );
 
@@ -211,7 +279,9 @@ respond([
         'leads_total' => $leadsTotal,
         'by_status' => $byStatus,
         'new' => $new,
-        'in_pipeline' => max(0, $leadsTotal - $new - $enrolled - $lost),
+        // new + in_pipeline + registered_leads + enrolled + lost = leads_total
+        'in_pipeline' => max(0, $leadsTotal - $new - $registeredLeads - $enrolled - $lost),
+        'registered_leads' => $registeredLeads,
         'enrolled' => $enrolled,
         'lost' => $lost,
         'unassigned' => $unassigned,
@@ -222,6 +292,7 @@ respond([
         'registered' => $registered,
         'students_enrolled' => max(0, $studentsTotal - $registered),
         'payment_candidates' => $candidates,
+        'pitch_total' => round($pitchTotal, 2),
         'collected' => round($collected, 2),
         'outstanding' => round($outstanding, 2),
         'pending_approvals' => $pendingApprovals,

@@ -59,9 +59,9 @@ import {
 import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { ORG_SCOPE_ALL, useOrgScope } from '@/hooks/useOrgScope';
-import { pct } from '@/lib/formatMetric';
+import { fmtCount, pct } from '@/lib/formatMetric';
 
-const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
+const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'] as const;
 
 const formatLeadStatus = (s?: string | null) => {
   if (!s) return 'New';
@@ -193,7 +193,7 @@ const SOURCE_BUCKET_ICONS: Record<LeadSourceBucket, LucideIcon> = {
   other: CircleHelp,
 };
 
-const SOURCE_STATUS_CHIP_ORDER = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'enrolled', 'lost'] as const;
+const SOURCE_STATUS_CHIP_ORDER = ['new', 'contacted', 'not_answered', 'messaged', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'] as const;
 
 export default function Leads() {
   const { toast } = useToast();
@@ -386,7 +386,14 @@ export default function Leads() {
   useEffect(() => {
     if (!isSuperAdmin || orgScope === ORG_SCOPE_ALL) return;
     if (viewOrgs.some((o) => o.id === orgScope)) {
-      setViewOrgIdLocal(orgScope);
+      setViewOrgIdLocal((prev) => {
+        if (prev !== orgScope) {
+          // Switching organization from the header: clear folder + selection like the old picker did.
+          setActiveFolderId('');
+          setSelectedIds(new Set());
+        }
+        return orgScope;
+      });
       setImportOrgId(orgScope);
     }
   }, [isSuperAdmin, orgScope, viewOrgs]);
@@ -1919,7 +1926,7 @@ export default function Leads() {
           selectedLeadId={detailLead?.id ?? null}
           detailPanel={sourceCardDetailPanel}
           onCloseDetail={closeInlineDetail}
-          backLabel="Back to Leads Management"
+          backLabel={isFormLeadsPage ? 'Back to Form Leads' : 'Back to Leads'}
           getCreatedByName={(lead) => {
             const fromApi = String(lead?.created_by_name || '').trim();
             if (fromApi) return fromApi;
@@ -1936,11 +1943,11 @@ export default function Leads() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">
-            {isSalesRepMyLeadsPage ? 'My Leads' : 'Leads Management'}
+          <h1 className="whitespace-nowrap text-xl sm:text-2xl font-bold tracking-tight">
+            {isSalesRepMyLeadsPage ? 'My Leads' : isFormLeadsPage ? 'Form Leads' : 'Leads'}
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
-            {totalLeads}{' '}
+            {fmtCount(totalLeads)}{' '}
             {isFormLeadsPage || isSalesRepMyLeadsPage ? 'form leads' : 'leads'}
             {' · '}
             {unassignedCount > 0 && <span className="text-amber-600 font-medium">{unassignedCount} unassigned</span>}
@@ -2108,7 +2115,7 @@ export default function Leads() {
                 <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{c.label}</span>
                 <div className={`h-6 w-6 rounded-md ${c.bg} flex items-center justify-center`}><c.icon className={`h-3 w-3 ${c.color}`} /></div>
               </div>
-              <div className="text-lg font-bold">{c.value}</div>
+              <div className="text-lg font-bold">{typeof c.value === "number" ? fmtCount(c.value) : c.value}</div>
               <p className="text-[10px] text-muted-foreground">{c.sub}</p>
             </CardContent>
           </Card>
@@ -2153,27 +2160,11 @@ export default function Leads() {
                     : 'Open a source or form card to view leads, filter by status, and bulk assign.'}
               </p>
             </div>
-            {isSuperAdmin && !isFormLeadsPage && !isSalesRepMyLeadsPage ? (
-              <Select
-                value={viewOrgId || undefined}
-                onValueChange={(v) => {
-                  setViewOrgId(v);
-                  setImportOrgId(v);
-                  setActiveFolderId('');
-                  setSelectedIds(new Set());
-                }}
-              >
-                <SelectTrigger className="h-9 w-full sm:w-[240px] shrink-0">
-                  <SelectValue placeholder="Select organisation" />
-                </SelectTrigger>
-                <SelectContent>
-                  {viewOrgs.map((o) => (
-                    <SelectItem key={o.id} value={o.id}>
-                      {o.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            {isSuperAdmin && !isSalesRepMyLeadsPage ? (
+              <p className="shrink-0 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
+                Showing <span className="font-semibold text-foreground">{viewOrgs.find((o) => o.id === viewOrgId)?.name || 'an organization'}</span>
+                {orgScope === ORG_SCOPE_ALL ? ' · choose another in the header' : ''}
+              </p>
             ) : null}
           </div>
           <div className="flex flex-col md:flex-row gap-3 md:gap-4 items-stretch">
