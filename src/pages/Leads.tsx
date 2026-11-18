@@ -2160,12 +2160,6 @@ export default function Leads() {
                     : 'Open a source or form card to view leads, filter by status, and bulk assign.'}
               </p>
             </div>
-            {isSuperAdmin && !isSalesRepMyLeadsPage ? (
-              <p className="shrink-0 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground">
-                Showing <span className="font-semibold text-foreground">{viewOrgs.find((o) => o.id === viewOrgId)?.name || 'an organization'}</span>
-                {orgScope === ORG_SCOPE_ALL ? ' · choose another in the header' : ''}
-              </p>
-            ) : null}
           </div>
           <div className="flex flex-col md:flex-row gap-3 md:gap-4 items-stretch">
             {canUseLeadFolders ? (
