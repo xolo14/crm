@@ -1135,6 +1135,46 @@ function paymentLinksOverlayCrmRows(array $items, ?int $from, ?int $to): array
 }
 
 /**
+ * After the HTTP response is flushed (PHP-FPM), run the full Razorpay sync so the
+ * next page load / poll sees fresh data. One sync at a time per filter window.
+ *
+ * @param array<string, mixed> $filters
+ */
+function paymentLinksScheduleBackgroundSync(array $filters): void
+{
+    if (empty($GLOBALS['__payment_links_needs_sync'])) {
+        return;
+    }
+    register_shutdown_function(static function () use ($filters): void {
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+        }
+        ignore_user_abort(true);
+        @set_time_limit(300);
+        $lockFile = paymentLinksSyncCachePath($filters) . '.lock';
+        $fh = @fopen($lockFile, 'c');
+        if ($fh === false) {
+            return;
+        }
+        if (!flock($fh, LOCK_EX | LOCK_NB)) {
+            fclose($fh);
+            return; // another request is already syncing this window
+        }
+        try {
+            $syncFilters = $filters;
+            unset($syncFilters['fast']);
+            $syncFilters['force'] = true;
+            paymentLinksListMerged($syncFilters, null);
+        } catch (Throwable $e) {
+            error_log('[payment_links] background sync: ' . $e->getMessage());
+        } finally {
+            flock($fh, LOCK_UN);
+            fclose($fh);
+        }
+    });
+}
+
+/**
  * Razorpay list + CRM rows (merged status) + live refresh for recent pending links.
  *
  * The full Razorpay sync (paginated list + per-pending refresh + fulfillment) runs
@@ -1193,6 +1233,16 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
             }
             paymentLinksFulfillPaidItems($items);
         }
+    }
+
+    // Fast path (page loads/polls): never block the response on a full Razorpay
+    // sync. Serve the last sync (however old) or plain CRM rows overlaid with the
+    // current DB state, and let the caller run the full sync after the response
+    // has been flushed (see paymentLinksScheduleBackgroundSync).
+    if ($items === null && !empty($filters['fast'])) {
+        $stale = paymentLinksSyncCacheRead($cacheFile, PHP_INT_MAX);
+        $items = paymentLinksOverlayCrmRows($stale ?? [], $from, $to);
+        $GLOBALS['__payment_links_needs_sync'] = true;
     }
 
     if ($items === null) {

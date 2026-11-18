@@ -531,10 +531,12 @@ export default function PaymentLinksTable({
 
         <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100 text-sm text-gray-600">
           <p>
-            {total === 0
-              ? "0 links"
-              : `Showing ${pageStart + 1}–${Math.min(pageStart + PAGE_SIZE, total)} of ${total}`}
-            {links.length !== total ? ` (${links.length} loaded)` : ""}
+            {loading
+              ? " "
+              : total === 0
+                ? "0 links"
+                : `Showing ${pageStart + 1}–${Math.min(pageStart + PAGE_SIZE, total)} of ${total}`}
+            {!loading && links.length !== total ? ` (${links.length} loaded)` : ""}
           </p>
           <div className="flex items-center gap-2">
             <button

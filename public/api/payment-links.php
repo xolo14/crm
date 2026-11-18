@@ -703,7 +703,7 @@ try {
             if ($from === null && $to === null) {
                 $maxPages = 50;
             }
-            $result = paymentLinksListMerged([
+            $listFilters = [
                 'from' => $from,
                 'to' => $to,
                 'status' => $_GET['status'] ?? null,
@@ -712,7 +712,12 @@ try {
                 'max_pages' => $maxPages,
                 'force' => !empty($_GET['force']),
                 'for_records' => isset($_GET['view']) && $_GET['view'] === 'records',
-            ], $tokenData);
+                // Page loads and polls answer from cache/DB at once; the Razorpay
+                // sync runs after the response (Refresh button still forces it inline).
+                'fast' => empty($_GET['force']),
+            ];
+            $result = paymentLinksListMerged($listFilters, $tokenData);
+            paymentLinksScheduleBackgroundSync($listFilters);
             paymentLinksSuccess($result);
             break;
 

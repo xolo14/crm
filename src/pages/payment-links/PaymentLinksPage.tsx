@@ -123,6 +123,13 @@ export default function PaymentLinksPage() {
     void loadLinks();
   }, [loadLinks]);
 
+  // The list is served from cache/DB instantly while the server syncs Razorpay
+  // after responding; pick up that fresh data once, shortly after the first load.
+  useEffect(() => {
+    const timer = window.setTimeout(() => refreshLinksQuiet(), 15_000);
+    return () => window.clearTimeout(timer);
+  }, [refreshLinksQuiet]);
+
   useEffect(() => {
     if (searchParams.get("status") !== "paid") return;
     void loadLinks();

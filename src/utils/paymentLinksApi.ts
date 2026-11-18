@@ -21,17 +21,40 @@ interface ApiEnvelope<T> {
   error?: string;
 }
 
-async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+/** Page loads answer from cache/DB; only a forced Razorpay sync may take longer. */
+export const PAYMENT_LINKS_LIST_TIMEOUT_MS = 10_000;
+export const PAYMENT_LINKS_FORCE_SYNC_TIMEOUT_MS = 90_000;
+
+async function apiFetch<T>(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs?: number,
+): Promise<T> {
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller
+    ? window.setTimeout(() => controller.abort(), timeoutMs)
+    : undefined;
   let res: Response;
+  let body: unknown;
   try {
-    res = await fetch(url, paymentLinksFetchInit(options));
+    res = await fetch(
+      url,
+      paymentLinksFetchInit(controller ? { ...options, signal: controller.signal } : options),
+    );
+    body = await parseJsonBody(res);
   } catch {
+    if (controller?.signal.aborted) {
+      throw new Error(
+        `Payment Links took longer than ${Math.round((timeoutMs ?? 0) / 1000)}s to respond. Please retry.`,
+      );
+    }
     throw new Error(
       "Cannot reach Payment Links API. Check your connection and api/config.php on the server.",
     );
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
   }
 
-  const body = await parseJsonBody(res);
   const data = body as ApiEnvelope<T>;
 
   if (!res.ok || !data?.success) {
@@ -80,7 +103,11 @@ export async function getAllPaymentLinks(filters?: {
   const url = baseUrl.includes("?")
     ? `${baseUrl}&${cacheBust}`
     : `${baseUrl}?${cacheBust}`;
-  const raw = await apiFetch<unknown>(url);
+  const raw = await apiFetch<unknown>(
+    url,
+    {},
+    filters?.force ? PAYMENT_LINKS_FORCE_SYNC_TIMEOUT_MS : PAYMENT_LINKS_LIST_TIMEOUT_MS,
+  );
   return normalizePaymentLinksList(raw);
 }
 
