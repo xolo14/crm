@@ -303,7 +303,7 @@ export default function PaymentLinksPage() {
   );
 
   return (
-    <div className="p-6 bg-[#f9fafb] min-h-full">
+    <div className="min-w-0">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Payment Links</h1>

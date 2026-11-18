@@ -272,7 +272,7 @@ export default function MyReferrals() {
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
   return (
-    <div>
+    <div className="min-w-0 max-w-full overflow-x-hidden">
       {loadError ? (
         <div className="mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
           {loadError}{' '}
@@ -320,12 +320,15 @@ export default function MyReferrals() {
         ))}
       </div>
 
-      <Tabs defaultValue="overview" className="space-y-4">
-        <TabsList className="w-full sm:w-auto">
-          <TabsTrigger value="overview" className="flex-1 sm:flex-none">Team Overview</TabsTrigger>
-          <TabsTrigger value="leads" className="flex-1 sm:flex-none">Collected Leads</TabsTrigger>
-          <TabsTrigger value="daily" className="flex-1 sm:flex-none">Daily Updates</TabsTrigger>
-        </TabsList>
+      <Tabs defaultValue="overview" className="min-w-0 space-y-4">
+        {/* Tab strip scrolls inside its own container on phones (no page-level sideways scroll). */}
+        <div className="-mx-1 overflow-x-auto px-1 scrollbar-none">
+          <TabsList className="w-max">
+            <TabsTrigger value="overview" className="whitespace-nowrap">Team Overview</TabsTrigger>
+            <TabsTrigger value="leads" className="whitespace-nowrap">Collected Leads</TabsTrigger>
+            <TabsTrigger value="daily" className="whitespace-nowrap">Daily Updates</TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Team Overview Tab */}
         <TabsContent value="overview">

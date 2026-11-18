@@ -295,6 +295,7 @@ export default function Leads() {
     total: number;
     new: number;
     pipeline: number;
+    registered?: number;
     enrolled: number;
     lost: number;
     unassigned: number;
@@ -361,16 +362,9 @@ export default function Leads() {
           .sort((a, b) => a.name.localeCompare(b.name));
         setViewOrgs(opts);
         setImportOrgs(opts);
-        setViewOrgIdLocal((prev) => {
-          // Leads always needs one org (an unscoped list is too heavy). Prefer the header
-          // scope, then the current org, then the main Syncpedia org — never just the
-          // alphabetically-first org (which landed super admins on an empty tenant).
-          const scoped = orgScope !== ORG_SCOPE_ALL ? orgScope : '';
-          for (const cand of [scoped, String(organization?.id || '').trim(), prev]) {
-            if (cand && opts.some((o) => o.id === cand)) return cand;
-          }
-          return opts.find((o) => /syncpedia/i.test(o.name))?.id || opts[0]?.id || '';
-        });
+        // Header scope decides: "All organizations" shows every org's source cards
+        // (server-side aggregate, cheap); a specific org narrows to it.
+        setViewOrgIdLocal(orgScope !== ORG_SCOPE_ALL && opts.some((o) => o.id === orgScope) ? orgScope : '');
         setImportOrgId((prev) => {
           const preferred = String(organization?.id || prev || '').trim();
           if (preferred && opts.some((o) => o.id === preferred)) return preferred;
@@ -384,7 +378,17 @@ export default function Leads() {
   }, [isSuperAdmin, organization?.id]);
 
   useEffect(() => {
-    if (!isSuperAdmin || orgScope === ORG_SCOPE_ALL) return;
+    if (!isSuperAdmin) return;
+    if (orgScope === ORG_SCOPE_ALL) {
+      setViewOrgIdLocal((prev) => {
+        if (prev !== '') {
+          setActiveFolderId('');
+          setSelectedIds(new Set());
+        }
+        return '';
+      });
+      return;
+    }
     if (viewOrgs.some((o) => o.id === orgScope)) {
       setViewOrgIdLocal((prev) => {
         if (prev !== orgScope) {
@@ -613,7 +617,7 @@ export default function Leads() {
 
   const openAccessToManager = async (sourceKey: string, label: string) => {
     if (isSuperAdmin && !viewOrgId) {
-      toast({ variant: 'destructive', title: 'Select an organisation first' });
+      toast({ variant: 'destructive', title: 'Choose an organization in the header first' });
       return;
     }
     setAccessCardKey(sourceKey);
@@ -685,7 +689,7 @@ export default function Leads() {
       return;
     }
     if (isSuperAdmin && !viewOrgId) {
-      toast({ variant: 'destructive', title: 'Select an organisation first' });
+      toast({ variant: 'destructive', title: 'Choose an organization in the header first' });
       return;
     }
     setFolderBusy(true);
@@ -781,21 +785,12 @@ export default function Leads() {
 
   // Stagger API calls — Leads page used to fire 8+ parallel requests and hit Hostinger MySQL limits.
   // Critical path: fetchLeads first (drives the page spinner). Folders/grants/roster after.
-  // Super-admin: never query leads until viewOrgId is set — unscoped master-view hits the full
-  // leads table (up to 100k rows) and was the main "stuck on spinner" cause at /leads.
+  // Super-admin with "All organizations": fetchLeads loads the server-side source-card
+  // aggregate (not the raw rows), so an unscoped view stays fast.
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
-      if (isSuperAdmin && !viewOrgId) {
-        setLeads([]);
-        setLoading(false);
-        if (canUseLeadFolders) {
-          await fetchLeadFolders();
-        }
-        return;
-      }
-
       await fetchLeads();
       if (cancelled) return;
 
@@ -1207,8 +1202,10 @@ export default function Leads() {
   const enrollLeads = leadKpi?.enrolled ?? leads.filter(l => l.status === 'enrolled' || l.status === 'converted').length;
   const lostLeads = leadKpi?.lost ?? leads.filter(l => l.status === 'lost' || l.status === 'not_interested').length;
   const unassignedCount = leadKpi?.unassigned ?? leads.filter(l => !l.assigned_to).length;
-  // In Pipeline = every non-terminal status except New, so New + In Pipeline + Enrolled + Lost = Total.
-  const inPipeline = Math.max(0, totalLeads - newLeads - enrollLeads - lostLeads);
+  // In Pipeline = every non-terminal status except New and Registered, so
+  // New + In Pipeline + Registered + Enrolled + Lost = Total.
+  const registeredLeads = leadKpi?.registered ?? leads.filter(l => l.status === 'registered').length;
+  const inPipeline = Math.max(0, totalLeads - newLeads - registeredLeads - enrollLeads - lostLeads);
   const convRate = pct(enrollLeads, totalLeads);
 
   const normalizeLeadStatusForApi = (status: string) => {
@@ -2083,11 +2080,12 @@ export default function Leads() {
 
 
       {/* KPI Cards */}
-      <div className={`grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 xl:grid-cols-6 gap-2 sm:gap-3 mb-5`}>
+      <div className="mb-5 grid gap-2 sm:gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
         {[
           { label: 'Total Leads', value: totalLeads, icon: Users, color: 'text-blue-600', bg: 'bg-blue-500/10', sub: 'All sources' },
           { label: 'New', value: newLeads, icon: Clock, color: 'text-sky-600', bg: 'bg-sky-500/10', sub: 'Untouched' },
           { label: 'In Pipeline', value: inPipeline, icon: Target, color: 'text-amber-600', bg: 'bg-amber-500/10', sub: 'Contacted to demo' },
+          { label: 'Registered', value: registeredLeads, icon: GraduationCap, color: 'text-amber-700', bg: 'bg-amber-500/10', sub: 'Fee paid, no batch' },
           { label: 'Enrolled', value: enrollLeads, icon: GraduationCap, color: 'text-teal-700', bg: 'bg-teal-500/10', sub: `${convRate} of total` },
           { label: 'Lost', value: lostLeads, icon: XCircle, color: 'text-red-600', bg: 'bg-red-500/10', sub: 'Dropped' },
           { label: 'Unassigned', value: unassignedCount, icon: UserPlus, color: 'text-amber-600', bg: 'bg-amber-500/10', sub: 'Need action' },
@@ -2106,6 +2104,7 @@ export default function Leads() {
               setUnassignedOnly(false);
               if (c.label === 'New') setStatusFilter('new');
               else if (c.label === 'Enrolled') setStatusFilter('enrolled');
+              else if (c.label === 'Registered') setStatusFilter('registered');
               else if (c.label === 'Lost') setStatusFilter('lost');
               else setStatusFilter('all');
             }
@@ -2156,7 +2155,9 @@ export default function Leads() {
                   : canUseLeadFolders
                     ? isL2LeadRole
                       ? 'Open a source or form card to view leads. Folders you were given access to appear on the left; use New folder to organize cards you can move.'
-                      : 'Open a source or form card to view leads, filter by status, and bulk assign. Use folders on the left to organize cards.'
+                      : isMobile
+                        ? 'Open a source or form card to view leads, filter by status, and bulk assign.'
+                        : 'Open a source or form card to view leads, filter by status, and bulk assign. Use folders on the left to organize cards.'
                     : 'Open a source or form card to view leads, filter by status, and bulk assign.'}
               </p>
             </div>
@@ -2266,7 +2267,7 @@ export default function Leads() {
                 return (
                   <Card
                     key={summary.key}
-                    className="border-border/50 shadow-none hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group"
+                    className="h-full border-border/50 shadow-none hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group"
                     onClick={() => openSourceDialog(summary.key, summary.label, 'all')}
                   >
                     <CardContent className="pt-4 pb-3 px-4">
@@ -2276,16 +2277,17 @@ export default function Leads() {
                             <Icon className="h-4 w-4 text-primary" />
                           </div>
                           <div className="min-w-0">
-                            <p className="font-semibold text-sm truncate">{summary.label}</p>
-                            <p className="text-xs text-muted-foreground">{summary.total} lead{summary.total === 1 ? '' : 's'}</p>
+                            <p className="font-semibold text-sm truncate" title={summary.label}>{summary.label}</p>
+                            <p className="text-xs text-muted-foreground">{summary.total.toLocaleString('en-IN')} lead{summary.total === 1 ? '' : 's'}</p>
+                            {/* Badge sits under the title so long names keep their full width. */}
+                            {summary.unassigned > 0 && (
+                              <Badge variant="outline" className="mt-1 text-[10px] text-amber-700 border-amber-200 bg-amber-500/10">
+                                {summary.unassigned.toLocaleString('en-IN')} unassigned
+                              </Badge>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-1 shrink-0">
-                          {summary.unassigned > 0 && (
-                            <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-200 bg-amber-500/10">
-                              {summary.unassigned} unassigned
-                            </Badge>
-                          )}
                           {showMove || showGrant ? (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -2296,6 +2298,7 @@ export default function Leads() {
                                 className="h-7 w-7"
                                 onClick={(e) => e.stopPropagation()}
                                 title="Card actions"
+                                aria-label={`Actions for ${summary.label}`}
                               >
                                 <MoreVertical className="h-4 w-4" />
                               </Button>

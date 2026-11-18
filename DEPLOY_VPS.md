@@ -84,6 +84,8 @@ Both pings should return `"status":"ok"`. Compare the entry script in
 > `nginx-crm-security.conf`). It supersedes the block below: its CSP allows Razorpay
 > checkout, Google sign-in, the Facebook SDK and YouTube/Vimeo/Drive embeds, keeps
 > camera/microphone for video intros, and ships the full CSP as Report-Only first.
+> Copy `nginx-crm-frame-map.conf` to `/etc/nginx/conf.d/` (public form, assessment and
+> intro pages stay embeddable on partner sites; everything else can't be framed).
 > Copy it to `/etc/nginx/snippets/crm-security.conf`, add
 > `include /etc/nginx/snippets/crm-security.conf;` inside the `crm.syncpedia.in`
 > server block, set `server_tokens off;` in the `http { }` block of

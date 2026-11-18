@@ -22,7 +22,11 @@ export type LeadExportNameResolvers = {
 };
 
 function csvEscape(value: unknown): string {
-  return `"${String(value ?? '').replace(/"/g, '""')}"`;
+  // Spreadsheet formula injection: a lead named "=HYPERLINK(...)" would execute when the
+  // export is opened in Excel/Sheets. Prefix such cells with an apostrophe.
+  let s = String(value ?? '');
+  if (/^[=+@\t\r-]/.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
 }
 
 function formatCreated(raw: unknown): string {

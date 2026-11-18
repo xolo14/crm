@@ -286,20 +286,21 @@ export default function Holidays() {
         </CardHeader>
         <CardContent className="p-0 sm:p-4">
           {/* Weekday headers */}
-          <div className="grid grid-cols-7">
+          <div className="grid grid-cols-7 [&>*]:min-w-0">
             {WEEKDAYS.map((d, i) => (
               <div key={d} className={cn(
                 "text-center text-xs font-semibold py-3 border-b",
                 i === 0 ? "text-red-500" : "text-muted-foreground"
               )}>
-                {d}
+                <span className="sm:hidden">{d.slice(0, 1)}</span>
+                <span className="hidden sm:inline">{d}</span>
               </div>
             ))}
           </div>
           {/* Days grid */}
-          <div className="grid grid-cols-7">
+          <div className="grid grid-cols-7 [&>*]:min-w-0">
             {Array.from({ length: startPadding }).map((_, i) => (
-              <div key={`pad-${i}`} className="min-h-[72px] sm:min-h-[90px] border-b border-r last:border-r-0 bg-muted/20" />
+              <div key={`pad-${i}`} className="min-h-[52px] sm:min-h-[90px] border-b border-r last:border-r-0 bg-muted/20" />
             ))}
             {days.map((day, idx) => {
               const dayHolidays = getHolidaysForDay(day);
@@ -316,7 +317,7 @@ export default function Holidays() {
                   key={day.toISOString()}
                   onClick={() => handleDayClick(day)}
                   className={cn(
-                    "min-h-[72px] sm:min-h-[90px] p-1 sm:p-1.5 transition-all relative border-b border-r group",
+                    "min-h-[52px] sm:min-h-[90px] p-1 sm:p-1.5 transition-all relative border-b border-r group",
                     (hasHoliday || canAddHoliday) && "cursor-pointer",
                     !hasHoliday && !today && "hover:bg-accent/30",
                     hasApproved && "bg-green-50/80 dark:bg-green-950/20 hover:bg-green-100/80 dark:hover:bg-green-950/30",
@@ -333,11 +334,24 @@ export default function Holidays() {
                   )}>
                     {format(day, 'd')}
                   </div>
+                  {hasHoliday ? (
+                    <div className="flex flex-wrap gap-0.5 sm:hidden" aria-hidden>
+                      {dayHolidays.map((h) => (
+                        <span
+                          key={h.id}
+                          className={cn(
+                            "h-1.5 w-1.5 rounded-full",
+                            h.is_approved ? "bg-green-600" : isSpecialDay(h) ? "bg-purple-600" : "bg-amber-500",
+                          )}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
                   {dayHolidays.map(h => (
                     <div
                       key={h.id}
                       className={cn(
-                        "text-[9px] sm:text-[11px] rounded-md px-1 py-0.5 mb-0.5 truncate font-medium leading-tight",
+                        "hidden sm:block text-[11px] rounded-md px-1 py-0.5 mb-0.5 truncate font-medium leading-tight",
                         h.is_approved
                           ? "bg-green-200/80 text-green-900 dark:bg-green-800/50 dark:text-green-200"
                           : isSpecialDay(h)
@@ -360,7 +374,7 @@ export default function Holidays() {
           </div>
 
           {/* Legend */}
-          <div className="flex items-center gap-4 px-4 py-3 border-t bg-muted/30 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-3 border-t bg-muted/30 text-xs text-muted-foreground">
             <div className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded-sm bg-green-200 dark:bg-green-800/50" />
               <span>Holiday</span>

@@ -3398,8 +3398,47 @@ export default function FormsManagerPage() {
           <CardTitle className="text-base">{destination === "hr_leads" ? "HR Forms" : "Leads Forms"}</CardTitle>
         </CardHeader>
         <CardContent className="px-0 sm:px-6">
-          <div className="w-full overflow-x-auto">
-          <Table className="w-full min-w-0 table-fixed">
+          {/* Phones: one card per form (the 9-column table merged into one unreadable row). */}
+          <ul className="divide-y divide-border sm:hidden">
+            {rows.length === 0 ? (
+              <li className="px-4 py-8 text-center text-sm text-muted-foreground">{emptyLabel}</li>
+            ) : (
+              rows.map((form) => {
+                const isOn = toBool(form.is_active);
+                const directLink = buildApplyLink(form.slug, form);
+                return (
+                  <li key={form.id} className="px-4 py-3" onClick={() => openFormDetail(form)}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium" title={form.name}>{form.name}</p>
+                        <p className="truncate text-[11px] text-muted-foreground" title={form.slug}>{form.slug}</p>
+                        {isSuperAdmin && form.org_name ? (
+                          <p className="truncate text-[11px] text-muted-foreground">{form.org_name}</p>
+                        ) : null}
+                      </div>
+                      <Badge variant={isOn ? "default" : "secondary"} className="shrink-0">{isOn ? "Active" : "Inactive"}</Badge>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        {Number(form.submission_count ?? 0).toLocaleString("en-IN")} submissions
+                      </span>
+                      <span className="flex gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <Button variant="outline" size="icon" className="h-8 w-8" aria-label="Copy public link" title="Copy public link" onClick={() => copy(directLink, "Form link")}>
+                          <Copy className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="outline" size="icon" className="h-8 w-8" aria-label="Copy form QR code" title="Copy form QR code" onClick={() => void copyFormQr(directLink, form.name)}>
+                          <QrCode className="h-3.5 w-3.5" />
+                        </Button>
+                      </span>
+                    </div>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+          <div className="hidden w-full overflow-x-auto sm:block">
+          {/* Fixed layout with a sane minimum width so names/orgs/creators aren't cut to a few letters. */}
+          <Table className="w-full min-w-[960px] table-fixed">
             <TableHeader>
               <TableRow>
                 <TableHead className={canAssignForms ? "w-[22%]" : "w-[30%]"}>Name</TableHead>
@@ -3469,7 +3508,7 @@ export default function FormsManagerPage() {
                         {Number(form.submission_count ?? 0)}
                       </TableCell>
                       <TableCell className="align-top" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex flex-col items-start gap-1">
+                        <div className="flex flex-row items-center gap-1">
                         <Button
                           variant="outline"
                           size="icon"

@@ -87,6 +87,91 @@ function prettySource(s: string): string {
   return cleanName(s);
 }
 
+/**
+ * Imports dwarf every other source (~28x the next one), so one bar chart leaves the
+ * organic channels as unreadable slivers. Split it: a share bar Imports vs Organic,
+ * then a ranked list of organic channels scaled to the largest organic channel.
+ * The same markup works at desktop and phone widths.
+ */
+function sourceType(name: string): string {
+  if (name.startsWith("Form ·")) return "Form";
+  if (name.startsWith("Assignment ·")) return "Assignment";
+  if (name === "Meta Ads") return "Ads";
+  if (name === "All other sources") return "";
+  return "Channel";
+}
+
+function SourceBreakdown({ sources }: { sources: { name: string; value: number }[] }) {
+  const series = chartSeries();
+  const imports = sources.filter((s) => s.name === "Imports").reduce((a, s) => a + s.value, 0);
+  const organicRows = sources.filter((s) => s.name !== "Imports");
+  const named = organicRows.filter((s) => s.name !== "All other sources").slice(0, 7);
+  const foldedNamed = organicRows.filter((s) => s.name !== "All other sources").slice(7);
+  const otherValue =
+    organicRows.filter((s) => s.name === "All other sources").reduce((a, s) => a + s.value, 0) +
+    foldedNamed.reduce((a, s) => a + s.value, 0);
+  const rows = otherValue > 0 ? [...named, { name: "All other sources", value: otherValue }] : named;
+  const organic = rows.reduce((a, s) => a + s.value, 0);
+  const total = imports + organic;
+  const maxOrganic = Math.max(1, ...named.map((r) => r.value), otherValue);
+  if (total === 0) return <p className="py-10 text-center text-sm text-muted-foreground">No leads in this scope yet.</p>;
+  const importPct = (imports / total) * 100;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="flex h-3 w-full overflow-hidden rounded-full bg-muted" role="img" aria-label={`Imports ${pct(imports, total)}, organic ${pct(organic, total)}`}>
+          <div style={{ width: `${importPct}%`, background: series[1] }} />
+          <div style={{ width: `${100 - importPct}%`, background: series[0] }} />
+        </div>
+        <div className="mt-1.5 flex flex-wrap justify-between gap-2 text-xs">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full" style={{ background: series[1] }} />
+            Imports <span className="font-semibold tabular-nums">{fmtCount(imports)}</span>
+            <span className="text-muted-foreground">({pct(imports, total)})</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full" style={{ background: series[0] }} />
+            Organic channels <span className="font-semibold tabular-nums">{fmtCount(organic)}</span>
+            <span className="text-muted-foreground">({pct(organic, total)})</span>
+          </span>
+        </div>
+      </div>
+      <ul className="space-y-2.5">
+        {rows.map((r) => {
+          const other = r.name === "All other sources";
+          const type = sourceType(r.name);
+          return (
+            <li key={r.name} className="min-w-0">
+              <div className="flex items-baseline justify-between gap-3 text-sm">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className={cn("truncate", other && "text-muted-foreground")} title={r.name}>
+                    {r.name.replace(/^(Form|Assignment) · /, "")}
+                  </span>
+                  {type ? (
+                    <span className="shrink-0 rounded-full border border-border px-1.5 py-0 text-[10px] text-muted-foreground">{type}</span>
+                  ) : null}
+                </span>
+                <span className="shrink-0 whitespace-nowrap tabular-nums">
+                  <span className="font-semibold">{fmtCount(r.value)}</span>
+                  <span className="ml-1.5 text-xs text-muted-foreground">{pct(r.value, organic)}</span>
+                </span>
+              </div>
+              <div className="mt-1 h-2 w-full rounded-full bg-muted">
+                <div
+                  className="h-2 rounded-full"
+                  style={{ width: `${Math.max(2, (r.value / maxOrganic) * 100)}%`, background: other ? "hsl(var(--ink-400))" : series[0] }}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="text-[11px] text-muted-foreground">Percentages in the list are shares of organic leads.</p>
+    </div>
+  );
+}
+
 function KpiTile({
   label,
   value,
@@ -291,7 +376,7 @@ export default function SuperAdminDashboard() {
 
 
       {/* KPI row */}
-      <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <section className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))]">
         <KpiTile label="Leads" value={fmtCount(m?.leads_total)} sub={m ? `${fmtCount(m.new)} new` : undefined} icon={TrendingUp} to="/leads" loading={loading} />
         <KpiTile
           label="Enrolled"
@@ -332,7 +417,7 @@ export default function SuperAdminDashboard() {
               <BarChart data={funnel} layout="vertical" margin={{ left: 8, right: 64 }}>
                 <CartesianGrid {...chartGrid} horizontal={false} vertical />
                 <XAxis type="number" {...chartAxis} />
-                <YAxis type="category" dataKey="stage" width={80} {...chartAxis} />
+                <YAxis type="category" dataKey="stage" width={96} interval={0} {...chartAxis} />
                 <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "Leads"]} />
                 <Bar dataKey="value" fill={series[0]} radius={[0, 4, 4, 0]} barSize={22}>
                   <LabelList
@@ -358,36 +443,10 @@ export default function SuperAdminDashboard() {
 
         <ChartCard
           title="Leads by source"
-          question="Which channels bring leads? (top 8, rest in Other)"
+          question="Where do leads come from? Bulk imports vs organic channels"
           table={<MiniTable cols={["Source", "Leads"]} rows={sources.map((s) => [s.name, fmtCount(s.value)])} />}
         >
-          {loading ? (
-            <Skeleton className="h-[240px] w-full" />
-          ) : (
-            <ResponsiveContainer width="100%" height={Math.max(180, sources.length * 36)}>
-              <BarChart data={sources} layout="vertical" margin={{ left: 8, right: 56 }}>
-                <CartesianGrid {...chartGrid} horizontal={false} vertical />
-                <XAxis type="number" {...chartAxis} />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  width={170}
-                  interval={0}
-                  {...chartAxis}
-                  tickFormatter={(v: string) => (v.length > 24 ? `${v.slice(0, 23)}…` : v)}
-                />
-                <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "Leads"]} labelFormatter={(l: string) => l} />
-                <Bar dataKey="value" fill={series[1]} radius={[0, 4, 4, 0]} barSize={18}>
-                  <LabelList
-                    dataKey="value"
-                    position="right"
-                    formatter={(v: number) => fmtCount(v)}
-                    style={{ fontSize: 12, fill: "hsl(var(--foreground))" }}
-                  />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          )}
+          {loading ? <Skeleton className="h-[240px] w-full" /> : <SourceBreakdown sources={sources} />}
         </ChartCard>
 
         <ChartCard
@@ -484,16 +543,41 @@ export default function SuperAdminDashboard() {
           ) : orgs.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">No organizations yet.</p>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            <ul className="space-y-2 sm:hidden">
+              {orgs.map((o) => {
+                const leads = Number(o.leads_count) || 0;
+                const conv = Number(o.converted_count) || 0;
+                return (
+                  <li key={o.id} className="rounded-lg border border-border p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate font-medium">{cleanName(o.name)}</span>
+                      <span className="shrink-0 text-xs capitalize text-muted-foreground">{o.plan || "starter"}</span>
+                    </div>
+                    <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                      <dt className="text-muted-foreground">Users</dt>
+                      <dd className="text-right tabular-nums">{fmtCount(Number(o.user_count))}</dd>
+                      <dt className="text-muted-foreground">Leads</dt>
+                      <dd className="text-right tabular-nums">{fmtCount(leads)}</dd>
+                      <dt className="text-muted-foreground">Conversion</dt>
+                      <dd className="text-right tabular-nums">{pct(conv, leads)}</dd>
+                      <dt className="text-muted-foreground">Revenue</dt>
+                      <dd className="text-right tabular-nums">{fmtINR(Number(o.revenue))}</dd>
+                    </dl>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="hidden overflow-x-auto sm:block">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs text-muted-foreground">
                     <th className="py-2 font-medium">Organization</th>
                     <th className="py-2 font-medium">Plan</th>
-                    <th className="py-2 text-right font-medium">Users</th>
-                    <th className="py-2 text-right font-medium">Leads</th>
-                    <th className="py-2 text-right font-medium">Conv.</th>
-                    <th className="py-2 text-right font-medium">Revenue</th>
+                    <th className="whitespace-nowrap py-2 pl-3 text-right font-medium">Users</th>
+                    <th className="whitespace-nowrap py-2 pl-3 text-right font-medium">Leads</th>
+                    <th className="whitespace-nowrap py-2 pl-3 text-right font-medium">Conv.</th>
+                    <th className="whitespace-nowrap py-2 pl-3 text-right font-medium">Revenue</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -512,16 +596,17 @@ export default function SuperAdminDashboard() {
                           ) : null}
                         </td>
                         <td className="py-2 capitalize text-muted-foreground">{o.plan || "starter"}</td>
-                        <td className="py-2 text-right tabular-nums">{fmtCount(Number(o.user_count))}</td>
-                        <td className="py-2 text-right tabular-nums">{fmtCount(leads)}</td>
-                        <td className="py-2 text-right tabular-nums">{pct(conv, leads)}</td>
-                        <td className="py-2 text-right tabular-nums">{fmtINR(Number(o.revenue))}</td>
+                        <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums">{fmtCount(Number(o.user_count))}</td>
+                        <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums">{fmtCount(leads)}</td>
+                        <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums">{pct(conv, leads)}</td>
+                        <td className="whitespace-nowrap py-2 pl-3 text-right tabular-nums">{fmtINR(Number(o.revenue))}</td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </CardContent>
       </Card>

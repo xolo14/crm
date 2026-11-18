@@ -56,10 +56,54 @@ function syncpediaSecurityHeaders(): void
     if (headers_sent()) {
         return;
     }
+    header_remove('X-Powered-By');
     header('X-Content-Type-Options: nosniff');
     header('X-Frame-Options: DENY');
     header('Referrer-Policy: strict-origin-when-cross-origin');
     header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+}
+
+/**
+ * CSRF defence in depth (on top of the SameSite=Lax session cookie): a state-changing
+ * request that carries the session cookie must come from this site. Requests without the
+ * cookie (public forms, webhooks, server-to-server) and requests with no Origin header
+ * are not affected. Native app shells (capacitor/ionic/localhost) stay allowed.
+ */
+function syncpediaAssertSameOriginWrite(): void
+{
+    $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+    if (!in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+        return;
+    }
+    if (empty($_COOKIE[syncpediaAuthCookieName()])) {
+        return;
+    }
+    $origin = trim((string) ($_SERVER['HTTP_ORIGIN'] ?? ''));
+    if ($origin === '' || $origin === 'null') {
+        return;
+    }
+    $originHost = strtolower((string) parse_url($origin, PHP_URL_HOST));
+    $scheme = strtolower((string) parse_url($origin, PHP_URL_SCHEME));
+    if (in_array($scheme, ['capacitor', 'ionic'], true) || in_array($originHost, ['localhost', '127.0.0.1'], true)) {
+        return;
+    }
+    $allowed = [];
+    foreach ([$_SERVER['HTTP_HOST'] ?? '', $_SERVER['HTTP_X_FORWARDED_HOST'] ?? ''] as $h) {
+        $h = strtolower(trim(explode(',', (string) $h)[0]));
+        if ($h !== '') {
+            $allowed[] = preg_replace('/:\d+$/', '', $h);
+        }
+    }
+    if (defined('FRONTEND_URL') && FRONTEND_URL !== '' && FRONTEND_URL !== '*') {
+        $allowed[] = strtolower((string) parse_url((string) FRONTEND_URL, PHP_URL_HOST));
+    }
+    if ($originHost !== '' && in_array($originHost, $allowed, true)) {
+        return;
+    }
+    http_response_code(403);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'Cross-site request blocked']);
+    exit;
 }
 
 function cors() {
@@ -68,6 +112,7 @@ function cors() {
         ob_start();
     }
     syncpediaSecurityHeaders();
+    syncpediaAssertSameOriginWrite();
     header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
     header('Pragma: no-cache');
     $origin = syncpediaCorsOrigin();
@@ -8702,6 +8747,10 @@ function syncpediaLeadSourceCardsSort(array $cards, array $kpi): array
         }
         return strcmp((string) ($a['label'] ?? ''), (string) ($b['label'] ?? ''));
     });
+    // Same definition as metrics.php: in pipeline = every non-terminal status except New,
+    // so new + pipeline + registered + enrolled + lost = total.
+    $kpi['registered'] = (int) ($kpi['registered'] ?? 0);
+    $kpi['pipeline'] = max(0, (int) $kpi['total'] - (int) $kpi['new'] - $kpi['registered'] - (int) $kpi['enrolled'] - (int) $kpi['lost']);
     return ['cards' => $list, 'kpi' => $kpi];
 }
 
@@ -8711,6 +8760,7 @@ function syncpediaLeadSourceCardsEmptyKpi(): array
         'total' => 0,
         'new' => 0,
         'pipeline' => 0,
+        'registered' => 0,
         'enrolled' => 0,
         'lost' => 0,
         'unassigned' => 0,
@@ -8775,6 +8825,8 @@ function syncpediaLeadSourceCardsFromGroupedRows(array $rows): array
             $kpi['new'] += $n;
         } elseif (isset($pipeline[$statusKey])) {
             $kpi['pipeline'] += $n;
+        } elseif ($statusKey === 'registered') {
+            $kpi['registered'] = ($kpi['registered'] ?? 0) + $n;
         } elseif ($statusKey === 'enrolled') {
             $kpi['enrolled'] += $n;
         } elseif ($statusKey === 'lost' || $statusKey === 'not_interested') {
@@ -8976,6 +9028,8 @@ function syncpediaAggregateLeadSourceCardsScan(PDO $db, array $tokenData, string
                 $kpi['new']++;
             } elseif (isset($pipeline[$statusKey])) {
                 $kpi['pipeline']++;
+            } elseif ($statusKey === 'registered') {
+                $kpi['registered'] = ($kpi['registered'] ?? 0) + 1;
             } elseif ($statusKey === 'enrolled') {
                 $kpi['enrolled']++;
             } elseif ($statusKey === 'lost' || $statusKey === 'not_interested') {

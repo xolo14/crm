@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { fmtDate } from '@/lib/formatMetric';
+import { fmtCount, fmtDate } from '@/lib/formatMetric';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api } from '@/lib/api';
@@ -227,6 +227,21 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
     || String(s.enrolled_by_name || '').toLowerCase().includes(q))
   );
 
+  /** Registered (fee only) / Enrolled (course or batch); Completed or Dropped when the row says so. */
+  const stageLabel = (s: any) => {
+    const st = String(s?.status || '').toLowerCase();
+    if (st === 'completed') return 'Completed';
+    if (st === 'dropped' || st === 'inactive') return 'Dropped';
+    return isRegisteredOnly(s) ? 'Registered' : 'Enrolled';
+  };
+  const stageBadgeClass = (s: any) => {
+    const l = stageLabel(s);
+    if (l === 'Registered') return 'bg-amber-500/10 text-amber-800 border-amber-200';
+    if (l === 'Completed') return 'bg-blue-500/10 text-blue-700 border-blue-200';
+    if (l === 'Dropped') return 'bg-red-500/10 text-red-700 border-red-200';
+    return 'bg-emerald-500/10 text-emerald-700 border-emerald-200';
+  };
+
   const statusColor = (status: string) => {
     if (status === 'active') return 'bg-emerald-500/10 text-emerald-700 border-emerald-200';
     if (status === 'completed') return 'bg-blue-500/10 text-blue-700 border-blue-200';
@@ -325,10 +340,10 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
         {!hidePageTitle ? (
           <div>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Students</h1>
-            <p className="text-sm text-muted-foreground mt-1">{students.length} enrolled students</p>
+            <p className="text-sm text-muted-foreground mt-1">{fmtCount(students.length - registeredCount)} enrolled · {fmtCount(registeredCount)} registered</p>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">{students.length} enrolled students</p>
+          <p className="text-sm text-muted-foreground">{fmtCount(students.length - registeredCount)} enrolled · {fmtCount(registeredCount)} registered</p>
         )}
         <div className="flex items-center gap-2 flex-wrap">
           {hasImport && (
@@ -409,7 +424,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                     {student.phone && <p className="text-[13px] text-muted-foreground">{student.phone}</p>}
                   </div>
                   <div className="flex items-center gap-2 mt-2.5 ml-7 flex-wrap">
-                    <Badge variant="outline" className={statusColor(student.status) + ' capitalize text-[11px] px-2 py-0.5 rounded-md'}>{student.status}</Badge>
+                    <Badge variant="outline" className={stageBadgeClass(student) + ' text-[11px] px-2 py-0.5 rounded-md'}>{stageLabel(student)}</Badge>
                     {(student.organization_name || organization?.name) && (
                       <span className="text-[11px] text-muted-foreground">{student.organization_name || organization?.name}</span>
                     )}
@@ -515,7 +530,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                   <TableCell>
                     <StudentPaymentProgress summary={student.payment_summary} />
                   </TableCell>
-                  <TableCell><Badge variant="outline" className={statusColor(student.status) + ' capitalize text-xs'}>{student.status}</Badge></TableCell>
+                  <TableCell><Badge variant="outline" className={stageBadgeClass(student) + ' text-xs'}>{stageLabel(student)}</Badge></TableCell>
                   <TableCell className="text-sm text-muted-foreground">{student.enrollment_date ? fmtDate(student.enrollment_date) : '—'}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-0.5">

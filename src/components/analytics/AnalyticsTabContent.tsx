@@ -16,6 +16,15 @@ export function AnalyticsTabContent({ data, byRep }: Props) {
     <>
       <AnalyticsKPICards data={data} byRep={byRep} />
 
+      {data.length === 0 ? (
+        <div className="mt-5 rounded-xl border border-dashed border-border bg-card px-6 py-12 text-center">
+          <p className="text-sm font-semibold">No reports in this period</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Pick a longer period or another rep. Charts appear once daily reports exist for the selection.
+          </p>
+        </div>
+      ) : (
+      <>
       <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
         <PerformanceBarChart byRep={byRep} />
         <MetricDonut byRep={byRep} />
@@ -29,6 +38,8 @@ export function AnalyticsTabContent({ data, byRep }: Props) {
         <ConversionFunnel data={data} />
         <RepLeaderboard byRep={byRep} />
       </div>
+      </>
+      )}
     </>
   );
 }

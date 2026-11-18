@@ -300,7 +300,58 @@ export default function PaymentLinksTable({
       </div>
 
       <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
+        <ul className="divide-y divide-gray-100 sm:hidden">
+          {loading ? (
+            <li className="px-4 py-10 text-center text-sm text-gray-500">Loading payment links…</li>
+          ) : pageRows.length === 0 ? (
+            <li className="px-4 py-10 text-center text-sm text-gray-500">{emptyTitle}</li>
+          ) : (
+            pageRows.map((l) => {
+              const badge = STATUS_BADGE[l.status] ?? STATUS_BADGE.created;
+              return (
+                <li key={l.id} className="px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-gray-900">{l.customer?.name || "—"}</p>
+                      <p className="truncate text-xs text-gray-500" title={l.customer?.email || ""}>
+                        {l.customer?.email || l.customer?.contact || "—"}
+                      </p>
+                    </div>
+                    <span className={`inline-flex shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${badge.cls}`}>
+                      {badge.label}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+                    <span className="whitespace-nowrap tabular-nums">
+                      <span className="font-semibold text-gray-900">{fmtInr(l.amount)}</span>
+                      {l.amount_paid > 0 ? <span className="ml-1.5 text-emerald-700">paid {fmtInr(l.amount_paid)}</span> : null}
+                    </span>
+                    <span className="whitespace-nowrap text-gray-500">{fmtDateTime(l.created_at)}</span>
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    {l.short_url ? (
+                      <button
+                        type="button"
+                        onClick={() => onCopyShortUrl(l.short_url)}
+                        className="rounded-lg border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700"
+                      >
+                        Copy link
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => onViewDetail(l)}
+                      className="rounded-lg border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-700"
+                    >
+                      Details
+                    </button>
+                  </div>
+                </li>
+              );
+            })
+          )}
+        </ul>
+        <div className="hidden overflow-x-auto sm:block">
           <table className="w-full text-sm min-w-[1100px]">
             <thead>
               <tr className="bg-gray-50 text-left text-[11px] uppercase tracking-wider text-gray-500">
@@ -389,8 +440,8 @@ export default function PaymentLinksTable({
                             onClick={() =>
                               handleCopyText(`inv-${l.id}`, invoice)
                             }
-                            className="font-mono text-[11px] text-gray-800 hover:underline text-left break-all"
-                            title="Invoice / reference"
+                            className="block max-w-[9rem] truncate font-mono text-[11px] text-gray-800 hover:underline text-left"
+                            title={invoice}
                           >
                             {invoice}
                           </button>
@@ -410,7 +461,7 @@ export default function PaymentLinksTable({
                         {l.customer?.contact || "—"}
                       </td>
                       <td className="px-3 py-3 text-xs max-w-[10rem]">
-                        <span className="text-gray-700 break-all line-clamp-2">
+                        <span className="block max-w-[10rem] truncate text-gray-700" title={l.customer?.email || ""}>
                           {l.customer?.email || "—"}
                         </span>
                       </td>

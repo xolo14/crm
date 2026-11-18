@@ -31,7 +31,7 @@ export function AnalyticsKPICards({ data, byRep }: Props) {
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+    <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(180px,1fr))]">
       {cards.map((c) => (
         <Card key={c.label} className={ANALYTICS_CARD_CLASS}>
           <CardContent className="px-4 py-4">

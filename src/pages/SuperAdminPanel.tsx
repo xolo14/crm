@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { fmtCount } from '@/lib/formatMetric';
+import { fmtCount, pct } from '@/lib/formatMetric';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
@@ -475,7 +475,7 @@ export default function SuperAdminPanel() {
             <CardContent className="pt-3 pb-2.5 px-3">
               <div className="flex items-center gap-2.5">
                 <div className={`h-8 w-8 rounded-lg ${c.bg} flex items-center justify-center`}><c.icon className={`h-4 w-4 ${c.ic}`} /></div>
-                <div><p className="text-lg font-bold leading-none">{c.value}</p><p className="text-[10px] text-muted-foreground mt-0.5">{c.label}</p></div>
+                <div><p className="text-lg font-bold leading-none">{typeof c.value === "number" ? fmtCount(c.value) : c.value}</p><p className="text-[10px] text-muted-foreground mt-0.5">{c.label}</p></div>
               </div>
             </CardContent>
           </Card>
@@ -526,6 +526,7 @@ export default function SuperAdminPanel() {
                   <TableHead>Plan</TableHead>
                   <TableHead className="text-center">Users</TableHead>
                   <TableHead className="text-center">Leads</TableHead>
+                  <TableHead className="text-center whitespace-nowrap">Enrolled</TableHead>
                   <TableHead className="text-center">Students</TableHead>
                   <TableHead className="text-center">Revenue</TableHead>
                   <TableHead>Status</TableHead>
@@ -534,7 +535,7 @@ export default function SuperAdminPanel() {
               </TableHeader>
               <TableBody>
                 {filteredOrgs.length === 0 ? (
-                  <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">No organizations. Click "Add Organization" to get started.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={9} className="text-center py-8 text-muted-foreground">No organizations. Click "Add Organization" to get started.</TableCell></TableRow>
                 ) : filteredOrgs.map(o => (
                     <TableRow key={o.id}>
                       <TableCell>
@@ -542,7 +543,11 @@ export default function SuperAdminPanel() {
                       </TableCell>
                       <TableCell><Badge variant="outline" className="capitalize text-xs">{o.plan}</Badge></TableCell>
                       <TableCell className="text-center font-medium">{fmtCount(Number(o.user_count) || 0)}</TableCell>
-                      <TableCell className="text-center">{fmtCount(Number(o.leads_count) || 0)} <span className="text-emerald-600 text-xs">({fmtCount(Number(o.converted_count) || 0)} conv.)</span></TableCell>
+                      <TableCell className="text-center whitespace-nowrap tabular-nums">{fmtCount(Number(o.leads_count) || 0)}</TableCell>
+                      <TableCell className="text-center whitespace-nowrap tabular-nums">
+                        {fmtCount(Number(o.converted_count) || 0)}
+                        <span className="ml-1 text-xs text-muted-foreground">({pct(Number(o.converted_count) || 0, Number(o.leads_count) || 0)})</span>
+                      </TableCell>
                       <TableCell className="text-center">{fmtCount(Number(o.students_count) || 0)}</TableCell>
                       <TableCell className="text-center font-semibold">{fmt(parseFloat(o.revenue) || 0)}</TableCell>
                       <TableCell><Badge variant={o.is_active ? 'default' : 'secondary'} className="text-xs">{o.is_active ? 'Active' : 'Disabled'}</Badge></TableCell>

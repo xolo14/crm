@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fmtCount, pct } from "@/lib/formatMetric";
 import { useOrgScope } from "@/hooks/useOrgScope";
 import { AlertCircle, CheckCircle, ChevronLeft, ChevronRight, Clock, Download, Eye, FileText, MoreHorizontal, PhoneCall, Plus, Search, Shuffle, TrendingUp, UserCheck, Users, XCircle } from "lucide-react";
@@ -65,11 +65,14 @@ export default function HRLeadsPage() {
   const [status, setStatus] = useState("all");
   const [source, setSource] = useState("all");
   const [hrId, setHrId] = useState("all");
-  const [orgId, setOrgId] = useOrgScope();
+  // Organization comes from the header scope switcher.
+  const [orgId] = useOrgScope();
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [dateFromManual, setDateFromManual] = useState("");
   const [dateToManual, setDateToManual] = useState("");
   const [page, setPage] = useState(1);
+  // Back to page 1 when the header organization changes.
+  useEffect(() => setPage(1), [orgId]);
   const [limit, setLimit] = useState(25);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [openAdd, setOpenAdd] = useState(false);
@@ -197,7 +200,7 @@ export default function HRLeadsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-2 sm:gap-3 mb-5">
+      <div className="mb-5 grid gap-2 sm:gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
         {[
           { label: "Total leads", value: stats.total || 0, icon: Users, sub: "Added by HR" },
           { label: "New", value: stats.by_status?.new || 0, icon: Clock, sub: "Untouched" },
@@ -245,15 +248,6 @@ export default function HRLeadsPage() {
             <SelectContent>
               <SelectItem value="all">All HRs</SelectItem>
               {hrUsers.map((hr: any) => <SelectItem key={hr.id} value={hr.id}>{hr.full_name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        )}
-        {showOrgFilter && (
-          <Select value={orgId} onValueChange={(v) => { setOrgId(v); setPage(1); }}>
-            <SelectTrigger className="w-[190px] h-9"><SelectValue placeholder="All Organizations" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Organizations</SelectItem>
-              {organizations.map((org: any) => <SelectItem key={org.id} value={org.id}>{org.name}</SelectItem>)}
             </SelectContent>
           </Select>
         )}
@@ -380,7 +374,7 @@ export default function HRLeadsPage() {
               <TableHead>Contact</TableHead>
               <TableHead>Source</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>HR (Added By)</TableHead>
+              <TableHead>Added by</TableHead>
               {isSuperAdmin && <TableHead>Organization</TableHead>}
               <TableHead>Assigned</TableHead>
               <TableHead>Created</TableHead>
@@ -571,7 +565,7 @@ export default function HRLeadsPage() {
                 <div className="border-t border-border pt-4 space-y-2.5">
                   <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
                     <div>
-                      <p className="text-xs text-muted-foreground">HR (Added By)</p>
+                      <p className="text-xs text-muted-foreground">Added by</p>
                       <p className="text-sm font-medium">{detailLead.hr_name || "—"}</p>
                     </div>
                   </div>

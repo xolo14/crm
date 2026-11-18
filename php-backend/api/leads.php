@@ -254,11 +254,11 @@ if ($method === 'GET') {
     $isManagerLeadRole = in_array($roleKey, ['manager', 'operational_manager'], true);
     $isL1LeadRole = in_array($roleKey, ['sales_representative', 'marketing', 'hr'], true);
     // Bulk-read hardening: a bare GET /leads.php used to return 10,000 leads (names, emails,
-    // phones) in one response. Now an unparameterised request gets one small page, and no
-    // single response exceeds 5,000 rows. The app pages through with limit/offset
+    // phones) in one response. Now an unparameterised request gets 100 rows, and no
+    // single response exceeds 2,000 rows. The app pages through with limit/offset
     // (truncated + next_offset), so full loads still work — just never in one dump.
     // ($isUncappedLeadRole / $isL1LeadRole kept for the role checks above.)
-    $maxLimit = 5000;
+    $maxLimit = 2000;
     $defaultLimit = 100;
     $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : $defaultLimit;
     if ($limit < 1) {

@@ -210,7 +210,7 @@ export default function PaymentLinksRecordsPage() {
   }
 
   return (
-    <div className="p-6 bg-[#f9fafb] min-h-full">
+    <div className="min-w-0">
       <div className="mb-6 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Payment Records</h1>
