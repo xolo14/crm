@@ -178,8 +178,40 @@ function docFormsUserOwnsForm(PDO $db, array $tokenData, string $formId): bool {
     return trim((string) ($row['created_by'] ?? '')) === $userId;
 }
 
+/** Form belongs to the caller's org. Super admin with no org selected (master view) sees all; fails closed otherwise. */
+function docFormsFormInCallerOrg(PDO $db, array $tokenData, string $formId): bool {
+    if ($formId === '') {
+        return false;
+    }
+    $orgId = docFormsOrgId($tokenData);
+    if ($orgId === null) {
+        return syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin';
+    }
+    $st = $db->prepare('SELECT org_id FROM doc_forms WHERE id = ? LIMIT 1');
+    $st->execute([$formId]);
+    $formOrg = $st->fetchColumn();
+    return $formOrg !== false && trim((string) $formOrg) === $orgId;
+}
+
+/** Load a submission the caller may work on (form in their org and accessible), or respond 404/403. */
+function docFormsRequireSubmissionAccess(PDO $db, array $tokenData, string $submissionId): array {
+    $st = $db->prepare('SELECT * FROM doc_form_submissions WHERE id = ? LIMIT 1');
+    $st->execute([$submissionId]);
+    $sub = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$sub) {
+        respond(['error' => 'Submission not found'], 404);
+    }
+    if (!docFormsUserCanAccessForm($db, $tokenData, (string) ($sub['form_id'] ?? ''))) {
+        respond(['error' => 'Forbidden'], 403);
+    }
+    return $sub;
+}
+
 /** Create/edit/delete/assign: org admin or form creator. */
 function docFormsUserCanManageForm(PDO $db, array $tokenData, string $formId): bool {
+    if (!docFormsFormInCallerOrg($db, $tokenData, $formId)) {
+        return false;
+    }
     if (docFormsIsOrgAdmin($tokenData)) {
         return true;
     }
@@ -203,6 +235,9 @@ function docFormsUserIsAssigned(PDO $db, array $tokenData, string $formId): bool
 }
 
 function docFormsUserCanAccessForm(PDO $db, array $tokenData, string $formId): bool {
+    if (!docFormsFormInCallerOrg($db, $tokenData, $formId)) {
+        return false;
+    }
     if (docFormsIsOrgAdmin($tokenData)) {
         return true;
     }
@@ -417,7 +452,7 @@ if ($method === 'GET') {
         if ($id === '') respond(['error' => 'id required'], 400);
         $row = docFormsFetchForm($db, $id);
         if (!$row) respond(['error' => 'Form not found'], 404);
-        if (!docFormsUserCanAccessForm($db, $tokenData, $id) && !docFormsIsAdmin($tokenData)) {
+        if (!docFormsUserCanAccessForm($db, $tokenData, $id)) {
             respond(['error' => 'Forbidden'], 403);
         }
         $form = docFormsNormalizeFormRow($row);
@@ -438,6 +473,7 @@ if ($method === 'GET') {
         requireRole($tokenData, docFormsManagerRoles());
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
+        if (!docFormsUserCanManageForm($db, $tokenData, $formId)) respond(['error' => 'Forbidden'], 403);
         $st = $db->prepare('SELECT * FROM doc_form_access WHERE form_id = ? ORDER BY created_at ASC');
         $st->execute([$formId]);
         respond(['data' => $st->fetchAll(PDO::FETCH_ASSOC) ?: []]);
@@ -447,6 +483,7 @@ if ($method === 'GET') {
         requireRole($tokenData, docFormsWorkflowRoles());
         $formId = trim((string) ($_GET['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
+        if (!docFormsUserCanAccessForm($db, $tokenData, $formId)) respond(['error' => 'Forbidden'], 403);
         $st = $db->prepare('SELECT * FROM doc_form_submissions WHERE form_id = ? ORDER BY created_at DESC LIMIT 2000');
         $st->execute([$formId]);
         $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -669,6 +706,7 @@ if ($method === 'POST') {
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         $form = docFormsFetchForm($db, $formId);
         if (!$form) respond(['error' => 'Form not found'], 404);
+        if (!docFormsUserCanAccessForm($db, $tokenData, $formId)) respond(['error' => 'Forbidden'], 403);
         $values = $input['values'] ?? $input['values_json'] ?? [];
         if (!is_array($values)) $values = [];
         // Normalize to string map; allow empty cells for manual fill-in.
@@ -722,6 +760,7 @@ if ($method === 'POST') {
         if ($formId === '' || $templateId === '') respond(['error' => 'form_id and template_id required'], 400);
         $form = docFormsFetchForm($db, $formId);
         if (!$form) respond(['error' => 'Form not found'], 404);
+        if (!docFormsUserCanAccessForm($db, $tokenData, $formId)) respond(['error' => 'Forbidden'], 403);
         if ($kind === '') {
             $kind = (string) ($form['form_type'] ?? '');
         }
@@ -761,6 +800,7 @@ if ($method === 'POST') {
         $formId = trim((string) ($input['form_id'] ?? ''));
         if ($formId === '') respond(['error' => 'form_id required'], 400);
         if (!docFormsFetchForm($db, $formId)) respond(['error' => 'Form not found'], 404);
+        if (!docFormsUserCanAccessForm($db, $tokenData, $formId)) respond(['error' => 'Forbidden'], 403);
         // Submissions stay; only the template mapping is removed so a different template can be linked.
         $del = $db->prepare('DELETE FROM doc_form_template_links WHERE form_id = ?');
         $del->execute([$formId]);
@@ -772,6 +812,7 @@ if ($method === 'POST') {
         $formId = trim((string) ($input['form_id'] ?? ''));
         $maps = $input['column_maps'] ?? [];
         if ($formId === '' || !is_array($maps)) respond(['error' => 'form_id and column_maps required'], 400);
+        if (!docFormsUserCanAccessForm($db, $tokenData, $formId)) respond(['error' => 'Forbidden'], 403);
         $st = $db->prepare('UPDATE doc_form_template_links SET column_maps_json = ?, updated_at = CURRENT_TIMESTAMP WHERE form_id = ?');
         $st->execute([json_encode($maps, JSON_UNESCAPED_UNICODE), $formId]);
         if ($st->rowCount() === 0) {
@@ -785,6 +826,7 @@ if ($method === 'POST') {
         $submissionId = trim((string) ($input['submission_id'] ?? ''));
         $values = $input['values'] ?? $input['values_json'] ?? null;
         if ($submissionId === '' || !is_array($values)) respond(['error' => 'submission_id and values required'], 400);
+        docFormsRequireSubmissionAccess($db, $tokenData, $submissionId);
         $patch = [];
         if (isset($input['respondent_name'])) $patch['respondent_name'] = trim((string) $input['respondent_name']);
         if (isset($input['respondent_email'])) $patch['respondent_email'] = trim((string) $input['respondent_email']);
@@ -809,10 +851,7 @@ if ($method === 'POST') {
         requireRole($tokenData, docFormsWorkflowRoles());
         $submissionId = trim((string) ($input['submission_id'] ?? ''));
         if ($submissionId === '') respond(['error' => 'submission_id required'], 400);
-        $st = $db->prepare('SELECT * FROM doc_form_submissions WHERE id = ? LIMIT 1');
-        $st->execute([$submissionId]);
-        $sub = $st->fetch(PDO::FETCH_ASSOC);
-        if (!$sub) respond(['error' => 'Submission not found'], 404);
+        $sub = docFormsRequireSubmissionAccess($db, $tokenData, $submissionId);
         $form = docFormsFetchForm($db, (string) $sub['form_id']);
         if (!$form) respond(['error' => 'Form not found'], 404);
         $linkSt = $db->prepare('SELECT * FROM doc_form_template_links WHERE form_id = ? LIMIT 1');
@@ -1019,6 +1058,7 @@ if ($method === 'DELETE') {
     $id = trim((string) ($_GET['id'] ?? ''));
     if ($action === 'submission') {
         if ($id === '') respond(['error' => 'id required'], 400);
+        docFormsRequireSubmissionAccess($db, $tokenData, $id);
         $db->prepare('DELETE FROM doc_form_submissions WHERE id = ?')->execute([$id]);
         respond(['success' => true]);
     }

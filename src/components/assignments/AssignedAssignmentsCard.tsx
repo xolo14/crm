@@ -145,7 +145,7 @@ export default function AssignedAssignmentsCard({ variant = "dashboard" }: { var
               <DialogHeader>
                 <DialogTitle className="pr-6">{selectedModal.title || "Assignment link"}</DialogTitle>
                 <DialogDescription>
-                  Permanent candidate link and partner API key · /{selectedModal.slug}
+                  Permanent candidate link · /{selectedModal.slug}
                 </DialogDescription>
               </DialogHeader>
 
@@ -170,35 +170,36 @@ export default function AssignedAssignmentsCard({ variant = "dashboard" }: { var
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <Label className="text-xs">Permanent API key</Label>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Input
-                      readOnly
-                      value={selectedModal.result_api_key || "(none)"}
-                      className="min-w-0 flex-1 text-xs font-mono"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon"
-                      disabled={!selectedModal.result_api_key}
-                      onClick={() => {
-                        void navigator.clipboard.writeText(String(selectedModal.result_api_key || ""));
-                        toast({ title: "API key copied" });
-                      }}
-                    >
-                      <Copy className="h-4 w-4" />
-                    </Button>
+                {selectedModal.partner_api_key && (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Partner API key (secret)</Label>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Input
+                        readOnly
+                        value={selectedModal.partner_api_key}
+                        className="min-w-0 flex-1 text-xs font-mono"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(String(selectedModal.partner_api_key || ""));
+                          toast({ title: "Partner API key copied" });
+                        }}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {selectedModal.result_api_key && (
+                {selectedModal.partner_api_key && (
                   <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground space-y-1.5 leading-relaxed">
                     <p className="font-medium text-foreground">Partner website</p>
                     <p>
                       Header:{" "}
-                      <code className="text-[10px]">X-Assessment-Api-Key: {selectedModal.result_api_key}</code>
+                      <code className="text-[10px]">X-Assessment-Api-Key: {selectedModal.partner_api_key}</code>
                     </p>
                     <p>
                       List attempts:{" "}

@@ -285,8 +285,32 @@ function peaklyyAttachResultLoginEmails(PDO $db, array &$rows): void
     }
 }
 
+/**
+ * partner_api_key is the secret for partner_* endpoints and webhooks. It is separate from
+ * result_api_key, which is embedded in every candidate link (#key=) and only opens the test.
+ */
+function peaklyyEnsurePartnerApiKeys(PDO $db): void
+{
+    try {
+        if (!syncpediaColumnExists($db, 'peaklyy_assessments', 'partner_api_key')) {
+            $db->exec('ALTER TABLE peaklyy_assessments ADD COLUMN partner_api_key VARCHAR(128) DEFAULT NULL');
+        }
+        $q = $db->query("SELECT id FROM peaklyy_assessments WHERE partner_api_key IS NULL OR partner_api_key = ''");
+        $rows = $q ? $q->fetchAll(PDO::FETCH_ASSOC) : [];
+        if ($rows) {
+            $upd = $db->prepare('UPDATE peaklyy_assessments SET partner_api_key = ? WHERE id = ?');
+            foreach ($rows as $r) {
+                $upd->execute([peaklyyGenerateApiKey(), $r['id']]);
+            }
+        }
+    } catch (Throwable $e) {
+        error_log('[assessments] ensure partner api keys: ' . $e->getMessage());
+    }
+}
+
 function peaklyyEnsureApiKeys(PDO $db): void
 {
+    peaklyyEnsurePartnerApiKeys($db);
     try {
         $q = $db->query("SELECT id, slug FROM peaklyy_assessments WHERE result_api_key IS NULL OR result_api_key = ''");
         if (!$q) {
@@ -1546,7 +1570,7 @@ function peaklyyCollectAttemptPartnerPayload(PDO $db, array $assessment, array $
 function peaklyySendWebhook(array $assessment, array $attempt, string $event = 'peaklyy.assessment.passed', array $extra = [], bool $requirePassed = true): array
 {
     $url = trim((string) ($assessment['result_webhook_url'] ?? ''));
-    $key = trim((string) ($assessment['result_api_key'] ?? ''));
+    $key = trim((string) ($assessment['partner_api_key'] ?? ''));
     if ($url === '') {
         return ['sent' => false, 'status' => 'skipped'];
     }
@@ -1712,6 +1736,9 @@ if ($action === 'list' && $method === 'GET') {
         $r['open_url'] = $key !== ''
             ? peaklyyOpenUrl((string) $r['slug'], $key)
             : (peaklyyPublicBase() . '/assessment/' . rawurlencode((string) $r['slug']));
+        if ($role !== 'super_admin') {
+            unset($r['partner_api_key']);
+        }
     }
     unset($r);
     $domainsOut = peaklyyDomainCatalog();
@@ -1836,12 +1863,17 @@ if ($action === 'create' && $method === 'POST') {
         $savedLoginEmail = (string) ($saved['email'] ?? $resultEmail);
     }
     $openUrl = peaklyyOpenUrl($slug, $apiKey);
+    peaklyyEnsurePartnerApiKeys($db);
+    $pk = $db->prepare('SELECT partner_api_key FROM peaklyy_assessments WHERE id = ? LIMIT 1');
+    $pk->execute([$id]);
+    $partnerApiKey = (string) ($pk->fetchColumn() ?: '');
     respond([
         'id' => $id,
         'slug' => $slug,
         'public_url' => $openUrl,
         'open_url' => $openUrl,
         'result_api_key' => $apiKey,
+        'partner_api_key' => $partnerApiKey,
         'duration_minutes' => $duration,
         'question_count' => $qCount,
         'source_mode' => $sourceMode,
@@ -1874,6 +1906,23 @@ if ($action === 'regenerate_api_key' && $method === 'POST') {
         'open_url' => peaklyyOpenUrl((string) $row['slug'], $apiKey),
         'message' => 'API key regenerated',
     ]);
+}
+
+if ($action === 'regenerate_partner_key' && $method === 'POST') {
+    $token = verifyToken();
+    requireRole($token, ['super_admin']);
+    $id = trim((string) ($input['id'] ?? ''));
+    if ($id === '') {
+        respond(['error' => 'id required'], 400);
+    }
+    peaklyyEnsurePartnerApiKeys($db);
+    $partnerApiKey = peaklyyGenerateApiKey();
+    $upd = $db->prepare('UPDATE peaklyy_assessments SET partner_api_key = ? WHERE id = ?');
+    $upd->execute([$partnerApiKey, $id]);
+    if ($upd->rowCount() < 1) {
+        respond(['error' => 'Not found'], 404);
+    }
+    respond(['id' => $id, 'partner_api_key' => $partnerApiKey, 'message' => 'Partner API key regenerated']);
 }
 
 if ($action === 'result_login' && $method === 'POST') {
@@ -2088,6 +2137,9 @@ if ($action === 'my_assignments' && $method === 'GET') {
             $r['open_url'] = $key !== ''
                 ? peaklyyOpenUrl((string) $r['slug'], $key)
                 : (peaklyyPublicBase() . '/assessment/' . rawurlencode((string) $r['slug']));
+            if ($role !== 'super_admin') {
+                unset($r['partner_api_key']);
+            }
         }
         unset($r);
         respond(['data' => $rows]);
@@ -3503,6 +3555,8 @@ if ($action === 'submit' && $method === 'POST') {
     if ($attempt['status'] === 'submitted') {
         respond(['error' => 'Already submitted', 'attempt_token' => $token], 409);
     }
+    // Before the transaction: may ALTER TABLE, which would implicitly commit an open transaction.
+    peaklyyEnsurePartnerApiKeys($db);
 
     // Serialize submit vs mid-test saves and prevent double-submit.
     try {
@@ -4160,7 +4214,8 @@ if ($action === 'result' && $method === 'GET') {
 }
 
 /**
- * Resolve assessment by permanent API key (partner).
+ * Resolve assessment by partner API key. Never accepts result_api_key: that one is in every
+ * candidate link, so anyone who received a test link could otherwise read all candidates' results.
  */
 function peaklyyAssessmentByApiKey(PDO $db, string $key): ?array
 {
@@ -4168,7 +4223,8 @@ function peaklyyAssessmentByApiKey(PDO $db, string $key): ?array
     if ($key === '') {
         return null;
     }
-    $stmt = $db->prepare('SELECT * FROM peaklyy_assessments WHERE result_api_key = ? LIMIT 1');
+    peaklyyEnsurePartnerApiKeys($db);
+    $stmt = $db->prepare('SELECT * FROM peaklyy_assessments WHERE partner_api_key = ? LIMIT 1');
     $stmt->execute([$key]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     return $row ?: null;

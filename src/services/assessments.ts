@@ -64,6 +64,7 @@ export const assessmentsApi = {
       public_url: string;
       open_url: string;
       result_api_key: string;
+      partner_api_key?: string;
       duration_minutes: number;
       question_count: number;
       source_mode?: PeaklyySourceMode;
@@ -74,6 +75,11 @@ export const assessmentsApi = {
     }),
   regenerateApiKey: (id: string) =>
     req<{ id: string; result_api_key: string; open_url: string }>("?action=regenerate_api_key", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    }),
+  regeneratePartnerKey: (id: string) =>
+    req<{ id: string; partner_api_key: string }>("?action=regenerate_partner_key", {
       method: "POST",
       body: JSON.stringify({ id }),
     }),
@@ -282,7 +288,10 @@ export interface PeaklyyAssessment {
   once_per_candidate: number | boolean;
   anti_cheat: number | boolean;
   result_webhook_url?: string | null;
+  /** Opens the test only; embedded in candidate links (#key=). */
   result_api_key?: string | null;
+  /** Secret for partner_* endpoints and webhooks. Returned to super admins only. */
+  partner_api_key?: string | null;
   result_login_email?: string | null;
   open_url?: string | null;
   is_active: number | boolean;
@@ -299,7 +308,7 @@ export interface PeaklyyAssessment {
   task_duration_minutes?: number;
 }
 
-export type PeaklyyAssessmentPublic = Omit<PeaklyyAssessment, "result_api_key">;
+export type PeaklyyAssessmentPublic = Omit<PeaklyyAssessment, "result_api_key" | "partner_api_key">;
 
 export interface PeaklyyTimelineEvent {
   at: string | null;

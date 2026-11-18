@@ -649,10 +649,19 @@ export default function AssessmentsAdminPage() {
 
   const regenMut = useMutation({
     mutationFn: (id: string) => assessmentsApi.regenerateApiKey(id),
-    onSuccess: (r) => {
-      toast({ title: "API key regenerated" });
+    onSuccess: () => {
+      toast({ title: "New test link created", description: "Links sent before this no longer open the test." });
       qc.invalidateQueries({ queryKey: ["peaklyy"] });
-      void navigator.clipboard.writeText(r.result_api_key);
+    },
+    onError: (e: Error) => toast({ variant: "destructive", title: e.message }),
+  });
+
+  const regenPartnerMut = useMutation({
+    mutationFn: (id: string) => assessmentsApi.regeneratePartnerKey(id),
+    onSuccess: (r) => {
+      toast({ title: "Partner API key regenerated and copied" });
+      qc.invalidateQueries({ queryKey: ["peaklyy"] });
+      void navigator.clipboard.writeText(r.partner_api_key);
     },
     onError: (e: Error) => toast({ variant: "destructive", title: e.message }),
   });
@@ -1321,11 +1330,14 @@ export default function AssessmentsAdminPage() {
                 </div>
               </div>
               <div className="space-y-1.5 min-w-0">
-                <Label className="text-xs">Permanent API key</Label>
+                <Label className="text-xs">Partner API key (secret)</Label>
+                <p className="text-[11px] text-muted-foreground">
+                  For partner websites and the results webhook only. Never put it in a candidate link — the link has its own key that only opens the test.
+                </p>
                 <div className="flex items-center gap-2 min-w-0">
                   <Input
                     readOnly
-                    value={linkDialogAssessment.result_api_key || "(none — regenerate)"}
+                    value={linkDialogAssessment.partner_api_key || "(none — regenerate)"}
                     className="min-w-0 flex-1 text-xs font-mono"
                   />
                   <Button
@@ -1333,21 +1345,21 @@ export default function AssessmentsAdminPage() {
                     variant="outline"
                     size="icon"
                     className="shrink-0"
-                    disabled={!linkDialogAssessment.result_api_key}
+                    disabled={!linkDialogAssessment.partner_api_key}
                     onClick={() => {
-                      void navigator.clipboard.writeText(String(linkDialogAssessment.result_api_key || ""));
-                      toast({ title: "API key copied" });
+                      void navigator.clipboard.writeText(String(linkDialogAssessment.partner_api_key || ""));
+                      toast({ title: "Partner API key copied" });
                     }}
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
                 </div>
-                {linkDialogAssessment.result_api_key ? (
+                {linkDialogAssessment.partner_api_key ? (
                   <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground space-y-1.5 leading-relaxed overflow-hidden">
                     <p className="font-medium text-foreground">Partner website</p>
                     <p className="break-all">
                       Header:{" "}
-                      <code className="text-[10px]">X-Assessment-Api-Key: {linkDialogAssessment.result_api_key}</code>
+                      <code className="text-[10px]">X-Assessment-Api-Key: {linkDialogAssessment.partner_api_key}</code>
                     </p>
                     <p className="break-all">
                       List attempts:{" "}
@@ -1526,10 +1538,24 @@ export default function AssessmentsAdminPage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  disabled={regenMut.isPending}
-                  onClick={() => regenMut.mutate(linkDialogAssessment.id)}
+                  disabled={regenPartnerMut.isPending}
+                  onClick={() => regenPartnerMut.mutate(linkDialogAssessment.id)}
                 >
-                  Regenerate API key
+                  Regenerate partner API key
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={regenMut.isPending}
+                  title="Creates a new candidate link. Links already sent will stop opening the test."
+                  onClick={() => {
+                    if (window.confirm("Create a new test link? Every link already sent to candidates will stop working.")) {
+                      regenMut.mutate(linkDialogAssessment.id);
+                    }
+                  }}
+                >
+                  New test link
                 </Button>
                 {!isSystemAssignment(linkDialogAssessment) ? (
                   <Button
