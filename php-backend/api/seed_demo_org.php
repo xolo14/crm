@@ -32,7 +32,18 @@ require_once __DIR__ . '/lib/Timetables.php';
 require_once __DIR__ . '/lib/PaymentCandidates.php';
 require_once __DIR__ . '/payment_link_store.php';
 
+// helpers.php buffers output for JSON APIs; print progress straight to the terminal instead.
+while (ob_get_level() > 0) {
+    ob_end_flush();
+}
+ob_implicit_flush(true);
+
 const SEED_BATCH = 'dummy_2026_11';
+
+function seedStep(string $msg): void
+{
+    echo '[' . date('H:i:s') . "] {$msg}\n";
+}
 
 $argvList = array_slice($argv, 1);
 $apply = in_array('--apply', $argvList, true);
@@ -367,6 +378,7 @@ $demoEmails = [];
 $db->beginTransaction();
 try {
     // ═══ 1. Team ════════════════════════════════════════════════════════
+    seedStep("1. Team");
     $teamPlan = [
         ['Ravi Teja', 'Kondapalli', 'manager'],
         ['Sneha', 'Reddy', 'manager'],
@@ -456,6 +468,7 @@ try {
     }
 
     // ═══ 2. Courses ═════════════════════════════════════════════════════
+    seedStep("2. Courses");
     $coursePlan = [
         ['Full Stack Development (MERN)', 65000, 24, 'HTML, CSS, JavaScript, React, Node.js, Express and MongoDB with three portfolio projects and placement prep.'],
         ['Data Science & AI', 85000, 26, 'Python, statistics, machine learning, deep learning and generative AI, ending in an industry capstone.'],
@@ -479,6 +492,7 @@ try {
     $COURSE_W = [14, 13, 12, 10, 11, 9, 10, 8, 13]; // interest weights, same order as $courses
 
     // ═══ 3. Batches + timetables ════════════════════════════════════════
+    seedStep("3. Batches + timetables");
     $trainers = [$managers[0], $managers[1], $reps[0], $reps[3]];
     $batches = [];
     $trainerSlots = [];
@@ -559,6 +573,7 @@ try {
     }
 
     // ═══ 5. Lead forms (before leads, which point at them) ══════════════
+    seedStep("5. Lead forms (before leads, which point at them)");
     $formPlan = [
         ['Free Demo Registration', 'Book a free live demo class with our trainers.'],
         ['Workshop Signup', 'Register for the weekend hands-on workshop.'],
@@ -603,6 +618,7 @@ try {
     }
 
     // ═══ 4. Leads (exactly 2,000) ═══════════════════════════════════════
+    seedStep("4. Leads (exactly 2,000)");
     $TOTAL = 2000;
     $sourceMix = ['google_ads' => 18, 'instagram' => 16, 'facebook' => 10, 'website' => 12, 'youtube' => 6, 'whatsapp' => 8,
         'referral' => 8, 'normal_form' => 6, 'google_forms' => 6, 'walkin' => 4, 'college_seminar' => 4, 'other' => 2];
@@ -756,6 +772,7 @@ try {
     }
 
     // Follow-up history + status-change logs for 60% of leads (all non-"new" first).
+    seedStep("Lead history and follow-ups");
     $nonNew = [];
     foreach ($leads as $ix => $lead) {
         if ($lead['status'] !== 'new') {
@@ -836,6 +853,7 @@ try {
     }
 
     // ═══ HR leads (≈150, HR portal) ═════════════════════════════════════
+    seedStep("HR leads (≈150, HR portal)");
     if (seedHasTable($db, 'hr_leads')) {
         $hrStatus = ['new' => 40, 'contacted' => 35, 'interested' => 30, 'not_interested' => 15, 'converted' => 20, 'lost' => 10];
         $hrSources = ['naukri', 'linkedin', 'referral', 'walkin', 'form_internship-application', 'indeed'];
@@ -869,6 +887,7 @@ try {
     }
 
     // ═══ 6. Students (registered + enrolled leads) ══════════════════════
+    seedStep("6. Students (registered + enrolled leads)");
     $batchesByCourse = [];
     foreach ($batches as $bix => $b) {
         $batchesByCourse[$b['course']][] = $bix;
@@ -917,6 +936,7 @@ try {
     }
 
     // ═══ 7. Payments: candidates, manual payments, payment links ════════
+    seedStep("7. Payments: candidates, manual payments, payment links");
     $methods = ['UPI', 'UPI', 'Bank Transfer', 'Cash', 'Card', 'UPI'];
     $hasCand = seedHasTable($db, 'payment_candidates');
     $hasManual = seedHasTable($db, 'manual_payments');
@@ -1068,6 +1088,7 @@ try {
     }
 
     // ═══ Coupons ════════════════════════════════════════════════════════
+    seedStep("Coupons");
     if (seedHasTable($db, 'coupons')) {
         $codeChk = $db->prepare('SELECT COUNT(*) FROM coupons WHERE org_id = ? AND code = ?');
         foreach (array_slice($deciding, 30, 10) as $j => $ix) {
@@ -1085,6 +1106,7 @@ try {
     }
 
     // ═══ Call log + daily reports (last 30 days) ════════════════════════
+    seedStep("Call log + daily reports (last 30 days)");
     if (seedHasTable($db, 'call_logs')) {
         $leadsByRep = [];
         foreach ($leads as $ix => $lead) {
@@ -1158,6 +1180,7 @@ try {
     }
 
     // ═══ Tasks ══════════════════════════════════════════════════════════
+    seedStep("Tasks");
     $taskTitles = ['Follow up on demo feedback', 'Collect second installment', 'Send brochure and fee structure', 'Call back after exams',
         'Confirm batch joining date', 'Share EMI documents', 'Schedule parents meeting', 'Verify payment proof', 'Book seminar hall at college',
         'Update Instagram ad creatives', 'Prepare weekly sales report', 'Interview shortlisted trainers'];
@@ -1179,6 +1202,7 @@ try {
     }
 
     // ═══ Notifications ══════════════════════════════════════════════════
+    seedStep("Notifications");
     $notifTemplates = [
         ['New lead assigned', 'A new Instagram lead was assigned to you.', 'lead_assigned', '/my-leads'],
         ['Payment received', 'Registration fee of ₹2,000 received via UPI.', 'payment', '/payments/records'],
@@ -1205,6 +1229,7 @@ try {
     }
 
     // ═══ Holidays ═══════════════════════════════════════════════════════
+    seedStep("Holidays");
     if (seedHasTable($db, 'holidays')) {
         $y = (int) $TODAY->format('Y');
         $hol = [
@@ -1230,6 +1255,7 @@ try {
         }
     }
 
+    seedStep($apply ? "Saving…" : "Finished building; undoing the dry run…");
     // ── Report ───────────────────────────────────────────────────────────
     echo "\nRows " . ($apply ? 'created' : 'that would be created') . ":\n";
     ksort($STATS);
