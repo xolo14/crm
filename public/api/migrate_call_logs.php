@@ -125,4 +125,30 @@ foreach ($calls as $c) {
 }
 echo "3. Phone numbers to normalise to +91: {$phoneFix}\n";
 echo "4. Calls to link to a lead by phone: {$linked} of " . count($calls) . "\n";
+// ── 5. Recordings that contain no sound ────────────────────────────────
+$hasCol = false;
+try {
+    $hasCol = syncpediaColumnExists($db, 'call_logs', 'recording_status');
+    if (!$hasCol && $apply) {
+        $db->exec("ALTER TABLE call_logs ADD COLUMN recording_status VARCHAR(16) DEFAULT NULL");
+        $hasCol = true;
+    }
+} catch (Throwable $e) {
+    echo "   could not add recording_status: {$e->getMessage()}\n";
+}
+$ffmpegPath = function_exists('shell_exec') ? trim((string) @shell_exec('command -v ffmpeg 2>/dev/null')) : '';
+echo '5. Recordings checked for sound (ffmpeg ' . ($ffmpegPath !== '' ? 'found' : 'NOT installed — only WAV files can be checked') . "):\n";
+$recs = $db->query("SELECT id, call_date, client_phone, attachment_path FROM call_logs WHERE attachment_path IS NOT NULL AND attachment_path <> ''")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+$updRec = $hasCol ? $db->prepare('UPDATE call_logs SET recording_status = ? WHERE id = ?') : null;
+foreach ($recs as $r) {
+    $abs = callRecordingAbsolutePath((string) $r['attachment_path']);
+    $audible = $abs !== null ? callRecordingIsAudible($abs) : null;
+    $status = $audible === false ? 'no_audio' : 'ok';
+    $label = $abs === null ? 'file missing' : ($audible === null ? 'could not check' : ($audible ? 'has sound' : 'SILENT'));
+    echo "   id={$r['id']} {$r['call_date']} {$r['client_phone']}  " . basename((string) $r['attachment_path']) . "  -> {$label}\n";
+    if ($apply && $updRec) {
+        $updRec->execute([$status, $r['id']]);
+    }
+}
+
 echo $apply ? "Done.\n" : "Dry run — nothing changed. Re-run with --apply to write.\n";

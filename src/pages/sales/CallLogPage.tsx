@@ -277,7 +277,14 @@ function DailyLogsStrip({
                     <TableCell className="max-w-[180px] truncate text-muted-foreground">{callLogLeadStatusCell(log)}</TableCell>
                     {showRepColumn ? <TableCell>{log.sales_rep_name || "—"}</TableCell> : null}
                     <TableCell>
-                      {log.attachment_path ? (
+                      {log.recording_status === "no_audio" ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800"
+                          title="The phone recorded silence. Android blocks call audio for most apps; use the phone's own call recorder or a cloud calling service."
+                        >
+                          Recording failed — no audio
+                        </span>
+                      ) : log.attachment_path ? (
                         <button
                           type="button"
                           className="inline-flex items-center gap-1 text-teal-600 hover:underline text-xs bg-transparent border-0 p-0 cursor-pointer"

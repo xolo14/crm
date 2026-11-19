@@ -13,6 +13,8 @@ export interface CallLog {
   client_name?: string | null;
   notes?: string | null;
   attachment_path?: string | null;
+  /** null = no recording, "ok", or "no_audio" (the phone captured silence). */
+  recording_status?: "ok" | "no_audio" | null;
   call_date: string;
   call_time?: string | null;
   created_at: string;

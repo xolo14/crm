@@ -9337,3 +9337,106 @@ function leadsSettleEnrollmentStatus(PDO $db, string $leadId): string
         return '';
     }
 }
+
+/**
+ * Does this recording contain any sound? true = audible, false = silent, null = can't tell.
+ *
+ * The Android app can only capture call audio on some phones; elsewhere it records silence
+ * (Android 10+ blocks third-party call-audio capture) and used to upload ~1 MB files of pure
+ * silence that showed a play button. WAV is checked directly from its PCM samples; every
+ * other format is measured with ffmpeg's volumedetect when ffmpeg is installed.
+ */
+function callRecordingIsAudible(string $absPath): ?bool
+{
+    if (!is_file($absPath) || filesize($absPath) < 1024) {
+        return null;
+    }
+    $ext = strtolower(pathinfo($absPath, PATHINFO_EXTENSION));
+    if ($ext === 'pdf') {
+        return null;
+    }
+    if ($ext === 'wav') {
+        $fh = @fopen($absPath, 'rb');
+        if ($fh === false) {
+            return null;
+        }
+        $hdr = fread($fh, 12);
+        if (strlen((string) $hdr) < 12 || substr($hdr, 0, 4) !== 'RIFF' || substr($hdr, 8, 4) !== 'WAVE') {
+            fclose($fh);
+            return null;
+        }
+        $bits = 16;
+        while (!feof($fh)) {
+            $ch = fread($fh, 8);
+            if (strlen((string) $ch) < 8) {
+                break;
+            }
+            $id = substr($ch, 0, 4);
+            $len = unpack('V', substr($ch, 4, 4))[1];
+            if ($id === 'fmt ') {
+                $fmt = fread($fh, $len);
+                $bits = unpack('v', substr((string) $fmt, 14, 2))[1] ?? 16;
+                continue;
+            }
+            if ($id !== 'data') {
+                fseek($fh, $len + ($len % 2), SEEK_CUR);
+                continue;
+            }
+            if ($bits !== 16) {
+                fclose($fh);
+                return null;
+            }
+            $peak = 0;
+            $left = $len;
+            while ($left > 0 && !feof($fh)) {
+                $buf = fread($fh, (int) min(65536, $left));
+                if ($buf === false || $buf === '') {
+                    break;
+                }
+                $left -= strlen($buf);
+                foreach (unpack('s*', $buf) ?: [] as $s) {
+                    $a = $s < 0 ? -$s : $s;
+                    if ($a > $peak) {
+                        $peak = $a;
+                        if ($peak > 64) {
+                            fclose($fh);
+                            return true;
+                        }
+                    }
+                }
+            }
+            fclose($fh);
+            return false; // every sample at (or within a hair of) zero
+        }
+        fclose($fh);
+        return null;
+    }
+    // Compressed audio (m4a/aac/amr/3gp/ogg/opus/webm/mp3): ask ffmpeg for the peak level.
+    if (!function_exists('shell_exec')) {
+        return null;
+    }
+    $ffmpeg = trim((string) @shell_exec('command -v ffmpeg 2>/dev/null'));
+    if ($ffmpeg === '') {
+        return null;
+    }
+    $out = (string) @shell_exec(escapeshellarg($ffmpeg) . ' -hide_banner -nostats -i ' . escapeshellarg($absPath)
+        . ' -af volumedetect -f null - 2>&1');
+    if (preg_match('/max_volume:\s*(-?[0-9.]+|-inf) dB/', $out, $m)) {
+        if ($m[1] === '-inf') {
+            return false;
+        }
+        return (float) $m[1] > -60.0; // pure digital silence reads -91 dB
+    }
+    return null;
+}
+
+/** Absolute path for a stored /uploads/... recording path. */
+function callRecordingAbsolutePath(string $relative): ?string
+{
+    $rel = ltrim(str_replace('\', '/', $relative), '/');
+    if ($rel === '' || strpos($rel, '..') !== false) {
+        return null;
+    }
+    $abs = realpath(__DIR__ . '/../' . $rel);
+    return $abs !== false ? $abs : null;
+}

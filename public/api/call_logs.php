@@ -510,6 +510,44 @@ if ($method === 'GET' && $action === 'daily_report_metrics') {
     ]);
 }
 
+/** recording_status column: NULL = no recording, 'ok', or 'no_audio' (silent capture). */
+function callLogsEnsureRecordingStatus(PDO $db): bool
+{
+    static $ok = null;
+    if ($ok !== null) {
+        return $ok;
+    }
+    try {
+        if (!syncpediaColumnExists($db, 'call_logs', 'recording_status')) {
+            $db->exec("ALTER TABLE call_logs ADD COLUMN recording_status VARCHAR(16) DEFAULT NULL");
+        }
+        $ok = true;
+    } catch (Throwable $e) {
+        error_log('[call_logs] recording_status column: ' . $e->getMessage());
+        $ok = false;
+    }
+    return $ok;
+}
+
+/**
+ * 'no_audio' when the stored file is silent (or the app says it was), 'ok' when it has sound
+ * or can't be checked, null when there is no recording.
+ */
+function callLogsRecordingStatus(?string $attachPath, string $clientSays): ?string
+{
+    if ($clientSays === 'no_audio') {
+        return 'no_audio';
+    }
+    if ($attachPath === null || $attachPath === '') {
+        return null;
+    }
+    $abs = callRecordingAbsolutePath($attachPath);
+    if ($abs === null) {
+        return 'ok';
+    }
+    return callRecordingIsAudible($abs) === false ? 'no_audio' : 'ok';
+}
+
 /** Longest plausible single call (4 hours); anything longer is a device clock/log error. */
 const CALL_LOG_MAX_DURATION_SECONDS = 14400;
 
@@ -717,6 +755,11 @@ if ($method === 'POST' && $action === 'add_log') {
 
     $deviceCallId = substr(trim((string) ($input['device_call_id'] ?? '')), 0, 64);
     $hasDeviceKey = $deviceCallId !== '' && callLogsEnsureDeviceCallId($db);
+    $hasRecordingStatus = callLogsEnsureRecordingStatus($db);
+    $recordingStatus = callLogsRecordingStatus(
+        $attachPath,
+        strtolower(trim((string) ($input['recording_status'] ?? '')))
+    );
     if ($hasDeviceKey) {
         $devSt = $db->prepare('SELECT id FROM call_logs WHERE sales_rep_id = ? AND device_call_id = ? LIMIT 1');
         $devSt->execute([$repId, $deviceCallId]);
@@ -814,6 +857,10 @@ if ($method === 'POST' && $action === 'add_log') {
         }
 
         $id = (int) $db->lastInsertId();
+
+        if ($hasRecordingStatus && $id > 0 && $recordingStatus !== null) {
+            $db->prepare('UPDATE call_logs SET recording_status = ? WHERE id = ?')->execute([$recordingStatus, $id]);
+        }
 
         if ($hasDeviceKey && $id > 0) {
             try {
@@ -1155,6 +1202,10 @@ if (($method === 'PUT' && $action === 'update_log') || ($method === 'POST' && $a
                 deleteCallRecordingIfExists($row['attachment_path'] ?? null);
                 $fields[] = 'attachment_path = ?';
                 $params[] = $saved;
+                if (callLogsEnsureRecordingStatus($db)) {
+                    $fields[] = 'recording_status = ?';
+                    $params[] = callLogsRecordingStatus($saved, '');
+                }
                 break;
             }
         }
