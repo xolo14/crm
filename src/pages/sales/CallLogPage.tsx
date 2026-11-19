@@ -86,7 +86,7 @@ function StatsGrid({ stats, periodTitle }: { stats: CallLogStats; periodTitle: s
         <StatCard value={stats.outgoing_duration} label="Outgoing Duration" icon={PhoneOutgoing} labelClass="text-orange-400" />
         <StatCard value={stats.missed} label="Missed" icon={PhoneMissed} labelClass="text-red-500" />
         <StatCard value={stats.rejected} label="Rejected" icon={Ban} labelClass="text-red-500" />
-        <StatCard value={stats.never_attended} label="Never Attended" icon={Scissors} labelClass="text-red-500" />
+        <StatCard value={stats.never_attended} label="Never attended" icon={Scissors} labelClass="text-red-500" />
         <StatCard value={stats.not_pickup_by_client ?? 0} label="Not picked up" icon={PhoneMissed} labelClass="text-amber-600" />
         <StatCard value={stats.working_hours} label="Talk Time" icon={Hourglass} />
       </div>
@@ -106,6 +106,20 @@ function typeBadgeClass(t: string) {
       return "bg-muted text-muted-foreground border-border";
     default:
       return "bg-muted text-muted-foreground border-border";
+  }
+}
+
+/** Same words as the summary cards. */
+function callStatusLabel(s: string) {
+  switch (s) {
+    case "connected":
+      return "Connected";
+    case "never_attended":
+      return "Never attended";
+    case "not_pickup_by_client":
+      return "Not picked up";
+    default:
+      return s.replace(/_/g, " ");
   }
 }
 
@@ -236,82 +250,96 @@ function DailyLogsStrip({
         </div>
       ) : (
         <Card className="border-border/50 shadow-none">
-          <div className="crm-table-scroll overflow-x-auto max-h-[65dvh]">
-            <Table className="min-w-[960px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="sticky top-0 z-10 bg-card w-[56px]">#</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card min-w-[128px]">Date</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card w-[92px]">Time</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card w-[96px]">Type</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card w-[136px]">Status</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card min-w-[140px]">Client</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card min-w-[120px]">Phone</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card w-[92px]">Duration</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card min-w-[160px]">Lead Status</TableHead>
-                  {showRepColumn ? <TableHead className="sticky top-0 z-10 bg-card min-w-[130px]">Rep</TableHead> : null}
-                  <TableHead className="sticky top-0 z-10 bg-card min-w-[140px]">Recording</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card min-w-[200px]">Notes</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card min-w-[150px]">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {logs.map((log, i) => (
-                  <TableRow key={log.id}>
-                    <TableCell className="font-mono text-xs">#{((page - 1) * limit + i + 1).toString()}</TableCell>
-                    <TableCell className="whitespace-nowrap">{formatCallDateDisplay(log.call_date)}</TableCell>
-                    <TableCell className="font-mono text-xs">{log.call_time?.slice(0, 8) || "—"}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className={cn("capitalize text-[10px] px-1.5 py-0", typeBadgeClass(log.call_type))}>
-                        {log.call_type}
-                      </Badge>
+          {/* One compact table, no inner vertical scroll: the page scrolls. Date+time, type+status and
+              client+phone share a cell so the whole row fits without sideways scrolling on desktop. */}
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[40px]">#</TableHead>
+                <TableHead>When</TableHead>
+                <TableHead>Call</TableHead>
+                <TableHead>Contact</TableHead>
+                <TableHead className="text-right">Duration</TableHead>
+                <TableHead>Lead status</TableHead>
+                {showRepColumn ? <TableHead>Rep</TableHead> : null}
+                <TableHead>Recording</TableHead>
+                <TableHead className="w-[84px] text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {logs.map((log, i) => {
+                const phone = (log.client_phone || "").trim();
+                const name = (log.client_name || "").trim();
+                const digits = (v: string) => v.replace(/\D+/g, "");
+                const hasName = name !== "" && digits(name) !== digits(phone);
+                const note = (log.notes || "").trim();
+                const showNote = note !== "" && note !== "Synced from Syncpedia app";
+                return (
+                  <TableRow key={log.id} className="align-top">
+                    <TableCell className="font-mono text-xs text-muted-foreground py-2.5">
+                      {((page - 1) * limit + i + 1).toString()}
                     </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className={cn("text-[10px] capitalize px-1.5 py-0", statusBadgeClass(log.call_status))}>
-                        {log.call_status.replace(/_/g, " ")}
-                      </Badge>
+                    <TableCell className="whitespace-nowrap py-2.5">
+                      <div>{formatCallDateDisplay(log.call_date)}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{log.call_time?.slice(0, 8) || "—"}</div>
                     </TableCell>
-                    <TableCell className="font-medium max-w-[160px] truncate">{log.client_name || "—"}</TableCell>
-                    <TableCell className="max-w-[140px] truncate">{log.client_phone || "—"}</TableCell>
-                    <TableCell className="font-mono">{formatCallDuration(log.duration_seconds)}</TableCell>
-                    <TableCell className="max-w-[180px] truncate text-muted-foreground">{callLogLeadStatusCell(log)}</TableCell>
-                    {showRepColumn ? <TableCell>{log.sales_rep_name || "—"}</TableCell> : null}
-                    <TableCell>
+                    <TableCell className="py-2.5">
+                      <div className="flex flex-col items-start gap-1">
+                        <Badge variant="outline" className={cn("whitespace-nowrap capitalize text-[10px] px-1.5 py-0", typeBadgeClass(log.call_type))}>
+                          {log.call_type}
+                        </Badge>
+                        <Badge variant="outline" className={cn("whitespace-nowrap text-[10px] px-1.5 py-0", statusBadgeClass(log.call_status))}>
+                          {callStatusLabel(log.call_status)}
+                        </Badge>
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-2.5">
+                      <div className={cn("whitespace-nowrap", hasName ? "font-medium" : "text-muted-foreground")}>
+                        {hasName ? name : "Unknown"}
+                      </div>
+                      <div className="whitespace-nowrap font-mono text-xs text-muted-foreground">{phone || "—"}</div>
+                      {showNote ? (
+                        <p className="mt-0.5 max-w-[220px] text-xs text-muted-foreground line-clamp-2 break-words" title={note}>
+                          {note}
+                        </p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-right font-mono py-2.5">{formatCallDuration(log.duration_seconds)}</TableCell>
+                    <TableCell className="whitespace-nowrap text-muted-foreground py-2.5">{callLogLeadStatusCell(log)}</TableCell>
+                    {showRepColumn ? <TableCell className="whitespace-nowrap py-2.5">{log.sales_rep_name || "—"}</TableCell> : null}
+                    <TableCell className="py-2.5">
                       {log.recording_status === "no_audio" ? (
                         <span
-                          className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800"
-                          title="The phone recorded silence. Android blocks call audio for most apps; use the phone's own call recorder or a cloud calling service."
+                          className="inline-flex items-center whitespace-nowrap rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800"
+                          title="Recording failed: the phone recorded silence. Turn on call recording in the phone's own dialer."
                         >
-                          Recording failed — no audio
+                          No audio
                         </span>
                       ) : log.attachment_path ? (
                         <button
                           type="button"
-                          className="inline-flex items-center gap-1 text-teal-600 hover:underline text-xs bg-transparent border-0 p-0 cursor-pointer"
+                          className="inline-flex items-center gap-1 whitespace-nowrap text-teal-600 hover:underline text-xs bg-transparent border-0 p-0 cursor-pointer"
+                          title={attachmentBasename(log.attachment_path)}
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             setPreviewPath(String(log.attachment_path));
                           }}
                         >
-                          <Paperclip className="h-3 w-3 shrink-0" />
-                          <span className="truncate max-w-[140px]">{attachmentBasename(log.attachment_path)}</span>
+                          <Paperclip className="h-3 w-3 shrink-0" /> Play
                         </button>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    <TableCell className="max-w-[220px]">
-                      <p className="text-muted-foreground whitespace-pre-wrap break-words line-clamp-2">{log.notes || "—"}</p>
-                    </TableCell>
-                    <TableCell>
+                    <TableCell className="py-2.5 text-right">
                       {canMutate(log) ? (
-                        <div className="flex items-center gap-1 flex-wrap">
-                          <Button variant="outline" size="sm" className="h-9 gap-1 max-md:min-h-11" onClick={() => onEdit(log)}>
-                            <Pencil className="h-3 w-3" /> Edit
+                        <div className="flex items-center justify-end gap-1">
+                          <Button variant="ghost" size="icon" className="h-8 w-8 max-md:h-11 max-md:w-11" aria-label="Edit call" title="Edit" onClick={() => onEdit(log)}>
+                            <Pencil className="h-3.5 w-3.5" />
                           </Button>
-                          <Button variant="outline" size="sm" className="h-9 gap-1 text-destructive max-md:min-h-11" onClick={() => onDelete(log)}>
-                            <Trash2 className="h-3 w-3" /> Delete
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive max-md:h-11 max-md:w-11" aria-label="Delete call" title="Delete" onClick={() => onDelete(log)}>
+                            <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       ) : (
@@ -319,10 +347,10 @@ function DailyLogsStrip({
                       )}
                     </TableCell>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                );
+              })}
+            </TableBody>
+          </Table>
         </Card>
       )}
 

@@ -343,7 +343,7 @@ function callLogsPeriodLabel(string $period, string $dateFrom, string $dateTo): 
 function formatDurationSeconds(?int $total): string
 {
     if ($total === null || $total <= 0) {
-        return '-';
+        return '00:00:00'; // same format as the other duration cards
     }
     $h = intdiv($total, 3600);
     $m = intdiv($total % 3600, 60);
