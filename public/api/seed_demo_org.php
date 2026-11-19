@@ -382,13 +382,9 @@ try {
     $teamPlan = [
         ['Ravi Teja', 'Kondapalli', 'manager'],
         ['Sneha', 'Reddy', 'manager'],
+        ['Harsha', 'Vardhan', 'operational_manager'],
         ['Karthik', 'Varma', 'sales_representative'],
         ['Priya', 'Nair', 'sales_representative'],
-        ['Rohan', 'Kulkarni', 'sales_representative'],
-        ['Divya', 'Iyer', 'sales_representative'],
-        ['Abhishek', 'Sharma', 'sales_representative'],
-        ['Meghana', 'Rao', 'sales_representative'],
-        ['Vikram', 'Chowdary', 'sales_representative'],
         ['Lakshmi', 'Menon', 'hr'],
         ['Arjun', 'Patel', 'hr'],
         ['Kavya', 'Joshi', 'marketing'],
@@ -408,6 +404,7 @@ try {
     $reps = [];
     $hrs = [];
     $marketing = [];
+    $oms = [];
     foreach ($teamPlan as $i => [$f, $l, $role]) {
         $id = uuid();
         $name = $f . ' ' . $l;
@@ -444,6 +441,8 @@ try {
             $reps[] = $u;
         } elseif ($role === 'hr') {
             $hrs[] = $u;
+        } elseif ($role === 'operational_manager') {
+            $oms[] = $u;
         } else {
             $marketing[] = $u;
         }
@@ -493,10 +492,10 @@ try {
 
     // ═══ 3. Batches + timetables ════════════════════════════════════════
     seedStep("3. Batches + timetables");
-    $trainers = [$managers[0], $managers[1], $reps[0], $reps[3]];
+    $trainers = [$managers[0], $managers[1], $oms[0]];
     $batches = [];
     $trainerSlots = [];
-    $slotTimes = [['07:00:00', '09:00:00'], ['10:00:00', '12:00:00'], ['14:00:00', '16:00:00'], ['18:30:00', '20:30:00']];
+    $slotTimes = [['07:00:00', '09:00:00'], ['09:30:00', '11:30:00'], ['12:00:00', '14:00:00'], ['14:30:00', '16:30:00'], ['17:00:00', '19:00:00'], ['19:30:00', '21:30:00']];
     $bi = 0;
     foreach ($courses as $ci => $c) {
         $n = $ci % 3 === 0 ? 3 : 2;
@@ -687,7 +686,8 @@ try {
         }
     }
 
-    $repWeights = [24, 20, 16, 14, 11, 9, 6];
+    $owners = [$reps[0], $reps[1], $managers[0], $managers[1]];
+    $ownerWeights = [38, 34, 16, 12];
     $leadIns = [];
     $leads = [];
     $notesByStatus = [
@@ -709,7 +709,7 @@ try {
         $source = $sources[$k];
         $created = $dates[$k];
         $unassigned = ($status === 'new' || $status === 'lost') && r01() < 0.22; // ≈10% of all leads
-        $assignee = $unassigned ? null : $reps[pickW($repWeights)]['id'];
+        $assignee = $unassigned ? null : $owners[pickW($ownerWeights)]['id'];
         $courseIx = pickW($COURSE_W);
         $tags = null;
         if ($source === 'normal_form') {
@@ -1049,17 +1049,6 @@ try {
                 ]);
             }
         }
-        // Student fee record (Payments page).
-        if (seedHasTable($db, 'payments') && $s['enrolled']) {
-            $paidAll = array_sum($installments) >= $pitch;
-            seedInsert($db, 'payments', [
-                'id' => uuid(), 'student_id' => $s['id'], 'batch_id' => $s['batch'], 'amount' => $pitch,
-                'payment_type' => count($installments) > 2 ? 'installment' : 'full', 'payment_method' => pick($methods),
-                'status' => $paidAll ? 'paid' : 'pending',
-                'due_date' => ymd($s['when']->modify('+30 days')), 'paid_date' => $paidAll ? ymd(min($NOW, $s['when']->modify('+20 days'))) : null,
-                'notes' => 'Course fee — ' . $course['name'], 'org_id' => $ORG, 'created_at' => ts($s['when']),
-            ]);
-        }
     }
     // Links for people still deciding: open, expired and part-paid.
     $deciding = array_values(array_filter(array_keys($leads), static fn($ix) => in_array($leads[$ix]['status'], ['interested', 'demo_scheduled', 'demo_attended'], true)));
@@ -1128,7 +1117,7 @@ try {
                 if ((int) $day->format('w') === 0) {
                     continue; // Sundays off
                 }
-                $n = mt_rand(6, 18) - $rIdx;
+                $n = mt_rand(25, 45) - $rIdx * 4;
                 for ($c = 0; $c < max(3, $n); $c++) {
                     $lead = $leads[pick($pool)];
                     $kind = pickW(['out_conn' => 50, 'out_np' => 22, 'missed' => 12, 'in_conn' => 13, 'rejected' => 3]);
@@ -1184,7 +1173,7 @@ try {
     $taskTitles = ['Follow up on demo feedback', 'Collect second installment', 'Send brochure and fee structure', 'Call back after exams',
         'Confirm batch joining date', 'Share EMI documents', 'Schedule parents meeting', 'Verify payment proof', 'Book seminar hall at college',
         'Update Instagram ad creatives', 'Prepare weekly sales report', 'Interview shortlisted trainers'];
-    $staff = array_merge($reps, $managers, $hrs, $marketing);
+    $staff = array_merge($reps, $managers, $oms, $hrs, $marketing);
     for ($k = 0; $k < 45; $k++) {
         $who = $staff[$k % count($staff)];
         $leadIx = mt_rand(0, $TOTAL - 1);

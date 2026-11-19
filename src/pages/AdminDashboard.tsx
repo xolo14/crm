@@ -139,6 +139,19 @@ export default function AdminDashboard() {
       setActiveBatches(payload.active_batches || 0);
       setTotalRevenue(Number(payload.total_revenue || 0));
       setPendingRevenue(Number(payload.pending_revenue || 0));
+      // Same math as Payment Records: collected = approved manual payments + paid link payments;
+      // pending = what candidates still owe against their agreed fee. Falls back to the old figures.
+      try {
+        // Super admin inside an org passes it explicitly; without it metrics.php sums every org.
+        const scopeOrg = role === 'super_admin' ? (organization?.id ?? undefined) : undefined;
+        const m = ((await api.metrics.summary(scopeOrg)) as { data?: { collected?: number; outstanding?: number } })?.data;
+        if (m && typeof m.collected === 'number') {
+          setTotalRevenue(m.collected);
+          setPendingRevenue(Math.max(0, Number(m.outstanding || 0)));
+        }
+      } catch {
+        /* metrics is optional (managers can't read it) */
+      }
 
       const profiles = payload.profiles || [];
       const refMap = new Map<
@@ -319,7 +332,7 @@ export default function AdminDashboard() {
             label: 'Revenue',
             value: fmt(totalRevenue),
             icon: IndianRupee,
-            sub: `${fmt(pendingRevenue)} pending`,
+            sub: `${fmt(pendingRevenue)} still to collect`,
             bg: 'from-green-500/10 to-emerald-500/10',
             ic: 'text-green-600',
           },
