@@ -5872,6 +5872,9 @@ function saveCallRecordingUpload(?array $file, ?PDO $db = null, ?string $orgId =
         $mime = $finfo->file($tmp) ?: '';
     }
     if ($mime === '' || !in_array($mime, callRecordingAllowedMimeTypes(), true)) {
+        // Logged so an unsupported recorder format can be added: grep "rejected recording".
+        error_log('[call_logs] rejected recording: sniffed=' . ($mime !== '' ? $mime : '(none)')
+            . ' name=' . basename((string) ($file['name'] ?? '')) . ' size=' . $size);
         respond(['error' => 'Recording must be an audio file (mp3, m4a, aac, amr, 3gp, wav, ogg, opus, webm) or PDF'], 400);
     }
     $ext = syncpediaExtensionForAllowedMime($mime, callRecordingMimeExtensionMap());
