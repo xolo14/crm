@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { cleanName } from "@/lib/formatMetric";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api";
 import { isSyncpediaOrganization } from "@/lib/orgFeatures";
@@ -352,7 +353,7 @@ function AddLmsStudentDialog({
                   .filter((c) => String(c.lms_id || "").trim() !== "")
                   .map((c) => (
                     <SelectItem key={c.lms_id} value={c.lms_id}>
-                      {c.name}
+                      {cleanName(c.name)}
                     </SelectItem>
                   ))}
               </SelectContent>
@@ -381,7 +382,7 @@ function AddLmsStudentDialog({
                   .filter((b) => String(b.lms_id || "").trim() !== "")
                   .map((b) => (
                     <SelectItem key={b.lms_id} value={b.lms_id}>
-                      {b.name}
+                      {cleanName(b.name)}
                       {b.lms_course_name ? ` · ${b.lms_course_name}` : ""}
                     </SelectItem>
                   ))}

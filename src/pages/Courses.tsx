@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
+import { cleanName } from '@/lib/formatMetric';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -214,7 +215,7 @@ function CrmCoursesAdmin() {
  <div className="flex-1 min-w-0">
  <div className="flex items-center gap-2 mb-1">
  <div className="h-7 w-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0"><BookOpen className="h-3.5 w-3.5 text-primary" /></div>
- <p className="font-medium text-sm truncate">{course.name}</p>
+ <p className="font-medium text-sm truncate">{cleanName(course.name)}</p>
  </div>
  <p className="text-xs text-muted-foreground line-clamp-2 mb-2">{course.description || '—'}</p>
  <div className="flex items-center gap-2 flex-wrap">
@@ -262,7 +263,7 @@ function CrmCoursesAdmin() {
  {courses.length === 0 ? <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">No courses found</TableCell></TableRow> : courses.map((course, i) => (
  <TableRow key={course.id} className={!course.is_active ? 'opacity-60' : ''}>
  <TableCell className="font-medium">{i + 1}</TableCell>
- <TableCell className="font-medium">{course.name}</TableCell>
+ <TableCell className="font-medium">{cleanName(course.name)}</TableCell>
  <TableCell className="text-muted-foreground line-clamp-1">{course.description || '—'}</TableCell>
  <TableCell>{Number(course.price) > 0 ? `₹${Number(course.price).toLocaleString('en-IN')}` : <span className="rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-[#9A5B00]">Price not set</span>}</TableCell>
  <TableCell className="whitespace-nowrap">{course.duration_weeks ? course.duration_weeks + ' weeks' : '—'}</TableCell>

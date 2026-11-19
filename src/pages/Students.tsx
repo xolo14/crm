@@ -451,7 +451,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                   )}
                   {student.enrolled_by_name && (
                     <div className="ml-7 mt-1 text-[11px] text-muted-foreground">
-                      Enrolled by: {student.enrolled_by_name}
+                      {isRegisteredOnly(student) ? 'Registered' : 'Enrolled'} by: {student.enrolled_by_name}
                     </div>
                   )}
                   {(student.course_name || student.course || student.batch_name || student.batch) && (
@@ -493,7 +493,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                 <TableHead>Contact</TableHead>
                 <TableHead className={extraCol}>Organization</TableHead>
                 <TableHead className={extraCol}>Lead source</TableHead>
-                <TableHead className={extraCol}>Enrolled by</TableHead>
+                <TableHead className={extraCol}>Enrolled / registered by</TableHead>
                 <TableHead>Course</TableHead>
                 <TableHead>Batch</TableHead>
                 <TableHead className={extraCol}>College</TableHead>
@@ -510,9 +510,9 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                 <TableRow key={student.id} className={selectedIds.has(student.id) ? 'bg-muted/50' : ''}>
                   {hasBulkDelete && <TableCell><Checkbox checked={selectedIds.has(student.id)} onCheckedChange={() => toggleSelect(student.id)} /></TableCell>}
                   <TableCell className="text-muted-foreground text-sm">{index + 1}</TableCell>
-                  <TableCell className="font-medium">{student.name}</TableCell>
-                  <TableCell>
-                    <div className="text-sm">{student.email}</div>
+                  <TableCell className="max-w-[11rem] font-medium"><span className="block truncate" title={student.name}>{student.name}</span></TableCell>
+                  <TableCell className="max-w-[13rem]">
+                    <div className="truncate text-sm" title={student.email}>{student.email}</div>
                     <div className="text-xs text-muted-foreground">{student.phone}</div>
                   </TableCell>
                   <TableCell className={`text-sm max-w-[140px] ${extraCol}`}>
@@ -585,7 +585,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                 <p><span className="text-muted-foreground">College:</span> {detailStudent.college || '—'}</p>
                 <p><span className="text-muted-foreground">Year:</span> {detailStudent.year_of_study || '—'}</p>
                 <p><span className="text-muted-foreground">Enrolled:</span> {detailStudent.enrollment_date ? fmtDate(detailStudent.enrollment_date) : '—'}</p>
-                <p><span className="text-muted-foreground">Enrolled by:</span> {detailStudent.enrolled_by_name || '—'}</p>
+                <p><span className="text-muted-foreground">{isRegisteredOnly(detailStudent) ? 'Registered' : 'Enrolled'} by:</span> {detailStudent.enrolled_by_name || '—'}</p>
                 <p><span className="text-muted-foreground">Course:</span> {detailStudent.course_name || detailStudent.course || '—'}</p>
                 <p><span className="text-muted-foreground">Batch:</span> {detailStudent.batch_name || detailStudent.batch || '—'}</p>
               </div>

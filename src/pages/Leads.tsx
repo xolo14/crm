@@ -1957,7 +1957,7 @@ export default function Leads() {
           <h1 className="whitespace-nowrap text-xl sm:text-2xl font-bold tracking-tight">
             {isSalesRepMyLeadsPage ? 'My Leads' : isFormLeadsPage ? 'Form Leads' : 'Leads'}
           </h1>
-          <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">
+          <p className="mt-0.5 truncate text-xs text-muted-foreground sm:text-sm">
             {fmtCount(totalLeads)}{' '}
             {isFormLeadsPage || isSalesRepMyLeadsPage ? 'form leads' : 'leads'}
             {' · '}
@@ -1972,7 +1972,7 @@ export default function Leads() {
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">
+        <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
           {hasImport && (
             <>
               <input
@@ -1998,25 +1998,6 @@ export default function Leads() {
                 </span>
               ) : null}
             </>
-          )}
-          {canExportLeads && (
-            <Button variant="outline" size="sm" className="gap-1.5 h-8" onClick={openExportCardsDialog}>
-              <Download className="h-3.5 w-3.5" /><span className="hidden sm:inline">Export</span>
-            </Button>
-          )}
-          {showSourceCards && canUseLeadFolders && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 h-8"
-              onClick={() => {
-                setNewFolderName('');
-                setNewFolderOpen(true);
-              }}
-            >
-              <FolderPlus className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">New folder</span>
-            </Button>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -2063,11 +2044,37 @@ export default function Leads() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          {isManager && (
-            <Button variant="outline" size="sm" className="gap-1.5 h-8" onClick={() => navigate('/leads/history')}>
-              <History className="h-3.5 w-3.5" /><span className="hidden sm:inline">History</span>
-            </Button>
-          )}
+          {canExportLeads || (showSourceCards && canUseLeadFolders) || isManager ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 w-8 p-0" aria-label="More lead actions" title="More actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                {canExportLeads ? (
+                  <DropdownMenuItem onClick={openExportCardsDialog}>
+                    <Download className="mr-2 h-3.5 w-3.5" /> Export
+                  </DropdownMenuItem>
+                ) : null}
+                {showSourceCards && canUseLeadFolders ? (
+                  <DropdownMenuItem
+                    onClick={() => {
+                      setNewFolderName('');
+                      setNewFolderOpen(true);
+                    }}
+                  >
+                    <FolderPlus className="mr-2 h-3.5 w-3.5" /> New folder
+                  </DropdownMenuItem>
+                ) : null}
+                {isManager ? (
+                  <DropdownMenuItem onClick={() => navigate('/leads/history')}>
+                    <History className="mr-2 h-3.5 w-3.5" /> History
+                  </DropdownMenuItem>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
           {hasCreate && (
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
               <DialogTrigger asChild>

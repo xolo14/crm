@@ -1287,6 +1287,8 @@ if ($method === 'PUT') {
                 }
                 leadsAttachStudentToBatch($db, $id, $vAttach['course_id'], $batchAttach);
             }
+            // Enroll without a course or batch = registration only.
+            leadsSettleEnrollmentStatus($db, $id);
 
             if ($db->inTransaction()) {
                 if (!$db->commit()) {

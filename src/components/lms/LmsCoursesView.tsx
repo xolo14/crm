@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { cleanName } from "@/lib/formatMetric";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -119,15 +120,15 @@ export function LmsCoursesView() {
                 <div className="h-7 w-7 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
                   <BookOpen className="h-3.5 w-3.5 text-primary" />
                 </div>
-                <p className="font-medium text-sm truncate">{c.name}</p>
+                <p className="font-medium text-sm truncate" title={cleanName(c.name)}>{cleanName(c.name)}</p>
               </div>
               <p className="text-xs text-muted-foreground line-clamp-2 mb-2">
-                {c.description || "—"}
+                {cleanName(c.description) || "—"}
               </p>
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold text-sm">₹0</span>
+                <span className="text-xs text-muted-foreground" title="Prices are managed in the LMS, not in the CRM">Price set in LMS</span>
                 {c.duration_weeks != null ? (
-                  <span className="text-xs text-muted-foreground">{c.duration_weeks} weeks</span>
+                  <span className="whitespace-nowrap text-xs text-muted-foreground">{c.duration_weeks} weeks</span>
                 ) : null}
                 <Badge variant="secondary" className="text-xs">
                   LMS
@@ -151,12 +152,12 @@ export function LmsCoursesView() {
             <TableBody>
               {filtered.map((c) => (
                 <TableRow key={c.lms_id}>
-                  <TableCell className="font-medium">{c.name}</TableCell>
+                  <TableCell className="font-medium">{cleanName(c.name)}</TableCell>
                   <TableCell className="max-w-xs truncate text-muted-foreground">
-                    {c.description || "—"}
+                    {cleanName(c.description) || "—"}
                   </TableCell>
-                  <TableCell>₹0</TableCell>
-                  <TableCell>
+                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground" title="Prices are managed in the LMS, not in the CRM">Set in LMS</TableCell>
+                  <TableCell className="whitespace-nowrap">
                     {c.duration_weeks != null ? `${c.duration_weeks} weeks` : "—"}
                   </TableCell>
                   <TableCell>

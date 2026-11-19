@@ -217,6 +217,9 @@ if ($method === 'PUT') {
         $stmt->execute($params);
         if ($isDropped) {
             studentsMarkLinkedEnrolledLeadLost($db, $studentRow);
+        } elseif (!empty($studentRow['lead_id'])) {
+            // Course/batch added or removed: lead moves between registered and enrolled.
+            leadsSettleEnrollmentStatus($db, (string) $studentRow['lead_id']);
         }
         $db->commit();
     } catch (Throwable $e) {

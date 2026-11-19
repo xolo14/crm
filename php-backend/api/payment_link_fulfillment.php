@@ -262,11 +262,13 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
 
     try {
         $currentStatus = strtolower(trim((string) ($leadRow['status'] ?? '')));
-        if ($currentStatus !== 'enrolled') {
-            // Privileged money path: may jump the interactive state machine (e.g. lost→enrolled).
+        if (!in_array($currentStatus, ['enrolled', 'registered'], true)) {
+            // Privileged money path: may jump the interactive state machine (e.g. lost→registered).
+            // Start at "registered"; leadsSettleEnrollmentStatus() promotes to "enrolled" below
+            // only when the student ends up with a course or batch (a ₹99 fee alone does not).
             $db->prepare(
                 'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            )->execute(['enrolled', $leadId]);
+            )->execute(['registered', $leadId]);
             syncpediaAuditLog(
                 $db,
                 $tokenData,
@@ -319,6 +321,7 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
         if ($batchAttached) {
             paymentLinkClearNeedsReconcile($plinkId);
         }
+        leadsSettleEnrollmentStatus($db, $leadId);
 
         return [
             'ok' => true,
@@ -338,6 +341,9 @@ function paymentLinkTryEnrollFromPayment(array $row, array $rzpLink): array
                 $db->prepare(
                     'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?',
                 )->execute([$prev, $leadId, 'enrolled']);
+                $db->prepare(
+                    'UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?',
+                )->execute([$prev, $leadId, 'registered']);
             }
         } catch (Throwable $revertErr) {
             error_log('[payment_fulfillment] status revert: ' . $revertErr->getMessage());

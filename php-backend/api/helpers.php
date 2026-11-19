@@ -3579,6 +3579,7 @@ function leadsSyncPipelineStatusFromCallLog(PDO $db, array $tokenData, string $u
             }
             return 'Could not create student for enrollment';
         }
+        leadsSettleEnrollmentStatus($db, $leadId);
     } elseif (in_array($prevStatus, leadsStudentStatuses(), true)) {
         // Only drop students when leaving registered/enrolled — never on unrelated status edits.
         leadsDropStudentForLead($db, $leadId);
@@ -9256,4 +9257,48 @@ function syncpediaActiveUserSql(string $alias = ''): string
     return "{$c}is_active = 1"
         . " AND LOWER(TRIM(COALESCE({$c}role, ''))) NOT IN ('super_admin', 'superadmin')"
         . " AND LOWER(COALESCE({$c}email, '')) NOT REGEXP '^(reviewer|test|demo|qa)[._+-]?[a-z0-9]*@'";
+}
+
+/**
+ * Registered vs Enrolled, decided by the data rather than by which button was pressed:
+ * a lead whose student row has a course or a batch is "enrolled"; one whose student row has
+ * neither (registration fee only, e.g. the ₹99 flow) is "registered". Called after every
+ * path that enrolls a lead (payment links, manual Enroll, call-log status change), so new
+ * registrations can't drift back into the enrolled count.
+ *
+ * Only touches leads currently in a student-owning status; returns the settled status.
+ */
+function leadsSettleEnrollmentStatus(PDO $db, string $leadId): string
+{
+    $leadId = trim($leadId);
+    if ($leadId === '') {
+        return '';
+    }
+    try {
+        $st = $db->prepare(
+            "SELECT LOWER(TRIM(COALESCE(l.status, ''))) AS status,
+                    COALESCE(NULLIF(TRIM(s.course_id), ''), NULLIF(TRIM(s.batch_id), '')) AS placed,
+                    s.id AS student_id
+               FROM leads l LEFT JOIN students s ON s.lead_id = l.id
+              WHERE l.id = ? LIMIT 1"
+        );
+        $st->execute([$leadId]);
+        $r = $st->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($r) || empty($r['student_id'])) {
+            return (string) ($r['status'] ?? '');
+        }
+        $current = (string) $r['status'];
+        if (!in_array($current, ['registered', 'enrolled', 'converted'], true)) {
+            return $current;
+        }
+        $target = $r['placed'] !== null ? 'enrolled' : 'registered';
+        if ($target !== $current) {
+            $db->prepare('UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+                ->execute([$target, $leadId]);
+        }
+        return $target;
+    } catch (Throwable $e) {
+        error_log('[leads] settle enrollment status: ' . $e->getMessage());
+        return '';
+    }
 }

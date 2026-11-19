@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { KpiTile } from "@/components/PageHeader";
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { phpList, inDateRange } from '@/lib/phpList';
@@ -180,7 +181,10 @@ export default function MarketingDashboard() {
   };
 
   // Stats calculations
-  const totalCampaigns = campaigns.length;
+  const isTransactional = (c: any) => Number(c.recipient_count ?? 0) <= 1;
+  const bulkCampaigns = campaigns.filter((c) => !isTransactional(c));
+  const transactionalCount = campaigns.length - bulkCampaigns.length;
+  const totalCampaigns = bulkCampaigns.length;
   const totalSent = campaigns.reduce((sum, c) => sum + (c.sent_count || 0), 0);
   const totalFailed = campaigns.reduce((sum, c) => sum + (c.failed_count || 0), 0);
   const totalPending = campaigns.reduce((sum, c) => sum + (c.pending_count || 0), 0);
@@ -383,38 +387,14 @@ export default function MarketingDashboard() {
         </CardContent>
       </Card>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <Card className="border-l-4 border-l-primary">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 mb-1"><BarChart3 className="h-4 w-4 text-primary" /><span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Email Campaigns</span></div>
-            <p className="text-xl md:text-2xl font-bold">{totalCampaigns}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-emerald-600">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 mb-1"><MessageSquare className="h-4 w-4 text-emerald-600" /><span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">WA Campaigns</span></div>
-            <p className="text-xl md:text-2xl font-bold">{waTotalCampaigns}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-emerald-500">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 mb-1"><CheckCircle2 className="h-4 w-4 text-emerald-500" /><span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Total Sent</span></div>
-            <p className="text-xl md:text-2xl font-bold text-emerald-600">{totalSent + waTotalSent}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-red-500">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 mb-1"><XCircle className="h-4 w-4 text-red-500" /><span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Total Failed</span></div>
-            <p className="text-xl md:text-2xl font-bold text-red-600">{totalFailed + waTotalFailed}</p>
-          </CardContent>
-        </Card>
-        <Card className="border-l-4 border-l-amber-500">
-          <CardContent className="p-3 md:p-4">
-            <div className="flex items-center gap-2 mb-1"><Clock className="h-4 w-4 text-amber-500" /><span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Pending</span></div>
-            <p className="text-xl md:text-2xl font-bold text-amber-600">{totalPending + waTotalPending}</p>
-          </CardContent>
-        </Card>
+      {/* Stats — shared KPI tile style */}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6 [&>*:last-child:nth-child(odd)]:col-span-2 md:[&>*:last-child]:col-span-1">
+        <KpiTile label="Email campaigns" value={totalCampaigns.toLocaleString('en-IN')} sub="2+ recipients" />
+        <KpiTile label="Transactional emails" value={transactionalCount.toLocaleString('en-IN')} sub="1 recipient each" />
+        <KpiTile label="WhatsApp campaigns" value={waTotalCampaigns.toLocaleString('en-IN')} />
+        <KpiTile label="Sent" value={(totalSent + waTotalSent).toLocaleString('en-IN')} />
+        <KpiTile label="Failed" value={(totalFailed + waTotalFailed).toLocaleString('en-IN')} />
+        <KpiTile label="Pending" value={(totalPending + waTotalPending).toLocaleString('en-IN')} />
       </div>
 
       {/* Tabs */}
@@ -432,6 +412,11 @@ export default function MarketingDashboard() {
           <Card>
             <CardHeader className="py-3 px-4">
               <CardTitle className="text-sm flex items-center gap-2"><Send className="h-4 w-4" />Email Campaigns</CardTitle>
+              {transactionalCount > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {transactionalCount.toLocaleString('en-IN')} single-recipient transactional email(s) are left out here; see the Email Log tab.
+                </p>
+              ) : null}
             </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
@@ -447,9 +432,9 @@ export default function MarketingDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {campaigns.length === 0 ? (
+                    {bulkCampaigns.length === 0 ? (
                       <TableRow><TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-8">No campaigns found</TableCell></TableRow>
-                    ) : campaigns.map(c => (
+                    ) : bulkCampaigns.map(c => (
                       <TableRow key={c.id}>
                         <TableCell className="text-sm font-medium max-w-[200px] truncate">{c.subject}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{format(new Date(c.created_at), 'dd MMM yyyy HH:mm')}</TableCell>

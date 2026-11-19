@@ -2999,7 +2999,7 @@ function TemplateCard({
           <div className="min-w-0">
             <CardTitle className="text-base truncate">{template.name}</CardTitle>
             <CardDescription className="mt-1 text-xs">
-              Created {template.createdAt} · <span className="font-mono">{template.id}</span>
+              Created {template.createdAt}
             </CardDescription>
           </div>
 

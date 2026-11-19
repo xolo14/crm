@@ -680,7 +680,7 @@ export default function CouponsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  {showOrgColumn ? <TableHead>Organization</TableHead> : null}
+                  {showOrgColumn ? <TableHead className="hidden xl:table-cell">Organization</TableHead> : null}
                   <TableHead>Name</TableHead>
                   <TableHead>Contact</TableHead>
                   <TableHead>Discount</TableHead>
@@ -688,7 +688,7 @@ export default function CouponsPage() {
                   <TableHead>Code</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Expires</TableHead>
-                  <TableHead>Created</TableHead>
+                  <TableHead className="hidden xl:table-cell">Created</TableHead>
                   <TableHead className="w-12" />
                 </TableRow>
               </TableHeader>
@@ -696,7 +696,7 @@ export default function CouponsPage() {
                 {rows.map((row) => (
                   <TableRow key={row.id}>
                     {showOrgColumn ? (
-                      <TableCell className="text-muted-foreground">{row.org_name || "—"}</TableCell>
+                      <TableCell className="hidden text-muted-foreground xl:table-cell">{row.org_name || "—"}</TableCell>
                     ) : null}
                     <TableCell className="max-w-[10rem] font-medium"><span className="block truncate" title={row.name}>{row.name}</span></TableCell>
                     <TableCell className="max-w-[14rem]">
@@ -736,7 +736,7 @@ export default function CouponsPage() {
                         fmtDateOnly(row.expires_at)
                       )}
                     </TableCell>
-                    <TableCell className="text-xs">
+                    <TableCell className="hidden text-xs xl:table-cell">
                       <span className="block whitespace-nowrap">{row.created_by_name || "—"}</span>
                       <span className="block whitespace-nowrap text-muted-foreground">{fmtWhen(row.created_at)}</span>
                     </TableCell>

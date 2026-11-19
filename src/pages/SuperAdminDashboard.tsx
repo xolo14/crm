@@ -179,6 +179,7 @@ function KpiTile({
   icon: Icon,
   to,
   loading,
+  className,
 }: {
   label: string;
   value: string;
@@ -186,6 +187,7 @@ function KpiTile({
   icon: typeof Users;
   to?: string;
   loading?: boolean;
+  className?: string;
 }) {
   const body = (
     <Card className="h-full border-border shadow-none transition-shadow hover:shadow-sm">
@@ -206,11 +208,11 @@ function KpiTile({
     </Card>
   );
   return to ? (
-    <Link to={to} className="block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    <Link to={to} className={cn("block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}>
       {body}
     </Link>
   ) : (
-    body
+    <div className={className}>{body}</div>
   );
 }
 
@@ -376,7 +378,7 @@ export default function SuperAdminDashboard() {
 
 
       {/* KPI row */}
-      <section className="grid gap-3 grid-cols-2 md:grid-cols-5 [&>*:last-child:nth-child(odd)]:col-span-2 md:[&>*:last-child]:col-span-1">
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <KpiTile label="Leads" value={fmtCount(m?.leads_total)} sub={m ? `${fmtCount(m.new)} new` : undefined} icon={TrendingUp} to="/leads" loading={loading} />
         <KpiTile
           label="Enrolled"
@@ -389,6 +391,7 @@ export default function SuperAdminDashboard() {
         <KpiTile label="Collected" value={m ? fmtINRCompact(m.collected) : "—"} sub={m ? fmtINR(m.collected) : undefined} icon={IndianRupee} to="/payments/records" loading={loading} />
         <KpiTile label="Outstanding" value={m ? fmtINRCompact(m.outstanding) : "—"} sub={m ? fmtINR(m.outstanding) : undefined} icon={IndianRupee} to="/payments/records" loading={loading} />
         <KpiTile
+          className="col-span-2 lg:col-span-1"
           label="Unassigned"
           value={fmtCount(m?.unassigned)}
           sub={m ? `${pct(m.unassigned, m.leads_total)} of leads` : undefined}

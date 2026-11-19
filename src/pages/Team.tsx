@@ -801,9 +801,9 @@ export default function Team() {
                             <TableHead className={`h-10 px-3 ${isSuperAdmin ? 'w-[30%]' : 'w-[38%]'}`}>Member</TableHead>
                             {isSuperAdmin && <TableHead className="h-10 px-3 w-[16%]">Org name</TableHead>}
                             <TableHead className="h-10 px-3 w-[180px]">Manager</TableHead>
-                            <TableHead className="h-10 px-3 w-[88px]">Status</TableHead>
+                            <TableHead className="h-10 px-3 w-[120px]">Status</TableHead>
                             <TableHead className="h-10 px-3 w-[88px]">Joined</TableHead>
-                            {showMemberMenu && <TableHead className="h-10 w-12 px-2 pr-3" />}
+                            <TableHead className="h-10 w-12 px-2 pr-3" />
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -848,7 +848,7 @@ export default function Team() {
                                     <span className="text-sm text-muted-foreground">{member.reports_to_name || '—'}</span>
                                   )}
                               </TableCell>
-                              <TableCell className="px-3 py-2.5 align-middle">
+                              <TableCell className="px-3 py-2.5 align-middle whitespace-nowrap">
                                 <Badge variant={member.is_active ? 'default' : 'secondary'} className={member.is_active ? 'bg-emerald-500/10 text-emerald-600 border-emerald-200 hover:bg-emerald-500/20' : ''}>{member.is_active ? 'active' : 'inactive'}</Badge>{isTestAccount(member) ? <Badge variant="outline" className="ml-1 text-[10px] text-muted-foreground" title="Test account: not counted in reports">test</Badge> : null}
                               </TableCell>
                               <TableCell className="px-3 py-2.5 text-sm text-muted-foreground align-middle whitespace-nowrap">
@@ -878,6 +878,7 @@ export default function Team() {
                                   </DropdownMenu>
                                 </TableCell>
                               )}
+                              {!showMemberMenu && <TableCell className="px-2 py-2.5 pr-3" />}
                             </TableRow>
                             );
                           })}

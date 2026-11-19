@@ -142,6 +142,44 @@ foreach ($srcRows as $r) {
 }
 echo '  ' . $found . " unmatched form source(s)" . ($found && !$fixFormSources ? ' — pass --fix-form-sources to re-point the matched ones' : '') . "\n";
 
+echo "\n== Forms that share a name (duplicate cards on Leads) ==\n";
+// Two lead_forms rows with the same name but different slugs give two source cards, e.g.
+// "Mega IT Placement Drive 2026" and a raw "form_megaitplacementdrive2026".
+$leadCountBySource = [];
+foreach ($db->query("SELECT source, COUNT(*) AS c FROM leads WHERE source LIKE 'form\\_%' GROUP BY source")->fetchAll(PDO::FETCH_ASSOC) ?: [] as $r) {
+    $leadCountBySource[(string) $r['source']] = (int) $r['c'];
+}
+$byName = [];
+foreach ($db->query('SELECT * FROM lead_forms')->fetchAll(PDO::FETCH_ASSOC) ?: [] as $fm) {
+    $byName[$norm((string) $fm['name']) . '|' . (string) $fm['org_id']][] = $fm;
+}
+$dupGroups = 0;
+foreach ($byName as $group) {
+    if (count($group) < 2) {
+        continue;
+    }
+    $dupGroups++;
+    echo '  "' . $group[0]['name'] . "\":\n";
+    foreach ($group as $fm) {
+        $src = 'form_' . $fm['slug'];
+        echo "    slug={$fm['slug']}  active=" . ((int) ($fm['is_active'] ?? 0)) . "  created=" . ($fm['created_at'] ?? '?') . "  leads=" . ($leadCountBySource[$src] ?? 0) . "\n";
+    }
+}
+echo '  ' . $dupGroups . " duplicate group(s)" . ($dupGroups ? ' — merge with --merge-form-source=<from_slug>:<to_slug>' : '') . "\n";
+foreach ($argv ?? [] as $arg) {
+    if (preg_match('/^--merge-form-source=([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$/', (string) $arg, $m)) {
+        $chk = $db->prepare('SELECT COUNT(*) FROM lead_forms WHERE slug = ?');
+        $chk->execute([$m[2]]);
+        if ((int) $chk->fetchColumn() < 1) {
+            echo "  !! target form slug {$m[2]} not found; nothing changed\n";
+            continue;
+        }
+        $up = $db->prepare('UPDATE leads SET source = ? WHERE source = ?');
+        $up->execute(['form_' . $m[2], 'form_' . $m[1]]);
+        echo "  merged {$up->rowCount()} lead(s): form_{$m[1]} -> form_{$m[2]}\n";
+    }
+}
+
 echo "\n== Invisible characters left in names/descriptions ==\n";
 foreach ([['courses', 'name'], ['courses', 'description'], ['batches', 'name'], ['lead_forms', 'name']] as [$t, $col]) {
     try {

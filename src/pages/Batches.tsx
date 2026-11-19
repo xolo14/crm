@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { cleanName } from '@/lib/formatMetric';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { api } from '@/lib/api';
@@ -572,9 +573,9 @@ export default function Batches() {
  <Card key={batch.id} className="p-4 border-border/50 shadow-none">
  <div className="flex items-start justify-between">
  <div className="flex-1 min-w-0">
- <p className="font-medium text-sm">{batch.name}</p>
+ <p className="font-medium text-sm">{cleanName(batch.name)}</p>
  <p className="text-xs text-muted-foreground mt-0.5">
- {batch.course_name || batch.course || '—'}
+ {cleanName(batch.course_name || batch.course) || '—'}
  </p>
  <div className="flex items-center gap-2 mt-2 flex-wrap">
  <Badge variant="outline" className={statusColor(status) + ' text-xs'}>
@@ -638,8 +639,8 @@ export default function Batches() {
  return (
  <TableRow key={batch.id}>
  <TableCell className="text-muted-foreground text-sm">{index + 1}</TableCell>
- <TableCell className="font-medium">{batch.name}</TableCell>
- <TableCell className="text-sm">{batch.course_name || batch.course || '—'}</TableCell>
+ <TableCell className="font-medium">{cleanName(batch.name)}</TableCell>
+ <TableCell className="text-sm">{cleanName(batch.course_name || batch.course) || '—'}</TableCell>
  <TableCell className="text-sm whitespace-nowrap">
  {formatBatchDate(batch.start_date) || '—'}
  {formatBatchDate(batch.end_date) ? ' → ' + formatBatchDate(batch.end_date) : ''}
