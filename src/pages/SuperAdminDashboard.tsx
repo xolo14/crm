@@ -376,7 +376,7 @@ export default function SuperAdminDashboard() {
 
 
       {/* KPI row */}
-      <section className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(160px,1fr))]">
+      <section className="grid gap-3 grid-cols-2 md:grid-cols-5 [&>*:last-child:nth-child(odd)]:col-span-2 md:[&>*:last-child]:col-span-1">
         <KpiTile label="Leads" value={fmtCount(m?.leads_total)} sub={m ? `${fmtCount(m.new)} new` : undefined} icon={TrendingUp} to="/leads" loading={loading} />
         <KpiTile
           label="Enrolled"
@@ -461,7 +461,7 @@ export default function SuperAdminDashboard() {
               <BarChart data={weekly} margin={{ top: 16, right: 8 }}>
                 <CartesianGrid {...chartGrid} />
                 <XAxis dataKey="week" {...chartAxis} />
-                <YAxis {...chartAxis} width={44} />
+                <YAxis {...chartAxis} width={56} tickFormatter={(v: number) => fmtCount(v)} />
                 <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "New leads"]} />
                 <Bar dataKey="value" fill={series[0]} radius={[4, 4, 0, 0]} />
               </BarChart>
@@ -503,7 +503,7 @@ export default function SuperAdminDashboard() {
               >
                 <CartesianGrid {...chartGrid} />
                 <XAxis dataKey="bucket" {...chartAxis} />
-                <YAxis {...chartAxis} width={44} />
+                <YAxis {...chartAxis} width={56} tickFormatter={(v: number) => fmtCount(v)} />
                 <Tooltip {...chartTooltip} formatter={(v: number) => [fmtCount(v), "Leads"]} />
                 <Bar dataKey="value" fill={series[2]} radius={[4, 4, 0, 0]}>
                   <LabelList

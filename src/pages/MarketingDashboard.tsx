@@ -314,10 +314,7 @@ export default function MarketingDashboard() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Mail className="h-5 w-5 md:h-6 md:w-6 text-primary" />
-            Marketing Dashboard
-          </h1>
+          <h1 className="text-2xl font-bold tracking-tight">Marketing Dashboard</h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-0.5">
             Email & WhatsApp campaigns and send analytics
           </p>

@@ -34,6 +34,8 @@ interface AuthContextType {
   profile: { full_name: string; email: string; phone: string | null; avatar_url: string | null; referral_code: string | null } | null;
   organization: Organization | null;
   loading: boolean;
+  /** True once the server confirmed the session this load (cached user/org may be stale before). */
+  sessionVerified: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signInWithGoogle: (credential: string, portal?: 'super_admin') => Promise<void>;
   signUp: (email: string, password: string, fullName: string, role?: string, inviteCode?: string) => Promise<void>;
@@ -49,6 +51,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [organization, setOrganization] = useState<Organization | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sessionVerified, setSessionVerified] = useState(false);
 
   const refreshOrganization = useCallback(async () => {
     const hasSession = api.auth.hasSession?.() ?? !!api.auth.getStoredUser();
@@ -71,7 +74,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const storedOrg = api.auth.getStoredOrg();
 
       if (!hasSession) {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setSessionVerified(true);
+        }
         return;
       }
 
@@ -94,7 +100,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setOrganization(null);
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setSessionVerified(true);
+        }
       }
     }
 
@@ -174,6 +183,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile,
       organization,
       loading,
+      sessionVerified,
       signIn,
       signInWithGoogle,
       signUp,
@@ -188,6 +198,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profile,
       organization,
       loading,
+      sessionVerified,
       signIn,
       signInWithGoogle,
       signUp,

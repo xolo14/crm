@@ -523,13 +523,13 @@ export default function SuperAdminPanel() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Organization</TableHead>
-                  <TableHead>Plan</TableHead>
+                  <TableHead className="hidden xl:table-cell">Plan</TableHead>
                   <TableHead className="text-center">Users</TableHead>
                   <TableHead className="text-center">Leads</TableHead>
                   <TableHead className="text-center whitespace-nowrap">Enrolled</TableHead>
-                  <TableHead className="text-center">Students</TableHead>
+                  <TableHead className="hidden text-center xl:table-cell">Students</TableHead>
                   <TableHead className="text-center">Revenue</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead className="hidden xl:table-cell">Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -539,18 +539,29 @@ export default function SuperAdminPanel() {
                 ) : filteredOrgs.map(o => (
                     <TableRow key={o.id}>
                       <TableCell>
-                        <div><p className="font-medium">{o.name}</p><p className="text-xs text-muted-foreground font-mono">{o.slug}</p></div>
+                        <div className="min-w-0">
+                          <p className="font-medium">
+                            {o.name}
+                            {!o.is_active ? (
+                              <Badge variant="secondary" className="ml-2 text-[10px] xl:hidden">Disabled</Badge>
+                            ) : null}
+                          </p>
+                          <p className="text-xs text-muted-foreground font-mono">
+                            {o.slug}
+                            <span className="capitalize xl:hidden"> · {o.plan}</span>
+                          </p>
+                        </div>
                       </TableCell>
-                      <TableCell><Badge variant="outline" className="capitalize text-xs">{o.plan}</Badge></TableCell>
+                      <TableCell className="hidden xl:table-cell"><Badge variant="outline" className="capitalize text-xs">{o.plan}</Badge></TableCell>
                       <TableCell className="text-center font-medium">{fmtCount(Number(o.user_count) || 0)}</TableCell>
                       <TableCell className="text-center whitespace-nowrap tabular-nums">{fmtCount(Number(o.leads_count) || 0)}</TableCell>
                       <TableCell className="text-center whitespace-nowrap tabular-nums">
                         {fmtCount(Number(o.converted_count) || 0)}
                         <span className="ml-1 text-xs text-muted-foreground">({pct(Number(o.converted_count) || 0, Number(o.leads_count) || 0)})</span>
                       </TableCell>
-                      <TableCell className="text-center">{fmtCount(Number(o.students_count) || 0)}</TableCell>
-                      <TableCell className="text-center font-semibold">{fmt(parseFloat(o.revenue) || 0)}</TableCell>
-                      <TableCell><Badge variant={o.is_active ? 'default' : 'secondary'} className="text-xs">{o.is_active ? 'Active' : 'Disabled'}</Badge></TableCell>
+                      <TableCell className="hidden text-center xl:table-cell">{fmtCount(Number(o.students_count) || 0)}</TableCell>
+                      <TableCell className="text-center font-semibold whitespace-nowrap tabular-nums">{fmt(parseFloat(o.revenue) || 0)}</TableCell>
+                      <TableCell className="hidden xl:table-cell"><Badge variant={o.is_active ? 'default' : 'secondary'} className="text-xs">{o.is_active ? 'Active' : 'Disabled'}</Badge></TableCell>
                       <TableCell className="text-right">
                         {renderOrgActions(o, 'desktop')}
                       </TableCell>

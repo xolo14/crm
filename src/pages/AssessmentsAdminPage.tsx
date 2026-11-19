@@ -898,10 +898,7 @@ export default function AssessmentsAdminPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <ClipboardCheck className="h-6 w-6 text-emerald-700" />
-          Assignments
-        </h1>
+        <h1 className="text-2xl font-bold tracking-tight">Assignments</h1>
         <p className="text-sm text-muted-foreground mt-1">
           {isSuperAdmin
             ? "Assignments tab: create and open link/API keys. Peaklyy and Syncpedia Basics tabs: candidate lists for people who took those assignments."
@@ -1217,7 +1214,7 @@ export default function AssessmentsAdminPage() {
                 {activeList.map((a) => (
                   <div
                     key={a.id}
-                    className="w-full text-left rounded-lg border p-3 transition-colors hover:bg-muted/40 hover:border-emerald-600/50"
+                    className="flex w-full items-start gap-2 text-left rounded-lg border p-3 transition-colors hover:bg-muted/40 hover:border-emerald-600/50"
                   >
                     <button
                       type="button"
@@ -1230,7 +1227,7 @@ export default function AssessmentsAdminPage() {
                           password: "",
                         });
                       }}
-                      className="w-full text-left"
+                      className="min-w-0 flex-1 text-left"
                     >
                       <div className="flex items-center justify-between gap-2">
                         <p className="font-medium text-sm truncate">{a.title}</p>
@@ -1250,21 +1247,20 @@ export default function AssessmentsAdminPage() {
                       </p>
                     </button>
                     {isSuperAdmin && !isSystemAssignment(a) ? (
-                      <div className="flex justify-end mt-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="h-7 text-xs gap-1 text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setConfirmDeleteAssessment(a);
-                          }}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          Delete
-                        </Button>
-                      </div>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8 shrink-0 text-red-600 hover:bg-red-50 hover:text-red-700"
+                        aria-label={`Delete ${a.title}`}
+                        title="Delete assignment"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteAssessment(a);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     ) : null}
                   </div>
                 ))}

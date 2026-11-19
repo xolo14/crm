@@ -131,6 +131,8 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
   const [search, setSearch] = useState('');
   /** Registered = paid the registration fee but no course and no batch yet; Enrolled = has either. */
   const [stage, setStage] = useState<'all' | 'registered' | 'enrolled'>('all');
+  const [showAllCols, setShowAllCols] = useState(false);
+  const extraCol = showAllCols ? '' : 'hidden';
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<any>(null);
@@ -400,6 +402,16 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
         {stage === 'registered' ? (
           <span className="self-center text-xs text-muted-foreground">Paid the registration fee; no course or batch assigned yet.</span>
         ) : null}
+        {!isMobile ? (
+          <button
+            type="button"
+            onClick={() => setShowAllCols((v) => !v)}
+            aria-pressed={showAllCols}
+            className="ml-auto rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+          >
+            {showAllCols ? 'Fewer columns' : 'More columns'}
+          </button>
+        ) : null}
       </div>
 
       <div className="mb-4 max-w-sm relative">
@@ -479,15 +491,15 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                 <TableHead className="w-12">#</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Contact</TableHead>
-                <TableHead>Organization</TableHead>
-                <TableHead>Lead source</TableHead>
-                <TableHead>Enrolled by</TableHead>
+                <TableHead className={extraCol}>Organization</TableHead>
+                <TableHead className={extraCol}>Lead source</TableHead>
+                <TableHead className={extraCol}>Enrolled by</TableHead>
                 <TableHead>Course</TableHead>
                 <TableHead>Batch</TableHead>
-                <TableHead>College</TableHead>
+                <TableHead className={extraCol}>College</TableHead>
                 <TableHead>Payment</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Enrolled</TableHead>
+                <TableHead className={`${extraCol} whitespace-nowrap`}>Enrolled</TableHead>
                 <TableHead className="w-24">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -503,15 +515,15 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                     <div className="text-sm">{student.email}</div>
                     <div className="text-xs text-muted-foreground">{student.phone}</div>
                   </TableCell>
-                  <TableCell className="text-sm max-w-[140px]">
+                  <TableCell className={`text-sm max-w-[140px] ${extraCol}`}>
                     <div className="truncate" title={(student.organization_name || organization?.name) || ''}>
                       {student.organization_name || organization?.name || '—'}
                     </div>
                   </TableCell>
-                  <TableCell className="text-sm max-w-[120px]">
+                  <TableCell className={`text-sm max-w-[120px] ${extraCol}`}>
                     <div className="truncate" title={formatLeadSource(student.lead_source)}>{formatLeadSource(student.lead_source)}</div>
                   </TableCell>
-                  <TableCell className="text-sm max-w-[140px]">
+                  <TableCell className={`text-sm max-w-[140px] ${extraCol}`}>
                     <div className="truncate" title={String(student.enrolled_by_name || '')}>
                       {student.enrolled_by_name || '—'}
                     </div>
@@ -526,12 +538,12 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                       {student.batch_name || student.batch || '—'}
                     </div>
                   </TableCell>
-                  <TableCell className="text-sm">{student.college || student.lead_college || '—'}</TableCell>
+                  <TableCell className={`text-sm ${extraCol}`}>{student.college || student.lead_college || '—'}</TableCell>
                   <TableCell>
                     <StudentPaymentProgress summary={student.payment_summary} />
                   </TableCell>
                   <TableCell><Badge variant="outline" className={stageBadgeClass(student) + ' text-xs'}>{stageLabel(student)}</Badge></TableCell>
-                  <TableCell className="text-sm text-muted-foreground">{student.enrollment_date ? fmtDate(student.enrollment_date) : '—'}</TableCell>
+                  <TableCell className={`text-sm text-muted-foreground whitespace-nowrap ${extraCol}`}>{student.enrollment_date ? fmtDate(student.enrollment_date) : '—'}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-0.5">
                       {student.source_lead_id && (

@@ -3406,6 +3406,9 @@ export default function FormsManagerPage() {
               rows.map((form) => {
                 const isOn = toBool(form.is_active);
                 const directLink = buildApplyLink(form.slug, form);
+                const assignedM = assignmentsByForm[form.id] || [];
+                const selectedM = assignedM.map((a) => a.member_id);
+                const assignableM = getAssignableMembersForForm(form);
                 return (
                   <li key={form.id} className="px-4 py-3" onClick={() => openFormDetail(form)}>
                     <div className="flex items-start justify-between gap-3">
@@ -3429,6 +3432,43 @@ export default function FormsManagerPage() {
                         <Button variant="outline" size="icon" className="h-8 w-8" aria-label="Copy form QR code" title="Copy form QR code" onClick={() => void copyFormQr(directLink, form.name)}>
                           <QrCode className="h-3.5 w-3.5" />
                         </Button>
+                        {canAssignForms && canAssignOnForm(form) ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2" aria-label={`Assign ${form.name}`}>
+                                <Users className="h-3.5 w-3.5" />
+                                {selectedM.length > 0 ? selectedM.length : "Assign"}
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-72 max-h-80 overflow-y-auto">
+                              <DropdownMenuLabel>{isManager ? "Select downline members" : "Select team members"}</DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              {assignableM.length === 0 ? (
+                                <p className="px-2 py-1 text-xs text-muted-foreground">No assignable members found.</p>
+                              ) : (
+                                assignableM.map((member) => {
+                                  const checked = selectedM.includes(member.id);
+                                  return (
+                                    <DropdownMenuItem
+                                      key={member.id}
+                                      className="pl-2"
+                                      onSelect={(e) => {
+                                        e.preventDefault();
+                                        const ids = checked ? selectedM.filter((id) => id !== member.id) : [...selectedM, member.id];
+                                        void updateAssignmentsForForm(form, Array.from(new Set(ids)));
+                                      }}
+                                    >
+                                      <span className="mr-2 inline-flex h-4 w-4 items-center justify-center rounded border border-border text-[10px]">
+                                        {checked ? "✓" : ""}
+                                      </span>
+                                      <span className="truncate">{member.full_name || member.email || "Member"}</span>
+                                    </DropdownMenuItem>
+                                  );
+                                })
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : null}
                       </span>
                     </div>
                   </li>

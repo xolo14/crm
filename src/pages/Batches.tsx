@@ -640,7 +640,7 @@ export default function Batches() {
  <TableCell className="text-muted-foreground text-sm">{index + 1}</TableCell>
  <TableCell className="font-medium">{batch.name}</TableCell>
  <TableCell className="text-sm">{batch.course_name || batch.course || '—'}</TableCell>
- <TableCell className="text-sm">
+ <TableCell className="text-sm whitespace-nowrap">
  {formatBatchDate(batch.start_date) || '—'}
  {formatBatchDate(batch.end_date) ? ' → ' + formatBatchDate(batch.end_date) : ''}
  </TableCell>

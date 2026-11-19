@@ -200,7 +200,7 @@ export default function HRLeadsPage() {
         </div>
       </div>
 
-      <div className="mb-5 grid gap-2 sm:gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
+      <div className="mb-5 grid gap-2 sm:gap-3 grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 [&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child]:col-span-1">
         {[
           { label: "Total leads", value: stats.total || 0, icon: Users, sub: "Added by HR" },
           { label: "New", value: stats.by_status?.new || 0, icon: Clock, sub: "Untouched" },

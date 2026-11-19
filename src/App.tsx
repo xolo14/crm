@@ -258,22 +258,26 @@ function OmAccessBlocked() {
 }
 
 function OrgFeatureRoute({ children }: { children: ReactNode }) {
-  const { user, organization } = useAuth();
+  const { user, organization, sessionVerified } = useAuth();
   const location = useLocation();
+  // The shell paints from the cached user/org before auth.me() answers. A redirect decided on
+  // that cache bounced valid deep links (e.g. /referral-analytics) to the dashboard, so any
+  // "not allowed" outcome waits for the verified session; allowed pages render immediately.
+  const deny = (el: JSX.Element) => (sessionVerified ? el : <AuthLoading />);
   const role = normalizePlatformRole(user);
   const nRole = normalizeAppRole(user?.role);
   const pathname = location.pathname;
   // OM home is ops analytics — not gated by the Leads org module.
   const omHome = nRole === "operational_manager" && (pathname === "/" || pathname === "");
   if (!omHome && !isPathAllowedByOrgFeatures(role, organization, pathname)) {
-    return <Navigate to="/" replace />;
+    return deny(<Navigate to="/" replace />);
   }
   if (nRole === "operational_manager") {
     const key = managerFeatureKeyForPath(pathname);
     if (key && !operationalManagerHasPageAccess(user?.page_access, key)) {
       const fallback = firstAllowedOperationalManagerPath(user?.page_access);
-      if (!fallback || fallback === pathname) return <OmAccessBlocked />;
-      return <Navigate to={fallback} replace />;
+      if (!fallback || fallback === pathname) return deny(<OmAccessBlocked />);
+      return deny(<Navigate to={fallback} replace />);
     }
   } else if (nRole === "manager") {
     const key = managerFeatureKeyForPath(location.pathname);
@@ -286,7 +290,7 @@ function OrgFeatureRoute({ children }: { children: ReactNode }) {
           </div>
         );
       }
-      return <Navigate to="/" replace />;
+      return deny(<Navigate to="/" replace />);
     }
   }
   return <>{children}</>;

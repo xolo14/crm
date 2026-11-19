@@ -192,7 +192,7 @@ export default function ReferralAnalytics() {
   const totalLeads = filteredLeads.length;
   const converted = filteredLeads.filter(l => l.status === 'converted' || l.status === 'enrolled').length;
   // Same definition as Leads: every non-terminal status except New.
-  const inPipeline = filteredLeads.filter(l => !['new', 'enrolled', 'converted', 'lost', 'not_interested'].includes(String(l.status || 'new'))).length;
+  const inPipeline = filteredLeads.filter(l => !['new', 'registered', 'enrolled', 'converted', 'lost', 'not_interested'].includes(String(l.status || 'new'))).length;
   const totalCalls = filteredReports.reduce((s, r) => s + (Number(r.total_calls) || 0), 0);
   const totalFollowups = filteredReports.reduce((s, r) => s + (Number(r.total_followups) || 0), 0);
   // One decimal place: a flat 0%/1% hid real values like 0.48% at low lead volumes.

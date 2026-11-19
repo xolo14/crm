@@ -14,6 +14,10 @@
  *   php /var/www/crm/api/data_hygiene.php --fix-typos
  *       Awarness -> Awareness, Reliveling -> Relieving in name/title/label/subject
  *       columns only (never slugs, codes, source keys or URLs).
+ *
+ *   php /var/www/crm/api/data_hygiene.php --fix-form-sources
+ *       Re-points leads whose form_<slug> source matches no form to the form whose slug
+ *       matches once punctuation is ignored (merges duplicate form cards).
  */
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -92,6 +96,61 @@ foreach ($cols->fetchAll(PDO::FETCH_ASSOC) ?: [] as $c) {
             $u->execute([$bad, $good, '%' . $bad . '%']);
             echo "    fixed {$u->rowCount()} row(s) -> \"{$good}\"\n";
         }
+    }
+}
+
+echo "\n== Lead sources that look like a form but match no form slug ==\n";
+// e.g. 'form_megaitplacementdrive2026' while the form's slug is 'mega-it-placement-drive-2026':
+// such leads show as a second raw card next to the real form. --fix-form-sources re-points
+// them to the form whose slug matches once punctuation is ignored.
+$norm = static fn(string $v): string => preg_replace('/[^a-z0-9]/', '', strtolower($v));
+$forms = $db->query('SELECT slug, name, org_id FROM lead_forms WHERE slug IS NOT NULL AND slug <> ""')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+$slugSet = [];
+$byNorm = [];
+foreach ($forms as $fm) {
+    $slugSet[(string) $fm['slug']] = true;
+    $byNorm[$norm((string) $fm['slug'])][] = $fm;
+}
+$srcRows = $db->query("SELECT source, org_id, COUNT(*) AS c FROM leads WHERE source LIKE 'form\\_%' GROUP BY source, org_id")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+$fixFormSources = in_array('--fix-form-sources', $argv ?? [], true);
+$found = 0;
+foreach ($srcRows as $r) {
+    $slug = substr((string) $r['source'], 5);
+    if ($slug === '' || isset($slugSet[$slug])) {
+        continue;
+    }
+    $cands = $byNorm[$norm($slug)] ?? [];
+    // Prefer the form in the same organization as the leads.
+    $match = null;
+    foreach ($cands as $c) {
+        if ((string) $c['org_id'] === (string) $r['org_id']) {
+            $match = $c;
+            break;
+        }
+    }
+    if ($match === null && count($cands) === 1) {
+        $match = $cands[0];
+    }
+    $found++;
+    echo "  {$r['source']}  ({$r['c']} lead(s), org " . ($r['org_id'] ?? 'none') . ')  -> '
+        . ($match ? "form_{$match['slug']} ({$match['name']})" : 'no matching form') . "\n";
+    if ($fixFormSources && $match) {
+        $up = $db->prepare('UPDATE leads SET source = ? WHERE source = ? AND org_id <=> ?');
+        $up->execute(['form_' . $match['slug'], $r['source'], $r['org_id']]);
+        echo "    re-pointed {$up->rowCount()} lead(s)\n";
+    }
+}
+echo '  ' . $found . " unmatched form source(s)" . ($found && !$fixFormSources ? ' — pass --fix-form-sources to re-point the matched ones' : '') . "\n";
+
+echo "\n== Invisible characters left in names/descriptions ==\n";
+foreach ([['courses', 'name'], ['courses', 'description'], ['batches', 'name'], ['lead_forms', 'name']] as [$t, $col]) {
+    try {
+        // UTF-8 bytes of U+200B–U+200F (E2 80 8B–8F), U+2060 (E2 81 A0), U+FEFF (EF BB BF).
+        $q = $db->query("SELECT COUNT(*) FROM `{$t}` WHERE HEX(`{$col}`) REGEXP 'E2808[B-F]|E281A0|EFBBBF'");
+        $n = (int) $q->fetchColumn();
+        echo "  {$t}.{$col}: {$n} row(s)" . ($n > 0 ? ' — run migrate_clean_names.php --apply' : '') . "\n";
+    } catch (Throwable $e) {
+        echo "  {$t}.{$col}: could not check ({$e->getMessage()})\n";
     }
 }
 

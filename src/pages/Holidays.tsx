@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { KpiTile, PageHeader } from "@/components/PageHeader";
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -210,23 +211,18 @@ export default function Holidays() {
   const goToToday = () => setCurrentMonth(new Date());
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <CalendarDays className="h-6 w-6 text-primary" />
-            {canManageHolidays ? 'Manage Holidays' : isManager ? 'Holidays' : 'Company Holidays'}
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            {canManageHolidays
-              ? 'National holidays are office holidays. Regional festivals are special days — declare a holiday only when you choose.'
-              : isManager
-                ? 'View holidays and special days. Submit extra dates for admin approval.'
-                : 'Office holidays and regional special days'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
+    <div className="min-w-0 max-w-full space-y-6 overflow-x-hidden">
+      <PageHeader
+        title={canManageHolidays ? 'Manage Holidays' : isManager ? 'Holidays' : 'Company Holidays'}
+        description={
+          canManageHolidays
+            ? 'National holidays are office holidays. Regional festivals are special days — declare a holiday only when you choose.'
+            : isManager
+              ? 'View holidays and special days. Submit extra dates for admin approval.'
+              : 'Office holidays and regional special days'
+        }
+        actions={
+        <>
           <Badge variant="secondary" className="gap-1.5 py-1.5 px-3">
             <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
             {approvedCount} Holidays
@@ -235,51 +231,32 @@ export default function Holidays() {
             <PartyPopper className="h-3.5 w-3.5 text-purple-600" />
             {yearHolidays.filter(isSpecialDay).length} Special days
           </Badge>
-        </div>
-      </div>
+        </>
+        }
+      />
 
       {/* Quick Stats */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Card className="bg-gradient-to-br from-green-50 to-green-100/50 dark:from-green-950/30 dark:to-green-900/10 border-green-200/50 dark:border-green-800/30">
-          <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-green-700 dark:text-green-400">{monthHolidays.filter(isDeclaredHoliday).length}</p>
-            <p className="text-xs text-green-600/80 dark:text-green-500/80 font-medium mt-1">Holidays this month</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-gradient-to-br from-blue-50 to-blue-100/50 dark:from-blue-950/30 dark:to-blue-900/10 border-blue-200/50 dark:border-blue-800/30">
-          <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-blue-700 dark:text-blue-400">{approvedCount}</p>
-            <p className="text-xs text-blue-600/80 dark:text-blue-500/80 font-medium mt-1">Holidays this year</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-gradient-to-br from-purple-50 to-purple-100/50 dark:from-purple-950/30 dark:to-purple-900/10 border-purple-200/50 dark:border-purple-800/30">
-          <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-purple-700 dark:text-purple-400">{yearHolidays.filter(isSpecialDay).length}</p>
-            <p className="text-xs text-purple-600/80 dark:text-purple-500/80 font-medium mt-1">Special days</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-gradient-to-br from-orange-50 to-orange-100/50 dark:from-orange-950/30 dark:to-orange-900/10 border-orange-200/50 dark:border-orange-800/30">
-          <CardContent className="p-4 text-center">
-            <p className="text-2xl font-bold text-orange-700 dark:text-orange-400">{yearHolidays.filter(h => h.type === 'public' || h.type === 'national').length}</p>
-            <p className="text-xs text-orange-600/80 dark:text-orange-500/80 font-medium mt-1">National</p>
-          </CardContent>
-        </Card>
+        <KpiTile label="Holidays this month" value={monthHolidays.filter(isDeclaredHoliday).length} />
+        <KpiTile label="Holidays this year" value={approvedCount} />
+        <KpiTile label="Special days" value={yearHolidays.filter(isSpecialDay).length} />
+        <KpiTile label="National" value={yearHolidays.filter(h => h.type === 'public' || h.type === 'national').length} />
       </div>
 
       {/* Calendar */}
       <Card className="overflow-hidden">
         <CardHeader className="pb-3 bg-gradient-to-r from-primary/5 to-primary/10 border-b">
-          <div className="flex items-center justify-between">
-            <Button variant="ghost" size="icon" onClick={() => setCurrentMonth(subMonths(currentMonth, 1))} className="h-9 w-9">
+          <div className="flex min-w-0 items-center justify-between gap-1">
+            <Button variant="ghost" size="icon" onClick={() => setCurrentMonth(subMonths(currentMonth, 1))} className="h-9 w-9 shrink-0" aria-label="Previous month">
               <ChevronLeft className="h-5 w-5" />
             </Button>
-            <div className="flex items-center gap-3">
-              <CardTitle className="text-lg font-semibold">{format(currentMonth, 'MMMM yyyy')}</CardTitle>
+            <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+              <CardTitle className="whitespace-nowrap text-base font-semibold sm:text-lg">{format(currentMonth, 'MMMM yyyy')}</CardTitle>
               <Button variant="outline" size="sm" onClick={goToToday} className="text-xs h-7 px-2">
                 Today
               </Button>
             </div>
-            <Button variant="ghost" size="icon" onClick={() => setCurrentMonth(addMonths(currentMonth, 1))} className="h-9 w-9">
+            <Button variant="ghost" size="icon" onClick={() => setCurrentMonth(addMonths(currentMonth, 1))} className="h-9 w-9 shrink-0" aria-label="Next month">
               <ChevronRight className="h-5 w-5" />
             </Button>
           </div>

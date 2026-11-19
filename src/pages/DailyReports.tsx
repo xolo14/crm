@@ -295,14 +295,14 @@ export default function DailyReports() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  {isManager && <TableHead>Submitted by</TableHead>}
-                  <TableHead>Date</TableHead>
-                  <TableHead className="text-center">Calls</TableHead>
-                  <TableHead className="text-center">Follow-ups</TableHead>
-                  <TableHead className="text-center">Demos</TableHead>
-                  <TableHead className="text-center">New Contacted</TableHead>
-                  <TableHead className="text-center">Enroll</TableHead>
-                  <TableHead className="text-center">Lost</TableHead>
+                  {isManager && <TableHead className="whitespace-nowrap">Rep</TableHead>}
+                  <TableHead className="whitespace-nowrap">Date</TableHead>
+                  <TableHead className="text-center whitespace-nowrap">Calls</TableHead>
+                  <TableHead className="text-center whitespace-nowrap" title="Follow-ups">Follow</TableHead>
+                  <TableHead className="text-center whitespace-nowrap">Demos</TableHead>
+                  <TableHead className="text-center whitespace-nowrap" title="New leads contacted">Contacted</TableHead>
+                  <TableHead className="text-center whitespace-nowrap">Enrolled</TableHead>
+                  <TableHead className="text-center whitespace-nowrap">Lost</TableHead>
                   <TableHead>Summary</TableHead>
                   <TableHead className="w-10"></TableHead>
                 </TableRow>

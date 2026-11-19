@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { dedupeNotifications } from '@/lib/dedupeNotifications';
 import { api } from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
@@ -130,20 +131,10 @@ export default function Notifications() {
 
   // Collapse duplicates (same title + message + link on the same day) and drop the stale
   // "(2 days ago)" suffix older alerts stored in their text; age is shown from created_at.
-  const deduped = (() => {
-    const seen = new Set<string>();
-    const out: typeof notifications = [];
-    for (const n of notifications) {
-      const day = String(n.created_at || '').slice(0, 10);
-      // Same entity (link) + type + day = one alert, even when the wording differs slightly.
-      const link = (n as { link?: string }).link ?? '';
-      const key = link ? `${n.type}|${link}|${day}` : `${n.type}|${n.title}|${n.message ?? ''}|${day}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ ...n, message: n.message ? n.message.replace(/\s*\(\d+ days? ago\)\.?$/, '.') : n.message });
-    }
-    return out;
-  })();
+  const deduped = dedupeNotifications(notifications).map((n) => ({
+    ...n,
+    message: n.message ? n.message.replace(/\s*\(\d+ days? ago\)\.?$/, '.') : n.message,
+  }));
 
   const filtered = deduped.filter(n => {
     if (typeFilter !== 'all' && n.type !== typeFilter) return false;

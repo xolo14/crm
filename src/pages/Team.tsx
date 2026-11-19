@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { isReportableUser } from '@/lib/reportableUsers';
+import { isReportableUser, isTestAccount } from '@/lib/reportableUsers';
 import { useOrgScope } from '@/hooks/useOrgScope';
 import { useAuth } from '@/hooks/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -599,13 +599,14 @@ export default function Team() {
     }
   };
 
-  // Same "active" definition as Dashboard and Organizations (src/lib/reportableUsers.ts).
-  // "active" matches the badges in the list below; "in reports" is the Dashboard /
-  // Organizations definition (active, excluding super admins and test accounts).
+  // Counted from exactly the rows the tables below show (members of a listed role group),
+  // so the header always matches the table. "Counted in reports" is the Dashboard /
+  // Organizations definition (active, excluding test accounts).
+  const listedMembers = visibleTeam.filter((m) => TEAM_ROLE_GROUPS.some((r) => r.key === normalizeRole(m.role)));
   const stats = {
-    total: visibleTeam.length,
-    active: visibleTeam.filter((m) => m.is_active).length,
-    reportable: visibleTeam.filter((m) => isReportableUser(m)).length,
+    total: listedMembers.length,
+    active: listedMembers.filter((m) => m.is_active).length,
+    reportable: listedMembers.filter((m) => isReportableUser(m)).length,
   };
 
   const activeManagers = team.filter((m) => m.is_active && normalizeRole(m.role) === 'manager');
@@ -785,7 +786,7 @@ export default function Team() {
                               </div>
                             )}
                             <div className="flex items-center gap-2 flex-wrap">
-                              <Badge variant={member.is_active ? 'default' : 'secondary'} className={member.is_active ? 'bg-emerald-500/10 text-emerald-600 border-emerald-200' : ''}>{member.is_active ? 'active' : 'inactive'}</Badge>
+                              <Badge variant={member.is_active ? 'default' : 'secondary'} className={member.is_active ? 'bg-emerald-500/10 text-emerald-600 border-emerald-200' : ''}>{member.is_active ? 'active' : 'inactive'}</Badge>{isTestAccount(member) ? <Badge variant="outline" className="ml-1 text-[10px] text-muted-foreground" title="Test account: not counted in reports">test</Badge> : null}
                               {member.phone && <span className="text-xs text-muted-foreground">{member.phone}</span>}
                             </div>
                           </div>
@@ -848,7 +849,7 @@ export default function Team() {
                                   )}
                               </TableCell>
                               <TableCell className="px-3 py-2.5 align-middle">
-                                <Badge variant={member.is_active ? 'default' : 'secondary'} className={member.is_active ? 'bg-emerald-500/10 text-emerald-600 border-emerald-200 hover:bg-emerald-500/20' : ''}>{member.is_active ? 'active' : 'inactive'}</Badge>
+                                <Badge variant={member.is_active ? 'default' : 'secondary'} className={member.is_active ? 'bg-emerald-500/10 text-emerald-600 border-emerald-200 hover:bg-emerald-500/20' : ''}>{member.is_active ? 'active' : 'inactive'}</Badge>{isTestAccount(member) ? <Badge variant="outline" className="ml-1 text-[10px] text-muted-foreground" title="Test account: not counted in reports">test</Badge> : null}
                               </TableCell>
                               <TableCell className="px-3 py-2.5 text-sm text-muted-foreground align-middle whitespace-nowrap">
                                 {new Date(member.created_at).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}

@@ -2246,7 +2246,7 @@ export default function OfferLetters() {
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {templates.map(t => (
-                <Card key={t.id} className="group hover:shadow-md transition-shadow">
+                <Card key={t.id} className="group flex h-full flex-col hover:shadow-md transition-shadow">
                   <CardHeader className="pb-3">
                     <div className="flex items-start justify-between">
                       <div>
@@ -2256,7 +2256,7 @@ export default function OfferLetters() {
                       <Badge variant={t.status === 'active' ? 'default' : 'secondary'} className="text-[10px]">{t.status}</Badge>
                     </div>
                   </CardHeader>
-                  <CardContent>
+                  <CardContent className="mt-auto">
                     <p className="text-xs text-muted-foreground mb-3">Updated {fmtDate(t.updated_at)}</p>
                     <div className="flex flex-wrap gap-1.5">
                       <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openPreview(t)}><Eye className="h-3 w-3" />Preview</Button>

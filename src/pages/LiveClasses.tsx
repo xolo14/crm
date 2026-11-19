@@ -363,8 +363,8 @@ export default function LiveClasses() {
                 <TableRow key={r.lms_id}>
                   <TableCell className="font-medium">{r.title}</TableCell>
                   <TableCell className="text-muted-foreground">{r.lms_course_name || "—"}</TableCell>
-                  <TableCell>{formatSchedule(r.scheduled_at)}</TableCell>
-                  <TableCell>{r.duration_minutes ? `${r.duration_minutes} min` : "—"}</TableCell>
+                  <TableCell className="whitespace-nowrap">{formatSchedule(r.scheduled_at)}</TableCell>
+                  <TableCell className="whitespace-nowrap">{r.duration_minutes ? `${r.duration_minutes} min` : "—"}</TableCell>
                   <TableCell>
                     {r.status ? <Badge variant="secondary">{r.status}</Badge> : "—"}
                   </TableCell>

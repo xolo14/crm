@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { PageHeader } from "@/components/PageHeader";
 import { ChevronDown, Copy, KeyRound, Loader2, Lock, Plus, Sparkles, Tag, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
@@ -604,17 +605,11 @@ export default function CouponsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Tag className="h-5 w-5 text-primary" />
-            Coupons
-          </h1>
-          <p className="text-xs sm:text-sm text-muted-foreground">
-            Create person-specific discount codes. Each code works once before it expires. {visibilityHint}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+      <PageHeader
+        title="Coupons"
+        description={<>Create person-specific discount codes. Each code works once before it expires. {visibilityHint}</>}
+        actions={
+        <>
           {canManageApiKey ? (
             <Button type="button" variant="outline" onClick={() => void openApiKeyDialog()}>
               <KeyRound className="mr-1.5 h-4 w-4" />
@@ -625,8 +620,9 @@ export default function CouponsPage() {
             <Plus className="mr-1.5 h-4 w-4" />
             Add coupon
           </Button>
-        </div>
-      </div>
+        </>
+        }
+      />
 
       <Card>
         <CardContent className="p-0">
@@ -638,20 +634,60 @@ export default function CouponsPage() {
           ) : rows.length === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">No coupons yet.</div>
           ) : (
-            <div className="overflow-x-auto">
+            <>
+            <ul className="divide-y divide-border sm:hidden">
+              {rows.map((row) => (
+                <li key={row.id} className="px-4 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{row.name}</p>
+                      <p className="truncate text-xs text-muted-foreground">{row.email}</p>
+                    </div>
+                    <span className="shrink-0 text-xs">
+                      {couponUsed(row.used_at) ? (
+                        <span className="text-muted-foreground">Used</span>
+                      ) : couponExpired(row.expires_at) ? (
+                        <span className="text-destructive">Expired</span>
+                      ) : (
+                        <span>Unused</span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-2 text-xs">
+                    <span className="whitespace-nowrap tabular-nums">
+                      <span className="font-semibold">{inr(row.discount)}</span> off · min {inr(row.min_amount)}
+                    </span>
+                    <span className="whitespace-nowrap text-muted-foreground">exp {fmtDateOnly(row.expires_at)}</span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void copyText(row.code, "Code")}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 font-mono text-xs"
+                    >
+                      {row.code} <Copy className="h-3 w-3" />
+                    </button>
+                    {canRemove(row) ? (
+                      <Button type="button" variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={() => void onDelete(row)} aria-label="Delete coupon">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <div className="hidden overflow-x-auto sm:block">
             <Table>
               <TableHeader>
                 <TableRow>
                   {showOrgColumn ? <TableHead>Organization</TableHead> : null}
                   <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Phone</TableHead>
+                  <TableHead>Contact</TableHead>
                   <TableHead>Discount</TableHead>
                   <TableHead>Min amount</TableHead>
                   <TableHead>Code</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Expires</TableHead>
-                  <TableHead>Created by</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead className="w-12" />
                 </TableRow>
@@ -662,11 +698,13 @@ export default function CouponsPage() {
                     {showOrgColumn ? (
                       <TableCell className="text-muted-foreground">{row.org_name || "—"}</TableCell>
                     ) : null}
-                    <TableCell className="font-medium">{row.name}</TableCell>
-                    <TableCell>{row.email}</TableCell>
-                    <TableCell>{row.phone || "—"}</TableCell>
-                    <TableCell>{inr(row.discount)}</TableCell>
-                    <TableCell>{inr(row.min_amount)}</TableCell>
+                    <TableCell className="max-w-[10rem] font-medium"><span className="block truncate" title={row.name}>{row.name}</span></TableCell>
+                    <TableCell className="max-w-[14rem]">
+                      <span className="block truncate text-sm" title={row.email}>{row.email}</span>
+                      <span className="block text-xs text-muted-foreground">{row.phone || "—"}</span>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap tabular-nums">{inr(row.discount)}</TableCell>
+                    <TableCell className="whitespace-nowrap tabular-nums">{inr(row.min_amount)}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
                         <span className="font-mono text-xs">{row.code}</span>
@@ -698,8 +736,10 @@ export default function CouponsPage() {
                         fmtDateOnly(row.expires_at)
                       )}
                     </TableCell>
-                    <TableCell>{row.created_by_name || "—"}</TableCell>
-                    <TableCell className="text-muted-foreground text-xs">{fmtWhen(row.created_at)}</TableCell>
+                    <TableCell className="text-xs">
+                      <span className="block whitespace-nowrap">{row.created_by_name || "—"}</span>
+                      <span className="block whitespace-nowrap text-muted-foreground">{fmtWhen(row.created_at)}</span>
+                    </TableCell>
                     <TableCell>
                       {canRemove(row) ? (
                         <Button
@@ -719,6 +759,7 @@ export default function CouponsPage() {
               </TableBody>
             </Table>
             </div>
+            </>
           )}
         </CardContent>
       </Card>

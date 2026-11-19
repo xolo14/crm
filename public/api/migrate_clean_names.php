@@ -20,8 +20,10 @@ $pattern = '/[\x{200B}-\x{200F}\x{2060}\x{FEFF}]/u';
 
 $targets = [
     ['courses', 'name'],
+    ['courses', 'description'],
     ['batches', 'name'],
     ['students', 'name'],
+    ['lead_forms', 'name'],
 ];
 
 $total = 0;

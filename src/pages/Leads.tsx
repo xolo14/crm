@@ -341,7 +341,7 @@ export default function Leads() {
   const scopeLabel = isSuperAdmin
     ? viewOrgId
       ? `Scope: ${viewOrgs.find((o) => o.id === viewOrgId)?.name || 'selected organisation'}`
-      : 'Scope: select an organisation'
+      : 'Scope: all organizations'
     : normalizedLeadRole === 'org' || normalizedLeadRole === 'manager' || isOperationalManagerRole(role)
       ? 'Scope: organization leads'
       : isSalesRepMyLeadsPage
@@ -1664,15 +1664,29 @@ export default function Leads() {
 
   /** Folders shown in sidebar. L2: own folders + folders that hold cards they can see. */
   const visibleLeadFolders = useMemo(() => {
-    if (!isL2LeadRole) return orgLeadFolders;
+    let base = orgLeadFolders;
+    // Super admin on "All organizations": every org has its own virtual Meta Ads folder, and
+    // each would count all orgs' Meta Ads cards. Show one combined Meta Ads folder instead.
+    if (isSuperAdmin && !viewOrgId) {
+      let seenMeta = false;
+      base = base
+        .filter((f) => {
+          if (!isMetaAdsFolderName(f.name)) return true;
+          if (seenMeta) return false;
+          seenMeta = true;
+          return true;
+        })
+        .map((f) => (isMetaAdsFolderName(f.name) ? { ...f, org_name: '' } : f));
+    }
+    if (!isL2LeadRole) return base;
     const visibleKeys = new Set(sourceSummaries.map((s) => s.key));
     const hasMetaCards = sourceSummaries.some((s) => !!(s.isMetaAd || isMetaAdSourceBucket(s.key)));
-    return orgLeadFolders.filter((f) => {
+    return base.filter((f) => {
       if (leadUserId && String(f.created_by || '').trim() === leadUserId) return true;
       if (isMetaAdsFolderName(f.name)) return hasMetaCards;
       return (f.source_keys || []).some((k) => visibleKeys.has(k));
     });
-  }, [orgLeadFolders, isL2LeadRole, leadUserId, sourceSummaries]);
+  }, [orgLeadFolders, isL2LeadRole, leadUserId, sourceSummaries, isSuperAdmin, viewOrgId]);
 
   const metaAdsFolderId = useMemo(
     () => visibleLeadFolders.find((f) => isMetaAdsFolderName(f.name))?.id ?? '',
@@ -1947,7 +1961,7 @@ export default function Leads() {
             {fmtCount(totalLeads)}{' '}
             {isFormLeadsPage || isSalesRepMyLeadsPage ? 'form leads' : 'leads'}
             {' · '}
-            {unassignedCount > 0 && <span className="text-amber-600 font-medium">{unassignedCount} unassigned</span>}
+            {unassignedCount > 0 && <span className="text-amber-600 font-medium">{fmtCount(unassignedCount)} unassigned</span>}
           </p>
           {!isFormLeadsPage && (
             <p className="text-[11px] text-muted-foreground mt-0.5">{scopeLabel}</p>
@@ -2080,7 +2094,7 @@ export default function Leads() {
 
 
       {/* KPI Cards */}
-      <div className="mb-5 grid gap-2 sm:gap-3 [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]">
+      <div className="mb-5 grid gap-2 sm:gap-3 grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 [&>*:last-child:nth-child(odd)]:col-span-2 sm:[&>*:last-child]:col-span-1">
         {[
           { label: 'Total Leads', value: totalLeads, icon: Users, color: 'text-blue-600', bg: 'bg-blue-500/10', sub: 'All sources' },
           { label: 'New', value: newLeads, icon: Clock, color: 'text-sky-600', bg: 'bg-sky-500/10', sub: 'Untouched' },
@@ -2185,7 +2199,7 @@ export default function Leads() {
                     key={folder.id}
                     type="button"
                     onClick={() => {
-                      if (isSuperAdmin && folder.org_id) {
+                      if (isSuperAdmin && folder.org_id && !(isMetaAdsFolderName(folder.name) && !viewOrgId)) {
                         setViewOrgId(folder.org_id);
                       }
                       setActiveFolderId(folder.id);
