@@ -1350,18 +1350,18 @@ function orgFilterLeadsTenant(PDO $db, array $tokenData, string $alias = ''): ar
  */
 function orgFilterStudentsTenantSql(string $orgId): array
 {
+    // The students list joins leads once (alias l); the old second join (l2, by email) is gone,
+    // and referencing it made the list fail with "Unknown column l2.org_id".
     $sql = ' AND (
-        s.org_id = ? OR l.org_id = ? OR l2.org_id = ?
+        s.org_id = ? OR l.org_id = ?
         OR s.mentor_id IN (SELECT id FROM users WHERE org_id = ?)
         OR l.assigned_to IN (SELECT id FROM users WHERE org_id = ?)
-        OR l2.assigned_to IN (SELECT id FROM users WHERE org_id = ?)
         OR l.created_by IN (SELECT id FROM users WHERE org_id = ?)
-        OR l2.created_by IN (SELECT id FROM users WHERE org_id = ?)
     )';
 
     return [
         'sql' => $sql,
-        'params' => array_fill(0, 8, $orgId),
+        'params' => array_fill(0, 5, $orgId),
     ];
 }
 
@@ -1643,7 +1643,7 @@ function hierarchyBuildInClause(string $columnExpr, array $userIds): array
 }
 
 /**
- * Student list scope for managers (expects leads aliases `l` and `l2` on the students query).
+ * Student list scope for managers (expects the leads alias `l` on the students query).
  *
  * @return array{sql: string, params: array}
  */
@@ -1656,12 +1656,11 @@ function hierarchyStudentListScopeSql(array $visibleIds): array
     $refSub = "SELECT referral_code FROM users WHERE id IN ({$in})";
     $sql = " AND (
         (l.id IS NOT NULL AND (l.assigned_to IN ({$in}) OR l.referred_by IN ({$refSub})))
-        OR (l2.id IS NOT NULL AND (l2.assigned_to IN ({$in}) OR l2.referred_by IN ({$refSub})))
-        OR ((l.id IS NULL AND l2.id IS NULL) AND (s.mentor_id IN ({$in}) OR s.user_id IN ({$in})))
+        OR (l.id IS NULL AND (s.mentor_id IN ({$in}) OR s.user_id IN ({$in})))
     )";
     return [
         'sql' => $sql,
-        'params' => array_merge($visibleIds, $visibleIds, $visibleIds, $visibleIds, $visibleIds, $visibleIds),
+        'params' => array_merge($visibleIds, $visibleIds, $visibleIds, $visibleIds),
     ];
 }
 

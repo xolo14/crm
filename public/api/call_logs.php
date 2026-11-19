@@ -227,6 +227,11 @@ function callLogsScopeWhere(PDO $db, string $role, string $userId, array $tokenD
     }
     if (in_array($role, ['admin', 'org', 'manager'], true)) {
         $orgId = ($tokenOrgId !== null && $tokenOrgId !== '') ? (string) $tokenOrgId : callLogsResolveOrgId($db, $tokenData, $userId);
+        // Org admins see every call in their org (same as Daily Reports). Walking the reports-to
+        // tree hid reps whose manager was not linked to the admin.
+        if ($orgId && $role !== 'manager') {
+            return ['cl.org_id = ?', [$orgId]];
+        }
         if ($orgId) {
             $ids = callLogsVisibleOrgMemberIds($db, $tokenData, $userId, $orgId);
             if (!empty($ids)) {

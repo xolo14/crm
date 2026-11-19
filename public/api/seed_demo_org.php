@@ -410,7 +410,8 @@ try {
         $name = $f . ' ' . $l;
         $email = strtolower(str_replace(' ', '', $f) . '.' . $l) . '.demo@example.com';
         $usedEmails[$email] = true;
-        $reportsTo = null;
+        // Managers and the operational manager report to the org admin; everyone else to a manager.
+        $reportsTo = ($role === 'manager' || $role === 'operational_manager') ? $ADMIN_ID : null;
         if ($role === 'sales_representative' || $role === 'hr' || $role === 'marketing') {
             $reportsTo = $managers[count($reps) % 2]['id'] ?? null;
         }
@@ -713,8 +714,11 @@ try {
         $courseIx = pickW($COURSE_W);
         $tags = null;
         if ($source === 'normal_form') {
+            // Stored exactly like a real submission (public-lead.php): source form_<slug> + form tags,
+            // so Form Management counts them and Form Leads shows one card per form.
             $form = $forms[$k % count($forms)];
             $tags = json_encode(['form_slug' => $form['slug'], 'form_id' => $form['id']]);
+            $source = 'form_' . $form['slug'];
         }
         $nextFollow = null;
         if (isset($pipeline[$status]) || $status === 'new') {
@@ -1170,24 +1174,62 @@ try {
 
     // ═══ Tasks ══════════════════════════════════════════════════════════
     seedStep("Tasks");
-    $taskTitles = ['Follow up on demo feedback', 'Collect second installment', 'Send brochure and fee structure', 'Call back after exams',
-        'Confirm batch joining date', 'Share EMI documents', 'Schedule parents meeting', 'Verify payment proof', 'Book seminar hall at college',
-        'Update Instagram ad creatives', 'Prepare weekly sales report', 'Interview shortlisted trainers'];
+    // Tasks that fit each role, so the Tasks page reads like a real team's to-do list.
+    $taskPlan = [
+        'sales_representative' => [
+            ['Call back after demo — {lead}', 'Attended Saturday demo; wants to discuss EMI with parents before deciding.', true],
+            ['Collect second installment — {lead}', 'Second installment due this week. Share the payment link on WhatsApp.', true],
+            ['Send brochure and fee structure — {lead}', 'Asked for the syllabus PDF and weekend batch timings.', true],
+            ['Confirm batch joining date — {lead}', 'Registered last week; confirm which batch they will join.', true],
+            ['Follow up on payment proof — {lead}', 'Paid by UPI; upload the screenshot to Payment Records for approval.', true],
+        ],
+        'manager' => [
+            ['Review this week\'s pipeline with the team', 'Go through demo-attended leads that have not enrolled yet.', false],
+            ['Approve pending manual payments', 'Check proofs in Payment Records → Approvals.', false],
+            ['Reassign unassigned Instagram leads', 'Spread the new Instagram leads between Karthik and Priya.', false],
+            ['Plan the CBIT college seminar', 'Confirm the date with the placement officer and share the form link.', false],
+        ],
+        'operational_manager' => [
+            ['Publish next week\'s class timetables', 'Send the timetable emails for all ongoing batches.', false],
+            ['Arrange trainer for the December Data Science batch', 'Batch starts on the 19th; confirm trainer and lab access.', false],
+            ['Check batch seat availability', 'Two upcoming batches are close to full; open a waitlist.', false],
+        ],
+        'hr' => [
+            ['Shortlist Full Stack trainer applicants', 'Review the HR leads from Naukri and LinkedIn and book interviews.', false],
+            ['Schedule interviews for counsellor roles', 'Three candidates interested; set up calls this week.', false],
+            ['Send offer letter to selected candidate', 'Candidate accepted the verbal offer; send the letter.', false],
+        ],
+        'marketing' => [
+            ['Refresh Instagram ad creatives', 'Cost per lead went up this week; test two new creatives.', false],
+            ['Launch Brochure Download campaign', 'Share the form link in the Google Ads landing page.', false],
+            ['Weekly lead source report', 'Compare Google Ads, Instagram and Website lead quality.', false],
+        ],
+    ];
     $staff = array_merge($reps, $managers, $oms, $hrs, $marketing);
-    for ($k = 0; $k < 45; $k++) {
-        $who = $staff[$k % count($staff)];
-        $leadIx = mt_rand(0, $TOTAL - 1);
-        $dueOff = mt_rand(-10, 14);
-        $status = $dueOff < -3 ? pick(['completed', 'completed', 'pending']) : ($dueOff < 0 ? pick(['pending', 'in_progress']) : pick(['pending', 'pending', 'in_progress']));
-        seedInsert($db, 'tasks', [
-            'id' => uuid(), 'title' => pick($taskTitles) . ($who['role'] === 'sales_representative' ? ' — ' . $leads[$leadIx]['name'] : ''),
-            'description' => 'Demo task for the ' . str_replace('_', ' ', $who['role']) . ' workflow.',
-            'due_date' => ts($TODAY->modify(($dueOff >= 0 ? '+' : '') . $dueOff . ' days')->setTime(mt_rand(10, 18), 0)),
-            'priority' => pick(['low', 'medium', 'medium', 'high', 'urgent']), 'status' => $status,
-            'assigned_to' => $who['id'], 'lead_id' => $who['role'] === 'sales_representative' ? $leads[$leadIx]['id'] : null,
-            'created_by' => $ADMIN_ID ?? $managers[0]['id'], 'org_id' => $ORG,
-            'created_at' => ts($TODAY->modify('-' . mt_rand(1, 20) . ' days')->setTime(10, 0)),
-        ]);
+    $taskN = 0;
+    foreach ($staff as $who) {
+        $list = $taskPlan[$who['role']] ?? [];
+        $repeat = $who['role'] === 'sales_representative' ? 3 : 1;
+        $ownLeads = array_values(array_filter(array_keys($leads), static fn($ix) => $leads[$ix]['assigned_to'] === $who['id']));
+        for ($r = 0; $r < $repeat; $r++) {
+            foreach ($list as [$title, $desc, $withLead]) {
+                $leadIx = $withLead && $ownLeads ? pick($ownLeads) : null;
+                $dueOff = mt_rand(-8, 12);
+                $status = $dueOff < -3 ? pick(['completed', 'completed', 'pending']) : ($dueOff < 0 ? pick(['pending', 'in_progress']) : pick(['pending', 'pending', 'in_progress']));
+                seedInsert($db, 'tasks', [
+                    'id' => uuid(),
+                    'title' => str_replace('{lead}', $leadIx !== null ? $leads[$leadIx]['name'] : 'lead', $title),
+                    'description' => $desc,
+                    'due_date' => ts($TODAY->modify(($dueOff >= 0 ? '+' : '') . $dueOff . ' days')->setTime(mt_rand(10, 18), 0)),
+                    'priority' => pick(['low', 'medium', 'medium', 'high', 'urgent']), 'status' => $status,
+                    'assigned_to' => $who['id'], 'lead_id' => $leadIx !== null ? $leads[$leadIx]['id'] : null,
+                    'created_by' => in_array($who['role'], ['manager', 'operational_manager'], true) ? ($ADMIN_ID ?? $who['id']) : $managers[$taskN % 2]['id'],
+                    'org_id' => $ORG,
+                    'created_at' => ts($TODAY->modify('-' . mt_rand(1, 20) . ' days')->setTime(10, 0)),
+                ]);
+                $taskN++;
+            }
+        }
     }
 
     // ═══ Notifications ══════════════════════════════════════════════════
