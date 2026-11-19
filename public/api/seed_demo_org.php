@@ -309,8 +309,14 @@ function ymd(DateTimeImmutable $d): string
 function daysAgo(float $days): DateTimeImmutable
 {
     global $TODAY;
+    global $NOW;
     $d = $TODAY->modify('-' . (int) floor($days) . ' days');
-    return $d->setTime(mt_rand(9, 19), mt_rand(0, 59), mt_rand(0, 59));
+    $d = $d->setTime(mt_rand(9, 19), mt_rand(0, 59), mt_rand(0, 59));
+    // Never in the future: a "today" time later than now becomes earlier today.
+    if ($d > $NOW) {
+        $d = $NOW->modify('-' . mt_rand(5, 240) . ' minutes');
+    }
+    return $d;
 }
 /** Random moment between $a and $b. */
 function between(DateTimeImmutable $a, DateTimeImmutable $b): DateTimeImmutable
@@ -680,8 +686,18 @@ try {
         $statuses[$ix] = $s;
         $taken[$ix] = true;
     }
+    // The newest leads get the early stages and the oldest the deep ones, so nobody created
+    // today has already attended a demo. A little jitter keeps it from looking mechanical.
+    $depth = ['contacted' => 1, 'not_answered' => 1, 'messaged' => 1.3, 'lost' => 2, 'qualified' => 2.2,
+        'interested' => 3, 'demo_scheduled' => 4, 'demo_attended' => 5];
+    $keyed = [];
+    foreach ($otherStatuses as $st) {
+        $keyed[] = [$st, ($depth[$st] ?? 2) + r01() * 2.2];
+    }
+    usort($keyed, static fn($a, $b) => $a[1] <=> $b[1]);
+    $otherStatuses = array_map(static fn($p) => $p[0], $keyed);
     $oi = 0;
-    foreach ($freeIdx as $ix) {
+    foreach ($freeIdx as $ix) { // $freeIdx runs newest → oldest
         if (!isset($taken[$ix])) {
             $statuses[$ix] = $otherStatuses[$oi++] ?? 'contacted';
         }
@@ -815,11 +831,14 @@ try {
         $span = max(1, min(40, (int) (($NOW->getTimestamp() - $created->getTimestamp()) / 86400)));
         $prev = 'new';
         $t = $created;
+        // Spread the steps evenly (with jitter) between creation and now, always moving forward.
+        $windowEnd = min($NOW->modify('-10 minutes'), $created->modify('+' . $span . ' days'));
+        $windowSec = max(60 * count($steps ?: [1]), $windowEnd->getTimestamp() - $created->getTimestamp());
         foreach ($steps as $sIdx => $next) {
-            $t = between($t->modify('+2 hours'), $created->modify('+' . (int) ceil($span * ($sIdx + 1) / count($steps)) . ' days'));
-            if ($t > $NOW) {
-                $t = $NOW->modify('-' . mt_rand(5, 300) . ' minutes');
-            }
+            $slot = $windowSec / (count($steps) + 1);
+            $at = $created->getTimestamp() + (int) ($slot * ($sIdx + 1) + $slot * (r01() - 0.5) * 0.6);
+            $at = max($at, $t->getTimestamp() + 60);
+            $t = (new DateTimeImmutable('@' . $at))->setTimezone(new DateTimeZone('Asia/Kolkata'));
             $desc = 'Status: ' . $prev . ' → ' . $next;
             $actorName = $repById[$actor]['name'] ?? 'Team member';
             if ($hasActivities) {
