@@ -6,6 +6,8 @@ cors();
 
 $db = (new Database())->getConnection();
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['certificates'], true); // writes only: Form Management doc forms read the templates
 $method = $_SERVER['REQUEST_METHOD'];
 $action = (string) ($_GET['action'] ?? '');
 $userId = $tokenData['user_id'] ?? null;

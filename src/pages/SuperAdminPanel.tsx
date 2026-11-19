@@ -23,6 +23,7 @@ import {
   IMPLEMENTED_FEATURE_KEYS,
   defaultFeaturesForNewOrg,
   implementedFeaturesBySection,
+  resolveFeatureToggles,
 } from '@/lib/orgFeatures';
 import { generateTempPassword } from '@/lib/randomPassword';
 
@@ -206,10 +207,8 @@ export default function SuperAdminPanel() {
   const openFeatures = async (orgId: string) => {
     try {
       const data = await api.organizations.features(orgId);
-      const map: Record<string, boolean> = {};
-      ALL_FEATURE_KEYS.forEach(k => { map[k] = false; });
-      (data.data || []).forEach((f: any) => { map[f.feature] = !!f.enabled; });
-      setFeatures(map);
+      // Never-saved switches show what the org really gets (new switches default ON).
+      setFeatures(resolveFeatureToggles(data.data || []));
       setShowFeatures(orgId);
     } catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
   };

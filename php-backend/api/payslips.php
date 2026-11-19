@@ -23,6 +23,8 @@ cors();
 $db = (new Database())->getConnection();
 syncpediaDocumentEnsureColumn($db, 'payslips', 'pdf_path', 'TEXT DEFAULT NULL');
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['payslip']);
 $method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? '';
 $normalizedRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));

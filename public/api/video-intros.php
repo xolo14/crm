@@ -17,6 +17,8 @@ cors();
 $db = (new Database())->getConnection();
 videoIntroEnsureSchema($db);
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['video_intros']);
 videoIntroRequireCaller($db, $tokenData);
 videoIntroPurgeExpiredRecordings($db);
 

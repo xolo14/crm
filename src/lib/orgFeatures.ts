@@ -12,6 +12,9 @@ export const FEATURE_FORM_MANAGEMENT = "form_management";
 export const FEATURE_TIMETABLES = "timetables";
 export const FEATURE_COMMUNICATIONS = "communications";
 export const FEATURE_VIDEO_INTROS = "video_intros";
+export const FEATURE_COUPONS = "coupons";
+export const FEATURE_LIVE_CLASSES = "live_classes";
+export const FEATURE_PAYMENT_RECORDS = "payment_records";
 
 /** Features that exist as pages in this CRM build. */
 export const IMPLEMENTED_ORG_FEATURES: {
@@ -28,9 +31,12 @@ export const IMPLEMENTED_ORG_FEATURES: {
   { key: "courses", section: "Learning", label: "Courses", description: "Course catalog" },
   { key: "batches", section: "Learning", label: "Batches", description: "Batch schedules and enrollment" },
   { key: FEATURE_TIMETABLES, section: "Learning", label: "Timetables", description: "Weekly/monthly class schedules and email delivery" },
+  { key: FEATURE_LIVE_CLASSES, section: "Learning", label: "Live Classes", description: "Live class schedule synced from the LMS" },
   { key: FEATURE_COMMUNICATIONS, section: "Engagement", label: "Communications", description: "WhatsApp hub and messaging" },
   { key: FEATURE_MARKETING, section: "Engagement", label: "Marketing Portal", description: "Email / WhatsApp marketing for org users" },
-  { key: "payments", section: "Finance", label: "Payment Links", description: "Razorpay payment links and records" },
+  { key: "payments", section: "Finance", label: "Payment Links", description: "Create and track Razorpay payment links" },
+  { key: FEATURE_PAYMENT_RECORDS, section: "Finance", label: "Payment Records", description: "Collected payments, manual payment approvals and candidate balances" },
+  { key: FEATURE_COUPONS, section: "Finance", label: "Coupons", description: "Person-specific discount coupons and the coupon API" },
   { key: FEATURE_PAYSLIP, section: "Finance", label: "Payslip", description: "Employee payslip generation" },
   { key: "daily_reports", section: "Reports", label: "Daily Reports", description: "Daily activity reports, call log, analytics" },
   { key: "holidays", section: "Reports", label: "Holidays", description: "Org holiday calendar" },
@@ -57,7 +63,41 @@ export const CORE_DEFAULT_FEATURES = [
   "daily_reports",
   "holidays",
   FEATURE_VIDEO_INTROS,
+  FEATURE_COUPONS,
+  FEATURE_LIVE_CLASSES,
+  FEATURE_PAYMENT_RECORDS,
 ];
+
+/**
+ * Switches added after orgs were already configured. Until a super admin sets them, they stay ON
+ * (these pages were always visible before), so no org loses a page. Payment Records instead follows
+ * the Payment Links switch, which used to cover it. Keep in sync with helpers.php.
+ */
+export const DEFAULT_ON_WHEN_UNSET: readonly string[] = [FEATURE_VIDEO_INTROS, FEATURE_COUPONS, FEATURE_LIVE_CLASSES];
+
+/** Value a never-saved switch has for an org that already has feature rows. */
+function unsetFeatureValue(feats: Record<string, boolean>, featureKey: string): boolean {
+  if (featureKey === FEATURE_PAYMENT_RECORDS) {
+    return Object.prototype.hasOwnProperty.call(feats, "payments") ? feats.payments === true : true;
+  }
+  return DEFAULT_ON_WHEN_UNSET.includes(featureKey);
+}
+
+/**
+ * Switch states to show in the Features dialog, filling in never-saved switches with the value the
+ * org actually gets at runtime (instead of showing them OFF).
+ */
+export function resolveFeatureToggles(rows: { feature: string; enabled: unknown }[]): Record<string, boolean> {
+  const stored: Record<string, boolean> = {};
+  for (const r of rows) stored[r.feature] = !!r.enabled;
+  const out: Record<string, boolean> = {};
+  const hasRows = Object.keys(stored).length > 0;
+  for (const key of IMPLEMENTED_FEATURE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(stored, key)) out[key] = stored[key];
+    else out[key] = hasRows ? unsetFeatureValue(stored, key) : CORE_DEFAULT_FEATURES.includes(key);
+  }
+  return out;
+}
 
 export function isSyncpediaOrganization(org: { slug?: string | null } | null): boolean {
   return String(org?.slug ?? "")
@@ -97,8 +137,8 @@ export function isOrgFeatureEnabled(
     return CORE_DEFAULT_FEATURES.includes(featureKey);
   }
 
-  if (featureKey === FEATURE_VIDEO_INTROS && feats && !Object.prototype.hasOwnProperty.call(feats, FEATURE_VIDEO_INTROS)) {
-    return true;
+  if (feats && !Object.prototype.hasOwnProperty.call(feats, featureKey)) {
+    return unsetFeatureValue(feats, featureKey);
   }
 
   return feats?.[featureKey] === true;
@@ -123,7 +163,10 @@ export function featureKeyForPath(pathname: string): string | null {
   if (p.startsWith("/timetables")) return FEATURE_TIMETABLES;
   if (p.startsWith("/tasks")) return "tasks";
   if (p.startsWith("/notifications")) return "notifications";
+  if (p.startsWith("/payments/records") || p.startsWith("/payment-links/records")) return FEATURE_PAYMENT_RECORDS;
   if (p.startsWith("/payments") || p.startsWith("/payment-links")) return "payments";
+  if (p.startsWith("/coupons")) return FEATURE_COUPONS;
+  if (p.startsWith("/live-classes")) return FEATURE_LIVE_CLASSES;
   if (p.startsWith("/payslip")) return FEATURE_PAYSLIP;
   if (p.startsWith("/daily-reports") || p.startsWith("/sales/call-log")) return "daily_reports";
   if (p.startsWith("/holidays")) return "holidays";

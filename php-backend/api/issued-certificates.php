@@ -7,6 +7,8 @@ $db = (new Database())->getConnection();
 $method = $_SERVER['REQUEST_METHOD'];
 
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['certificates'], true); // writes only: Form Management doc forms read the templates
 $userId = $tokenData['user_id'] ?? null;
 
 certEnsureTypeColumns($db);

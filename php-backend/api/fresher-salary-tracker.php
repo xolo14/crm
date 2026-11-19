@@ -4,6 +4,8 @@ cors();
 
 $db = (new Database())->getConnection();
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['fresher_salary']);
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));

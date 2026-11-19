@@ -11,6 +11,8 @@ cors();
 
 $db = (new Database())->getConnection();
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['coupons']);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $userId = (string) ($tokenData['user_id'] ?? '');
 

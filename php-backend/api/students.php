@@ -5,6 +5,8 @@ cors();
 
 $db = (new Database())->getConnection();
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['students'], true);
 $method = $_SERVER['REQUEST_METHOD'];
 
 function studentsMarkLinkedEnrolledLeadLost(PDO $db, array $studentRow): void

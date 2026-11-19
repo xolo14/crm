@@ -5,6 +5,9 @@
  */
 import {
   FEATURE_COMMUNICATIONS,
+  FEATURE_COUPONS,
+  FEATURE_LIVE_CLASSES,
+  FEATURE_PAYMENT_RECORDS,
   FEATURE_FORM_MANAGEMENT,
   FEATURE_MARKETING,
   FEATURE_OFFER_LETTERS,
@@ -46,6 +49,9 @@ export const OPERATIONAL_MANAGER_DEFAULT_ON_PAGE_KEYS: readonly string[] = [
   FEATURE_TIMETABLES,
   FEATURE_FORM_MANAGEMENT,
   "payments",
+  FEATURE_PAYMENT_RECORDS,
+  FEATURE_COUPONS,
+  FEATURE_LIVE_CLASSES,
   FEATURE_COMMUNICATIONS,
   FEATURE_OFFER_LETTERS,
   FEATURE_MARKETING,
@@ -68,6 +74,34 @@ export const OPERATIONAL_MANAGER_AUTO_GRANTED_PAGE_KEYS = OPERATIONAL_MANAGER_DE
 /** Legacy reference kept for backward compatibility */
 export const OPERATIONAL_MANAGER_ALWAYS_ON_OPTIONS: ManagerPageOption[] = [];
 
+/**
+ * A page key missing from a saved page map. Coupons and Live Classes had no switch before, so they
+ * stay allowed; Payment Records used to follow the Payment Links grant. Everything else is off.
+ */
+export function unsetPageGrant(pages: Record<string, unknown>, featureKey: string): boolean {
+  if (featureKey === FEATURE_COUPONS || featureKey === FEATURE_LIVE_CLASSES) return true;
+  if (featureKey === FEATURE_PAYMENT_RECORDS) {
+    const v = pages.payments;
+    return v === true || v === 1 || v === "1" || v === "true";
+  }
+  return false;
+}
+
+function grantValue(pages: Record<string, unknown>, featureKey: string): boolean {
+  if (!(featureKey in pages)) return unsetPageGrant(pages, featureKey);
+  const v = pages[featureKey];
+  return v === true || v === 1 || v === "1" || v === "true";
+}
+
+/** Fill never-saved keys of a stored map with what the member actually gets. */
+function withUnsetDefaults(stored: Record<string, boolean>, keys: string[]): Record<string, boolean> {
+  const out = { ...stored };
+  for (const key of keys) {
+    if (!(key in stored)) out[key] = unsetPageGrant(stored, key);
+  }
+  return out;
+}
+
 export function defaultManagerPages(allOn = true): Record<string, boolean> {
   const out: Record<string, boolean> = {};
   for (const key of MANAGER_PAGE_ACCESS_KEYS) {
@@ -86,7 +120,7 @@ export function resolveManagerPagesForEdit(pageAccess?: PageAccess | null): Reco
   if (!stored || typeof stored !== "object" || Object.keys(stored).length === 0) {
     return defaultManagerPages(true);
   }
-  return { ...defaultManagerPages(false), ...stored };
+  return { ...defaultManagerPages(false), ...withUnsetDefaults(stored, MANAGER_PAGE_ACCESS_KEYS) };
 }
 
 /**
@@ -142,7 +176,7 @@ export function resolveOperationalManagerPagesForEdit(
   if (!stored || typeof stored !== "object" || Object.keys(stored).length === 0) {
     return defaults;
   }
-  return { ...defaults, ...stored };
+  return { ...defaults, ...withUnsetDefaults(stored, OPERATIONAL_MANAGER_PAGE_ACCESS_KEYS) };
 }
 
 /**
@@ -159,8 +193,7 @@ export function operationalManagerHasPageAccess(
   if (!pages || Object.keys(pages).length === 0) {
     return OPERATIONAL_MANAGER_DEFAULT_ON_PAGE_KEYS.includes(featureKey);
   }
-  const v = pages[featureKey];
-  return v === true || v === 1 || v === "1" || v === "true";
+  return grantValue(pages, featureKey);
 }
 
 /** Operational Manager home is always `/` (auto-granted dashboard). */
@@ -202,8 +235,7 @@ export function managerHasPageAccess(
   if (!featureKey) return true;
   const pages = pageAccess?.pages;
   if (!pages || Object.keys(pages).length === 0) return true;
-  const v = pages[featureKey];
-  return v === true || v === 1 || v === "1" || v === "true";
+  return grantValue(pages, featureKey);
 }
 
 /** Map a route to the manager/OM page-access key (home uses "dashboard"). */

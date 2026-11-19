@@ -650,6 +650,8 @@ if ($action === 'webhook' && $method === 'POST') {
 }
 
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature(paymentLinksDb(), $tokenData, ['payments', 'payment_records']);
 
 // Sales reps only when page_access.payments is enabled (admins/managers always).
 $__payRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));

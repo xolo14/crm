@@ -784,12 +784,102 @@ function syncpediaImplementedOrgFeatures(): array
         'fresher_salary',
         'timetables',
         'video_intros',
+        'coupons',
+        'live_classes',
+        'payment_records',
     ];
 }
 
 function syncpediaIsAllowedOrgFeature(string $feature): bool
 {
     return in_array($feature, syncpediaImplementedOrgFeatures(), true);
+}
+
+/** Modules on for orgs that have never configured features (keep in sync with orgFeatures.ts CORE_DEFAULT_FEATURES). */
+function syncpediaCoreDefaultOrgFeatures(): array
+{
+    return [
+        'leads', 'form_management', 'tasks', 'notifications', 'students', 'courses', 'batches', 'timetables',
+        'communications', 'payments', 'daily_reports', 'holidays', 'video_intros', 'coupons', 'live_classes',
+        'payment_records',
+    ];
+}
+
+/**
+ * Switches added after orgs were already configured: ON until a super admin turns them off,
+ * so no org loses a page it already had (keep in sync with orgFeatures.ts).
+ */
+function syncpediaDefaultOnOrgFeatures(): array
+{
+    return ['video_intros', 'coupons', 'live_classes', 'payment_records'];
+}
+
+/** Same rules as isOrgFeatureEnabled() in src/lib/orgFeatures.ts. */
+function syncpediaOrgFeatureEnabled(PDO $db, string $orgId, string $feature): bool
+{
+    static $cache = [];
+    if ($orgId === '') {
+        return true;
+    }
+    if (!isset($cache[$orgId])) {
+        $rows = [];
+        $slug = '';
+        try {
+            $st = $db->prepare('SELECT feature, enabled FROM org_features WHERE org_id = ?');
+            $st->execute([$orgId]);
+            foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $r) {
+                $rows[(string) $r['feature']] = (int) ($r['enabled'] ?? 0) === 1;
+            }
+            $so = $db->prepare('SELECT slug FROM organizations WHERE id = ? LIMIT 1');
+            $so->execute([$orgId]);
+            $slug = strtolower(trim((string) ($so->fetchColumn() ?: '')));
+        } catch (Throwable $e) {
+            return true; // never lock an org out because the lookup failed
+        }
+        $cache[$orgId] = ['rows' => $rows, 'slug' => $slug];
+    }
+    $rows = $cache[$orgId]['rows'];
+    if ($cache[$orgId]['slug'] === 'syncpedia'
+        && in_array($feature, ['offer_letters', 'fresher_salary', 'video_intros'], true)) {
+        return true;
+    }
+    if ($rows === []) {
+        return in_array($feature, syncpediaCoreDefaultOrgFeatures(), true);
+    }
+    if (!array_key_exists($feature, $rows)) {
+        // Payment Records used to follow the Payment Links switch; keep that until it is set on its own.
+        if ($feature === 'payment_records') {
+            return syncpediaOrgFeatureEnabled($db, $orgId, 'payments');
+        }
+        return in_array($feature, syncpediaDefaultOnOrgFeatures(), true);
+    }
+    return $rows[$feature];
+}
+
+/**
+ * Stop the request when the caller's org has this module switched off (Organizations → Features).
+ * $anyOf: allowed when at least one listed feature is on. $writesOnly: only block POST/PUT/PATCH/DELETE,
+ * for modules whose lists other pages also read. Super admin is never blocked.
+ */
+function syncpediaRequireOrgFeature(PDO $db, array $tokenData, array $anyOf, bool $writesOnly = false): void
+{
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($role === 'super_admin') {
+        return;
+    }
+    if ($writesOnly && in_array(strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')), ['GET', 'HEAD', 'OPTIONS'], true)) {
+        return;
+    }
+    $orgId = trim((string) ($tokenData['org_id'] ?? ''));
+    if ($orgId === '') {
+        return;
+    }
+    foreach ($anyOf as $feature) {
+        if (syncpediaOrgFeatureEnabled($db, $orgId, (string) $feature)) {
+            return;
+        }
+    }
+    respond(['error' => 'This feature is turned off for your organization.', 'code' => 'feature_disabled'], 403);
 }
 
 /** Platform super_admin with no org context (master panel / all tenants). */

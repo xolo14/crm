@@ -93,6 +93,11 @@ if ($method === 'POST' && $action === 'add_lms_student') {
     respond(lmsAddStudentOnLms($name, $email, $phone, $lmsCourseId, $lmsBatchId));
 }
 
+// Organizations → Features: Live Classes switch.
+if (in_array($action, ['lms_live_classes', 'lms_live_class', 'create_lms_live_class', 'update_lms_live_class'], true)) {
+    syncpediaRequireOrgFeature($db, $tokenData, ['live_classes']);
+}
+
 if ($method === 'GET' && $action === 'lms_live_classes') {
     respond(['data' => lmsFetchLiveClassesNormalized()]);
 }

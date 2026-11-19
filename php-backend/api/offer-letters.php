@@ -13,6 +13,8 @@ try {
     /* ignore */
 }
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['offer_letters'], true); // writes only: Form Management doc forms read the templates
 $method = $_SERVER['REQUEST_METHOD'];
 $userId = $tokenData['user_id'];
 $role = $tokenData['role'];

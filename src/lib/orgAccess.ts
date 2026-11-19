@@ -10,11 +10,13 @@ import {
   FEATURE_CERTIFICATES,
   FEATURE_PAYSLIP,
   FEATURE_VIDEO_INTROS,
+  FEATURE_PAYMENT_RECORDS,
   isOrgFeatureEnabled,
 } from "./orgFeatures";
 import { normalizeAppRole } from "./roleUtils";
 import {
   operationalManagerHasPageAccess,
+  unsetPageGrant,
 } from "./managerPageAccess";
 
 export type OrgAccessLite = {
@@ -59,6 +61,7 @@ export function normalizePageAccess(raw?: PageAccess | null): Required<Pick<Page
 function managerPagesAllow(pageAccess: PageAccess | null | undefined, featureKey: string): boolean {
   const pages = pageAccess?.pages;
   if (!pages || Object.keys(pages).length === 0) return true;
+  if (!(featureKey in pages)) return unsetPageGrant(pages, featureKey);
   return pages[featureKey] === true;
 }
 
@@ -208,10 +211,11 @@ export function canAccessPaymentRecords(role: string | null, pageAccess?: PageAc
   // Visible to all org members; managers still respect page grants when configured.
   if (r === "super_admin" || r === "org") return true;
   if (r === "operational_manager" || r === "manager") {
+    // Own grant since Payment Records got its own switch; an unset grant follows Payment Links.
     const allowed =
       r === "operational_manager"
-        ? operationalManagerHasPageAccess(pageAccess, "payments")
-        : managerPagesAllow(pageAccess, "payments");
+        ? operationalManagerHasPageAccess(pageAccess, FEATURE_PAYMENT_RECORDS)
+        : managerPagesAllow(pageAccess, FEATURE_PAYMENT_RECORDS);
     return allowed;
   }
   if (r === "sales_representative" || r === "hr" || r === "marketing") {

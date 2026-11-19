@@ -12,6 +12,8 @@ cors();
 
 $db = (new Database())->getConnection();
 $tokenData = verifyToken();
+// Organizations → Features: refuse when this module is switched off for the org.
+syncpediaRequireOrgFeature($db, $tokenData, ['payment_records', 'payments']);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $action = trim((string) ($_GET['action'] ?? 'list'));
 
