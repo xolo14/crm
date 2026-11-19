@@ -882,6 +882,23 @@ if ($method === 'POST' && $action === 'add_log') {
                 $db->prepare('UPDATE call_logs SET pipeline_status_at_call = ? WHERE id = ?')
                     ->execute([$leadStatusIn, $id]);
             }
+        } elseif ($leadId !== null && $callStatus === 'connected' && $duration > 0) {
+            // A real conversation happened: a lead still at "New" becomes "Contacted". Only
+            // moves forward from New, never overrides a status a rep chose, and never blocks
+            // saving the call if the lead can't be updated.
+            try {
+                $cur = $db->prepare('SELECT status FROM leads WHERE id = ? LIMIT 1');
+                $cur->execute([(string) $leadId]);
+                $curStatus = leadsNormalizeStatus((string) ($cur->fetchColumn() ?: ''));
+                if ($curStatus === 'new') {
+                    $autoErr = leadsSyncPipelineStatusFromCallLog($db, $tokenData, $userId, $rawRole, (string) $leadId, 'contacted');
+                    if ($autoErr !== null) {
+                        error_log('[call_logs] auto Contacted skipped for lead ' . $leadId . ': ' . $autoErr);
+                    }
+                }
+            } catch (Throwable $autoE) {
+                error_log('[call_logs] auto Contacted failed: ' . $autoE->getMessage());
+            }
         }
 
         $db->commit();
