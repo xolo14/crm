@@ -9433,7 +9433,7 @@ function callRecordingIsAudible(string $absPath): ?bool
 /** Absolute path for a stored /uploads/... recording path. */
 function callRecordingAbsolutePath(string $relative): ?string
 {
-    $rel = ltrim(str_replace('\', '/', $relative), '/');
+    $rel = ltrim(str_replace(chr(92), '/', $relative), '/');
     if ($rel === '' || strpos($rel, '..') !== false) {
         return null;
     }
