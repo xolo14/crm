@@ -124,8 +124,23 @@ export function MetaAdsSetup() {
     setSyncing(true);
     try {
       const res = (await api.metaAds.syncNow()) as {
-        data?: { upserted?: number; leads_imported?: number; errors?: string[] };
+        data?: { upserted?: number; leads_imported?: number; errors?: string[]; started?: boolean; accounts?: number };
       };
+      if (res?.data?.started) {
+        // The server runs the sync after answering (it can take minutes for many accounts).
+        toast({
+          title: "Sync started",
+          description: `Syncing ${res.data.accounts ?? 0} ad account(s) in the background. Figures update in a minute or two.${
+            (res.data.errors ?? []).length ? " " + (res.data.errors ?? [])[0] : ""
+          }`,
+        });
+        window.setTimeout(() => {
+          void (async () => {
+            await load();
+          })();
+        }, 60_000);
+        return;
+      }
       const errs = res?.data?.errors ?? [];
       const leadsN = res?.data?.leads_imported ?? 0;
       const leadBlock = errs.find((e) => /lead/i.test(e));

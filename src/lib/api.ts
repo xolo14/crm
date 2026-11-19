@@ -173,7 +173,11 @@ async function request(endpoint: string, options: RequestInit = {}) {
         res.status === 404
           ? 'API not found. Upload the full dist/ folder (it must include api/ and the root .htaccess).'
           : res.status === 504 || res.status === 502
-            ? 'The mail server did not answer before the gateway timed out. Try Send Email again. If it keeps failing, open Settings → Email Setup and send a test from the certificates mailbox.'
+            ? // Only email endpoints get the mail-server hint; every other timeout (e.g. Meta Ads
+              // sync) used to show it too, which pointed people at the wrong setting.
+              /email|mail|certificate|offer-letter|payslip/i.test(endpoint)
+              ? 'The mail server did not answer before the gateway timed out. Try Send Email again. If it keeps failing, open Settings → Email Setup and send a test from the certificates mailbox.'
+              : 'The server took too long to answer (gateway timeout). The work may still finish in the background — wait a minute, refresh, and try again.'
             : `Server returned HTML instead of JSON (HTTP ${res.status}). Open /api/ping.php to verify PHP and the database.`,
       );
     }

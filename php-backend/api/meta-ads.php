@@ -272,51 +272,93 @@ if ($method === 'POST' && $action === 'sync_now') {
     $a = $db->prepare('SELECT * FROM meta_ads_accounts WHERE org_id = ? AND connection_id = ? AND is_enabled = 1');
     $a->execute([$orgId, $conn['id']]);
     $accounts = $a->fetchAll(PDO::FETCH_ASSOC) ?: [];
-    $upserted = 0;
-    $leadsImported = 0;
-    $errors = [];
-    $connScopes = (string) ($conn['scopes'] ?? '');
-    $oauthScopes = metaAdsOauthScopes();
-    $tokenHasLeads = str_contains($connScopes, 'leads_retrieval');
-    $configHasLeads = str_contains($oauthScopes, 'leads_retrieval');
-    if (!$tokenHasLeads) {
-        $errors[] = !$configHasLeads
+    $tokenHasLeadsWarning = [];
+    if (!str_contains((string) ($conn['scopes'] ?? ''), 'leads_retrieval')) {
+        $tokenHasLeadsWarning[] = !str_contains(metaAdsOauthScopes(), 'leads_retrieval')
             ? 'Lead Ads: token has no leads_retrieval. After Meta App Review, set META_ADS_OAUTH_SCOPES=ads_read,leads_retrieval in config.php, then Reconnect.'
             : 'Lead Ads: server requests leads_retrieval but this connection was granted without it. Reconnect Meta Ads and accept Retrieve leads.';
     }
-    foreach ($accounts as $acct) {
-        try {
-            $r = metaAdsSyncAccountInsights(
-                $db,
-                $orgId,
-                (string) $acct['ad_account_id'],
-                $token,
-                $since,
-                $until,
-                $acct['currency'] ?? null
-            );
-            $upserted += (int) $r['upserted'];
-            try {
-                $lr = metaAdsSyncAccountLeads($db, $orgId, (string) $acct['ad_account_id'], $token);
-                $leadsImported += (int) ($lr['imported'] ?? 0);
-            } catch (Throwable $le) {
-                $errors[] = $acct['ad_account_id'] . ' leads: ' . $le->getMessage();
-            }
-            $db->prepare('UPDATE meta_ads_accounts SET last_synced_at=NOW(), last_sync_error=NULL WHERE id=?')->execute([$acct['id']]);
-        } catch (Throwable $e) {
-            $errors[] = $acct['ad_account_id'] . ': ' . $e->getMessage();
-            $db->prepare('UPDATE meta_ads_accounts SET last_sync_error=? WHERE id=?')->execute([mb_substr($e->getMessage(), 0, 1000), $acct['id']]);
+    // The full sync (30 days of insights + leads for every enabled account) can outlast the
+    // proxy timeout, which surfaced as a 504 "Sync failed". Answer right away and run the
+    // sync after the response is flushed; accounts' last_synced_at / last_sync_error show
+    // the outcome. One sync per org at a time.
+    $runSync = static function () use ($db, $orgId, $conn, $token, $accounts, $since, $until): array {
+        $upserted = 0;
+        $leadsImported = 0;
+        $errors = [];
+        $connScopes = (string) ($conn['scopes'] ?? '');
+        $oauthScopes = metaAdsOauthScopes();
+        $tokenHasLeads = str_contains($connScopes, 'leads_retrieval');
+        $configHasLeads = str_contains($oauthScopes, 'leads_retrieval');
+        if (!$tokenHasLeads) {
+            $errors[] = !$configHasLeads
+                ? 'Lead Ads: token has no leads_retrieval. After Meta App Review, set META_ADS_OAUTH_SCOPES=ads_read,leads_retrieval in config.php, then Reconnect.'
+                : 'Lead Ads: server requests leads_retrieval but this connection was granted without it. Reconnect Meta Ads and accept Retrieve leads.';
         }
-    }
-    respond([
-        'success' => true,
-        'data' => [
+        foreach ($accounts as $acct) {
+            try {
+                $r = metaAdsSyncAccountInsights(
+                    $db,
+                    $orgId,
+                    (string) $acct['ad_account_id'],
+                    $token,
+                    $since,
+                    $until,
+                    $acct['currency'] ?? null
+                );
+                $upserted += (int) $r['upserted'];
+                try {
+                    $lr = metaAdsSyncAccountLeads($db, $orgId, (string) $acct['ad_account_id'], $token);
+                    $leadsImported += (int) ($lr['imported'] ?? 0);
+                } catch (Throwable $le) {
+                    $errors[] = $acct['ad_account_id'] . ' leads: ' . $le->getMessage();
+                }
+                $db->prepare('UPDATE meta_ads_accounts SET last_synced_at=NOW(), last_sync_error=NULL WHERE id=?')->execute([$acct['id']]);
+            } catch (Throwable $e) {
+                $errors[] = $acct['ad_account_id'] . ': ' . $e->getMessage();
+                $db->prepare('UPDATE meta_ads_accounts SET last_sync_error=? WHERE id=?')->execute([mb_substr($e->getMessage(), 0, 1000), $acct['id']]);
+            }
+        }
+        return [
             'upserted' => $upserted,
             'leads_imported' => $leadsImported,
             'accounts' => count($accounts),
             'since' => $since,
             'until' => $until,
             'errors' => $errors,
+        ];
+    };
+
+    if (!function_exists('fastcgi_finish_request')) {
+        // CLI / non-FPM: run inline as before.
+        respond(['success' => true, 'data' => $runSync()]);
+    }
+    $lockFile = sys_get_temp_dir() . '/meta_ads_sync_' . preg_replace('/[^a-zA-Z0-9_-]/', '', (string) $orgId) . '.lock';
+    register_shutdown_function(static function () use ($runSync, $lockFile): void {
+        @fastcgi_finish_request();
+        ignore_user_abort(true);
+        @set_time_limit(600);
+        $fh = @fopen($lockFile, 'c');
+        if ($fh === false || !flock($fh, LOCK_EX | LOCK_NB)) {
+            return; // a sync for this org is already running
+        }
+        try {
+            $runSync();
+        } catch (Throwable $e) {
+            error_log('[meta-ads] background sync: ' . $e->getMessage());
+        } finally {
+            flock($fh, LOCK_UN);
+            fclose($fh);
+        }
+    });
+    respond([
+        'success' => true,
+        'data' => [
+            'started' => true,
+            'accounts' => count($accounts),
+            'since' => $since,
+            'until' => $until,
+            'errors' => $tokenHasLeadsWarning,
         ],
     ]);
 }
