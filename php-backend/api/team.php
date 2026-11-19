@@ -317,7 +317,7 @@ if ($method === 'POST') {
     // Role hierarchy: L4/L3 may assign L2–L1 staff. Org admins are provisioned via Organizations, not Team.
     $allowedRoles = [];
     if (in_array($callerRole, ['super_admin', 'org'], true)) {
-        $allowedRoles = array_merge(['manager', 'operational_manager'], syncpediaL1AssignableRoles(), ['student']);
+        $allowedRoles = array_merge(['manager', 'operational_manager'], syncpediaL1AssignableRoles());
     } elseif ($isManagerCreator) {
         $allowedRoles = syncpediaL1AssignableRoles();
     }
@@ -544,12 +544,14 @@ if ($method === 'PUT') {
 
         $allowedRoles = [];
         if (in_array($callerRole, ['super_admin', 'org'], true)) {
-            $allowedRoles = array_merge(['manager', 'operational_manager'], syncpediaL1AssignableRoles(), ['student']);
+            $allowedRoles = array_merge(['manager', 'operational_manager'], syncpediaL1AssignableRoles());
         } elseif (in_array($callerRole, ['manager', 'operational_manager'], true)) {
             $allowedRoles = syncpediaL1AssignableRoles();
         }
 
-        if (!in_array($newRole, $allowedRoles, true)) {
+        // An existing Student account can still be edited without changing its role.
+        $keepsStudent = $newRole === 'student' && $prevRole === 'student';
+        if (!$keepsStudent && !in_array($newRole, $allowedRoles, true)) {
             respond(['error' => 'You cannot assign this role'], 403);
         }
 

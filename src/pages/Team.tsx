@@ -197,8 +197,9 @@ export default function Team() {
     : isManagerViewer
       ? TEAM_ROLE_GROUPS.filter((r) => isL1OperationalRole(r.key))
       : []
-  // Org admins are created only at org provision time / Organizations credentials — not via Add Team Member
-  ).filter((r) => r.key !== 'org');
+  // Org admins are created only at org provision time / Organizations credentials — not via Add Team Member.
+  // There is no student portal, so Student isn't offered as a member role.
+  ).filter((r) => r.key !== 'org' && r.key !== 'student');
 
   useEffect(() => {
     if (!isSuperAdmin) return;
@@ -711,7 +712,7 @@ export default function Team() {
         <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" /><Input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} className="pl-9" /></div>
         <Select value={roleFilter} onValueChange={setRoleFilter}>
           <SelectTrigger className="w-full sm:w-[180px]"><SelectValue placeholder="Filter by role" /></SelectTrigger>
-          <SelectContent><SelectItem value="all">All Roles</SelectItem>{TEAM_ROLE_GROUPS.filter((r) => r.level <= currentLevel).map((r) => <SelectItem key={r.key} value={r.key}>{r.label}</SelectItem>)}</SelectContent>
+          <SelectContent><SelectItem value="all">All Roles</SelectItem>{TEAM_ROLE_GROUPS.filter((r) => r.level <= currentLevel && (r.key !== "student" || (grouped.student?.length ?? 0) > 0)).map((r) => <SelectItem key={r.key} value={r.key}>{r.label}</SelectItem>)}</SelectContent>
         </Select>
       </div>
 
