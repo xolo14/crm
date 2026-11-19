@@ -322,11 +322,17 @@ function lmsRowId(array $row): string
     return '';
 }
 
+/** Strip invisible characters (U+200B–U+200F, U+2060, U+FEFF) the LMS keeps in names. */
+function lmsCleanText(string $v): string
+{
+    return trim((string) preg_replace('/[\x{200B}-\x{200F}\x{2060}\x{FEFF}]/u', '', $v));
+}
+
 function lmsRowName(array $row): string
 {
     foreach (['title', 'name', 'courseName', 'course_name', 'batchName', 'batch_name', 'fullName', 'full_name'] as $k) {
-        if (isset($row[$k]) && trim((string) $row[$k]) !== '') {
-            return trim((string) $row[$k]);
+        if (isset($row[$k]) && lmsCleanText((string) $row[$k]) !== '') {
+            return lmsCleanText((string) $row[$k]);
         }
     }
     return '';
@@ -386,7 +392,7 @@ function lmsFetchCoursesNormalized(): array
         $out[] = [
             'lms_id' => $id,
             'name' => $name,
-            'description' => trim((string) ($row['description'] ?? '')),
+            'description' => lmsCleanText((string) ($row['description'] ?? '')),
             'price' => $price,
             'duration_weeks' => $durationWeeks,
             'source' => $source,
@@ -457,7 +463,7 @@ function lmsFetchBatchesNormalized(): array
         $courseName = '';
         foreach (['courseTitle', 'courseName', 'course_name', 'course_title'] as $k) {
             if (!empty($row[$k])) {
-                $courseName = trim((string) $row[$k]);
+                $courseName = lmsCleanText((string) $row[$k]);
                 break;
             }
         }
@@ -556,7 +562,7 @@ function lmsFetchStudentsNormalized(): array
         }
         $courseId = trim((string) ($row['courseId'] ?? $row['course_id'] ?? $row['lms_course_id'] ?? ''));
         $batchId = trim((string) ($row['batchId'] ?? $row['batch_id'] ?? $row['lms_batch_id'] ?? ''));
-        $courseName = trim((string) ($row['courseName'] ?? $row['course_name'] ?? $row['courseTitle'] ?? ''));
+        $courseName = lmsCleanText((string) ($row['courseName'] ?? $row['course_name'] ?? $row['courseTitle'] ?? ''));
         $batchName = trim((string) ($row['batchName'] ?? $row['batch_name'] ?? ''));
         if (isset($row['course']) && is_array($row['course'])) {
             if ($courseId === '') {
@@ -748,7 +754,7 @@ function lmsNormalizeLiveClassRow(array $row): ?array
         return null;
     }
     $courseId = trim((string) ($row['courseId'] ?? $row['course_id'] ?? $row['lms_course_id'] ?? ''));
-    $courseName = trim((string) ($row['courseTitle'] ?? $row['courseName'] ?? $row['course_name'] ?? ''));
+    $courseName = lmsCleanText((string) ($row['courseTitle'] ?? $row['courseName'] ?? $row['course_name'] ?? ''));
     $batchId = trim((string) ($row['batchId'] ?? $row['batch_id'] ?? $row['lms_batch_id'] ?? ''));
     $mentorId = trim((string) ($row['mentorId'] ?? $row['mentor_id'] ?? ''));
     $scheduled = null;

@@ -3049,14 +3049,14 @@ function TemplateCard({
           </div>
         </div>
 
-        <div className="mt-2 flex items-center gap-2 flex-wrap">
-          <Badge variant={statusBadgeVariant(template.status)} className="text-[10px]">
+        <div className="mt-2 flex min-w-0 items-center gap-2 overflow-hidden">
+          <Badge variant={statusBadgeVariant(template.status)} className="shrink-0 text-[10px]">
             {template.status}
           </Badge>
-          <Badge variant="outline" className={cn("text-[10px]", certTypeBadgeClass(template.certType))}>
+          <Badge variant="outline" className={cn("min-w-0 truncate text-[10px]", certTypeBadgeClass(template.certType))}>
             {template.certType} · {certTypeLabel(template.certType, typeOptions)}
           </Badge>
-          <Badge variant="secondary" className="text-[10px]">
+          <Badge variant="secondary" className="shrink-0 text-[10px]">
             {getCertPageSpec(template.style.pageFormat).shortLabel}
           </Badge>
         </div>
@@ -3067,24 +3067,10 @@ function TemplateCard({
           Use <span className="font-medium text-foreground">Preview</span> (eye icon) to see the certificate layout.
         </p>
 
-        <div className="flex flex-wrap gap-2 mt-auto">
+        <div className="mt-auto flex items-center gap-2">
           <Button size="sm" className="h-8 text-xs gap-1.5" onClick={onIssue} disabled={template.status !== "active"}>
             <Award className="h-3.5 w-3.5" />
             Issue
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-8 text-xs gap-1.5"
-            onClick={onBulk}
-            disabled={template.status !== "active"}
-          >
-            <Users className="h-3.5 w-3.5" />
-            Bulk
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={onEdit}>
-            <Pencil className="h-3.5 w-3.5" />
-            Edit
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

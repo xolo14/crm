@@ -488,17 +488,17 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
             <TableHeader>
               <TableRow>
                 {hasBulkDelete && <TableHead className="w-12"><Checkbox checked={allSelected ? true : someSelected ? 'indeterminate' : false} onCheckedChange={toggleSelectAll} /></TableHead>}
-                <TableHead className="w-12">#</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Contact</TableHead>
+                <TableHead className={`w-12 ${extraCol}`}>#</TableHead>
+                <TableHead>Student</TableHead>
+                <TableHead className={extraCol}>Contact</TableHead>
                 <TableHead className={extraCol}>Organization</TableHead>
                 <TableHead className={extraCol}>Lead source</TableHead>
                 <TableHead className={extraCol}>Enrolled / registered by</TableHead>
-                <TableHead>Course</TableHead>
-                <TableHead>Batch</TableHead>
+                <TableHead>{showAllCols ? 'Course' : 'Course / batch'}</TableHead>
+                <TableHead className={extraCol}>Batch</TableHead>
                 <TableHead className={extraCol}>College</TableHead>
                 <TableHead>Payment</TableHead>
-                <TableHead>Status</TableHead>
+                <TableHead className={extraCol}>Status</TableHead>
                 <TableHead className={`${extraCol} whitespace-nowrap`}>Enrolled</TableHead>
                 <TableHead className="w-24">Actions</TableHead>
               </TableRow>
@@ -509,9 +509,17 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
               ) : filtered.map((student, index) => (
                 <TableRow key={student.id} className={selectedIds.has(student.id) ? 'bg-muted/50' : ''}>
                   {hasBulkDelete && <TableCell><Checkbox checked={selectedIds.has(student.id)} onCheckedChange={() => toggleSelect(student.id)} /></TableCell>}
-                  <TableCell className="text-muted-foreground text-sm">{index + 1}</TableCell>
-                  <TableCell className="max-w-[11rem] font-medium"><span className="block truncate" title={student.name}>{student.name}</span></TableCell>
-                  <TableCell className="max-w-[13rem]">
+                  <TableCell className={`text-muted-foreground text-sm ${extraCol}`}>{index + 1}</TableCell>
+                  <TableCell className="max-w-[14rem]">
+                    <span className="block truncate font-medium" title={student.name}>{student.name}</span>
+                    {!showAllCols ? (
+                      <>
+                        <span className="block truncate text-xs text-muted-foreground" title={student.email}>{student.email}</span>
+                        <Badge variant="outline" className={stageBadgeClass(student) + ' mt-1 text-[10px] px-1.5 py-0'}>{stageLabel(student)}</Badge>
+                      </>
+                    ) : null}
+                  </TableCell>
+                  <TableCell className={`max-w-[13rem] ${extraCol}`}>
                     <div className="truncate text-sm" title={student.email}>{student.email}</div>
                     <div className="text-xs text-muted-foreground">{student.phone}</div>
                   </TableCell>
@@ -528,12 +536,17 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                       {student.enrolled_by_name || '—'}
                     </div>
                   </TableCell>
-                  <TableCell className="text-sm max-w-[140px]">
+                  <TableCell className="text-sm max-w-[160px]">
                     <div className="truncate" title={String(student.course_name || student.course || '')}>
                       {student.course_name || student.course || '—'}
                     </div>
+                    {!showAllCols && (student.batch_name || student.batch) ? (
+                      <div className="truncate text-xs text-muted-foreground" title={String(student.batch_name || student.batch)}>
+                        {student.batch_name || student.batch}
+                      </div>
+                    ) : null}
                   </TableCell>
-                  <TableCell className="text-sm max-w-[140px]">
+                  <TableCell className={`text-sm max-w-[140px] ${extraCol}`}>
                     <div className="truncate" title={String(student.batch_name || student.batch || '')}>
                       {student.batch_name || student.batch || '—'}
                     </div>
@@ -542,7 +555,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                   <TableCell>
                     <StudentPaymentProgress summary={student.payment_summary} />
                   </TableCell>
-                  <TableCell><Badge variant="outline" className={stageBadgeClass(student) + ' text-xs'}>{stageLabel(student)}</Badge></TableCell>
+                  <TableCell className={extraCol}><Badge variant="outline" className={stageBadgeClass(student) + ' text-xs'}>{stageLabel(student)}</Badge></TableCell>
                   <TableCell className={`text-sm text-muted-foreground whitespace-nowrap ${extraCol}`}>{student.enrollment_date ? fmtDate(student.enrollment_date) : '—'}</TableCell>
                   <TableCell>
                     <div className="flex items-center gap-0.5">

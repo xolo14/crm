@@ -57,8 +57,10 @@ import {
   offerPlaceholderLabel,
 } from '@/lib/offerLetterPlaceholders';
 import {
-  Plus, FileText, Send, Trash2, Edit, Eye, Upload, Download, Loader2, Mail, Copy, Image, Users, X, ChevronLeft, FilePlus, FileSpreadsheet, Variable, Lock, Unlock
+  Plus, FileText, Send, Trash2, Edit, Eye, Upload, Download, Loader2, Mail, Copy, Image, Users, X, ChevronLeft, FilePlus, FileSpreadsheet, Variable, Lock, Unlock,
+  MoreHorizontal,
 } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { format } from 'date-fns';
 import { normalizeAppRole } from '@/lib/roleUtils';
 
@@ -2248,25 +2250,39 @@ export default function OfferLetters() {
               {templates.map(t => (
                 <Card key={t.id} className="group flex h-full flex-col hover:shadow-md transition-shadow">
                   <CardHeader className="pb-3">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <CardTitle className="text-base">{t.template_name}</CardTitle>
-                        <CardDescription className="mt-1">{t.role_title}</CardDescription>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <CardTitle className="truncate text-base" title={t.template_name}>{t.template_name}</CardTitle>
+                        <CardDescription className="mt-1 truncate" title={t.role_title}>{t.role_title || '—'}</CardDescription>
                       </div>
                       <Badge variant={t.status === 'active' ? 'default' : 'secondary'} className="text-[10px]">{t.status}</Badge>
                     </div>
                   </CardHeader>
                   <CardContent className="mt-auto">
                     <p className="text-xs text-muted-foreground mb-3">Updated {fmtDate(t.updated_at)}</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openPreview(t)}><Eye className="h-3 w-3" />Preview</Button>
-                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openEditTemplate(t)}><Edit className="h-3 w-3" />Edit</Button>
-                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void duplicateTemplate(t)}><Copy className="h-3 w-3" />Duplicate</Button>
+                    <div className="flex items-center gap-1.5">
                       <Button size="sm" className="h-7 text-xs gap-1" onClick={() => void openSendDialog(t)}><Send className="h-3 w-3" />Send</Button>
-                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openBulkGenerate(t)}><Users className="h-3 w-3" />Bulk</Button>
-                      {canDeleteLetters && (
-                        <Button variant="ghost" size="sm" className="h-7 text-xs gap-1 text-destructive hover:text-destructive" onClick={() => deleteTemplate(t.id)}><Trash2 className="h-3 w-3" /></Button>
-                      )}
+                      <Button variant="outline" size="sm" className="h-7 text-xs gap-1" onClick={() => void openPreview(t)}><Eye className="h-3 w-3" />Preview</Button>
+                      <DropdownMenu modal={false}>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="sm" className="ml-auto h-7 w-7 p-0" aria-label={`More actions for ${t.template_name}`}>
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-44">
+                          <DropdownMenuItem onSelect={() => void openEditTemplate(t)}><Edit className="mr-2 h-3.5 w-3.5" />Edit</DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => void duplicateTemplate(t)}><Copy className="mr-2 h-3.5 w-3.5" />Duplicate</DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => void openBulkGenerate(t)}><Users className="mr-2 h-3.5 w-3.5" />Bulk generate</DropdownMenuItem>
+                          {canDeleteLetters ? (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => deleteTemplate(t.id)}>
+                                <Trash2 className="mr-2 h-3.5 w-3.5" />Delete
+                              </DropdownMenuItem>
+                            </>
+                          ) : null}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </CardContent>
                 </Card>

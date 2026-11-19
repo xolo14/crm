@@ -681,13 +681,10 @@ export default function CouponsPage() {
               <TableHeader>
                 <TableRow>
                   {showOrgColumn ? <TableHead className="hidden xl:table-cell">Organization</TableHead> : null}
-                  <TableHead>Name</TableHead>
-                  <TableHead>Contact</TableHead>
-                  <TableHead>Discount</TableHead>
-                  <TableHead>Min amount</TableHead>
+                  <TableHead>Person</TableHead>
+                  <TableHead className="whitespace-nowrap">Discount</TableHead>
                   <TableHead>Code</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Expires</TableHead>
                   <TableHead className="hidden xl:table-cell">Created</TableHead>
                   <TableHead className="w-12" />
                 </TableRow>
@@ -698,13 +695,15 @@ export default function CouponsPage() {
                     {showOrgColumn ? (
                       <TableCell className="hidden text-muted-foreground xl:table-cell">{row.org_name || "—"}</TableCell>
                     ) : null}
-                    <TableCell className="max-w-[10rem] font-medium"><span className="block truncate" title={row.name}>{row.name}</span></TableCell>
-                    <TableCell className="max-w-[14rem]">
-                      <span className="block truncate text-sm" title={row.email}>{row.email}</span>
+                    <TableCell className="max-w-[16rem]">
+                      <span className="block truncate font-medium" title={row.name}>{row.name}</span>
+                      <span className="block truncate text-xs text-muted-foreground" title={row.email}>{row.email}</span>
                       <span className="block text-xs text-muted-foreground">{row.phone || "—"}</span>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap tabular-nums">{inr(row.discount)}</TableCell>
-                    <TableCell className="whitespace-nowrap tabular-nums">{inr(row.min_amount)}</TableCell>
+                    <TableCell className="whitespace-nowrap tabular-nums">
+                      <span className="block font-medium">{inr(row.discount)}</span>
+                      <span className="block text-xs text-muted-foreground">min {inr(row.min_amount)}</span>
+                    </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
                         <span className="font-mono text-xs">{row.code}</span>
@@ -720,21 +719,15 @@ export default function CouponsPage() {
                         </Button>
                       </div>
                     </TableCell>
-                    <TableCell className="text-xs">
+                    <TableCell className="whitespace-nowrap text-xs">
                       {couponUsed(row.used_at) ? (
-                        <span className="text-muted-foreground">Used {fmtWhen(String(row.used_at))}</span>
+                        <span className="block text-muted-foreground">Used {fmtWhen(String(row.used_at))}</span>
                       ) : couponExpired(row.expires_at) ? (
-                        <span className="text-destructive">Expired</span>
+                        <span className="block text-destructive">Expired</span>
                       ) : (
-                        <span>Unused</span>
+                        <span className="block">Unused</span>
                       )}
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      {couponExpired(row.expires_at) ? (
-                        <span className="text-destructive">Expired {fmtDateOnly(row.expires_at)}</span>
-                      ) : (
-                        fmtDateOnly(row.expires_at)
-                      )}
+                      <span className="block text-muted-foreground">exp {fmtDateOnly(row.expires_at)}</span>
                     </TableCell>
                     <TableCell className="hidden text-xs xl:table-cell">
                       <span className="block whitespace-nowrap">{row.created_by_name || "—"}</span>
