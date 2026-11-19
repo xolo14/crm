@@ -5693,6 +5693,23 @@ function callRecordingAllowedMimeTypes(): array {
         'audio/webm',
         'audio/ogg',
         'application/pdf',
+        // Android call recorders: finfo reports MP4/3GP containers as video/* even when they
+        // only hold an audio track, AMR-NB/WB as audio/amr, raw AAC as ADTS, Opus as ogg.
+        'video/mp4',
+        'audio/3gpp',
+        'audio/3gpp2',
+        'video/3gpp',
+        'video/3gpp2',
+        'audio/amr',
+        'audio/amr-wb',
+        'audio/x-hx-aac-adts',
+        'audio/x-aac',
+        'application/ogg',
+        'audio/opus',
+        'video/webm',
+        'audio/flac',
+        'audio/x-flac',
+        'audio/vnd.wave',
     ];
 }
 
@@ -5713,6 +5730,21 @@ function callRecordingMimeExtensionMap(): array {
         'audio/webm' => 'webm',
         'audio/ogg' => 'ogg',
         'application/pdf' => 'pdf',
+        'video/mp4' => 'm4a',
+        'audio/3gpp' => '3gp',
+        'audio/3gpp2' => '3g2',
+        'video/3gpp' => '3gp',
+        'video/3gpp2' => '3g2',
+        'audio/amr' => 'amr',
+        'audio/amr-wb' => 'awb',
+        'audio/x-hx-aac-adts' => 'aac',
+        'audio/x-aac' => 'aac',
+        'application/ogg' => 'ogg',
+        'audio/opus' => 'opus',
+        'video/webm' => 'webm',
+        'audio/flac' => 'flac',
+        'audio/x-flac' => 'flac',
+        'audio/vnd.wave' => 'wav',
     ];
 }
 
@@ -5840,11 +5872,11 @@ function saveCallRecordingUpload(?array $file, ?PDO $db = null, ?string $orgId =
         $mime = $finfo->file($tmp) ?: '';
     }
     if ($mime === '' || !in_array($mime, callRecordingAllowedMimeTypes(), true)) {
-        respond(['error' => 'Recording must be audio (mp3, wav, m4a, webm, ogg) or PDF'], 400);
+        respond(['error' => 'Recording must be an audio file (mp3, m4a, aac, amr, 3gp, wav, ogg, opus, webm) or PDF'], 400);
     }
     $ext = syncpediaExtensionForAllowedMime($mime, callRecordingMimeExtensionMap());
     if ($ext === null) {
-        respond(['error' => 'Recording must be audio (mp3, wav, m4a, webm, ogg) or PDF'], 400);
+        respond(['error' => 'Recording must be an audio file (mp3, m4a, aac, amr, 3gp, wav, ogg, opus, webm) or PDF'], 400);
     }
 
     $dirRel = '/uploads/recordings/unknown/unknown';
