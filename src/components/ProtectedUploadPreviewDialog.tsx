@@ -3,6 +3,7 @@ import { Download, Loader2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -269,7 +270,9 @@ export function ProtectedUploadPreviewDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="max-w-[min(92vw,32rem)] max-h-[min(92dvh,100%)] overflow-hidden p-4 sm:p-5 z-[100]"
+        // No z-index override: the shared overlay is z-[150], and forcing this content to z-[100]
+        // put the dimmed backdrop above the player, so every click closed it and stopped playback.
+        className="max-w-[min(92vw,32rem)] max-h-[min(92dvh,100%)] overflow-hidden p-4 sm:p-5"
         onPointerDownOutside={(ev) => {
           // Keep dialog stable while using native audio controls / download
           const t = ev.target as HTMLElement | null;
@@ -290,6 +293,7 @@ export function ProtectedUploadPreviewDialog({
               </span>
             ) : null}
           </DialogTitle>
+          <DialogDescription className="sr-only">Play or download this file.</DialogDescription>
         </DialogHeader>
 
         <div className="flex min-h-[8rem] flex-col items-stretch justify-center gap-3 rounded-lg bg-muted/40 p-3">

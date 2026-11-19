@@ -77,7 +77,7 @@ function StatsGrid({ stats, periodTitle }: { stats: CallLogStats; periodTitle: s
         <span className="text-xs text-muted-foreground">Logged calls come from the call log. Daily reports show reported calls separately.</span>
       </div>
       {/* Wrapping grid: tiles no longer scroll sideways. */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
         <StatCard value={stats.total_calls} label="Logged calls" icon={Phone} />
         <StatCard value={stats.call_duration} label="Call Duration" icon={Clock} />
         <StatCard value={stats.incoming} label="Incoming" icon={PhoneIncoming} labelClass="text-green-500" />
@@ -87,6 +87,7 @@ function StatsGrid({ stats, periodTitle }: { stats: CallLogStats; periodTitle: s
         <StatCard value={stats.missed} label="Missed" icon={PhoneMissed} labelClass="text-red-500" />
         <StatCard value={stats.rejected} label="Rejected" icon={Ban} labelClass="text-red-500" />
         <StatCard value={stats.never_attended} label="Never Attended" icon={Scissors} labelClass="text-red-500" />
+        <StatCard value={stats.not_pickup_by_client ?? 0} label="Not picked up" icon={PhoneMissed} labelClass="text-amber-600" />
         <StatCard value={stats.working_hours} label="Talk Time" icon={Hourglass} />
       </div>
     </div>

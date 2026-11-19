@@ -510,6 +510,50 @@ if ($method === 'GET' && $action === 'daily_report_metrics') {
     ]);
 }
 
+/** Longest plausible single call (4 hours); anything longer is a device clock/log error. */
+const CALL_LOG_MAX_DURATION_SECONDS = 14400;
+
+/** "+91 98765 43210", "09876543210", "919876543210" → "+919876543210"; other shapes kept. */
+function callLogsNormalizePhone(string $raw): string
+{
+    $raw = trim($raw);
+    $digits = preg_replace('/\D+/', '', $raw) ?? '';
+    if (strlen($digits) === 10) {
+        return '+91' . $digits;
+    }
+    if (strlen($digits) === 11 && $digits[0] === '0') {
+        return '+91' . substr($digits, 1);
+    }
+    if (strlen($digits) === 12 && str_starts_with($digits, '91')) {
+        return '+' . $digits;
+    }
+    return $raw;
+}
+
+/** Lead in this org whose phone ends with the same 10 digits (most recent first). */
+function callLogsFindLeadIdByPhone(PDO $db, string $orgId, string $phone): ?string
+{
+    $digits = preg_replace('/\D+/', '', $phone) ?? '';
+    if (strlen($digits) < 10 || $orgId === '') {
+        return null;
+    }
+    $last10 = substr($digits, -10);
+    try {
+        $st = $db->prepare(
+            "SELECT id FROM leads
+              WHERE org_id = ? AND phone LIKE ?
+                AND RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '+', ''), '(', ''), ')', ''), 10) = ?
+              ORDER BY created_at DESC LIMIT 1"
+        );
+        $st->execute([$orgId, '%' . substr($last10, -4), $last10]);
+        $id = $st->fetchColumn();
+        return $id ? (string) $id : null;
+    } catch (Throwable $e) {
+        error_log('[call_logs] lead match: ' . $e->getMessage());
+        return null;
+    }
+}
+
 /** Ensure call_logs.device_call_id exists with a per-rep unique key (idempotent mobile uploads). */
 function callLogsEnsureDeviceCallId(PDO $db): bool
 {
@@ -560,6 +604,10 @@ if ($method === 'POST' && $action === 'add_log') {
         respond(['error' => 'call_date required'], 400);
     }
     $duration = max(0, (int) ($input['duration_seconds'] ?? 0));
+    if ($duration > CALL_LOG_MAX_DURATION_SECONDS) {
+        error_log('[call_logs] implausible duration ' . $duration . 's stored as 0');
+        $duration = 0;
+    }
     if (in_array($callType, ['missed', 'rejected'], true) && $duration > 0) {
         $duration = 0;
     }
@@ -622,6 +670,16 @@ if ($method === 'POST' && $action === 'add_log') {
             $clientPhone = $lfPhone;
         }
     }
+    if ($clientPhone !== null) {
+        $clientPhone = callLogsNormalizePhone($clientPhone);
+    }
+    if ($leadId === null && $clientPhone !== null) {
+        // Calls synced from the phone carry only a number; link them to the org's lead with
+        // that number so they show on the lead's history and the Lead Status column. This
+        // only links — it never blocks the upload, and it skips the explicit-lead scope check
+        // above on purpose (the rep logged a real call to that number).
+        $leadId = callLogsFindLeadIdByPhone($db, (string) $orgId, $clientPhone);
+    }
 
     $attachPath = null;
     if ($multipart) {
@@ -667,6 +725,21 @@ if ($method === 'POST' && $action === 'add_log') {
             $q0 = $db->prepare('SELECT cl.*, u.full_name AS sales_rep_name, l.name AS lead_name, l.status AS lead_status FROM call_logs cl LEFT JOIN users u ON u.id = cl.sales_rep_id LEFT JOIN leads l ON l.id = cl.lead_id WHERE cl.id = ?');
             $q0->execute([$existingId]);
             respond(['success' => true, 'duplicate' => true, 'log' => $q0->fetch(PDO::FETCH_ASSOC)]);
+        }
+    }
+
+    if (!$hasDeviceKey && $clientPhone !== null && $callTime !== null) {
+        $sameCall = $db->prepare(
+            "SELECT id FROM call_logs
+              WHERE sales_rep_id = ? AND call_date = ? AND call_time = ?
+                AND client_phone = ? AND COALESCE(duration_seconds, 0) = ?
+              LIMIT 1"
+        );
+        $sameCall->execute([$repId, $callDate, $dupTime, $clientPhone, $duration]);
+        if ($sameCall->fetchColumn()) {
+            // Older app versions re-sent calls without a device id; this was the source of
+            // ~190 duplicate rows. Success (not 409) so the phone marks the call synced.
+            respond(['success' => true, 'duplicate' => true]);
         }
     }
 
@@ -893,7 +966,7 @@ if ($method === 'GET' && $action === 'get_logs') {
          LEFT JOIN users u ON u.id = cl.sales_rep_id
          LEFT JOIN leads l ON l.id = cl.lead_id
          WHERE $whereFull
-         ORDER BY cl.call_date DESC, cl.id DESC
+         ORDER BY cl.call_date DESC, cl.call_time DESC, cl.id DESC
          LIMIT $limit OFFSET $offset"
     );
     try {
@@ -907,7 +980,7 @@ if ($method === 'GET' && $action === 'get_logs') {
              LEFT JOIN users u ON u.id = cl.sales_rep_id
              LEFT JOIN leads l ON l.id = cl.lead_id
              WHERE $whereFull
-             ORDER BY cl.call_date DESC, cl.id DESC
+             ORDER BY cl.call_date DESC, cl.call_time DESC, cl.id DESC
              LIMIT $limit OFFSET $offset"
         );
         $lst->execute($params);

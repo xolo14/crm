@@ -412,11 +412,69 @@ if ($mime === 'application/octet-stream' || $mime === 'text/plain' || $mime === 
     }
 }
 
+// Real HTTP Range support (206 Partial Content). We used to advertise Accept-Ranges but
+// always send the whole file, which Safari / iOS reject for <audio>, so recordings would
+// not play or seek there. Cache privately for an hour instead of no-store so replays and
+// seeks don't re-download the whole recording (the URL still needs the login cookie).
+$size = (int) filesize($abs);
+$start = 0;
+$end = $size - 1;
+$partial = false;
+$rangeHeader = (string) ($_SERVER['HTTP_RANGE'] ?? '');
+if ($size > 0 && preg_match('/^bytes=(\d*)-(\d*)$/', trim($rangeHeader), $rm)) {
+    if ($rm[1] === '' && $rm[2] !== '') {
+        // "bytes=-N": the last N bytes
+        $start = max(0, $size - (int) $rm[2]);
+    } else {
+        $start = (int) $rm[1];
+        if ($rm[2] !== '') {
+            $end = min((int) $rm[2], $size - 1);
+        }
+    }
+    if ($start > $end || $start >= $size) {
+        if (ob_get_level() > 0) {
+            @ob_end_clean();
+        }
+        http_response_code(416);
+        header('Content-Range: bytes */' . $size);
+        exit;
+    }
+    $partial = true;
+}
+
+while (ob_get_level() > 0) {
+    @ob_end_clean();
+}
 header('Content-Type: ' . $mime);
-header('Content-Length: ' . (string) filesize($abs));
 header('X-Content-Type-Options: nosniff');
 header('Content-Disposition: inline; filename="' . basename($abs) . '"');
 header('Accept-Ranges: bytes');
-header('Cache-Control: private, no-store');
-readfile($abs);
+header_remove('Pragma');
+header('Cache-Control: private, max-age=3600');
+if ($partial) {
+    http_response_code(206);
+    header('Content-Range: bytes ' . $start . '-' . $end . '/' . $size);
+}
+$length = $end - $start + 1;
+header('Content-Length: ' . (string) max(0, $length));
+
+$fh = @fopen($abs, 'rb');
+if ($fh === false) {
+    http_response_code(500);
+    exit;
+}
+if ($start > 0) {
+    fseek($fh, $start);
+}
+$remaining = $length;
+while ($remaining > 0 && !feof($fh)) {
+    $chunk = fread($fh, (int) min(65536, $remaining));
+    if ($chunk === false || $chunk === '') {
+        break;
+    }
+    echo $chunk;
+    $remaining -= strlen($chunk);
+    flush();
+}
+fclose($fh);
 exit;
