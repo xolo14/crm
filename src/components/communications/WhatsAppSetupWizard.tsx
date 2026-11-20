@@ -511,7 +511,7 @@ export default function WhatsAppSetupWizard({
 
               <span className="font-medium">Callback URL:</span>{" "}
 
-              <code className="break-all">{existingConfig?.webhook_url_suggested || "https://your-domain.com/api/whatsapp/webhook"}</code>
+              <code className="break-all">{existingConfig?.webhook_url_suggested || `${window.location.origin}/api/whatsapp/webhook`}</code>
 
             </div>
 
