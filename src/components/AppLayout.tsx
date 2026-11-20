@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
   LayoutDashboard, Users, GraduationCap, BookOpen, Layers,
-  BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, ChevronDown, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, CalendarRange, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone, Tag, Video
+  BarChart2, Settings, LogOut, ChevronLeft, ChevronRight, Menu, CheckSquare, TrendingUp, FileText, ClipboardList, Bell, Mail, MessageSquare, CalendarDays, CalendarRange, FileCheck, Building2, Trash2, Award, UserCheck, PhoneCall, Receipt, Link2, IndianRupee, ClipboardCheck, Megaphone, Tag, Video
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import syncpediaLogoTransparent from '@/assets/syncpedia-logo-transparent.png';
@@ -281,9 +281,9 @@ const NAV_GROUP_ORDER: Record<NavGroupKey, string[]> = {
     '/my-referrals', '/daily-reports', '/communications',
     '/marketing-admin', '/marketing/portal', '/marketing/whatsapp', '/marketing/meta-ads',
   ],
-  academics: ['/students', '/courses', '/batches', '/live-classes', '/timetables', '/assessments', '/certificates'],
+  academics: ['/students', '/courses', '/batches', '/live-classes', '/timetables', '/assessments'],
   revenue: ['/payments/records', '/payments', '/coupons'],
-  people: ['/team', '/offer-letters', '/video-intros', '/payslip', '/fresher-salary-tracker', '/holidays'],
+  people: ['/team', '/offer-letters', '/certificates', '/video-intros', '/payslip', '/fresher-salary-tracker', '/holidays'],
   other: ['/notifications', '/tasks', '/settings', '/trash'],
 };
 
@@ -295,17 +295,6 @@ function navGroupOf(path: string): { key: NavGroupKey; rank: number } {
   return { key: 'overview', rank: 99 };
 }
 
-const NAV_COLLAPSED_GROUPS_KEY = 'crm_nav_collapsed_groups';
-
-function readCollapsedGroups(): Set<string> {
-  try {
-    const raw = JSON.parse(localStorage.getItem(NAV_COLLAPSED_GROUPS_KEY) || '[]');
-    return new Set(Array.isArray(raw) ? raw.map(String) : []);
-  } catch {
-    return new Set();
-  }
-}
-
 function SidebarNavItem({ item, collapsed, role, organization, pageAccess, currentPath, onNavigate, showNewBadge, fresherEnrolled, hasAssignedAssignments }: { item: NavItem; collapsed: boolean; role: string | null; organization: { slug?: string | null; features?: Record<string, boolean> | null } | null; pageAccess?: PageAccess | null; currentPath: string; onNavigate?: () => void; showNewBadge: boolean; fresherEnrolled?: boolean; hasAssignedAssignments?: boolean }) {
   const hasChildren = item.children && item.children.length > 0;
   const filteredChildren = hasChildren
@@ -313,8 +302,8 @@ function SidebarNavItem({ item, collapsed, role, organization, pageAccess, curre
     : [];
   const isActive = currentPath === item.to || (item.to === '/assessments' && currentPath === '/assignments');
   const isChildActive = filteredChildren.some(c => currentPath === c.to);
-  const open = isActive || isChildActive || currentPath.startsWith(item.to + '/');
 
+  // Sub-pages are always listed under their parent: nothing in the sidebar is hidden behind an arrow.
   if (hasChildren && filteredChildren.length > 0 && !collapsed) {
     return (
       <div>
@@ -338,15 +327,8 @@ function SidebarNavItem({ item, collapsed, role, organization, pageAccess, curre
               </span>
             )}
           </NavLink>
-          <NavLink
-            to={item.to}
-            className="p-1.5 rounded-md text-sidebar-foreground/50 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
-          >
-            <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
-          </NavLink>
         </div>
-        {open && (
-          <div className="ml-4 mt-0.5 space-y-0.5 border-l border-sidebar-border pl-2">
+        <div className="ml-4 mt-0.5 space-y-0.5 border-l border-sidebar-border pl-2">
             {filteredChildren.map(child => (
               <NavLink
                 key={child.to}
@@ -363,8 +345,7 @@ function SidebarNavItem({ item, collapsed, role, organization, pageAccess, curre
                 <span>{child.label}</span>
               </NavLink>
             ))}
-          </div>
-        )}
+        </div>
       </div>
     );
   }
@@ -542,20 +523,6 @@ function SidebarContent({
     }
     return out;
   }, [groupedNav, role, organization, pageAccess, fresherAccess.enrolled, hasAssignedAssignments]);
-  const [collapsedGroups, setCollapsedGroups] = React.useState<Set<string>>(() => readCollapsedGroups());
-  const toggleGroup = (key: string) => {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      try {
-        localStorage.setItem(NAV_COLLAPSED_GROUPS_KEY, JSON.stringify([...next]));
-      } catch {
-        /* storage unavailable: keep in-memory state */
-      }
-      return next;
-    });
-  };
   const [showNewBadge, setShowNewBadge] = React.useState<boolean>(
     !localStorage.getItem("cert_nav_seen")
   );
@@ -614,34 +581,20 @@ function SidebarContent({
 
       {enableCommandPalette ? <CommandPalette pages={commandPages} /> : null}
       <nav className="flex-1 py-2 px-2 overflow-y-auto pb-3" aria-label="Main navigation">
-        {groupedNav.map(({ group, items }, gi) => {
-          const containsActive = items.some(
-            (it) => currentPath === it.to || (it.to !== '/' && currentPath.startsWith(it.to + '/')),
-          );
-          const isClosed = !collapsed && collapsedGroups.has(group.key) && !containsActive;
-          return (
-            <div key={group.key} className={cn(gi > 0 && (collapsed ? 'mt-2 pt-2 border-t border-sidebar-border' : 'mt-3'))}>
-              {!collapsed && (
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(group.key)}
-                  aria-expanded={!isClosed}
-                  className="flex w-full items-center justify-between rounded-md px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/45 hover:text-sidebar-foreground/80"
-                >
-                  <span>{group.label}</span>
-                  <ChevronDown className={cn('h-3 w-3 transition-transform', isClosed && '-rotate-90')} />
-                </button>
-              )}
-              {!isClosed && (
-                <div className="space-y-0.5">
-                  {items.map((item) => (
-                    <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} fresherEnrolled={fresherAccess.enrolled} hasAssignedAssignments={hasAssignedAssignments} />
-                  ))}
-                </div>
-              )}
+        {groupedNav.map(({ group, items }, gi) => (
+          <div key={group.key} className={cn(gi > 0 && (collapsed ? 'mt-2 pt-2 border-t border-sidebar-border' : 'mt-3'))}>
+            {!collapsed && (
+              <p className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/45">
+                {group.label}
+              </p>
+            )}
+            <div className="space-y-0.5">
+              {items.map((item) => (
+                <SidebarNavItem key={item.to} item={item} collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} currentPath={currentPath} onNavigate={onNavigate} showNewBadge={showNewBadge} fresherEnrolled={fresherAccess.enrolled} hasAssignedAssignments={hasAssignedAssignments} />
+              ))}
             </div>
-          );
-        })}
+          </div>
+        ))}
       </nav>
     </div>
   );
