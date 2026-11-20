@@ -155,7 +155,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setOrganization(me.organization ?? null);
   }, []);
 
-  const role = user?.role ?? null;
+  // Org admins are stored as the legacy role "admin" on older accounts; pages compare
+  // against "org", so normalise here once (otherwise e.g. Leads hides Export and Folders).
+  const role = (() => {
+    const raw = user?.role ?? null;
+    if (raw == null) return null;
+    const r = String(raw).trim().toLowerCase();
+    return r === "admin" || r === "organisation" ? "org" : raw;
+  })();
 
   const hasFeature = useCallback(
     (feature: string) => isOrgFeatureEnabled(role, organization, feature),
