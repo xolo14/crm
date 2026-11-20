@@ -37,6 +37,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -5083,15 +5093,25 @@ function IssuedCertificatesTable({
 }) {
   const { toast } = useToast();
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState(false);
   const [previewCertId, setPreviewCertId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!confirmRevokeId) return;
-    const t = window.setTimeout(() => setConfirmRevokeId(null), 2500);
-    return () => window.clearTimeout(t);
-  }, [confirmRevokeId]);
-
   const previewCert = useMemo(() => issuedCerts.find((c) => c.id === previewCertId) || null, [issuedCerts, previewCertId]);
+  const revokeCert = useMemo(() => issuedCerts.find((c) => c.id === confirmRevokeId) || null, [issuedCerts, confirmRevokeId]);
+
+  const confirmRevoke = async () => {
+    if (!revokeCert || revoking) return;
+    setRevoking(true);
+    try {
+      await onRevoke(revokeCert.id);
+      toast({ title: "Certificate revoked", description: `${revokeCert.id} is now marked revoked.` });
+      setConfirmRevokeId(null);
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Revoke failed", description: e?.message || "Unable to revoke certificate." });
+    } finally {
+      setRevoking(false);
+    }
+  };
 
   return (
     <>
@@ -5168,25 +5188,14 @@ function IssuedCertificatesTable({
                         <Button
                           variant="ghost"
                           size="sm"
-                          className={cn("h-7 text-xs", confirmRevokeId === c.id ? "text-destructive hover:text-destructive" : "text-muted-foreground")}
+                          className="h-7 text-xs text-muted-foreground"
                           onClick={() => {
                             if (c.status !== "issued") return;
-                            if (confirmRevokeId === c.id) {
-                              onRevoke(c.id)
-                                .then(() => {
-                                  setConfirmRevokeId(null);
-                                  toast({ title: "Revoked", description: "Certificate marked revoked." });
-                                })
-                                .catch((e: any) => {
-                                  toast({ variant: "destructive", title: "Revoke failed", description: e?.message || "Unable to revoke certificate." });
-                                });
-                              return;
-                            }
                             setConfirmRevokeId(c.id);
                           }}
                           disabled={c.status !== "issued"}
                         >
-                          {confirmRevokeId === c.id ? "Confirm revoke" : "Revoke"}
+                          Revoke
                         </Button>
                         {canDelete && onDelete ? (
                           <Button
@@ -5223,6 +5232,43 @@ function IssuedCertificatesTable({
           </div>
         </CardContent>
       </Card>
+
+      <AlertDialog open={!!confirmRevokeId} onOpenChange={(o) => !o && !revoking && setConfirmRevokeId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Revoke this certificate?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                {revokeCert ? (
+                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-foreground">
+                    <div className="font-medium">{revokeCert.recipientName}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {revokeCert.id} · {revokeCert.courseName}
+                    </div>
+                  </div>
+                ) : null}
+                <p>
+                  Anyone who checks this certificate ID on the verification page will see it as <strong>revoked</strong>. The
+                  action is recorded in Audit Logs.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={revoking}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={revoking}
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmRevoke();
+              }}
+            >
+              {revoking ? "Revoking…" : "Yes, revoke"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Dialog open={!!previewCertId} onOpenChange={(o) => !o && setPreviewCertId(null)}>
         <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)]">
