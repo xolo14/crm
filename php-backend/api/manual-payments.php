@@ -504,6 +504,14 @@ function manualPaymentsFetchPendingForApprover(PDO $db, array $tokenData): array
         }));
     }
 
+    // Tell the UI which pending rows this reviewer may approve/reject (same rule the approve action enforces).
+    foreach ($rows as &$r) {
+        $r['can_review'] = (string) ($r['status'] ?? '') === 'pending'
+            ? manualPaymentsCanApprove($db, $tokenData, $r)
+            : false;
+    }
+    unset($r);
+
     return $rows;
 }
 
@@ -559,6 +567,14 @@ function manualPaymentsFetchAllForApprover(PDO $db, array $tokenData): array
             return $sr !== 'manager' && $sr !== 'admin' && $sr !== 'org' && $sr !== 'super_admin';
         }));
     }
+
+    // Tell the UI which pending rows this reviewer may approve/reject (same rule the approve action enforces).
+    foreach ($rows as &$r) {
+        $r['can_review'] = (string) ($r['status'] ?? '') === 'pending'
+            ? manualPaymentsCanApprove($db, $tokenData, $r)
+            : false;
+    }
+    unset($r);
 
     return $rows;
 }

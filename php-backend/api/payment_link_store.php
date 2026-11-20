@@ -758,7 +758,8 @@ function paymentLinkListCrmRows(?int $fromUnix = null, ?int $toUnix = null, int 
 
     $sql = 'SELECT razorpay_payment_link_id, customer_name, customer_email, customer_phone,
                    amount, currency, amount_paid, status, description, reference_id,
-                   razorpay_short_url, expire_by, notes, salesperson_id, created_at, updated_at
+                   razorpay_short_url, expire_by, notes, salesperson_id, created_at, updated_at,
+                   (SELECT u.full_name FROM users u WHERE u.id = payment_links.salesperson_id LIMIT 1) AS salesperson_full_name
             FROM payment_links WHERE deleted_at IS NULL';
     $params = [];
     if ($accessScope !== null) {
@@ -795,6 +796,11 @@ function paymentLinkCrmRowToRazorpayShape(array $row): array
     $spId = trim((string) ($row['salesperson_id'] ?? ''));
     if ($spId !== '') {
         $notes['salesperson_id'] = $spId;
+    }
+    // Creator's name for views whose team roster does not include them (e.g. operational manager).
+    $spName = trim((string) ($row['salesperson_full_name'] ?? ''));
+    if ($spName !== '' && trim((string) ($notes['salesperson_name'] ?? '')) === '') {
+        $notes['salesperson_name'] = $spName;
     }
 
     $createdAt = 0;

@@ -374,6 +374,8 @@ export interface ManualPaymentRow {
   customer_name?: string | null;
   proof_path?: string | null;
   notes?: string | null;
+  /** Set by the approvals endpoint: false when this reviewer may not act (e.g. a manager's own submission). */
+  can_review?: boolean;
 }
 
 /** Merge approved manual payments into member summaries (rupees → paise). */

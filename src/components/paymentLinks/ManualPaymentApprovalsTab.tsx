@@ -276,7 +276,12 @@ export default function ManualPaymentApprovalsTab({
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
-                        {row.status === "pending" ? (
+                        {row.status === "pending" && row.can_review === false ? (
+                          <span className="text-xs text-muted-foreground" title="Payments submitted by a manager are approved by an admin">
+                            Needs admin
+                          </span>
+                        ) : null}
+                        {row.status === "pending" && row.can_review !== false ? (
                           <>
                             <Button
                               size="sm"
