@@ -61,6 +61,35 @@ if (count($orgRows) !== 1) {
 $ORG = (string) $orgRows[0]['id'];
 echo "Organization: {$orgRows[0]['name']} ({$orgRows[0]['slug']})\n";
 
+// ── Demo HR members: Form Management (HR forms) + Offer Letters ──────────
+// Same as an admin ticking them in Team → Configure pages. Idempotent.
+$hrSt = $db->prepare(
+    "SELECT u.id, u.full_name, u.page_access_json
+       FROM users u
+       JOIN demo_seed_registry r ON r.tbl = 'users' AND r.row_id COLLATE utf8mb4_unicode_ci = u.id AND r.batch = ? AND r.org_id = ?
+      WHERE u.role = 'hr'"
+);
+$hrSt->execute([MKT_SEED_BATCH, $ORG]);
+$hrPages = [
+    'dashboard' => true, 'my_leads' => true, 'assigned_leads' => true, 'tasks' => true, 'reports' => true,
+    'notifications' => true, 'holidays' => true, 'settings' => true,
+    'offer_letters' => true, 'form_management' => true, 'communications' => false,
+];
+foreach ($hrSt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $hr) {
+    $cur = json_decode((string) ($hr['page_access_json'] ?? ''), true);
+    if (is_array($cur) && !empty($cur['pages']['form_management']) && !empty($cur['pages']['offer_letters'])) {
+        echo "HR {$hr['full_name']}: Form Management + Offer Letters already granted\n";
+        continue;
+    }
+    if ($apply) {
+        $db->prepare('UPDATE users SET page_access_json = ? WHERE id = ?')->execute([
+            json_encode(['payments' => false, 'offer_letters' => true, 'pages' => $hrPages], JSON_UNESCAPED_UNICODE),
+            $hr['id'],
+        ]);
+    }
+    echo "HR {$hr['full_name']}: " . ($apply ? 'granted' : 'would grant') . " Form Management + Offer Letters\n";
+}
+
 // ── Seeded marketing member ─────────────────────────────────────────────
 $st = $db->prepare(
     "SELECT u.id, u.full_name, u.email, u.referral_code
