@@ -65,7 +65,7 @@ echo "Organization: {$orgRows[0]['name']} ({$orgRows[0]['slug']})\n";
 $st = $db->prepare(
     "SELECT u.id, u.full_name, u.email, u.referral_code
        FROM users u
-       JOIN demo_seed_registry r ON r.tbl = 'users' AND r.row_id = u.id AND r.batch = ? AND r.org_id = ?
+       JOIN demo_seed_registry r ON r.tbl = 'users' AND r.row_id COLLATE utf8mb4_unicode_ci = u.id AND r.batch = ? AND r.org_id = ?
       WHERE u.role = 'marketing'
       ORDER BY u.created_at ASC LIMIT 1"
 );
@@ -80,7 +80,7 @@ $code = trim((string) ($mk['referral_code'] ?? ''));
 echo "Marketing member: {$mk['full_name']} <{$mk['email']}> referral code: " . ($code !== '' ? $code : '(none)') . "\n";
 
 // Already done?
-$chk = $db->prepare("SELECT COUNT(*) FROM demo_seed_registry r JOIN email_campaigns c ON c.id = r.row_id
+$chk = $db->prepare("SELECT COUNT(*) FROM demo_seed_registry r JOIN email_campaigns c ON c.id = r.row_id COLLATE utf8mb4_unicode_ci
                       WHERE r.batch = ? AND r.org_id = ? AND r.tbl = 'email_campaigns' AND c.created_by = ?");
 try {
     $chk->execute([MKT_SEED_BATCH, $ORG, $MK]);
@@ -166,7 +166,7 @@ try {
     $leadSt = $db->prepare(
         "SELECT l.id, l.name, l.email, l.phone, l.source, l.created_at
            FROM leads l
-           JOIN demo_seed_registry r ON r.tbl = 'leads' AND r.row_id = l.id AND r.batch = ? AND r.org_id = ?
+           JOIN demo_seed_registry r ON r.tbl = 'leads' AND r.row_id COLLATE utf8mb4_unicode_ci = l.id AND r.batch = ? AND r.org_id = ?
           WHERE (l.referred_by IS NULL OR l.referred_by = '')
             AND (l.source LIKE 'form\\_%' OR l.source IN ('instagram', 'google_ads', 'website', 'facebook', 'youtube'))
             AND l.source NOT IN ('form_internship-application')
@@ -187,7 +187,7 @@ try {
     $phones = array_values(array_filter(array_map(static fn($l) => trim((string) ($l['phone'] ?? '')), $myLeads)));
     if (count($emails) < 40 || count($phones) < 40) {
         // Fall back to any seeded leads for recipients.
-        $more = $db->prepare("SELECT l.email, l.phone FROM leads l JOIN demo_seed_registry r ON r.tbl = 'leads' AND r.row_id = l.id
+        $more = $db->prepare("SELECT l.email, l.phone FROM leads l JOIN demo_seed_registry r ON r.tbl = 'leads' AND r.row_id COLLATE utf8mb4_unicode_ci = l.id
                                AND r.batch = ? AND r.org_id = ? ORDER BY l.created_at DESC LIMIT 300");
         $more->execute([MKT_SEED_BATCH, $ORG]);
         foreach ($more->fetchAll(PDO::FETCH_ASSOC) ?: [] as $m) {
