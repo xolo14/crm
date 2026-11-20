@@ -6,7 +6,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import WhatsAppInbox from "@/components/WhatsApp/WhatsAppInbox";
 
-const ALLOWED = new Set(["super_admin", "admin", "org", "manager", "sales_representative", "sales_rep", "marketing"]);
+// Same roles the inbox API serves (commOrgOpsRoles + reps/marketing); OM sees the sidebar link too.
+const ALLOWED = new Set(["super_admin", "admin", "org", "manager", "operational_manager", "sales_representative", "sales_rep", "marketing"]);
 
 export default function WhatsAppInboxPage() {
   const { user } = useAuth();

@@ -4,6 +4,7 @@
  * - Manager / Operational Manager: subset granted by org admin via users.page_access_json.pages.
  */
 import {
+  FEATURE_CERTIFICATES,
   FEATURE_COMMUNICATIONS,
   FEATURE_COUPONS,
   FEATURE_LIVE_CLASSES,
@@ -54,6 +55,7 @@ export const OPERATIONAL_MANAGER_DEFAULT_ON_PAGE_KEYS: readonly string[] = [
   FEATURE_LIVE_CLASSES,
   FEATURE_COMMUNICATIONS,
   FEATURE_OFFER_LETTERS,
+  FEATURE_CERTIFICATES,
   FEATURE_MARKETING,
   "tasks",
   "notifications",
