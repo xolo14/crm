@@ -663,6 +663,15 @@ if ($method === 'PUT') {
     // Update features
     if (!empty($_GET['action']) && $_GET['action'] === 'features') {
         $features = $input['features'] ?? [];
+        $auditOldFeatures = [];
+        try {
+            $afs = $db->prepare('SELECT feature, enabled FROM org_features WHERE org_id = ?');
+            $afs->execute([$id]);
+            foreach ($afs->fetchAll(PDO::FETCH_ASSOC) as $afr) {
+                $auditOldFeatures[(string) $afr['feature']] = (bool) $afr['enabled'];
+            }
+        } catch (Throwable $e) {
+        }
         foreach ($features as $feat => $enabled) {
             if (!syncpediaIsAllowedOrgFeature((string) $feat)) {
                 continue;
@@ -692,6 +701,25 @@ if ($method === 'PUT') {
             $stmt = $db->prepare("INSERT INTO org_features (id, org_id, feature, enabled) VALUES (?, ?, ?, ?) {$upsert}");
             $stmt->execute([generateUUID(), $id, $feat, $bool ? 1 : 0]);
         }
+        $auditOn = [];
+        $auditOff = [];
+        foreach ((array) $features as $feat => $enabled) {
+            if (!syncpediaIsAllowedOrgFeature((string) $feat)) {
+                continue;
+            }
+            $nb = filter_var($enabled, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            $nb = $nb === null ? !empty($enabled) : $nb;
+            if (!array_key_exists((string) $feat, $auditOldFeatures) || $auditOldFeatures[(string) $feat] !== $nb) {
+                if ($nb) {
+                    $auditOn[] = (string) $feat;
+                } else {
+                    $auditOff[] = (string) $feat;
+                }
+            }
+        }
+        if ($auditOn !== [] || $auditOff !== []) {
+            syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $id]), 'updated', 'organization_features', $id, 'Organization features changed' . ($auditOn !== [] ? ' — turned on: ' . implode(', ', $auditOn) : '') . ($auditOff !== [] ? ' — turned off: ' . implode(', ', $auditOff) : ''));
+        }
         respond(['message' => 'Features updated']);
     }
     
@@ -708,6 +736,7 @@ if ($method === 'PUT') {
     $params[] = $id;
     $stmt = $db->prepare("UPDATE organizations SET " . implode(', ', $fields) . " WHERE id = ?");
     $stmt->execute($params);
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $id]), 'updated', 'organization', $id, 'Updated organization ' . syncpediaAuditLabel($db, 'organizations', $id, ['name']) . ': ' . implode(', ', array_map(static fn($f) => explode(' ', $f)[0], $fields)));
     respond(['message' => 'Organization updated']);
 }
 
@@ -716,6 +745,7 @@ if ($method === 'DELETE') {
     $id = $_GET['id'] ?? '';
     if (!$id) respond(['error' => 'ID required'], 400);
     
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'organization', $id, 'Deleted organization ' . syncpediaAuditLabel($db, 'organizations', $id, ['name', 'slug']));
     $db->prepare("DELETE FROM organizations WHERE id = ?")->execute([$id]);
     respond(['message' => 'Organization deleted']);
 }

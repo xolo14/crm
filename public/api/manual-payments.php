@@ -199,6 +199,7 @@ if ($method === 'POST' && ($action === '' || $action === 'create')) {
             $installmentNumber,
         ]);
 
+        syncpediaAuditLog($db, $tokenData, 'created', 'payment', (string) $id, 'Recorded ₹' . number_format((float) $amount, 2) . ' ' . $paymentMethod . ' payment for ' . $customerName . ($needsApproval ? ' (pending approval)' : ' (approved)'));
         $row = manualPaymentsFetchById($db, $id);
         respond([
             'data' => $row,
@@ -248,6 +249,7 @@ if ($method === 'POST' && in_array($action, ['approve', 'reject'], true)) {
     if ($st->rowCount() < 1) {
         respond(['error' => 'Payment was already reviewed'], 409);
     }
+    syncpediaAuditLog($db, $tokenData, $newStatus, 'payment', (string) $id, ($newStatus === 'approved' ? 'Approved' : 'Rejected') . ' ₹' . number_format((float) ($row['amount'] ?? 0), 2) . ' payment for ' . (string) ($row['customer_name'] ?? '') . ($notes !== '' ? ' — ' . $notes : ''));
     respond([
         'data' => manualPaymentsFetchById($db, $id),
         'message' => $newStatus === 'approved' ? 'Payment approved' : 'Payment rejected',
@@ -282,6 +284,7 @@ if ($method === 'DELETE' && $action === 'delete') {
         respond(['error' => 'Delete failed'], 400);
     }
     deletePaymentProofIfExists((string) ($row['proof_path'] ?? ''));
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'payment', (string) $id, 'Deleted ₹' . number_format((float) ($row['amount'] ?? 0), 2) . ' payment record for ' . (string) ($row['customer_name'] ?? ''));
     respond(['message' => 'Payment record deleted']);
 }
 

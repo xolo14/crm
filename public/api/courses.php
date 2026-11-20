@@ -200,6 +200,7 @@ if ($method === 'POST' && ($_GET['action'] ?? '') === 'bulk') {
 
  }
 
+ syncpediaAuditLog($db, $tokenData, 'imported', 'course', null, 'Imported courses: ' . (int) $created . ' created, ' . (is_array($skipped) ? count($skipped) : (int) $skipped) . ' skipped');
  respond([
 
  'message' => 'Import complete',
@@ -284,6 +285,7 @@ if ($method === 'POST') {
 
  }
 
+ syncpediaAuditLog($db, $tokenData, 'created', 'course', (string) $id, 'Created course ' . syncpediaAuditLabel($db, 'courses', (string) $id, ['name']));
  respond(['id' => $id, 'message' => 'Course created'], 201);
 
 }
@@ -344,6 +346,7 @@ if ($method === 'PUT') {
 
  }
 
+ syncpediaAuditLog($db, $tokenData, 'updated', 'course', (string) $id, 'Updated course ' . syncpediaAuditLabel($db, 'courses', (string) $id, ['name']));
  respond(['message' => 'Course updated']);
 
 }
@@ -374,12 +377,14 @@ if ($method === 'DELETE') {
 
 
 
+ $auditLabel = syncpediaAuditLabel($db, 'courses', (string) $id, ['name']);
  trashArchiveRow($db, 'course', 'courses', $id, $tokenData);
 
  $stmt = $db->prepare("DELETE FROM courses WHERE id = ?");
 
  $stmt->execute([$id]);
 
+ syncpediaAuditLog($db, $tokenData, 'deleted', 'course', (string) $id, 'Deleted course ' . $auditLabel . ' (moved to Trash)');
  respond(['message' => 'Course deleted']);
 
 }

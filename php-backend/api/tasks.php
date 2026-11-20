@@ -119,6 +119,7 @@ if ($method === 'PUT') {
         }
     }
 
+    syncpediaAuditLog($db, $tokenData, 'updated', 'task', (string) $id, 'Updated task ' . syncpediaAuditLabel($db, 'tasks', (string) $id, ['title', 'status']));
     respond(['message' => 'Task updated']);
 }
 
@@ -132,8 +133,10 @@ if ($method === 'DELETE') {
         respond(['error' => 'Task not found'], 404);
     }
     trashArchivePayload($db, 'task', $taskRow, $tokenData);
+    $auditLabel = syncpediaAuditLabel($db, 'tasks', (string) $id, ['title']);
     $stmt = $db->prepare('DELETE FROM tasks WHERE id = ?');
     $stmt->execute([$id]);
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'task', (string) $id, 'Deleted task ' . $auditLabel);
     respond(['message' => 'Task deleted']);
 }
 

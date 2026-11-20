@@ -7,8 +7,20 @@ const actionLabelMap: Record<string, string> = {
   updated: "Updated",
   deleted: "Deleted",
   restored: "Restored",
-  logged_in: "Logged in",
+  status_updated: "Status changed",
+  assigned: "Assigned",
+  imported: "Imported",
+  sent: "Sent",
+  issued: "Issued",
+  revoked: "Revoked",
+  approved: "Approved",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+  connected: "Connected",
+  disconnected: "Disconnected",
   exported: "Exported",
+  logged_in: "Logged in",
+  updated_profile: "Profile updated",
 };
 
 const actionColorMap: Record<string, string> = {
@@ -16,9 +28,64 @@ const actionColorMap: Record<string, string> = {
   updated: "bg-blue-100 text-blue-700",
   deleted: "bg-red-100 text-red-700",
   restored: "bg-purple-100 text-purple-700",
-  logged_in: "bg-gray-100 text-gray-700",
+  status_updated: "bg-sky-100 text-sky-700",
+  assigned: "bg-indigo-100 text-indigo-700",
+  imported: "bg-teal-100 text-teal-700",
+  sent: "bg-cyan-100 text-cyan-700",
+  issued: "bg-emerald-100 text-emerald-700",
+  revoked: "bg-rose-100 text-rose-700",
+  approved: "bg-green-100 text-green-700",
+  rejected: "bg-orange-100 text-orange-700",
+  cancelled: "bg-orange-100 text-orange-700",
+  connected: "bg-lime-100 text-lime-700",
+  disconnected: "bg-zinc-200 text-zinc-700",
   exported: "bg-amber-100 text-amber-700",
+  logged_in: "bg-gray-100 text-gray-700",
+  updated_profile: "bg-gray-100 text-gray-700",
 };
+
+/** Friendly names for audit_log.entity_type ("payment_link" → "Payment link"). */
+const entityLabelMap: Record<string, string> = {
+  lead: "Lead",
+  team_member: "Team member",
+  certificate: "Certificate",
+  certificate_template: "Certificate template",
+  offer_letter: "Offer letter",
+  offer_letter_template: "Offer letter template",
+  form: "Form",
+  form_api_key: "Form API key",
+  form_campaign: "Form campaign",
+  form_link: "Paid form link",
+  payment: "Payment record",
+  payment_link: "Payment link",
+  coupon: "Coupon",
+  coupon_api_key: "Coupon API key",
+  coupon_settings: "Coupon settings",
+  student: "Student",
+  course: "Course",
+  batch: "Batch",
+  timetable: "Timetable",
+  holiday: "Holiday",
+  task: "Task",
+  email_campaign: "Email campaign",
+  whatsapp_campaign: "WhatsApp campaign",
+  whatsapp_template: "WhatsApp template",
+  whatsapp_settings: "WhatsApp setup",
+  email_settings: "Email (SMTP) setup",
+  razorpay_settings: "Razorpay setup",
+  meta_ads: "Meta Ads",
+  organization: "Organization",
+  organization_features: "Organization features",
+  organization_profile: "Company profile",
+  organization_logo: "Company logo",
+  organization_payment_qr: "Payment QR",
+  trash: "Trash",
+  auth: "Sign-in",
+  user: "User profile",
+};
+
+const entityLabel = (type: string) =>
+  entityLabelMap[type] ?? (type ? type.charAt(0).toUpperCase() + type.slice(1).replace(/_/g, " ") : "—");
 
 export function AuditLogs() {
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
@@ -77,7 +144,7 @@ export function AuditLogs() {
       log.created_at,
       log.user_name ?? "",
       actionLabelMap[log.action] ?? log.action,
-      log.entity_type,
+      entityLabel(log.entity_type),
       log.details ?? "",
       log.ip_address ?? "",
     ]);
@@ -98,7 +165,7 @@ export function AuditLogs() {
       <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-white p-4">
         <div>
           <h3 className="text-base font-semibold text-gray-900">Audit Logs</h3>
-          <p className="text-sm text-gray-500">Track real user activity in your CRM</p>
+          <p className="text-sm text-gray-500">Who did what and when — leads, payments, certificates, campaigns, settings and sign-ins</p>
         </div>
         <button type="button" onClick={exportCsv} className="rounded-lg border border-gray-200 px-4 py-2 text-sm">
           Export CSV
@@ -116,11 +183,11 @@ export function AuditLogs() {
         </select>
         <select value={actionFilter} onChange={(e) => setActionFilter(e.target.value)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm">
           <option value="all">All actions</option>
-          <option value="created">Created</option>
-          <option value="updated">Updated</option>
-          <option value="deleted">Deleted</option>
-          <option value="restored">Restored</option>
-          <option value="logged_in">Logged in</option>
+          {Object.entries(actionLabelMap).map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
         </select>
         <input
           type="date"
@@ -181,7 +248,7 @@ export function AuditLogs() {
                       {actionLabelMap[log.action] ?? log.action}
                     </span>
                   </td>
-                  <td className="px-4 py-3">{log.entity_type}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">{entityLabel(log.entity_type)}</td>
                   <td className="px-4 py-3">{log.details || "—"}</td>
                   <td className="px-4 py-3">{log.ip_address || "—"}</td>
                 </tr>

@@ -205,6 +205,18 @@ if ($method === 'POST') {
         );
     }
 
+    if ($created > 0) {
+        $firstIds = array_slice(array_values(array_filter(array_map('strval', (array) $ids))), 0, 5);
+        syncpediaAuditLog(
+            $db,
+            $tokenData,
+            'issued',
+            'certificate',
+            $created === 1 ? ($firstIds[0] ?? null) : null,
+            "Issued {$created} certificate(s)" . ($firstIds !== [] ? ': ' . implode(', ', $firstIds) . ($created > count($firstIds) ? ', …' : '') : ''),
+        );
+    }
+
     $topError = null;
     if ($created === 0 && $errors !== []) {
         $topError = (string) ($errors[0]['error'] ?? 'Could not issue certificate');
@@ -237,6 +249,12 @@ if ($method === 'PUT') {
     }
     $stmt = $db->prepare($sql);
     $stmt->execute($params);
+    if ($stmt->rowCount() > 0) {
+        $label = syncpediaAuditLabel($db, 'issued_certificates', $id, ['id', 'recipient_name', 'course_name']);
+        $auditAction = $status === 'revoked' ? 'revoked' : ($status === 'issued' ? 'restored' : 'updated');
+        $verb = $status === 'revoked' ? 'Revoked' : ($status === 'issued' ? 'Restored' : 'Marked expired');
+        syncpediaAuditLog($db, $tokenData, $auditAction, 'certificate', $id, "{$verb} certificate {$label}");
+    }
     respond(['message' => 'Status updated']);
 }
 
@@ -249,9 +267,11 @@ if ($method === 'DELETE') {
     if (is_file(__DIR__ . '/document_storage.php')) {
         require_once __DIR__ . '/document_storage.php';
     }
+    $label = syncpediaAuditLabel($db, 'issued_certificates', $id, ['id', 'recipient_name', 'course_name']);
     if (!function_exists('syncpediaPurgeIssuedCertificate') || !syncpediaPurgeIssuedCertificate($db, $tokenData, $id)) {
         respond(['error' => 'Issued certificate not found'], 404);
     }
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'certificate', $id, "Deleted certificate {$label}");
     respond(['message' => 'Deleted successfully']);
 }
 

@@ -348,6 +348,7 @@ function handleSendPaymentLinkEmail(array $tokenData): void
         paymentLinksError($result['error'] ?? 'Failed to send email', 500);
     }
 
+    syncpediaAuditLog($db, $tokenData, 'sent', 'payment_link', $plinkId, 'Emailed payment link ' . $plinkId . ' to ' . $to);
     paymentLinksSuccess([
         'sent' => true,
         'to' => $to,
@@ -496,6 +497,7 @@ function handleSendPaidFormLinkEmail(array $tokenData): void
         paymentLinksError($result['error'] ?? 'Failed to send form link email', 500);
     }
 
+    syncpediaAuditLog($db, $tokenData, 'sent', 'form_link', $formId, 'Emailed paid form link to ' . $to . ' (payment link ' . $linkId . ')');
     paymentLinksSuccess([
         'sent' => true,
         'to' => $to,
@@ -627,6 +629,7 @@ function handleCreateStandardPaymentLink(array $tokenData): void
             error_log('[payment-links] persist on create: ' . $e->getMessage());
             paymentLinksError('Payment link was created but CRM persistence failed. The payment link was cancelled when possible; please retry.', 500);
         }
+        syncpediaAuditLog(paymentLinksDb(), $tokenData, 'created', 'payment_link', (string) ($link['id'] ?? ''), 'Created ₹' . number_format($amount / 100, 2) . ' payment link for ' . $name . ($email !== '' ? ' (' . $email . ')' : ''));
         paymentLinksSuccess($link, 201);
     } catch (Throwable $e) {
         paymentLinksError($e->getMessage(), 500);
@@ -823,6 +826,7 @@ try {
             } else {
                 $cancelled['status'] = 'cancelled';
             }
+            syncpediaAuditLog($db, $tokenData, 'cancelled', 'payment_link', $id, 'Cancelled payment link ' . syncpediaAuditLabel($db, 'payment_links', $id, ['customer_name', 'customer_email'], 'razorpay_payment_link_id') . ' (' . $id . ')');
             paymentLinksSuccess($cancelled);
             break;
 
@@ -849,6 +853,7 @@ try {
             if (!paymentLinkDeleteFromCrm($id)) {
                 paymentLinksError('Could not delete payment link', 500);
             }
+            syncpediaAuditLog($db, $tokenData, 'deleted', 'payment_link', $id, 'Deleted payment link for ' . (string) ($row['customer_name'] ?? '') . ' (' . $id . ')');
             paymentLinksSuccess(['id' => $id, 'deleted' => true]);
             break;
 

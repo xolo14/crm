@@ -315,6 +315,7 @@ if ($action === 'org_config' || $action === 'platform_config') {
             $params[] = $userId;
             $params[] = $existing['id'];
             $db->prepare('UPDATE org_whatsapp_config SET ' . implode(', ', $sets) . ' WHERE id = ?')->execute($params);
+            syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $targetOrgId]), 'updated', 'whatsapp_settings', (string) $targetOrgId, 'Updated WhatsApp connection settings' . (array_key_exists('business_phone', $input) ? ' (number ' . (string) $input['business_phone'] . ')' : ''));
             respond(['message' => 'Organization WhatsApp config saved', 'id' => $existing['id'], 'org_id' => $targetOrgId, 'webhook_url_suggested' => commOrgWebhookUrl()]);
         }
         $id = generateUUID();
@@ -338,6 +339,7 @@ if ($action === 'org_config' || $action === 'platform_config') {
                 isset($input['is_active']) ? (int) $input['is_active'] : 1,
                 $userId,
             ]);
+        syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $targetOrgId]), 'connected', 'whatsapp_settings', (string) $targetOrgId, 'Connected WhatsApp (manual setup' . (!empty($input['business_phone']) ? ', number ' . (string) $input['business_phone'] : '') . ')');
         respond(['message' => 'Organization WhatsApp config created', 'id' => $id, 'org_id' => $targetOrgId, 'webhook_verify_token' => $verifyToken, 'webhook_url_suggested' => commOrgWebhookUrl()], 201);
     }
 }
@@ -444,6 +446,7 @@ if ($action === 'complete_embedded_signup' && $method === 'POST') {
         $backfill = WhatsAppInbox::backfillInboxForOrg($db, $orgId);
     } catch (Throwable $ignored) {
     }
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $orgId]), 'connected', 'whatsapp_settings', (string) $orgId, 'Connected WhatsApp via Meta Embedded Signup (WABA ' . $wabaId . ')');
     respond([
         'message' => 'WhatsApp connected via Meta',
         'org_id' => $orgId,
@@ -464,6 +467,7 @@ if ($action === 'sync_meta_templates' && $method === 'POST') {
     if (empty($sync['ok'])) {
         respond(['error' => $sync['error'] ?? 'Sync failed'], 502);
     }
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $orgId]), 'updated', 'whatsapp_template', null, 'Synced WhatsApp templates from Meta (' . (int) ($sync['imported'] ?? 0) . ' new, ' . (int) ($sync['updated'] ?? 0) . ' updated)');
     respond(['message' => 'Meta templates synced for organization', 'imported' => $sync['imported'], 'updated' => $sync['updated'], 'total' => $sync['total'], 'org_id' => $orgId]);
 }
 
@@ -507,6 +511,7 @@ if ($action === 'submit_template_meta' && $method === 'POST') {
             $tplId,
         ]);
     $msg = $result['message_hint'] ?? 'Template submitted to Meta for official approval';
+    syncpediaAuditLog($db, $tokenData, 'sent', 'whatsapp_template', $tplId, 'Submitted WhatsApp template ' . (string) ($tpl['name'] ?? $tplId) . ' to Meta for approval');
     respond(['message' => $msg, 'data' => $result, 'partner_preapproved' => !empty($result['partner_preapproved'])]);
 }
 
@@ -679,6 +684,7 @@ if ($action === 'templates') {
                 $status,
                 $userId,
             ]);
+        syncpediaAuditLog($db, $tokenData, 'created', 'whatsapp_template', (string) $id, 'Created WhatsApp template ' . $name);
         respond(['id' => $id, 'status' => $status, 'name' => $name, 'message' => 'Template saved — submit to Meta for official approval'], 201);
     }
     if ($method === 'PUT') {
@@ -737,6 +743,7 @@ if ($action === 'templates') {
             respond(['error' => 'Forbidden'], 403);
         }
         $db->prepare('DELETE FROM whatsapp_message_templates WHERE id = ?')->execute([$id]);
+        syncpediaAuditLog($db, $tokenData, 'deleted', 'whatsapp_template', $id, 'Deleted WhatsApp template ' . (string) ($row['name'] ?? $id));
         respond([
             'message' => 'Template removed from CRM',
             'note' => 'If this template exists in Meta, delete or archive it there separately.',
@@ -761,6 +768,7 @@ if (($action === 'delete_template' || $action === 'templates_delete') && $method
         respond(['error' => 'Forbidden'], 403);
     }
     $db->prepare('DELETE FROM whatsapp_message_templates WHERE id = ?')->execute([$id]);
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'whatsapp_template', $id, 'Deleted WhatsApp template ' . (string) ($row['name'] ?? $id));
     respond([
         'message' => 'Template removed from CRM',
         'note' => 'If this template exists in Meta, delete or archive it there separately.',

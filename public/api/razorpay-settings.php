@@ -176,6 +176,7 @@ if ($method === 'PUT' && ($action === 'setup' || $action === '')) {
         ]);
     }
 
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $orgId]), 'updated', 'razorpay_settings', $orgId, 'Saved Razorpay keys (' . $mode . ' mode, key ' . ($keyId !== '' ? substr($keyId, 0, 12) . '…' : 'unchanged') . ')');
     razorpaySettingsRespond($db, $org);
 }
 
@@ -198,6 +199,7 @@ if ($method === 'POST' && $action === 'clear') {
             'INSERT INTO org_razorpay_config (org_id, key_id, is_active, updated_by) VALUES (?, \'\', 0, ?)',
         )->execute([$orgId, $userId !== '' ? $userId : null]);
     }
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $orgId]), 'deleted', 'razorpay_settings', $orgId, 'Removed Razorpay keys (online payments disconnected)');
     razorpaySettingsRespond($db, $org);
 }
 

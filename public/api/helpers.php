@@ -3721,15 +3721,19 @@ function syncpediaAuditLog(PDO $db, array $tokenData, string $action, string $en
         }
         $userId = $tokenData['user_id'] ?? null;
         $userName = null;
+        $orgId = $tokenData['org_id'] ?? null;
         if ($userId) {
             try {
-                $u = $db->prepare('SELECT full_name FROM users WHERE id = ? LIMIT 1');
+                $u = $db->prepare('SELECT full_name, org_id FROM users WHERE id = ? LIMIT 1');
                 $u->execute([$userId]);
-                $userName = $u->fetchColumn() ?: null;
+                $uRow = $u->fetch(PDO::FETCH_ASSOC) ?: [];
+                $userName = ($uRow['full_name'] ?? '') !== '' ? (string) $uRow['full_name'] : null;
+                if (($orgId === null || $orgId === '') && !empty($uRow['org_id'])) {
+                    $orgId = (string) $uRow['org_id'];
+                }
             } catch (Throwable $ignored) {
             }
         }
-        $orgId = $tokenData['org_id'] ?? null;
         $ins = $db->prepare(
             'INSERT INTO audit_log (id, org_id, user_id, user_name, action, entity_type, entity_id, details, ip_address)
              VALUES (?,?,?,?,?,?,?,?,?)',
@@ -3747,6 +3751,102 @@ function syncpediaAuditLog(PDO $db, array $tokenData, string $action, string $en
         ]);
     } catch (Throwable $ignored) {
         // Audit logging is best-effort; never let it break the calling request.
+    }
+}
+
+/**
+ * Short human label for an audit entry, e.g. "SY-IN-916972 · GANTA ESWARI". Reads the given
+ * columns of one row; falls back to the id. Never throws.
+ *
+ * @param list<string> $cols
+ */
+function syncpediaAuditLabel(PDO $db, string $table, string $id, array $cols, string $idCol = 'id'): string
+{
+    $id = trim($id);
+    if ($id === '' || !preg_match('/^[a-z_]+$/', $table) || !preg_match('/^[a-z_]+$/', $idCol)) {
+        return $id;
+    }
+    try {
+        $safe = array_values(array_filter($cols, static fn($c) => is_string($c) && preg_match('/^[a-z_]+$/', $c)));
+        if ($safe === []) {
+            return $id;
+        }
+        $st = $db->prepare('SELECT `' . implode('`, `', $safe) . "` FROM `{$table}` WHERE `{$idCol}` = ? LIMIT 1");
+        $st->execute([$id]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return $id;
+        }
+        $parts = array_values(array_filter(array_map(static fn($v) => trim((string) $v), $row), static fn($v) => $v !== ''));
+        return $parts !== [] ? implode(' · ', $parts) : $id;
+    } catch (Throwable $e) {
+        return $id;
+    }
+}
+
+/** Comma-separated display names for user ids (audit log text). Never throws. */
+function syncpediaAuditUserNames(PDO $db, array $userIds): string
+{
+    $names = [];
+    foreach (array_slice(array_values(array_unique(array_filter(array_map(static fn($u) => trim((string) $u), $userIds)))), 0, 10) as $uid) {
+        $label = syncpediaAuditLabel($db, 'users', $uid, ['full_name']);
+        $names[] = $label !== '' ? $label : $uid;
+    }
+    return $names !== [] ? implode(', ', $names) : 'nobody';
+}
+
+/**
+ * Audit a lead edit (PUT leads.php): an 'assigned' entry when the owner changes and an
+ * 'updated' entry naming the edited fields. Status changes are logged separately
+ * (status_updated) by leadsRecordStatusChangeActivity. Never throws.
+ *
+ * @param array<string, mixed> $before lead row before the update
+ * @param array<string, mixed> $input  request body
+ */
+function syncpediaAuditLeadUpdate(PDO $db, array $tokenData, string $leadId, array $before, array $input): void
+{
+    try {
+        $name = trim((string) ($before['name'] ?? ''));
+        if ($name === '') {
+            $name = $leadId;
+        }
+        if (array_key_exists('assigned_to', $input)) {
+            $new = trim((string) ($input['assigned_to'] ?? ''));
+            $old = trim((string) ($before['assigned_to'] ?? ''));
+            if ($new !== $old) {
+                $who = $new === '' ? 'nobody (unassigned)' : syncpediaAuditUserNames($db, [$new]);
+                syncpediaAuditLog($db, $tokenData, 'assigned', 'lead', $leadId, "Assigned lead {$name} to {$who}");
+            }
+        }
+        $skip = ['id', 'status', 'assigned_to', 'updated_at', 'created_at', 'org_id', 'created_by'];
+        $norm = static function ($v): string {
+            if ($v === null) {
+                return '';
+            }
+            if (is_scalar($v)) {
+                return trim((string) $v);
+            }
+            return (string) json_encode($v, JSON_UNESCAPED_UNICODE);
+        };
+        $changed = [];
+        foreach ($input as $k => $v) {
+            if (!is_string($k) || in_array($k, $skip, true) || !array_key_exists($k, $before)) {
+                continue;
+            }
+            $o = $before[$k];
+            if ($k === 'tags' && is_string($o)) {
+                $decoded = json_decode($o, true);
+                $o = is_array($decoded) ? $decoded : $o;
+            }
+            if ($norm($o) !== $norm($v)) {
+                $changed[] = str_replace('_', ' ', $k);
+            }
+        }
+        if ($changed !== []) {
+            syncpediaAuditLog($db, $tokenData, 'updated', 'lead', $leadId, "Updated lead {$name}: " . implode(', ', array_slice($changed, 0, 10)));
+        }
+    } catch (Throwable $e) {
+        // best-effort
     }
 }
 

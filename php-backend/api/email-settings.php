@@ -229,6 +229,7 @@ if ($method === 'PUT' && $action === 'setup') {
         error_log('[email-settings] save: ' . $e->getMessage());
         respond(['error' => 'Could not save email setup'], 500);
     }
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => (string) $org['id']]), 'updated', 'email_settings', (string) $org['id'], 'Saved Email Setup (' . count($savedIds) . ' SMTP mailbox(es) and sending routes)');
     emailSettingsResponse($db, $org);
 }
 
@@ -277,6 +278,7 @@ if ($method === 'POST' && $action === 'test') {
         );
         respond(['error' => $safeError], 502);
     }
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => (string) $org['id']]), 'sent', 'email_settings', (string) $org['id'], 'Sent SMTP test email to ' . $recipient);
     respond(['message' => 'Test email sent', 'to' => $recipient]);
 }
 

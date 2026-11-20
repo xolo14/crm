@@ -229,6 +229,7 @@ if ($method === 'POST' && ($_GET['action'] ?? '') === 'bulk') {
 
  }
 
+ syncpediaAuditLog($db, $tokenData, 'imported', 'batch', null, 'Imported batches: ' . (int) $created . ' created, ' . (is_array($skipped) ? count($skipped) : (int) $skipped) . ' skipped');
  respond([
 
  'message' => 'Import complete',
@@ -346,6 +347,7 @@ if ($method === 'POST') {
   $lmsSync = lmsClassesPushBatchCreate($db, (string) $id);
  }
 
+ syncpediaAuditLog($db, $tokenData, 'created', 'batch', (string) $id, 'Created batch ' . syncpediaAuditLabel($db, 'batches', (string) $id, ['name']));
  respond([
   'id' => $id,
   'message' => 'Batch created',
@@ -459,6 +461,7 @@ if ($method === 'PUT') {
   $lmsSync = lmsClassesPushBatchUpdate($db, (string) $id);
  }
 
+ syncpediaAuditLog($db, $tokenData, 'updated', 'batch', (string) $id, 'Updated batch ' . syncpediaAuditLabel($db, 'batches', (string) $id, ['name']));
  respond([
   'message' => 'Batch updated',
   'status' => $input['status'],
@@ -493,12 +496,14 @@ if ($method === 'DELETE') {
 
 
 
+ $auditLabel = syncpediaAuditLabel($db, 'batches', (string) $id, ['name']);
  trashArchiveRow($db, 'batch', 'batches', $id, $tokenData);
 
  $stmt = $db->prepare("DELETE FROM batches WHERE id = ?");
 
  $stmt->execute([$id]);
 
+ syncpediaAuditLog($db, $tokenData, 'deleted', 'batch', (string) $id, 'Deleted batch ' . $auditLabel . ' (moved to Trash)');
  respond(['message' => 'Batch deleted']);
 
 }

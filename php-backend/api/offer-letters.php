@@ -432,6 +432,7 @@ if ($method === 'POST') {
                 }
             }
         }
+        syncpediaAuditLog($db, $tokenData, 'created', 'offer_letter_template', (string) $id, 'Created offer letter template ' . $name);
         respond(['id' => $id, 'message' => 'Template created'], 201);
     }
 
@@ -645,6 +646,7 @@ if ($method === 'POST') {
             }
         }
 
+        syncpediaAuditLog($db, $tokenData, 'sent', 'offer_letter', (string) $id, 'Sent offer letter to ' . $recipientName . ($recipientEmail ? ' (' . $recipientEmail . ')' : '') . ($roleTitle !== '' ? ' for ' . $roleTitle : ''));
         respond([
             'id' => $id,
             'message' => 'Offer letter sent',
@@ -694,8 +696,10 @@ if ($method === 'PUT') {
     if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
 
     $params[] = $id;
+    $auditLabel = syncpediaAuditLabel($db, 'offer_letter_templates', (string) $id, ['template_name']);
     $stmt = $db->prepare("UPDATE offer_letter_templates SET " . implode(', ', $fields) . " WHERE id = ?");
     $stmt->execute($params);
+    syncpediaAuditLog($db, $tokenData, 'updated', 'offer_letter_template', (string) $id, 'Updated offer letter template ' . $auditLabel);
     respond(['message' => 'Template updated']);
 }
 
@@ -708,16 +712,20 @@ if ($method === 'DELETE') {
     $action = $_GET['action'] ?? 'template';
 
     if ($action === 'sent') {
+        $auditLabel = syncpediaAuditLabel($db, 'offer_letters_sent', (string) $id, ['recipient_name', 'recipient_email', 'role_title']);
         if (!offerLettersPurgeSentRecord($db, $tokenData, $id)) {
             respond(['error' => 'Sent letter not found'], 404);
         }
+        syncpediaAuditLog($db, $tokenData, 'deleted', 'offer_letter', (string) $id, 'Deleted sent offer letter ' . $auditLabel);
         respond(['message' => 'Deleted successfully']);
     } else {
         if (!offerLettersFetchTemplateInScope($db, $tokenData, $id)) {
             respond(['error' => 'Template not found'], 404);
         }
+        $auditTplLabel = syncpediaAuditLabel($db, 'offer_letter_templates', (string) $id, ['template_name']);
         $stmt = $db->prepare("DELETE FROM offer_letter_templates WHERE id = ?");
         $stmt->execute([$id]);
+        syncpediaAuditLog($db, $tokenData, 'deleted', 'offer_letter_template', (string) $id, 'Deleted offer letter template ' . $auditTplLabel);
     }
     respond(['message' => 'Deleted successfully']);
 }

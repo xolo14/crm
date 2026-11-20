@@ -172,6 +172,7 @@ if ($method === 'POST' && $action === 'send' && $id !== '') {
         ], 500);
     }
 
+    syncpediaAuditLog($db, $tokenData, 'sent', 'timetable', $id, 'Sent timetable ' . syncpediaAuditLabel($db, 'timetables', (string) $id, ['title']) . " to {$sent} recipient(s)" . ($failed ? ' (' . count($failed) . ' failed)' : ''));
     respond([
         'message' => "Timetable sent to {$sent} recipient(s)",
         'sent' => $sent,
@@ -227,6 +228,7 @@ if ($method === 'POST') {
     if ($row) {
         $row['sessions'] = timetablesFetchSessions($db, $tid);
     }
+    syncpediaAuditLog($db, $tokenData, 'created', 'timetable', (string) $tid, 'Created timetable ' . $title);
     respond(['id' => $tid, 'message' => 'Timetable created', 'data' => $row], 201);
 }
 
@@ -289,6 +291,7 @@ if ($method === 'PUT' && $id !== '') {
     if ($updated) {
         $updated['sessions'] = timetablesFetchSessions($db, $id);
     }
+    syncpediaAuditLog($db, $tokenData, 'updated', 'timetable', $id, 'Updated timetable ' . syncpediaAuditLabel($db, 'timetables', (string) $id, ['title']));
     respond(['message' => 'Timetable updated', 'data' => $updated]);
 }
 
@@ -297,9 +300,11 @@ if ($method === 'DELETE' && $id !== '') {
     if (!$row) {
         respond(['error' => 'Timetable not found'], 404);
     }
+    $auditLabel = syncpediaAuditLabel($db, 'timetables', (string) $id, ['title']);
     $db->prepare('DELETE FROM timetable_sends WHERE timetable_id = ?')->execute([$id]);
     $db->prepare('DELETE FROM timetable_sessions WHERE timetable_id = ?')->execute([$id]);
     $db->prepare('DELETE FROM timetables WHERE id = ?')->execute([$id]);
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'timetable', $id, 'Deleted timetable ' . $auditLabel);
     respond(['message' => 'Timetable deleted']);
 }
 

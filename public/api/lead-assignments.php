@@ -189,6 +189,7 @@ if ($method === 'POST') {
             $clean[] = $uid;
         }
         leadsReplaceAssignees($db, $leadId, $clean);
+        syncpediaAuditLog($db, $tokenData, 'assigned', 'lead', $leadId, 'Assigned lead ' . syncpediaAuditLabel($db, 'leads', $leadId, ['name']) . ' to ' . syncpediaAuditUserNames($db, $clean));
         respond([
             'id' => $leadId,
             'assigned_to' => $clean[0] ?? null,
@@ -258,6 +259,9 @@ if ($method === 'POST') {
             );
         }
 
+        if ($ok > 0) {
+            syncpediaAuditLog($db, $tokenData, 'assigned', 'lead', null, "Bulk assigned {$ok} lead(s) to " . syncpediaAuditUserNames($db, $assigneeIds) . ($failed > 0 ? " ({$failed} failed)" : ''));
+        }
         respond([
             'message' => "$ok leads assigned",
             'assigned' => $ok,
@@ -278,6 +282,7 @@ if ($method === 'POST') {
     // Single add: keep existing multi-assignees; set primary only if empty.
     leadsSetAssignee($db, $leadId, $assignTo, false);
 
+    syncpediaAuditLog($db, $tokenData, 'assigned', 'lead', $leadId, 'Added ' . syncpediaAuditUserNames($db, [$assignTo]) . ' as assignee on lead ' . syncpediaAuditLabel($db, 'leads', $leadId, ['name']));
     respond(['id' => $leadId, 'message' => 'Lead assigned'], 201);
 }
 
@@ -341,6 +346,7 @@ if ($method === 'DELETE') {
         }
         respond(['error' => 'Failed to remove assignment: ' . $e->getMessage()], 500);
     }
+    syncpediaAuditLog($db, $tokenData, 'updated', 'lead', (string) ($row['lead_id'] ?? ''), 'Removed ' . syncpediaAuditUserNames($db, [(string) ($row['user_id'] ?? '')]) . ' from lead ' . syncpediaAuditLabel($db, 'leads', (string) ($row['lead_id'] ?? ''), ['name']));
     respond(['message' => 'Assignment removed']);
 }
 

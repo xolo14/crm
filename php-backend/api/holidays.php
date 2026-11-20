@@ -69,6 +69,7 @@ if ($method === 'POST') {
     }
     $hName = trim((string) ($input['name'] ?? 'Holiday'));
     syncpediaNotifyHolidayChange($db, (string) $userId, $orgId ? (string) $orgId : null, $hName, 'added');
+    syncpediaAuditLog($db, $tokenData, 'created', 'holiday', (string) $id, 'Added holiday ' . syncpediaAuditLabel($db, 'holidays', (string) $id, ['name', 'date']));
     respond(['id' => $id, 'message' => 'Holiday created'], 201);
 }
 
@@ -121,6 +122,7 @@ if ($method === 'PUT') {
     if ($stmt->rowCount() === 0) {
         respond(['error' => 'Holiday not found'], 404);
     }
+    syncpediaAuditLog($db, $tokenData, 'updated', 'holiday', (string) $id, 'Updated holiday ' . syncpediaAuditLabel($db, 'holidays', (string) $id, ['name', 'date']));
     respond(['message' => 'Holiday updated']);
 }
 
@@ -140,6 +142,7 @@ if ($method === 'DELETE') {
         respond(['error' => 'Holiday not found'], 404);
     }
 
+    $auditLabel = syncpediaAuditLabel($db, 'holidays', (string) $id, ['name', 'date']);
     trashArchiveRow($db, 'holiday', 'holidays', $id, $tokenData);
     $stmt = $db->prepare('DELETE FROM holidays h WHERE h.id = ?' . $orgAnd['sql']);
     $stmt->execute($params);
@@ -150,6 +153,7 @@ if ($method === 'DELETE') {
         (string) ($holidayRow['name'] ?? 'Holiday'),
         'removed',
     );
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'holiday', (string) $id, 'Deleted holiday ' . $auditLabel . ' (moved to Trash)');
     respond(['message' => 'Holiday deleted']);
 }
 

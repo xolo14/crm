@@ -754,6 +754,9 @@ if ($method === 'POST') {
                 (int) $created,
             );
         }
+        if ($created > 0) {
+            syncpediaAuditLog($db, $tokenData, 'imported', 'lead', null, "Imported {$created} lead(s), skipped {$skipped}" . ($orgName ? ' into ' . $orgName : ''));
+        }
         respond([
             'message' => 'Bulk create complete',
             'created' => $created,
@@ -932,6 +935,7 @@ if ($method === 'POST') {
         if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
             leadsSetAssignee($db, $id, (string) $assignedTo);
         }
+        syncpediaAuditLog($db, $tokenData, 'created', 'lead', (string) $id, 'Created lead ' . $name . ' (source: ' . (string) ($input['source'] ?? 'other') . ')');
         respond(['id' => $id, 'message' => 'Lead created'], 201);
     } catch (Exception $e) {
         try {
@@ -977,6 +981,7 @@ if ($method === 'POST') {
             if ($assignedTo !== null && trim((string) $assignedTo) !== '') {
                 leadsSetAssignee($db, $id, (string) $assignedTo);
             }
+            syncpediaAuditLog($db, $tokenData, 'created', 'lead', (string) $id, 'Created lead ' . $name . ' (source: ' . (string) ($input['source'] ?? 'other') . ')');
             respond(['id' => $id, 'message' => 'Lead created'], 201);
         } catch (Exception $e2) {
             try {
@@ -990,6 +995,7 @@ if ($method === 'POST') {
                     $input['source'] ?? 'other',
                     $input['notes'] ?? null,
                 ]);
+                syncpediaAuditLog($db, $tokenData, 'created', 'lead', (string) $id, 'Created lead ' . $name . ' (source: ' . (string) ($input['source'] ?? 'other') . ')');
                 respond(['id' => $id, 'message' => 'Lead created'], 201);
             } catch (Exception $e3) {
                 respond(['error' => 'Lead create failed: ' . $e3->getMessage()], 500);
@@ -1331,6 +1337,7 @@ if ($method === 'PUT') {
             $prevStatus,
             (string) ($input['status'] ?? $prevStatus)
         );
+        syncpediaAuditLeadUpdate($db, $tokenData, (string) $id, $lead, $input);
         respond(['message' => 'Lead updated']);
     }
 
@@ -1408,6 +1415,7 @@ if ($method === 'PUT') {
             $prevStatus,
             (string) ($input['status'] ?? $prevStatus)
         );
+        syncpediaAuditLeadUpdate($db, $tokenData, (string) $id, $lead, $input);
         respond(['message' => 'Lead updated']);
     }
 
@@ -1497,6 +1505,7 @@ if ($method === 'PUT') {
         }
     }
 
+    syncpediaAuditLeadUpdate($db, $tokenData, (string) $id, $lead, $input);
     respond(['message' => 'Lead updated']);
 }
 

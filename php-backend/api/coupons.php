@@ -402,6 +402,7 @@ if ($action === 'min_amount') {
             error_log('[coupons] save min amount: ' . $e->getMessage());
             respond(['error' => 'Could not save min amount'], 500);
         }
+        syncpediaAuditLog($db, $tokenData, 'updated', 'coupon_settings', (string) $orgId, 'Set coupon minimum order amount to ₹' . number_format($minAmount, 2));
         respond([
             'org_id' => $orgId,
             'min_amount' => round($minAmount, 2),
@@ -481,6 +482,7 @@ if ($action === 'api_key') {
             error_log('[coupons] api key generate: ' . $e->getMessage());
             respond(['error' => 'Could not generate API key'], 500);
         }
+        syncpediaAuditLog($db, $tokenData, 'created', 'coupon_api_key', (string) $orgId, 'Generated a new coupon API key (previous key stopped working)');
         respond([
             'org_id' => $orgId,
             'api_key' => $plain,
@@ -667,6 +669,7 @@ if ($method === 'POST') {
         }
     }
 
+    syncpediaAuditLog($db, $tokenData, 'created', 'coupon', (string) $id, 'Created coupon ' . $code . ' (₹' . number_format($discount, 2) . ' off) for ' . $name . ' (' . $email . ')' . ($emailSent ? ', emailed' : ''));
     $row = $db->prepare('SELECT c.*, COALESCE(NULLIF(TRIM(u.full_name), \'\'), NULLIF(TRIM(u.email), \'\'), NULL) AS created_by_name FROM coupons c LEFT JOIN users u ON u.id = c.created_by WHERE c.id = ? LIMIT 1');
     $row->execute([$id]);
     respond([
@@ -712,6 +715,7 @@ if ($method === 'DELETE') {
         error_log('[coupons] delete: ' . $e->getMessage());
         respond(['error' => 'Could not delete coupon'], 500);
     }
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'coupon', $id, 'Deleted coupon ' . (string) ($row['code'] ?? $id) . ' for ' . (string) ($row['name'] ?? ''));
     respond(['ok' => true]);
 }
 

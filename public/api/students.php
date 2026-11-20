@@ -179,6 +179,7 @@ if ($method === 'POST') {
             $input['enrollment_date'] ?? date('Y-m-d'),
         ]);
     }
+    syncpediaAuditLog($db, $tokenData, 'created', 'student', (string) $id, 'Enrolled student ' . syncpediaAuditLabel($db, 'students', (string) $id, ['name', 'email']));
     respond(['id' => $id, 'message' => 'Student enrolled'], 201);
 }
 
@@ -230,12 +231,14 @@ if ($method === 'PUT') {
         }
         respond(['error' => 'Could not update student', 'detail' => $e->getMessage()], 500);
     }
+    syncpediaAuditLog($db, $tokenData, 'updated', 'student', (string) $id, 'Updated student ' . syncpediaAuditLabel($db, 'students', (string) $id, ['name', 'email']));
     respond(['message' => 'Student updated']);
 }
 
 if ($method === 'DELETE') {
     requireRole($tokenData, ['admin', 'super_admin', 'org', 'manager']);
     $id = trim((string) ($_GET['id'] ?? ''));
+    $auditLabel = syncpediaAuditLabel($db, 'students', (string) $id, ['name', 'email']);
     if ($id === '') respond(['error' => 'ID required'], 400);
 
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
@@ -272,5 +275,6 @@ if ($method === 'DELETE') {
         }
         respond(['error' => 'Could not delete student', 'detail' => $e->getMessage()], 500);
     }
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'student', (string) $id, 'Deleted student ' . $auditLabel . ' (moved to Trash)');
     respond(['message' => 'Student deleted']);
 }

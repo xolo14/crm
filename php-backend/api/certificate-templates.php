@@ -231,6 +231,7 @@ if ($method === 'POST' && $action === '') {
         }
         $stmt = $db->prepare($sql);
         $stmt->execute($params);
+        syncpediaAuditLog($db, $tokenData, 'updated', 'certificate_template', (string) $id, 'Updated certificate template ' . (isset($name) && $name !== '' ? $name : $id));
         respond(['id' => $id, 'message' => 'Template updated', 'cert_prefix' => $orgId !== '' ? certGetOrgPrefix($db, $orgId) : null]);
     }
 
@@ -248,6 +249,7 @@ if ($method === 'POST' && $action === '') {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ");
     $stmt->execute([$id, $name, $status, $certType, $layoutStyle, $bgColor, $accentColor, $styleJson, $fieldsJson, $layersJson, $userId, $orgId]);
+    syncpediaAuditLog($db, $tokenData, 'created', 'certificate_template', (string) $id, 'Created certificate template ' . (isset($name) && $name !== '' ? $name : $id));
     respond(['id' => $id, 'message' => 'Template created', 'cert_prefix' => $orgId !== '' ? certGetOrgPrefix($db, $orgId) : null], 201);
 }
 
@@ -257,6 +259,7 @@ if ($method === 'DELETE') {
     if ($id === '') respond(['error' => 'ID required'], 400);
     $org = orgFilter($tokenData);
     $params = [$id];
+    $auditLabel = syncpediaAuditLabel($db, 'certificate_templates', $id, ['name']);
     $sql = "DELETE FROM certificate_templates WHERE id = ?";
     if ($org['where'] !== '1=1') {
         $sql .= " AND {$org['where']}";
@@ -264,6 +267,9 @@ if ($method === 'DELETE') {
     }
     $stmt = $db->prepare($sql);
     $stmt->execute($params);
+    if ($stmt->rowCount() > 0) {
+        syncpediaAuditLog($db, $tokenData, 'deleted', 'certificate_template', $id, 'Deleted certificate template ' . $auditLabel);
+    }
     respond(['message' => 'Template deleted']);
 }
 

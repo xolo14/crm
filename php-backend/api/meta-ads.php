@@ -124,6 +124,7 @@ if ($method === 'GET' && $action === 'oauth_callback') {
             ]);
         }
 
+        syncpediaAuditLog($db, ['user_id' => $userId, 'org_id' => $orgId], 'connected', 'meta_ads', $orgId, 'Connected Meta Ads account' . (isset($metaUserName) && $metaUserName !== '' ? ' (' . $metaUserName . ')' : ''));
         header('Location: ' . metaAdsFrontendReturnUrl('meta_ads=connected'));
         exit;
     } catch (Throwable $e) {
@@ -242,6 +243,7 @@ if ($method === 'PUT' && $action === 'accounts') {
         $enabled = !empty($item['is_enabled']) ? 1 : 0;
         $upd->execute([$enabled, $orgId, $act]);
     }
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $orgId]), 'updated', 'meta_ads', $orgId, 'Changed which Meta ad accounts sync leads (' . count($list) . ' account(s) updated)');
     respond(['success' => true]);
 }
 
@@ -252,6 +254,7 @@ if ($method === 'POST' && $action === 'disconnect') {
         $db->prepare('DELETE FROM meta_ads_accounts WHERE connection_id = ?')->execute([$cid]);
         $db->prepare('DELETE FROM meta_ads_connections WHERE id = ?')->execute([$cid]);
     }
+    syncpediaAuditLog($db, array_merge($tokenData, ['org_id' => $orgId]), 'disconnected', 'meta_ads', $orgId, 'Disconnected Meta Ads');
     respond(['success' => true]);
 }
 

@@ -723,6 +723,9 @@ if ($action === 'dispatch_email_campaign' && $method === 'POST') {
     $sent = (int) ($result['sent'] ?? 0);
     $pending = (int) ($result['pending'] ?? 0);
     $queuedNow = (int) ($result['queued_now'] ?? 0);
+    if ($ok || $sent > 0 || $pending > 0) {
+        syncpediaAuditLog($db, $tokenData, 'sent', 'email_campaign', (string) ($result['campaign_id'] ?? $draftId), 'Sent email campaign ' . syncpediaAuditLabel($db, 'email_drafts', $draftId, ['subject']) . ' to ' . count($recipientsIn) . ' recipient(s)' . ($campaignScheduledAt ? ' (scheduled ' . $campaignScheduledAt . ')' : '') . " — sent {$sent}, queued {$pending}");
+    }
     if ($ok && $queuedNow > 0) {
         marketingEchoJsonAndContinue($result, 200);
         if (!marketingKickEmailCampaignWorker()) {
@@ -1075,6 +1078,11 @@ if ($action === 'dispatch_whatsapp_campaign' && $method === 'POST') {
         );
     }
 
+    $auditTpl = syncpediaAuditLabel($db, 'whatsapp_message_templates', $templateId, ['name']);
+    if ($auditTpl === $templateId) {
+        $auditTpl = syncpediaAuditLabel($db, 'whatsapp_drafts', $templateId, ['name']);
+    }
+    syncpediaAuditLog($db, $tokenData, 'sent', 'whatsapp_campaign', (string) $campaignId, 'Sent WhatsApp campaign ' . $auditTpl . ' to ' . count($recipients) . " number(s) — sent {$sent}, failed {$failed}");
     respond([
         'ok' => $sent > 0,
         'campaign_id' => $campaignId,

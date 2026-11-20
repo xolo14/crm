@@ -910,6 +910,7 @@ if ($method === 'POST') {
         // background worker it tried to spawn didn't actually start, drain inline here instead —
         // this is the one context where blocking/exiting is safe (a direct, top-level HTTP
         // request), matching marketing.php's own dispatch_email_campaign action.
+        syncpediaAuditLog($db, $tokenData, 'sent', 'form_campaign', (string) ($formRow['id'] ?? ''), 'Sent ' . $channel . ' campaign to leads of form ' . (string) ($formRow['name'] ?? '') . (isset($result['total']) ? ' (' . (int) $result['total'] . ' recipients)' : ''));
         if ($channel === 'email' && ($result['pending'] ?? 0) > 0) {
             marketingEchoJsonAndContinue(['message' => 'Campaign sent', 'data' => $result]);
             if (empty($result['worker_kicked'])) {
@@ -1173,6 +1174,7 @@ if ($method === 'POST') {
         foreach ($cleanMemberIds as $mid) {
             $stmt->execute([generateUUID(), $formId, $mid, $userId]);
         }
+        syncpediaAuditLog($db, $tokenData, 'assigned', 'form', (string) $formId, 'Assigned form ' . syncpediaAuditLabel($db, 'lead_forms', (string) $formId, ['name']) . ' to ' . count($cleanMemberIds) . ' member(s)');
         respond(['message' => 'Assignments saved']);
     }
 
@@ -1196,6 +1198,7 @@ if ($method === 'POST') {
         $meta['external_api_key_last_rotated_at'] = date('c');
         $db->prepare('UPDATE lead_forms SET meta_json = ? WHERE id = ?')
             ->execute([json_encode($meta), $formId]);
+        syncpediaAuditLog($db, $tokenData, 'created', 'form_api_key', $formId, 'Generated API key for form ' . syncpediaAuditLabel($db, 'lead_forms', $formId, ['name']));
         respond([
             'message' => 'Form API key generated',
             'data' => [
@@ -1304,6 +1307,7 @@ if ($method === 'POST') {
             error_log('[forms] duplicate: ' . $e->getMessage());
             respond(['error' => 'Could not duplicate form'], 500);
         }
+        syncpediaAuditLog($db, $tokenData, 'created', 'form', (string) $newId, 'Duplicated form ' . syncpediaAuditLabel($db, 'lead_forms', $formId, ['name']) . ' as ' . $name);
         respond([
             'message' => 'Form duplicated',
             'id' => $newId,
@@ -1397,6 +1401,7 @@ if ($method === 'POST') {
         }
     }
 
+    syncpediaAuditLog($db, $tokenData, 'created', 'form', (string) $id, 'Created form ' . $name . ' (' . $slug . ')');
     respond(['id' => $id, 'slug' => $slug, 'message' => 'Form created'], 201);
 }
 
@@ -1475,6 +1480,7 @@ if ($method === 'PUT') {
         }
     }
 
+    syncpediaAuditLog($db, $tokenData, 'updated', 'form', (string) $id, 'Updated form ' . syncpediaAuditLabel($db, 'lead_forms', (string) $id, ['name']));
     respond(['message' => 'Form updated']);
 }
 
@@ -1491,6 +1497,7 @@ if ($method === 'DELETE') {
         $meta['external_api_enabled'] = false;
         $db->prepare('UPDATE lead_forms SET meta_json = ? WHERE id = ?')
             ->execute([json_encode($meta), $formId]);
+        syncpediaAuditLog($db, $tokenData, 'revoked', 'form_api_key', $formId, 'Revoked API key for form ' . syncpediaAuditLabel($db, 'lead_forms', $formId, ['name']));
         respond(['message' => 'Form API key revoked']);
     }
 
@@ -1515,8 +1522,10 @@ if ($method === 'DELETE') {
     if (!$row) {
         respond(['error' => 'Form not found'], 404);
     }
+    $auditLabel = syncpediaAuditLabel($db, 'lead_forms', (string) $id, ['name', 'slug']);
     $stmt = $db->prepare("DELETE FROM lead_forms WHERE id = ? $orgClause");
     $stmt->execute($params);
+    syncpediaAuditLog($db, $tokenData, 'deleted', 'form', (string) $id, 'Deleted form ' . $auditLabel);
     respond(['message' => 'Form deleted']);
 }
 
