@@ -24,7 +24,7 @@ import { assessmentsApi } from "@/services/assessments";
 import { useAuth } from "@/hooks/useAuth";
 import { hrHasPageAccess } from "@/lib/hrPageAccess";
 import { canAccessFormManagement, canAccessOfferLetters } from "@/lib/orgAccess";
-import { FEATURE_FORM_MANAGEMENT } from "@/lib/orgFeatures";
+import { FEATURE_COMMUNICATIONS, FEATURE_COUPONS, FEATURE_FORM_MANAGEMENT, isOrgFeatureEnabled } from "@/lib/orgFeatures";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -71,6 +71,13 @@ function NavLinks({
       item.accessKey === FEATURE_FORM_MANAGEMENT &&
       !canAccessFormManagement(role ?? null, organization ?? null, pageAccess)
     ) {
+      return false;
+    }
+    // Org feature switches (Organizations → Features): hide modules turned off for this org.
+    if (item.to === "/hr/coupons" && !isOrgFeatureEnabled(role ?? null, organization ?? null, FEATURE_COUPONS)) {
+      return false;
+    }
+    if (item.accessKey === "communications" && !isOrgFeatureEnabled(role ?? null, organization ?? null, FEATURE_COMMUNICATIONS)) {
       return false;
     }
     // Assignments: not an admin-grantable page — shown only once a Super Admin has
