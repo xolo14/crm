@@ -7,12 +7,12 @@ export function Security() {
     <div className="bg-gray-50">
       <SettingsSection
         title="Password Policy"
-        description="Organization password rules are enforced by the server (api/config.php MIN_PASSWORD_LENGTH). Per-org UI policy is not available yet."
+        description="Every account in your organization follows the same password rules."
       >
-        <SettingsRow label="Server enforcement" border={false}>
+        <SettingsRow label="Password rules" border={false}>
           <p className="text-sm text-muted-foreground max-w-md">
-            Minimum length and strength checks run on signup, password change, and reset.
-            There is no fake Save control — changing policy requires a config deploy.
+            Passwords must be at least 8 characters. The rules are checked whenever someone
+            signs up, changes or resets a password.
           </p>
         </SettingsRow>
       </SettingsSection>

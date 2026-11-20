@@ -3,6 +3,7 @@ import { ExternalLink, Loader2, Megaphone, RefreshCw, Unplug } from "lucide-reac
 import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/ui/SettingsSection";
@@ -42,6 +43,10 @@ type MetaStatus = {
 
 export function MetaAdsSetup() {
   const { toast } = useToast();
+  // Setup steps (Meta App Review, server config) are only actionable by the platform owner;
+  // org admins see plain-language status instead.
+  const { role } = useAuth();
+  const isPlatformAdmin = role === "super_admin";
   const [searchParams, setSearchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -206,9 +211,18 @@ export function MetaAdsSetup() {
     <div className="space-y-4">
       <SettingsSection
         title="Meta Ads connection"
-        description="Campaign insights use ads_read. Your Business Integration screenshot shows ads + WhatsApp only — Lead Ads need Meta Advanced Access for leads_retrieval, then META_ADS_OAUTH_SCOPES and a reconnect. If you use Login for Business, also enable Leads Access on that config."
+        description="Connect your Facebook and Instagram ad account to see campaign spend, clicks and conversions next to the leads they bring in."
       >
-        {connected && !status.leads_ready ? (
+        {connected && !status.leads_ready && !isPlatformAdmin ? (
+          <div className="mx-5 mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-950">
+            <p className="font-medium">Ad results are syncing; lead import is not switched on yet</p>
+            <p className="mt-1 text-amber-900/90">
+              Campaign spend and results are updating. To also bring Facebook and Instagram lead form
+              enquiries into the CRM automatically, contact Syncpedia support, then click Reconnect.
+            </p>
+          </div>
+        ) : null}
+        {connected && !status.leads_ready && isPlatformAdmin ? (
           <div className="mx-5 mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-950">
             <p className="font-medium">Lead Ads are not importing yet</p>
             <p className="mt-1 text-amber-900/90">
@@ -240,18 +254,20 @@ export function MetaAdsSetup() {
             </p>
           </div>
         ) : null}
-        <SettingsRow label="Server app">
+        <SettingsRow label="Meta integration">
           <span className="text-sm">
             {status.configured ? (
-              <span className="text-emerald-700 font-medium">Configured</span>
-            ) : (
+              <span className="text-emerald-700 font-medium">Available</span>
+            ) : isPlatformAdmin ? (
               <span className="text-amber-700">
                 Set META_ADS_APP_ID / META_ADS_APP_SECRET in api/config.php
               </span>
+            ) : (
+              <span className="text-amber-700">Not available yet: contact Syncpedia support</span>
             )}
           </span>
         </SettingsRow>
-        {status.redirect_uri ? (
+        {status.redirect_uri && isPlatformAdmin ? (
           <SettingsRow label="OAuth redirect">
             <code className="text-[11px] break-all text-muted-foreground">{status.redirect_uri}</code>
           </SettingsRow>
