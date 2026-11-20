@@ -115,6 +115,13 @@ if ($action === 'hr_dashboard' && $method === 'GET') {
     } catch (Throwable $e) {
         // HR leads (`hr_leads` table) may be missing on older installs
     }
+    // Same source as the Assigned Leads page (leads.assigned_to), so the card matches the list.
+    try {
+        $qAl = $db->prepare('SELECT COUNT(*) c FROM leads WHERE assigned_to = ?');
+        $qAl->execute([$userId]);
+        $assignedHrLeads = max($assignedHrLeads, (int) (($qAl->fetch()['c'] ?? 0)));
+    } catch (Throwable $e) {
+    }
 
     $q3 = $db->prepare("SELECT COUNT(*) c FROM tasks WHERE assigned_to=? AND status <> 'completed'"); $q3->execute([$userId]); $c = $q3->fetch();
     $orgHolidays = orgFilter($tokenData, '', $db);
@@ -122,15 +129,20 @@ if ($action === 'hr_dashboard' && $method === 'GET') {
     $q4->execute($orgHolidays['params']);
     $d = $q4->fetch();
 
+    // Grouped by day; the label uses MIN(created_at) so the query is valid under ONLY_FULL_GROUP_BY.
     $activity = [];
     try {
-        $q5 = $db->prepare("SELECT DATE_FORMAT(created_at, '%b %d') label, COUNT(*) value FROM hr_leads WHERE hr_id=? AND is_assigned=0 AND deleted_at IS NULL AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
+        $q5 = $db->prepare("SELECT DATE_FORMAT(MIN(created_at), '%b %d') label, COUNT(*) value FROM hr_leads WHERE hr_id=? AND is_assigned=0 AND deleted_at IS NULL AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
         $q5->execute([$userId]);
         $activity = $q5->fetchAll();
     } catch (Throwable $e) {
-        $q5 = $db->prepare("SELECT DATE_FORMAT(created_at, '%b %d') label, COUNT(*) value FROM leads WHERE created_by=? AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
-        $q5->execute([$userId]);
-        $activity = $q5->fetchAll();
+        try {
+            $q5 = $db->prepare("SELECT DATE_FORMAT(MIN(created_at), '%b %d') label, COUNT(*) value FROM leads WHERE created_by=? AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
+            $q5->execute([$userId]);
+            $activity = $q5->fetchAll();
+        } catch (Throwable $e2) {
+            error_log('[hr_dashboard] activity: ' . $e2->getMessage());
+        }
     }
 
     respond([
@@ -257,9 +269,9 @@ if ($action === 'tasks' && $method === 'PUT') {
 }
 
 if ($action === 'reports' && $method === 'GET') {
-    $lead = $db->prepare("SELECT DATE_FORMAT(created_at, '%b %d') label, COUNT(*) count FROM leads WHERE created_by=? AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
+    $lead = $db->prepare("SELECT DATE_FORMAT(MIN(created_at), '%b %d') label, COUNT(*) count FROM leads WHERE created_by=? AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
     $lead->execute([$userId]);
-    $task = $db->prepare("SELECT DATE_FORMAT(updated_at, '%b %d') label, SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) completed FROM tasks WHERE assigned_to=? AND updated_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(updated_at) ORDER BY DATE(updated_at)");
+    $task = $db->prepare("SELECT DATE_FORMAT(MIN(updated_at), '%b %d') label, SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) completed FROM tasks WHERE assigned_to=? AND updated_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(updated_at) ORDER BY DATE(updated_at)");
     $task->execute([$userId]);
     respond(['lead_report' => $lead->fetchAll(), 'task_report' => $task->fetchAll()]);
 }
