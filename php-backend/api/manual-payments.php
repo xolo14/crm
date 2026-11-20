@@ -436,8 +436,8 @@ function manualPaymentsCanApprove(PDO $db, array $tokenData, array $row): bool
         return in_array($role, ['admin', 'org', 'super_admin'], true);
     }
 
-    // L1 (and similar): assigned manager (downline) OR admin/org/super_admin.
-    if (in_array($role, ['admin', 'org', 'super_admin'], true)) {
+    // L1 (and similar): assigned manager (downline) OR admin/org/super_admin/operational manager (org-wide).
+    if (in_array($role, ['admin', 'org', 'super_admin', 'operational_manager'], true)) {
         return true;
     }
     if ($role === 'manager') {
@@ -456,7 +456,7 @@ function manualPaymentsFetchPendingForApprover(PDO $db, array $tokenData): array
 
     if ($role === 'super_admin' && ($orgId === null || $orgId === '')) {
         // all pending
-    } elseif (in_array($role, ['admin', 'org', 'super_admin'], true) && $orgId) {
+    } elseif (in_array($role, ['admin', 'org', 'super_admin', 'operational_manager'], true) && $orgId) {
         $where .= ' AND mp.org_id = ?';
         $params[] = $orgId;
     } elseif ($role === 'manager') {
@@ -516,7 +516,7 @@ function manualPaymentsFetchAllForApprover(PDO $db, array $tokenData): array
 
     if ($role === 'super_admin' && ($orgId === null || $orgId === '')) {
         // all
-    } elseif (in_array($role, ['admin', 'org', 'super_admin'], true) && $orgId) {
+    } elseif (in_array($role, ['admin', 'org', 'super_admin', 'operational_manager'], true) && $orgId) {
         $where .= ' AND mp.org_id = ?';
         $params[] = $orgId;
     } elseif ($role === 'manager') {
