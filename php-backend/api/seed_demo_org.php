@@ -103,6 +103,8 @@ if ($cleanup) {
         'payments', 'coupons', 'daily_reports', 'call_logs', 'tasks', 'notifications', 'audit_log',
         'activities', 'lead_activities', 'timetable_sessions', 'timetables', 'students', 'hr_leads',
         'lead_form_assignments', 'leads', 'lead_forms', 'holidays', 'batches', 'courses',
+        // Rows from seed_demo_marketing.php (same batch).
+        'email_sends', 'email_campaigns', 'email_drafts', 'whatsapp_sends', 'whatsapp_campaigns', 'whatsapp_drafts',
         'marketing_members', 'users',
     ];
     $st = $db->prepare('SELECT tbl, row_id FROM demo_seed_registry WHERE batch = ? AND org_id = ?');
@@ -1329,6 +1331,7 @@ try {
         @file_put_contents($file, "Demo logins for {$orgRows[0]['name']} (password for all: {$demoPassword})\n" . implode("\n", $demoEmails) . "\n");
         @chmod($file, 0600);
         echo "\nDone. Demo team logins (one shared password) saved to {$file} (readable by root only).\n";
+        echo "Next: php " . __DIR__ . "/seed_demo_marketing.php --apply  (gives the marketing member campaigns and leads)\n";
     } else {
         $db->rollBack();
         echo "\nDry run — nothing written. Re-run with --apply to create it.\n";
