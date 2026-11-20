@@ -14,7 +14,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { api } from "@/lib/api";
 import type { PaymentCandidateKpi } from "@/components/paymentLinks/CandidatePaymentRecords";
 import type { RazorpayPaymentLink } from "@/types/paymentLinks";
-import { paymentLinkReferralCode, paymentLinkSalespersonId } from "@/utils/normalizePaymentLink";
+import { resolvePaymentLinkCreator, type TeamMemberLookup } from "@/utils/normalizePaymentLink";
 import {
  getAllPaymentLinks,
 } from "@/utils/paymentLinksApi";
@@ -68,6 +68,7 @@ export default function OperationalManagerDashboard() {
  const [error, setError] = useState<string | null>(null);
  const [kpi, setKpi] = useState<PaymentCandidateKpi | null>(null);
  const [links, setLinks] = useState<RazorpayPaymentLink[]>([]);
+ const [team, setTeam] = useState<TeamMemberLookup[]>([]);
  const [chartPeriod, setChartPeriod] = useState<"7d" | "30d" | "90d" | "all">("30d");
 
  const load = useCallback(async () => {
@@ -109,6 +110,10 @@ export default function OperationalManagerDashboard() {
  // Fetch approved manual payments
  const manualRes = await api.manualPayments.list('approved').catch(() => ({ data: [] }));
  setManualPayments(Array.isArray(manualRes?.data) ? manualRes.data : []);
+
+ // Team roster: resolves who created each payment link (for "Top Members by Collection").
+ const teamRes = await api.team.list().catch(() => ({ data: [] }));
+ setTeam(Array.isArray(teamRes?.data) ? (teamRes.data as TeamMemberLookup[]) : []);
  } catch (err) {
  setError(err instanceof Error ? err.message : "Failed to load dashboard");
  } finally {
@@ -166,20 +171,24 @@ export default function OperationalManagerDashboard() {
  const memberData = useMemo(() => {
  const memberMap = new Map<string, { name: string; collected: number; links: number }>();
  for (const link of links) {
- // Creator lives in Razorpay notes (salesperson_id / staff ID), not on the link root.
- const staffId = paymentLinkReferralCode(link).trim();
- const key = paymentLinkSalespersonId(link) || staffId || "unassigned";
- const noteName = String(link.notes?.salesperson_name || "").trim();
- const existing = memberMap.get(key) || { name: noteName || staffId || "Unassigned", collected: 0, links: 0 };
+ // Creator lives in Razorpay notes (salesperson_id / staff ID); resolve it against the team roster.
+ const creator = resolvePaymentLinkCreator(link, team);
+ const key = creator.id || creator.referral_code || "unassigned";
+ const label = creator.full_name && creator.full_name !== "—" ? creator.full_name : creator.referral_code || "Unassigned";
+ const existing = memberMap.get(key) || { name: label, collected: 0, links: 0 };
  const collected = link.status === "paid" || link.status === "partially_paid" ? (link.amount_paid || 0) / 100 : 0;
  memberMap.set(key, { name: existing.name, collected: existing.collected + collected, links: existing.links + 1 });
  }
  return Array.from(memberMap.values())
  .sort((a, b) => b.collected - a.collected)
  .slice(0, 10);
- }, [links]);
+ }, [links, team]);
 
- const totalCollected = links.filter((l) => l.status === "paid" || l.status === "partially_paid").reduce((s, l) => s + (l.amount_paid || 0), 0) / 100 + manualPayments.reduce((s, m) => s + (parseFloat(m.amount) || 0), 0);
+ // Same figure as Payment Records (candidate ledger: link payments + approved manual payments).
+ const ledgerCollected = Number(kpi?.total_paid ?? 0);
+ const totalCollected = kpi && (kpi.candidate_count ?? 0) > 0
+ ? ledgerCollected
+ : links.filter((l) => l.status === "paid" || l.status === "partially_paid").reduce((s, l) => s + (l.amount_paid || 0), 0) / 100 + manualPayments.reduce((s, m) => s + (parseFloat(m.amount) || 0), 0);
  const totalPitch = kpi?.total_pitch || 0;
  const pendingCount = links.filter((l) => l.status === "created" || l.status === "partially_paid").length;
 
@@ -221,7 +230,7 @@ export default function OperationalManagerDashboard() {
  <KpiCard
  title="Total Collected"
  value={fmtInr(totalCollected)}
- hint={`${links.filter((l) => l.status === "paid").length} paid links`}
+ hint={`${fmtInr(Math.max(0, totalPitch - totalCollected))} still to collect`}
  icon={IndianRupee}
  color="text-emerald-600"
  />
@@ -266,7 +275,7 @@ export default function OperationalManagerDashboard() {
  innerRadius={50}
  outerRadius={90}
  paddingAngle={3}
- dataKey="value"
+ dataKey="count"
  label={({ name, percent }) =>
  `${name} ${(percent * 100).toFixed(0)}%`
  }
@@ -277,7 +286,10 @@ export default function OperationalManagerDashboard() {
  ))}
  </Pie>
  <Tooltip
- formatter={(value: number) => [fmtInr(value), "Amount"]}
+ formatter={(count: number, _name: string, item: { payload?: PaymentChartData }) => [
+ `${count} link${count === 1 ? "" : "s"} · ${fmtInr(item?.payload?.value ?? 0)} collected`,
+ item?.payload?.name ?? "",
+ ]}
  contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 10, fontSize: 12 }}
  />
  </PieChart>
