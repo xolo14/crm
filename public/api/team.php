@@ -179,10 +179,19 @@ if ($method === 'GET') {
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
+    // Reps / HR / marketing read this roster only for "assign to" pickers: they must not see
+    // other people's page-access settings or the org admin's contact details.
+    $isPeerReader = in_array($effRole, $orgPeerRoles, true);
+    $callerId = (string) ($tokenData['user_id'] ?? '');
     foreach ($rows as &$row) {
-        if (is_array($row)) {
-            userAttachPageAccess($row);
+        if (!is_array($row)) {
+            continue;
         }
+        if ($isPeerReader && (string) ($row['id'] ?? '') !== $callerId) {
+            unset($row['page_access_json'], $row['org_admin_email']);
+            continue;
+        }
+        userAttachPageAccess($row);
     }
     unset($row);
     respond(['data' => $rows]);

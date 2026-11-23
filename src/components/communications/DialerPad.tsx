@@ -49,7 +49,7 @@ export default function DialerPad({ value, onChange, onCall, className }: Dialer
       </div>
 
       <div className="flex items-center justify-center gap-4 pt-1">
-        <Button type="button" variant="ghost" size="icon" className="h-12 w-12 rounded-full" onClick={backspace} disabled={!value}>
+        <Button type="button" variant="ghost" size="icon" className="h-12 w-12 rounded-full" onClick={backspace} disabled={!value} aria-label="Delete last digit" title="Delete last digit">
           <Delete className="h-5 w-5" />
         </Button>
         <Button

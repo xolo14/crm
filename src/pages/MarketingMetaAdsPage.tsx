@@ -289,7 +289,7 @@ export default function MarketingMetaAdsPage() {
             Facebook only granted ads/stats access — not{" "}
             <code className="text-xs">leads_retrieval</code>. An admin must finish Meta App Review, set{" "}
             <code className="text-xs">META_ADS_OAUTH_SCOPES=ads_read,leads_retrieval</code>, reconnect in{" "}
-            Settings → Meta Ads, then sync.
+            Settings → Meta Ads, then sync.{canSync ? null : " Ask your organization admin to do this."}
           </p>
         </div>
       ) : null}
@@ -420,7 +420,11 @@ export default function MarketingMetaAdsPage() {
                   {campaignRollup.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                        No campaigns yet — run Sync from Settings → Meta Ads after connecting.
+                        {canSync
+                          ? "No campaigns yet — connect in Settings → Meta Ads, then press Sync now."
+                          : connected
+                            ? "No campaigns yet — your organization admin can run a sync."
+                            : "No campaigns yet — ask your organization admin to connect Meta Ads."}
                       </TableCell>
                     </TableRow>
                   ) : (

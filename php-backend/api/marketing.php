@@ -193,6 +193,14 @@ if ($action === 'members') {
         $input = getInput();
         $id = generateUUID();
         $orgId = marketingRequireOrgId($tokenData, $input, $db);
+        $memberUserId = trim((string) ($input['user_id'] ?? ''));
+        if ($memberUserId !== '') {
+            $chk = $db->prepare('SELECT 1 FROM users WHERE id = ? AND org_id = ? LIMIT 1');
+            $chk->execute([$memberUserId, $orgId]);
+            if (!$chk->fetchColumn()) {
+                respond(['error' => 'That user is not in your organization'], 403);
+            }
+        }
         $stmt = $db->prepare('INSERT INTO marketing_members (id, user_id, name, email, phone, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $stmt->execute([
             $id, $input['user_id'], $input['name'], $input['email'],
@@ -390,6 +398,9 @@ if ($action === 'email_campaigns') {
         $input = getInput();
         $id = generateUUID();
         $orgId = marketingRequireOrgId($tokenData, $input, $db);
+        if (trim((string) ($input['draft_id'] ?? '')) !== '') {
+            marketingAssertRowInScope($db, 'email_drafts', (string) $input['draft_id'], $tokenData);
+        }
         $stmt = $db->prepare('INSERT INTO email_campaigns (id, subject, draft_id, recipient_count, pending_count, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $pending = (int) ($input['pending_count'] ?? $input['recipient_count'] ?? 0);
         $stmt->execute([$id, $input['subject'], $input['draft_id'] ?? null, $input['recipient_count'] ?? 0, $pending, $input['status'] ?? 'draft', $userId, $orgId]);
@@ -410,8 +421,13 @@ if ($action === 'email_campaigns') {
         marketingAssertRowInScope($db, 'email_campaigns', $id, $tokenData);
         $input = getInput();
         $fields = []; $params = [];
-        foreach (['subject', 'draft_id', 'recipient_count', 'sent_count', 'failed_count', 'pending_count', 'status'] as $f) {
+        // Sent / failed / pending counts come from the server's sending worker only — a client
+        // must not be able to rewrite campaign results.
+        foreach (['subject', 'draft_id', 'status'] as $f) {
             if (array_key_exists($f, $input)) { $fields[] = "$f = ?"; $params[] = $input[$f]; }
+        }
+        if (array_key_exists('draft_id', $input) && trim((string) $input['draft_id']) !== '') {
+            marketingAssertRowInScope($db, 'email_drafts', (string) $input['draft_id'], $tokenData);
         }
         if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
         $params[] = $id;
@@ -510,6 +526,9 @@ if ($action === 'whatsapp_campaigns') {
         $input = getInput();
         $id = generateUUID();
         $orgId = marketingRequireOrgId($tokenData, $input, $db);
+        if (trim((string) ($input['draft_id'] ?? '')) !== '') {
+            marketingAssertRowInScope($db, 'whatsapp_drafts', (string) $input['draft_id'], $tokenData);
+        }
         $stmt = $db->prepare('INSERT INTO whatsapp_campaigns (id, subject, draft_id, recipient_count, pending_count, status, created_by, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $pending = (int) ($input['pending_count'] ?? $input['recipient_count'] ?? 0);
         $stmt->execute([$id, $input['subject'], $input['draft_id'] ?? null, $input['recipient_count'] ?? 0, $pending, $input['status'] ?? 'draft', $userId, $orgId]);
@@ -530,8 +549,12 @@ if ($action === 'whatsapp_campaigns') {
         marketingAssertRowInScope($db, 'whatsapp_campaigns', $id, $tokenData);
         $input = getInput();
         $fields = []; $params = [];
-        foreach (['subject', 'draft_id', 'recipient_count', 'sent_count', 'failed_count', 'pending_count', 'status'] as $f) {
+        // Counts come from the server's dispatch only (see email_campaigns PUT).
+        foreach (['subject', 'draft_id', 'status'] as $f) {
             if (array_key_exists($f, $input)) { $fields[] = "$f = ?"; $params[] = $input[$f]; }
+        }
+        if (array_key_exists('draft_id', $input) && trim((string) $input['draft_id']) !== '') {
+            marketingAssertRowInScope($db, 'whatsapp_drafts', (string) $input['draft_id'], $tokenData);
         }
         if (empty($fields)) respond(['error' => 'Nothing to update'], 400);
         $params[] = $id;
@@ -554,6 +577,9 @@ if ($action === 'email_sends') {
             respond(['data' => []]);
         }
         [$w, $scopeParams] = marketingOrgScope($db, $tokenData, 'ec');
+        [$cs, $cp] = marketingCreatorScopeSql($db, $tokenData, 'ec.created_by');
+        $w .= $cs;
+        $scopeParams = array_merge($scopeParams, $cp);
         $placeholders = implode(',', array_fill(0, count($idList), '?'));
         $stmt = $db->prepare("
             SELECT es.*
@@ -604,6 +630,9 @@ if ($action === 'whatsapp_sends') {
             respond(['data' => []]);
         }
         [$w, $scopeParams] = marketingOrgScope($db, $tokenData, 'wc');
+        [$cs, $cp] = marketingCreatorScopeSql($db, $tokenData, 'wc.created_by');
+        $w .= $cs;
+        $scopeParams = array_merge($scopeParams, $cp);
         $placeholders = implode(',', array_fill(0, count($idList), '?'));
         $stmt = $db->prepare("
             SELECT ws.*
@@ -634,8 +663,7 @@ if ($action === 'whatsapp_sends') {
             if ($phone === '') {
                 continue;
             }
-            $status = is_array($row) ? (string) ($row['status'] ?? 'pending') : 'pending';
-            $stmt->execute([generateUUID(), $campaignId, $phone, $status]);
+            $stmt->execute([generateUUID(), $campaignId, $phone, 'pending']);
             $count++;
         }
         respond(['message' => 'Sends recorded', 'count' => $count], 201);

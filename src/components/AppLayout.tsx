@@ -648,7 +648,11 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       )}>
         <SidebarContent collapsed={collapsed} role={role} organization={organization} pageAccess={pageAccess} enableCommandPalette />
         <button
+          type="button"
           onClick={() => setCollapsed(!collapsed)}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed}
           className="absolute -right-3 z-10 h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground hover:text-foreground transition-all hidden md:flex shadow-sm"
           style={{ top: "calc(var(--crm-brand-header-height) / 2)", transform: "translateY(-50%)" }}
         >

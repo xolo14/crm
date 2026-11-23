@@ -33,17 +33,35 @@ export function KpiTile({
   value,
   sub,
   className,
+  onClick,
 }: {
   label: ReactNode;
   value: ReactNode;
   sub?: ReactNode;
   className?: string;
+  /** Makes the tile a button (e.g. open the matching tab or list). */
+  onClick?: () => void;
 }) {
-  return (
-    <div className={cn("min-w-0 rounded-xl border border-border bg-card p-4", className)}>
+  const body = (
+    <>
       <p className="truncate text-xs font-medium text-muted-foreground">{label}</p>
       <p className="mt-1 text-2xl font-bold leading-tight tabular-nums">{value}</p>
       {sub ? <p className="mt-0.5 truncate text-xs text-muted-foreground">{sub}</p> : null}
-    </div>
+    </>
   );
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={cn(
+          "min-w-0 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          className,
+        )}
+      >
+        {body}
+      </button>
+    );
+  }
+  return <div className={cn("min-w-0 rounded-xl border border-border bg-card p-4", className)}>{body}</div>;
 }

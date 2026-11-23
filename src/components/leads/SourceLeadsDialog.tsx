@@ -379,6 +379,23 @@ export function SourceLeadsDialog({
     };
   }, [open]);
 
+  // Esc closes this full-screen view (like the Back button) unless an inner popup
+  // (filter sheet, bulk-assign dialog, menu, confirmation) is open — that one closes first.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const innerOpen = document.querySelector(
+        '[role="dialog"][data-state="open"]:not([data-full-height]), [role="alertdialog"], [role="menu"], [role="listbox"]',
+      );
+      if (innerOpen) return;
+      onCloseDetail?.();
+      onOpenChange(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onOpenChange, onCloseDetail]);
+
   const undoButton = canBulkAssign && onBulkUndoAssign ? (
     <Button
       size="sm"

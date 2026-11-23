@@ -389,9 +389,9 @@ export default function MarketingDashboard() {
 
       {/* Stats — shared KPI tile style */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6 [&>*:last-child:nth-child(odd)]:col-span-2 md:[&>*:last-child]:col-span-1">
-        <KpiTile label="Email campaigns" value={totalCampaigns.toLocaleString('en-IN')} sub="2+ recipients" />
+        <KpiTile label="Email campaigns" value={totalCampaigns.toLocaleString('en-IN')} sub="2+ recipients" onClick={() => setActiveTab('campaigns')} />
         <KpiTile label="Transactional emails" value={transactionalCount.toLocaleString('en-IN')} sub="1 recipient each" />
-        <KpiTile label="WhatsApp campaigns" value={waTotalCampaigns.toLocaleString('en-IN')} />
+        <KpiTile label="WhatsApp campaigns" value={waTotalCampaigns.toLocaleString('en-IN')} onClick={() => setActiveTab('wa_campaigns')} />
         <KpiTile label="Sent" value={(totalSent + waTotalSent).toLocaleString('en-IN')} />
         <KpiTile label="Failed" value={(totalFailed + waTotalFailed).toLocaleString('en-IN')} />
         <KpiTile label="Pending" value={(totalPending + waTotalPending).toLocaleString('en-IN')} />
