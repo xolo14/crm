@@ -4082,7 +4082,7 @@ function userCanAccessPaymentsPage(array $tokenData, ?array $userRow = null): bo
  *  operational_manager when page grant on; HR when toggled on). */
 function userCanAccessOfferLettersPage(array $tokenData, ?array $userRow = null, $org = null): bool {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ($userRow['role'] ?? '')));
-    if (in_array($role, ['super_admin', 'org', 'manager'], true)) {
+    if (in_array($role, ['super_admin', 'org'], true)) {
         return true;
     }
     $access = null;
@@ -4090,6 +4090,10 @@ function userCanAccessOfferLettersPage(array $tokenData, ?array $userRow = null,
         $access = isset($userRow['page_access']) && is_array($userRow['page_access'])
             ? $userRow['page_access']
             : userDecodePageAccess(isset($userRow['page_access_json']) ? (string) $userRow['page_access_json'] : null);
+    }
+    // Managers: off by default; an admin turns it on in Team → Configure pages.
+    if ($role === 'manager') {
+        return userManagerHasPageAccess($access, 'offer_letters');
     }
     $pages = is_array($access) && isset($access['pages']) && is_array($access['pages'])
         ? $access['pages']
@@ -4159,6 +4163,34 @@ function userOperationalManagerAutoGrantedPages(): array
         'notifications',
         'holidays',
     ];
+}
+
+/**
+ * Manager pages ON when the manager has no saved page map (new managers).
+ * Keep in sync with MANAGER_DEFAULT_ON_PAGE_KEYS in src/lib/managerPageAccess.ts.
+ */
+function userManagerDefaultOnPages(): array
+{
+    return [
+        'dashboard', 'team', 'settings', 'trash', 'leads', 'form_management', 'daily_reports',
+        'communications', 'students', 'courses', 'batches', 'payments', 'payment_records',
+        'certificates', 'holidays', 'notifications', 'tasks',
+    ];
+}
+
+/** Manager: saved page map wins; with no map, only userManagerDefaultOnPages() are on. */
+function userManagerHasPageAccess(?array $access, string $featureKey): bool
+{
+    $pages = is_array($access) && isset($access['pages']) && is_array($access['pages'])
+        ? $access['pages']
+        : [];
+    if (empty($pages)) {
+        return in_array($featureKey, userManagerDefaultOnPages(), true);
+    }
+    if (!array_key_exists($featureKey, $pages)) {
+        return false;
+    }
+    return !empty($pages[$featureKey]);
 }
 
 /** Operational Manager: marketing auto-granted; other pages default off unless toggled on. */

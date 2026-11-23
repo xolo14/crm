@@ -43,6 +43,38 @@ export const MANAGER_PAGE_ACCESS_OPTIONS: ManagerPageOption[] = [
 
 export const MANAGER_PAGE_ACCESS_KEYS = MANAGER_PAGE_ACCESS_OPTIONS.map((o) => o.key);
 
+/**
+ * Pages ON by default for a new Manager (and for managers with no saved page map).
+ * Everything else — Offer Letters, Timetables, Live Classes, Marketing, Coupons, Payslip,
+ * Video Intros, Fresher Salary — starts OFF; an admin turns it on in Team → Configure pages.
+ * Keep in sync with userManagerDefaultOnPages() in php-backend/api/helpers.php.
+ */
+export const MANAGER_DEFAULT_ON_PAGE_KEYS: readonly string[] = [
+  "dashboard",
+  "team",
+  "settings",
+  "trash",
+  "leads",
+  FEATURE_FORM_MANAGEMENT,
+  "daily_reports",
+  FEATURE_COMMUNICATIONS,
+  "students",
+  "courses",
+  "batches",
+  "payments",
+  FEATURE_PAYMENT_RECORDS,
+  FEATURE_CERTIFICATES,
+  "holidays",
+  "notifications",
+  "tasks",
+];
+
+function managerDefaultOn(featureKey: string): boolean {
+  // Keys a manager can't toggle (unknown routes) stay allowed, as before.
+  if (!MANAGER_PAGE_ACCESS_KEYS.includes(featureKey)) return true;
+  return MANAGER_DEFAULT_ON_PAGE_KEYS.includes(featureKey);
+}
+
 /** Core/needed pages toggled ON by default for Operational Manager (others default OFF). */
 export const OPERATIONAL_MANAGER_DEFAULT_ON_PAGE_KEYS: readonly string[] = [
   "dashboard",
@@ -104,23 +136,29 @@ function withUnsetDefaults(stored: Record<string, boolean>, keys: string[]): Rec
   return out;
 }
 
-export function defaultManagerPages(allOn = true): Record<string, boolean> {
+/**
+ * Default pages for Manager:
+ * - allOn === true: all pages ON ("Select all")
+ * - allOn === false: all pages OFF ("Clear all")
+ * - allOn === undefined: MANAGER_DEFAULT_ON_PAGE_KEYS ON, the rest OFF (new manager)
+ */
+export function defaultManagerPages(allOn?: boolean): Record<string, boolean> {
   const out: Record<string, boolean> = {};
   for (const key of MANAGER_PAGE_ACCESS_KEYS) {
-    out[key] = allOn;
+    out[key] = allOn !== undefined ? allOn : MANAGER_DEFAULT_ON_PAGE_KEYS.includes(key);
   }
   return out;
 }
 
 /**
  * Merge stored pages for the Configure pages UI (Manager).
- * - No pages map (legacy): show all on.
+ * - No pages map: the manager defaults (what the member actually gets).
  * - Configured map: missing keys = off (same as runtime managerHasPageAccess).
  */
 export function resolveManagerPagesForEdit(pageAccess?: PageAccess | null): Record<string, boolean> {
   const stored = pageAccess?.pages;
   if (!stored || typeof stored !== "object" || Object.keys(stored).length === 0) {
-    return defaultManagerPages(true);
+    return defaultManagerPages();
   }
   return { ...defaultManagerPages(false), ...withUnsetDefaults(stored, MANAGER_PAGE_ACCESS_KEYS) };
 }
@@ -236,8 +274,13 @@ export function managerHasPageAccess(
 ): boolean {
   if (!featureKey) return true;
   const pages = pageAccess?.pages;
-  if (!pages || Object.keys(pages).length === 0) return true;
+  if (!pages || Object.keys(pages).length === 0) return managerDefaultOn(featureKey);
   return grantValue(pages, featureKey);
+}
+
+/** Same rule as managerHasPageAccess, for callers outside this module (orgAccess). */
+export function managerPageAllowedByDefaults(featureKey: string): boolean {
+  return managerDefaultOn(featureKey);
 }
 
 /** Map a route to the manager/OM page-access key (home uses "dashboard"). */

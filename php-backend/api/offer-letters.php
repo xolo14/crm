@@ -22,10 +22,10 @@ $role = $tokenData['role'];
 /** Org/super_admin/manager always; operational_manager when page grant on; HR when enabled. */
 function offerLettersRequireCallerAccess(PDO $db, array $tokenData): void {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    if (in_array($role, ['super_admin', 'org', 'manager'], true)) {
+    if (in_array($role, ['super_admin', 'org'], true)) {
         return;
     }
-    if ($role === 'operational_manager' || $role === 'hr') {
+    if ($role === 'manager' || $role === 'operational_manager' || $role === 'hr') {
         ensureUsersPageAccessColumn($db);
         try {
             $st = $db->prepare('SELECT role, page_access_json FROM users WHERE id = ? LIMIT 1');

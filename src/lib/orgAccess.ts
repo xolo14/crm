@@ -17,6 +17,7 @@ import { normalizeAppRole } from "./roleUtils";
 import {
   operationalManagerHasPageAccess,
   unsetPageGrant,
+  managerPageAllowedByDefaults,
 } from "./managerPageAccess";
 
 export type OrgAccessLite = {
@@ -60,7 +61,7 @@ export function normalizePageAccess(raw?: PageAccess | null): Required<Pick<Page
 /** Empty pages map = legacy unrestricted manager access. */
 function managerPagesAllow(pageAccess: PageAccess | null | undefined, featureKey: string): boolean {
   const pages = pageAccess?.pages;
-  if (!pages || Object.keys(pages).length === 0) return true;
+  if (!pages || Object.keys(pages).length === 0) return managerPageAllowedByDefaults(featureKey);
   if (!(featureKey in pages)) return unsetPageGrant(pages, featureKey);
   return pages[featureKey] === true;
 }

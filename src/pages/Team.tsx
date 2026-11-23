@@ -349,7 +349,7 @@ export default function Team() {
           payments: role === 'sales_representative' ? Boolean(newMember.page_access.payments) : false,
           offer_letters: false,
           ...(role === 'manager'
-            ? { pages: newMember.page_access?.pages || defaultManagerPages(true) }
+            ? { pages: newMember.page_access?.pages || defaultManagerPages() }
             : role === 'operational_manager'
               ? { pages: newMember.page_access?.pages || defaultOperationalManagerPages(true) }
               : {}),
@@ -486,7 +486,7 @@ export default function Team() {
                 payments: role === 'sales_representative' ? Boolean(editingMember.page_access?.payments) : false,
                 offer_letters: false,
                 ...(role === 'manager'
-                  ? { pages: editingMember.page_access?.pages || defaultManagerPages(true) }
+                  ? { pages: editingMember.page_access?.pages || defaultManagerPages() }
                   : role === 'operational_manager'
                     ? buildOperationalManagerPageAccessPayload(
                         editingMember.page_access?.pages || defaultOperationalManagerPages(false),
@@ -963,7 +963,7 @@ export default function Team() {
                       payments: false,
                       offer_letters: false,
                       ...(normalizeRole(v) === 'hr' ? { pages: defaultHrPages(true) } : {}),
-                      ...(normalizeRole(v) === 'manager' ? { pages: defaultManagerPages(true) } : {}),
+                      ...(normalizeRole(v) === 'manager' ? { pages: defaultManagerPages() } : {}),
                       ...(normalizeRole(v) === 'operational_manager'
                         ? { pages: defaultOperationalManagerPages(false) }
                         : {}),
@@ -1248,7 +1248,7 @@ export default function Team() {
                                     offer_letters: false,
                                     pages:
                                       normalizeRole(v) === 'manager'
-                                        ? defaultManagerPages(true)
+                                        ? defaultManagerPages()
                                         : normalizeRole(v) === 'operational_manager'
                                           ? defaultOperationalManagerPages(false)
                                           : normalizeRole(v) === 'hr'
@@ -1491,7 +1491,7 @@ export default function Team() {
                                                 ? defaultHrPages(true)
                                                 : editRole === 'operational_manager'
                                                   ? defaultOperationalManagerPages()
-                                                  : defaultManagerPages(true))),
+                                                  : defaultManagerPages())),
                                             [opt.key]: on,
                                           },
                                           ...(isHr && opt.key === 'offer_letters' ? { offer_letters: on } : {}),
@@ -1591,7 +1591,7 @@ export default function Team() {
                                 ? buildOperationalManagerPageAccessPayload(
                                     editingMember.page_access?.pages || defaultOperationalManagerPages(),
                                   ).pages
-                                : editingMember.page_access?.pages || defaultManagerPages(true),
+                                : editingMember.page_access?.pages || defaultManagerPages(),
                           };
                     await api.team.update(editingMember.id, { page_access });
                     setEditingMember((p) => (p ? { ...p, page_access } : p));
