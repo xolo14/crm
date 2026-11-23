@@ -163,6 +163,22 @@ export default function Apply() {
   const [view, setView] = useState<'landing' | 'form'>(isDirectFormLink ? 'form' : 'landing');
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  /** Optional ?next= after-submit page, only on Syncpedia's own app (e.g. the install-the-app screen). */
+  const afterSubmitUrl = useMemo(() => {
+    try {
+      const raw = new URLSearchParams(window.location.search).get('next') || '';
+      if (!raw) return '';
+      const u = new URL(raw);
+      return u.protocol === 'https:' && u.hostname === 'app.syncpedia.in' ? u.toString() : '';
+    } catch {
+      return '';
+    }
+  }, []);
+  useEffect(() => {
+    if (!submitted || !afterSubmitUrl) return;
+    const t = window.setTimeout(() => window.location.assign(afterSubmitUrl), 1500);
+    return () => window.clearTimeout(t);
+  }, [submitted, afterSubmitUrl]);
   const [dynamicFields, setDynamicFields] = useState<LegacyFormField[]>([]);
   const [builderQuestions, setBuilderQuestions] = useState<BuilderQuestion[] | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
@@ -1338,6 +1354,11 @@ export default function Apply() {
             <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center', color: formBrand.accentColor }}><CheckCircle2 size={52} strokeWidth={1.8} aria-hidden /></div>
             <h2>Applied!</h2>
             <p>{confirmationMessage || 'Our counselor will call you within 24 hours.'}</p>
+            {afterSubmitUrl ? (
+              <a href={afterSubmitUrl} style={{ display: 'inline-block', marginTop: 16, fontWeight: 600, color: formBrand.accentColor }}>
+                Taking you to the Syncpedia app…
+              </a>
+            ) : null}
             {quizResult && quizResult.total > 0 ? (
               <p style={{ marginTop: 8 }}>Score: {quizResult.earned} / {quizResult.total}</p>
             ) : null}
