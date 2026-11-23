@@ -49,7 +49,7 @@ export default function HRDashboard() {
         </Card>
         {(
           [
-            ["Assigned Leads", stats.assigned_leads || 0, Users, "Applicants assigned to you"],
+            ["Assigned Leads", stats.assigned_leads || 0, Users, "Leads assigned to you"],
             ["Pending Tasks", stats.pending_tasks || 0, ClipboardCheck, "Not yet completed"],
             ["Upcoming Holidays", stats.upcoming_holidays || 0, CalendarDays, "Days off in the next 12 months"],
           ] as const
@@ -68,25 +68,25 @@ export default function HRDashboard() {
       </div>
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
-          <CardHeader><CardTitle className="text-sm">New applicants, last 30 days</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-sm">New leads, last 30 days</CardTitle></CardHeader>
           <CardContent className="h-64">
-            <ChartOrEmpty rows={activity} valueKey="value" hint="Applicants assigned to you or added by you appear here.">
+            <ChartOrEmpty rows={activity} valueKey="value" hint="Leads assigned to you or added by you appear here.">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={activity}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
                   <YAxis allowDecimals={false} />
                   <Tooltip />
-                  <Bar dataKey="value" name="Applicants" fill="#2ed573" />
+                  <Bar dataKey="value" name="Leads" fill="#2ed573" />
                 </BarChart>
               </ResponsiveContainer>
             </ChartOrEmpty>
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><CardTitle className="text-sm">Applicants this month (running total)</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-sm">Leads, last 30 days (running total)</CardTitle></CardHeader>
           <CardContent className="h-64">
-            <ChartOrEmpty rows={trend} valueKey="value" hint="Builds up as applicants come in.">
+            <ChartOrEmpty rows={trend} valueKey="value" hint="Builds up as leads come in.">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={trend}>
                   <CartesianGrid strokeDasharray="3 3" />

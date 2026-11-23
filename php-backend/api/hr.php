@@ -170,10 +170,72 @@ function hrSeries(PDO $db, string $table, string $dateExpr, string $where, array
     return array_map(static fn($b) => ['label' => $b['label'], 'count' => $counts[$b['key']] ?? 0], $buckets);
 }
 
-/** HR leads = applicants assigned to this HR user plus the ones they added themselves. */
+/**
+ * HR leads per bucket: the `hr_leads` rows the HR pages show (assigned to this HR user or
+ * added by them), plus any CRM `leads` rows assigned to / added by them (older installs).
+ */
 function hrLeadSeries(PDO $db, string $userId, string $range): array
 {
-    return hrSeries($db, 'leads', 'created_at', '(assigned_to = ? OR created_by = ?)', [$userId, $userId], $range);
+    $hr = hrSeries($db, 'hr_leads', 'created_at', 'hr_id = ? AND deleted_at IS NULL', [$userId], $range);
+    $crm = hrSeries($db, 'leads', 'created_at', '(assigned_to = ? OR created_by = ?)', [$userId, $userId], $range);
+    foreach ($hr as $i => $row) {
+        $hr[$i]['count'] = (int) $row['count'] + (int) ($crm[$i]['count'] ?? 0);
+    }
+    return $hr;
+}
+
+/**
+ * Tasks for the Reports page, one period: completions per bucket split into on time / late
+ * (completed after the due date), and a summary for tasks due in the period.
+ */
+function hrTaskReport(PDO $db, string $userId, string $range): array
+{
+    $buckets = hrPeriodBuckets($range);
+    $fmt = $range === 'year' ? '%Y-%m' : '%Y-%m-%d';
+    $from = $range === 'year' ? $buckets[0]['key'] . '-01' : $buckets[0]['key'];
+    $onTime = [];
+    $late = [];
+    $summary = ['total' => 0, 'completed' => 0, 'late' => 0, 'overdue' => 0];
+    try {
+        // Completion time = updated_at when status became completed (tasks have no completed_at).
+        $st = $db->prepare("SELECT DATE_FORMAT(updated_at, '{$fmt}') k,
+                                   SUM(CASE WHEN due_date IS NOT NULL AND DATE(updated_at) > DATE(due_date) THEN 1 ELSE 0 END) late,
+                                   SUM(CASE WHEN due_date IS NULL OR DATE(updated_at) <= DATE(due_date) THEN 1 ELSE 0 END) on_time
+                              FROM tasks
+                             WHERE assigned_to = ? AND status = 'completed' AND updated_at >= ?
+                             GROUP BY DATE_FORMAT(updated_at, '{$fmt}')");
+        $st->execute([$userId, $from]);
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $onTime[(string) $r['k']] = (int) $r['on_time'];
+            $late[(string) $r['k']] = (int) $r['late'];
+        }
+        // Summary: tasks due inside the period (so it moves with the period filter).
+        $today = hrTodayIst();
+        $sm = $db->prepare("SELECT COUNT(*) total,
+                                   SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) done,
+                                   SUM(CASE WHEN status = 'completed' AND DATE(updated_at) > DATE(due_date) THEN 1 ELSE 0 END) late,
+                                   SUM(CASE WHEN status <> 'completed' AND DATE(due_date) < ? THEN 1 ELSE 0 END) overdue
+                              FROM tasks
+                             WHERE assigned_to = ? AND due_date IS NOT NULL AND DATE(due_date) >= ? AND DATE(due_date) <= ?");
+        $sm->execute([$today, $userId, $from, $today]);
+        $t = $sm->fetch(PDO::FETCH_ASSOC) ?: [];
+        $summary = [
+            'total' => (int) ($t['total'] ?? 0),
+            'completed' => (int) ($t['done'] ?? 0),
+            'late' => (int) ($t['late'] ?? 0),
+            'overdue' => (int) ($t['overdue'] ?? 0),
+        ];
+    } catch (Throwable $e) {
+        error_log('[hr task report] ' . $e->getMessage());
+    }
+    $summary['completion_rate'] = $summary['total'] > 0 ? (int) round($summary['completed'] * 100 / $summary['total']) : 0;
+    $rows = array_map(static fn($b) => [
+        'label' => $b['label'],
+        'on_time' => $onTime[$b['key']] ?? 0,
+        'late' => $late[$b['key']] ?? 0,
+        'completed' => ($onTime[$b['key']] ?? 0) + ($late[$b['key']] ?? 0),
+    ], $buckets);
+    return ['rows' => $rows, 'summary' => $summary];
 }
 
 if ($action === 'hr_dashboard' && $method === 'GET') {
@@ -204,7 +266,7 @@ if ($action === 'hr_dashboard' && $method === 'GET') {
 
     $q3 = $db->prepare("SELECT COUNT(*) c FROM tasks WHERE assigned_to=? AND status <> 'completed'"); $q3->execute([$userId]); $c = $q3->fetch();
 
-    // Last 30 days of applicants (assigned + own), every day present; trend = running total.
+    // Last 30 days of leads (assigned + own), every day present; trend = running total.
     $activity = array_map(static fn($r) => ['label' => $r['label'], 'value' => $r['count']], hrLeadSeries($db, (string) $userId, 'month'));
     $trend = [];
     $running = 0;
@@ -344,24 +406,14 @@ if ($action === 'reports' && $method === 'GET') {
         $range = 'month';
     }
     $leadReport = hrLeadSeries($db, (string) $userId, $range);
-    $taskDone = hrSeries($db, 'tasks', 'updated_at', "assigned_to = ? AND status = 'completed'", [$userId], $range);
-    $taskReport = array_map(static fn($r) => ['label' => $r['label'], 'completed' => $r['count']], $taskDone);
-
-    $tot = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) done FROM tasks WHERE assigned_to = ?");
-    $tot->execute([$userId]);
-    $t = $tot->fetch(PDO::FETCH_ASSOC) ?: [];
-    $total = (int) ($t['total'] ?? 0);
-    $done = (int) ($t['done'] ?? 0);
+    $tasks = hrTaskReport($db, (string) $userId, $range);
 
     respond([
         'range' => $range,
         'lead_report' => $leadReport,
-        'task_report' => $taskReport,
-        'task_summary' => [
-            'total' => $total,
-            'completed' => $done,
-            'completion_rate' => $total > 0 ? (int) round($done * 100 / $total) : 0,
-        ],
+        'lead_total' => array_sum(array_map(static fn($r) => (int) $r['count'], $leadReport)),
+        'task_report' => $tasks['rows'],
+        'task_summary' => $tasks['summary'],
     ]);
 }
 
