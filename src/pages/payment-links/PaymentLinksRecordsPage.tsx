@@ -238,7 +238,7 @@ export default function PaymentLinksRecordsPage() {
               className="shrink-0 gap-1.5 bg-primary hover:bg-brand-700 text-primary-foreground"
             >
               <Plus size={16} />
-              Payments
+              Add payment
             </Button>
           ) : null}
         </div>

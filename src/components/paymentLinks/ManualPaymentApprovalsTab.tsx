@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, Eye, Loader2, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { ProtectedUploadImage } from "@/components/ProtectedUploadImage";
 import { resolveUploadSrc } from "@/lib/resumeHref";
 import type { ManualPaymentRow } from "@/utils/normalizePaymentLink";
+import { confirmAction, promptAction } from "@/components/ConfirmDialogHost";
 
 interface Props {
   rows: ManualPaymentRow[];
@@ -115,6 +116,11 @@ function ProofPreviewDialog({
   );
 }
 
+/** "Shruti Verma · ₹8,000" for confirmation titles. */
+function paymentLabel(row: { customer_name?: string | null; amount?: number | string | null }): string {
+  return `${row.customer_name || "this payment"} · ₹${Number(row.amount || 0).toLocaleString("en-IN")}`;
+}
+
 export default function ManualPaymentApprovalsTab({
   rows,
   loading,
@@ -123,16 +129,44 @@ export default function ManualPaymentApprovalsTab({
 }: Props) {
   const { toast } = useToast();
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Approvals is a work queue: show what still needs a decision first, a page at a time.
+  const pendingCount = rows.filter((r) => r.status === "pending").length;
+  const [statusFilter, setStatusFilter] = useState<"pending" | "approved" | "rejected" | "all">("pending");
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 25;
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter]);
+  const shownRows = useMemo(() => {
+    const order: Record<string, number> = { pending: 0, rejected: 1, approved: 2 };
+    return rows
+      .filter((r) => statusFilter === "all" || r.status === statusFilter)
+      .slice()
+      .sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3));
+  }, [rows, statusFilter]);
+  const pageCount = Math.max(1, Math.ceil(shownRows.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pageRows = shownRows.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
 
-  async function review(id: string, action: "approve" | "reject") {
+  async function review(id: string, action: "approve" | "reject", label = "this payment") {
+    // Money decisions are confirmed first; a rejection can carry a reason for the submitter.
+    let reason = "";
+    if (action === "approve") {
+      const ok = await confirmAction({ title: `Approve ${label}?`, description: "It will count as collected in Payment Records.", confirmLabel: "Approve" });
+      if (!ok) return;
+    } else {
+      const r = await promptAction({ title: `Reject ${label}?`, inputLabel: "Reason (shown to the person who submitted it)", placeholder: "e.g. Proof does not match the amount", confirmLabel: "Reject", destructive: true });
+      if (r === null) return;
+      reason = r;
+    }
     setBusyId(id);
     try {
       if (action === "approve") {
         await api.manualPayments.approve(id);
         toast({ title: "Payment approved" });
       } else {
-        await api.manualPayments.reject(id);
+        await api.manualPayments.reject(id, reason);
         toast({ title: "Payment rejected" });
       }
       onChanged();
@@ -147,7 +181,14 @@ export default function ManualPaymentApprovalsTab({
     }
   }
 
-  async function removeApproved(id: string) {
+  async function removeApproved(id: string, label = "this payment") {
+    const ok = await confirmAction({
+      title: `Delete the approved payment for ${label}?`,
+      description: "It will no longer count as collected. This cannot be undone.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     setBusyId(id);
     try {
       await api.manualPayments.delete(id);
@@ -184,8 +225,33 @@ export default function ManualPaymentApprovalsTab({
     );
   }
 
+  const filterChips: Array<[typeof statusFilter, string]> = [
+    ["pending", `Pending (${pendingCount})`],
+    ["approved", "Approved"],
+    ["rejected", "Rejected"],
+    ["all", `All (${rows.length})`],
+  ];
+
   return (
     <>
+      <div className="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Filter by status">
+        {filterChips.map(([key, text]) => (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={statusFilter === key}
+            onClick={() => setStatusFilter(key)}
+            className={`rounded-full border px-3 py-1 text-xs font-medium ${statusFilter === key ? "border-primary bg-primary text-primary-foreground" : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"}`}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
+      {shownRows.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-gray-200 px-6 py-10 text-center text-sm text-gray-500">
+          {statusFilter === "pending" ? "Nothing waiting for approval." : "No payments with this status."}
+        </div>
+      ) : (
       <div className="bg-white rounded-2xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[880px]">
@@ -202,7 +268,7 @@ export default function ManualPaymentApprovalsTab({
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {rows.map((row) => {
+              {pageRows.map((row) => {
                 const busy = busyId === row.id;
                 const amt = Number(row.amount || 0);
                 return (
@@ -288,7 +354,7 @@ export default function ManualPaymentApprovalsTab({
                               variant="outline"
                               disabled={busy}
                               className="h-8 text-red-700 border-red-200 hover:bg-red-50"
-                              onClick={() => void review(row.id, "reject")}
+                              onClick={() => void review(row.id, "reject", paymentLabel(row))}
                             >
                               {busy ? (
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -303,7 +369,7 @@ export default function ManualPaymentApprovalsTab({
                               size="sm"
                               disabled={busy}
                               className="h-8 bg-primary hover:bg-brand-700 text-primary-foreground"
-                              onClick={() => void review(row.id, "approve")}
+                              onClick={() => void review(row.id, "approve", paymentLabel(row))}
                             >
                               {busy ? (
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -322,7 +388,7 @@ export default function ManualPaymentApprovalsTab({
                             variant="outline"
                             disabled={busy}
                             className="h-8 text-red-700 border-red-200 hover:bg-red-50"
-                            onClick={() => void removeApproved(row.id)}
+                            onClick={() => void removeApproved(row.id, paymentLabel(row))}
                           >
                             {busy ? (
                               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -342,7 +408,24 @@ export default function ManualPaymentApprovalsTab({
             </tbody>
           </table>
         </div>
+        {pageCount > 1 ? (
+          <div className="flex items-center justify-between gap-2 border-t border-gray-100 px-4 py-2.5 text-xs text-gray-500">
+            <span>
+              {(safePage - 1) * PAGE_SIZE + 1}–{Math.min(safePage * PAGE_SIZE, shownRows.length)} of {shownRows.length}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" className="h-8" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}>
+                ← Prev
+              </Button>
+              <span className="tabular-nums">{safePage} / {pageCount}</span>
+              <Button size="sm" variant="outline" className="h-8" disabled={safePage >= pageCount} onClick={() => setPage(safePage + 1)}>
+                Next →
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
+      )}
 
       <ProofPreviewDialog
         path={previewPath}

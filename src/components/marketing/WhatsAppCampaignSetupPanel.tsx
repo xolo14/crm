@@ -73,7 +73,7 @@ export function WhatsAppCampaignSetupPanel({
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
               <Badge variant="outline" className={step1 ? "border-emerald-400 text-emerald-700" : ""}>
-                {step1 ? "Connected" : status.connectionStatus || "Not connected"}
+                {step1 ? "Connected" : String(status.connectionStatus || "not_connected").replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())}
               </Badge>
               {status.businessPhone ? (
                 <span className="text-[11px] text-muted-foreground">{status.businessPhone}</span>

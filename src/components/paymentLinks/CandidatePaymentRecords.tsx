@@ -102,11 +102,23 @@ function fmtPitchCell(pitch: number) {
   );
 }
 
+/** "in_progress" with nothing paid yet reads as "not_started". */
+function displayStatus(status: string, paid: unknown): string {
+  return status === "in_progress" && !(Number(paid) > 0) ? "not_started" : status;
+}
+
 function statusBadge(status: string) {
   if (status === "cleared") {
     return (
       <span className="inline-flex rounded-full bg-brand-100 text-[#0f5230] text-[10px] font-semibold px-2 py-0.5">
         Cleared
+      </span>
+    );
+  }
+  if (status === "not_started") {
+    return (
+      <span className="inline-flex rounded-full bg-gray-100 text-gray-700 text-[10px] font-semibold px-2 py-0.5">
+        Not started
       </span>
     );
   }
@@ -260,6 +272,7 @@ export default function CandidatePaymentRecords({
 
   function candidateStatusLabel(status: string): string {
     if (status === "cleared") return "Cleared";
+    if (status === "not_started") return "Not started";
     if (status === "in_progress") return "In progress";
     return "No pitch";
   }
@@ -282,7 +295,7 @@ export default function CandidatePaymentRecords({
           "Collected (INR)": Number(row.total_paid || 0),
           "Remaining (INR)": Number(row.remaining || 0),
           Installments: Number(row.installment_count || 0),
-          Status: candidateStatusLabel(String(row.status || "")),
+          Status: candidateStatusLabel(displayStatus(String(row.status || ""), row.total_paid)),
         })),
       );
       toast({ title: "Excel downloaded", description: `${filteredRows.length} candidate(s)` });
@@ -445,7 +458,7 @@ export default function CandidatePaymentRecords({
                       .join(" · ")}
                   </p>
                 </div>
-                {statusBadge(String(detail.status || ""))}
+                {statusBadge(displayStatus(String(detail.status || ""), detail.total_paid))}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm min-w-[560px]">
@@ -753,7 +766,7 @@ export default function CandidatePaymentRecords({
                     <td className="px-4 py-3 text-right tabular-nums">
                       {row.installment_count ?? 0}
                     </td>
-                    <td className="px-4 py-3">{statusBadge(String(row.status || ""))}</td>
+                    <td className="px-4 py-3">{statusBadge(displayStatus(String(row.status || ""), row.total_paid))}</td>
                   </tr>
                 ))
               )}

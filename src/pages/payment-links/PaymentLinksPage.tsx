@@ -52,6 +52,7 @@ export default function PaymentLinksPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const referralCode = profile?.referral_code?.trim() ?? "";
   const pollInFlight = useRef(false);
+  const loadSeq = useRef(0);
 
   const [links, setLinks] = useState<RazorpayPaymentLink[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,6 +71,10 @@ export default function PaymentLinksPage() {
   const loadLinks = useCallback(
     async (options?: { silent?: boolean; force?: boolean }) => {
       const silent = options?.silent === true;
+      // Only the newest load may update the page: an older, slower request (e.g. the
+      // previous period) must not overwrite fresh results or leave a stale error.
+      // Silent polls don't start a new generation; they just drop out if one starts.
+      const seq = silent ? loadSeq.current : ++loadSeq.current;
       if (!silent) {
         setLoading(true);
         setError(null);
@@ -80,17 +85,17 @@ export default function PaymentLinksPage() {
           force: options?.force === true,
           orgId: isSuperAdmin && selectedOrgId !== "all" ? selectedOrgId : undefined,
         });
+        if (seq !== loadSeq.current) return;
         setLinks(res.items ?? []);
-        if (!silent) {
-          setError(null);
-        }
+        setError(null);
       } catch (err) {
+        if (seq !== loadSeq.current) return;
         if (!silent) {
           setError(err instanceof Error ? err.message : "Failed to load links");
           setLinks([]);
         }
       } finally {
-        if (!silent) {
+        if (!silent && seq === loadSeq.current) {
           setLoading(false);
         }
       }

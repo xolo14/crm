@@ -537,7 +537,7 @@ function SortableQuestionCard({
     >
       <CardContent className="p-5 space-y-4">
         <div className="flex items-center gap-2">
-          <button className="text-muted-foreground cursor-grab" {...attributes} {...listeners}>
+          <button type="button" className="text-muted-foreground cursor-grab" aria-label="Drag to reorder question" {...attributes} {...listeners}>
             <GripVertical className="h-4 w-4" />
           </button>
           <Input
@@ -639,7 +639,7 @@ function SortableQuestionCard({
           </div>
           <div className="flex items-center gap-2 text-xs">
             <span>Required</span>
-            <Checkbox checked={question.required} onCheckedChange={(c) => onUpdate({ required: c === true })} />
+            <Checkbox aria-label="Required" checked={question.required} onCheckedChange={(c) => onUpdate({ required: c === true })} />
           </div>
         </div>
       </CardContent>
@@ -3015,7 +3015,7 @@ export default function FormsManagerPage() {
                         <SelectContent>{Object.entries(QUESTION_TYPE_LABELS).map(([k, v]) => <SelectItem key={k} value={k}>{v}</SelectItem>)}</SelectContent>
                       </Select>
                     </div>
-                    <div className="flex items-center justify-between"><span className="text-sm">Required</span><Checkbox checked={selectedQuestion.required} onCheckedChange={(c) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { required: c === true } })} /></div>
+                    <div className="flex items-center justify-between"><span className="text-sm">Required</span><Checkbox aria-label="Required" checked={selectedQuestion.required} onCheckedChange={(c) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { required: c === true } })} /></div>
                     <div><Label className="text-xs">Description</Label><Textarea value={selectedQuestion.description || ""} onChange={(e) => dispatchBuilder({ type: "update_question", id: selectedQuestion.id, patch: { description: e.target.value } })} /></div>
                     {selectedQuestion.type === "phone_number" ? (
                       <p className="text-xs text-muted-foreground">

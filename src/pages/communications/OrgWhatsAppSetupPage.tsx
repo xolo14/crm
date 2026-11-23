@@ -238,9 +238,12 @@ export default function OrgWhatsAppSetupPage() {
           <span>
             Connect directly to Meta WhatsApp Cloud API. Use the Official Template Library for Meta-aligned templates.
           </span>
-          <Button variant="secondary" size="sm" className="gap-1.5 shrink-0" asChild>
-            <Link to="/communications/template-library"><BookOpen className="h-4 w-4" /> Template Library</Link>
-          </Button>
+          {/* The library page is for org admins; other roles would be sent back to the dashboard. */}
+          {canConnectMeta ? (
+            <Button variant="secondary" size="sm" className="gap-1.5 shrink-0" asChild>
+              <Link to="/communications/template-library"><BookOpen className="h-4 w-4" /> Template Library</Link>
+            </Button>
+          ) : null}
         </CardContent>
       </Card>
 

@@ -62,6 +62,7 @@ import {
   weekPeriodStart,
   type PeriodType,
 } from "@/utils/timetableCalendar";
+import { formatShortDate } from "@/lib/localDate";
 
 type TimetableSession = {
   id?: string;
@@ -594,7 +595,7 @@ export default function Timetables() {
                 <div className="mb-3 flex items-center justify-between">
                   <Label className="text-base">Calendar</Label>
                   <Badge variant="outline" className="font-normal">
-                    {period.start} → {period.end}
+                    {formatShortDate(period.start)} → {formatShortDate(period.end)}
                   </Badge>
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7">

@@ -161,8 +161,15 @@ function formsGetScopedForm(PDO $db, string $formId, array $tokenData): ?array {
 }
 
 /** Same visibility rules as the Form Management list. */
-function formsBuildListScope(PDO $db, array $tokenData): array {
+/**
+ * $orgWideRead: read-only, org-wide list for Operational Managers (email / WhatsApp campaigns
+ * to form leads). Editing still follows formsCallerCanEditForm.
+ */
+function formsBuildListScope(PDO $db, array $tokenData, bool $orgWideRead = false): array {
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($orgWideRead && $role === 'operational_manager') {
+        $role = 'org';
+    }
     $userId = (string) ($tokenData['user_id'] ?? '');
     $tenantOrgId = formsEffectiveTenantOrgId($db, $tokenData);
     $params = [];
@@ -229,8 +236,8 @@ function formsSubmissionCountSelectSql(string $formAlias = 'lf'): string {
 }
 
 /** @return array<string,mixed>|null */
-function formsGetAccessibleFormDetail(PDO $db, string $formId, array $tokenData): ?array {
-    $scope = formsBuildListScope($db, $tokenData);
+function formsGetAccessibleFormDetail(PDO $db, string $formId, array $tokenData, bool $orgWideRead = false): ?array {
+    $scope = formsBuildListScope($db, $tokenData, $orgWideRead);
     $params = array_merge($scope['params'], [$formId]);
     $sql = 'SELECT lf.*, o.name AS org_name,
                    COALESCE(NULLIF(TRIM(p.full_name), \'\'), NULLIF(TRIM(p.email), \'\'), NULL) AS created_by_name,
@@ -492,7 +499,7 @@ if ($method === 'GET') {
             if ($formId === '') {
                 respond(['error' => 'form_id required'], 400);
             }
-            $formRow = formsGetAccessibleFormDetail($db, $formId, $tokenData);
+            $formRow = formsGetAccessibleFormDetail($db, $formId, $tokenData, ($_GET['scope'] ?? '') === 'org');
             if (!$formRow) {
                 respond(['error' => 'Form not found'], 404);
             }
@@ -777,7 +784,7 @@ if ($method === 'GET') {
         respond(['data' => ['id' => $tplId, 'kind' => $kind, 'placeholders' => $placeholders]]);
     }
 
-    $scope = formsBuildListScope($db, $tokenData);
+    $scope = formsBuildListScope($db, $tokenData, ($_GET['scope'] ?? '') === 'org');
     $params = $scope['params'];
     $where = $scope['where'];
 

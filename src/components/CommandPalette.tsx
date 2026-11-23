@@ -44,7 +44,7 @@ export function CommandPalette({ pages }: { pages: CommandPage[] }) {
   }, {});
 
   return (
-    <CommandDialog open={open} onOpenChange={setOpen}>
+    <CommandDialog open={open} onOpenChange={setOpen} title="Search pages">
       <CommandInput placeholder="Search pages…" />
       <CommandList>
         <CommandEmpty>No matching page.</CommandEmpty>

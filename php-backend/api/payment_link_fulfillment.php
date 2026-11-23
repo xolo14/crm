@@ -469,6 +469,14 @@ function paymentLinksFulfillPaidItems(array $items, int $maxCheck = 100): void
         if (!$needsReceipt && !$needsEnroll && !$needsReconcile) {
             continue;
         }
+        // A link that failed recently (reconcile_needed, touched in the last 15 minutes) is
+        // not retried on every list load; the reconcile cron and later loads pick it up.
+        if (PHP_SAPI !== 'cli' && !empty($row['reconcile_needed'])) {
+            $touched = strtotime((string) ($row['updated_at'] ?? '')) ?: 0;
+            if ($touched > time() - 900) {
+                continue;
+            }
+        }
 
         $checked++;
         $eventType = $status === 'paid' ? 'payment_link.paid' : 'payment_link.partially_paid';

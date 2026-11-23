@@ -523,14 +523,17 @@ export default function PaymentLinksTable({
                       </td>
                       <td className="px-3 py-3">
                         <div className="flex items-center justify-end gap-0.5">
-                          <button
-                            type="button"
-                            onClick={() => onCopyShortUrl(l.short_url)}
-                            className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100"
-                            title="Copy URL"
-                          >
-                            <Copy size={14} />
-                          </button>
+                          {l.short_url ? (
+                            <button
+                              type="button"
+                              onClick={() => onCopyShortUrl(l.short_url)}
+                              className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100"
+                              title="Copy URL"
+                              aria-label="Copy payment URL"
+                            >
+                              <Copy size={14} />
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             onClick={() => onViewDetail(l)}

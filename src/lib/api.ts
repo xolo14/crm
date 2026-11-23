@@ -1280,7 +1280,8 @@ export const api = {
 
   // Form Management
   forms: {
-    list: () => request('/forms.php'),
+    /** scope 'org': Operational Managers get every form in their org (read-only, for campaigns). */
+    list: (opts?: { scope?: 'org' }) => request(opts?.scope ? `/forms.php?scope=${opts.scope}` : '/forms.php'),
     create: (data: {
       name: string;
       slug?: string;
@@ -1326,9 +1327,10 @@ export const api = {
       }),
     submissions: (
       formId: string,
-      params?: { page?: number; limit?: number; search?: string; status?: string },
+      params?: { page?: number; limit?: number; search?: string; status?: string; scope?: 'org' },
     ) => {
       const q = new URLSearchParams({ action: 'submissions', form_id: formId });
+      if (params?.scope) q.set('scope', params.scope);
       if (params?.page) q.set('page', String(params.page));
       if (params?.limit) q.set('limit', String(params.limit));
       if (params?.search) q.set('search', params.search);

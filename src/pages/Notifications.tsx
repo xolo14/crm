@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { dedupeNotifications } from '@/lib/dedupeNotifications';
 import { api } from '@/lib/api';
 import { useAuth } from '@/hooks/useAuth';
@@ -45,8 +46,28 @@ const typeIcons: Record<string, any> = {
   warning: AlertTriangle,
 };
 
+/** Readable label for any notification type, including ones without an entry below. */
+function notificationTypeLabel(type: string): string {
+  if (typeLabels[type]) return typeLabels[type];
+  const t = String(type || 'info').replace(/_/g, ' ').trim();
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+/**
+ * In-app links only open when this user has that page in their sidebar; otherwise the
+ * route guard would just bounce them to the dashboard.
+ */
+function canOpenNotificationLink(link: string): boolean {
+  if (!link.startsWith('/')) return false;
+  const seg = link.split(/[?#]/)[0].split('/')[1] || '';
+  if (seg === '') return true;
+  return [...document.querySelectorAll<HTMLAnchorElement>('aside a[href^="/"], nav a[href^="/"]')].some((a) => (a.getAttribute('href') || '').split('/')[1] === seg);
+}
+
 const typeLabels: Record<string, string> = {
-  lead_assigned: 'Bulk assigned',
+  lead_assigned: 'Lead assigned',
+  payment: 'Payment',
+  task: 'Task',
   task_assigned: 'Task',
   member_added: 'Member added',
   member_removed: 'Member removed',
@@ -101,6 +122,7 @@ function notificationBucket(createdAt: string): string {
 export default function Notifications() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -152,38 +174,51 @@ export default function Notifications() {
     return true;
   });
 
+  const failed = (what: string) => (err: unknown) =>
+    toast({ variant: 'destructive', title: `Could not ${what}`, description: err instanceof Error ? err.message : 'Try again' });
+
   const markAsRead = async (id: string) => {
-    await api.notifications.update(id, { is_read: true });
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+    try {
+      await api.notifications.update(id, { is_read: true });
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+    } catch (err) { failed('mark it as read')(err); }
   };
 
   const markAllRead = async () => {
     const ids = filtered.filter(n => !n.is_read).map(n => n.id);
     if (!ids.length) return;
-    await api.notifications.markAllRead(ids);
-    setNotifications(prev => prev.map(n => ids.includes(n.id) ? { ...n, is_read: true } : n));
-    toast({ title: `${ids.length} notifications marked as read` });
+    try {
+      await api.notifications.markAllRead(ids);
+      setNotifications(prev => prev.map(n => ids.includes(n.id) ? { ...n, is_read: true } : n));
+      toast({ title: `${ids.length} notifications marked as read` });
+    } catch (err) { failed('mark them as read')(err); }
   };
 
   const deleteNotification = async (id: string) => {
-    await api.notifications.delete(id);
-    setNotifications(prev => prev.filter(n => n.id !== id));
-    setSelectedIds(prev => { const s = new Set(prev); s.delete(id); return s; });
+    try {
+      await api.notifications.delete(id);
+      setNotifications(prev => prev.filter(n => n.id !== id));
+      setSelectedIds(prev => { const s = new Set(prev); s.delete(id); return s; });
+    } catch (err) { failed('delete it')(err); }
   };
 
   const bulkDelete = async () => {
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
-    await api.notifications.bulkDelete(ids);
-    setNotifications(prev => prev.filter(n => !selectedIds.has(n.id)));
-    setSelectedIds(new Set());
-    toast({ title: `${ids.length} notifications deleted` });
+    try {
+      await api.notifications.bulkDelete(ids);
+      setNotifications(prev => prev.filter(n => !selectedIds.has(n.id)));
+      setSelectedIds(new Set());
+      toast({ title: `${ids.length} notifications deleted` });
+    } catch (err) { failed('delete them')(err); }
   };
 
   const bulkMarkRead = async () => {
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
-    await api.notifications.markAllRead(ids);
+    try {
+      await api.notifications.markAllRead(ids);
+    } catch (err) { failed('mark them as read')(err); return; }
     setNotifications(prev => prev.map(n => selectedIds.has(n.id) ? { ...n, is_read: true } : n));
     setSelectedIds(new Set());
     toast({ title: `${ids.length} notifications marked as read` });
@@ -241,7 +276,7 @@ export default function Notifications() {
             <SelectContent>
               <SelectItem value="all">All Types</SelectItem>
               {uniqueTypes.map(t => (
-                <SelectItem key={t} value={t}>{typeLabels[t] || t}</SelectItem>
+                <SelectItem key={t} value={t}>{notificationTypeLabel(t)}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -283,7 +318,7 @@ export default function Notifications() {
       <Card className="divide-y divide-border overflow-hidden">
         {filtered.length > 0 && (
           <div className="px-4 py-2 bg-muted/30 flex items-center gap-3 border-b border-border">
-            <Checkbox checked={selectedIds.size === filtered.length && filtered.length > 0} onCheckedChange={selectAll} />
+            <Checkbox aria-label="Select all notifications" checked={selectedIds.size === filtered.length && filtered.length > 0} onCheckedChange={selectAll} />
             <span className="text-xs text-muted-foreground font-medium">
               {filtered.length} notification{filtered.length !== 1 ? 's' : ''}
             </span>
@@ -314,7 +349,7 @@ export default function Notifications() {
                   !n.is_read && "bg-primary/5"
                 )}
               >
-                <Checkbox checked={selectedIds.has(n.id)} onCheckedChange={() => toggleSelect(n.id)} className="mt-1" />
+                <Checkbox aria-label={`Select "${n.title}"`} checked={selectedIds.has(n.id)} onCheckedChange={() => toggleSelect(n.id)} className="mt-1" />
                 <div className={cn(
                   "h-9 w-9 rounded-full flex items-center justify-center shrink-0",
                   n.type === 'lead_assigned' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
@@ -324,14 +359,17 @@ export default function Notifications() {
                 <div
                   className="flex-1 min-w-0 cursor-pointer"
                   onClick={() => {
-                    if (!n.is_read) markAsRead(n.id);
-                    if (n.link) window.location.href = n.link;
+                    if (!n.is_read) void markAsRead(n.id);
+                    if (!n.link) return;
+                    if (/^https?:\/\//i.test(n.link)) { window.open(n.link, '_blank', 'noopener'); return; }
+                    // In-app navigation (no full reload), only to a page this user can open.
+                    if (canOpenNotificationLink(n.link)) navigate(n.link);
                   }}
                 >
                   <div className="flex items-center gap-2 flex-wrap">
                     <p className={cn("text-sm", !n.is_read && "font-semibold")}>{n.title}</p>
                     <Badge variant="outline" className={cn("text-[10px] px-1.5 py-0", typeBadgeColors[n.type] || '')}>
-                      {typeLabels[n.type] || n.type}
+                      {notificationTypeLabel(n.type)}
                     </Badge>
                     {!n.is_read && <span className="h-2 w-2 rounded-full bg-primary shrink-0" />}
                   </div>

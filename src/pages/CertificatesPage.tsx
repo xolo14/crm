@@ -5996,7 +5996,7 @@ export default function CertificatesPage() {
           <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setShowImport(true)}>
             <Download className="h-3.5 w-3.5" /> Import
           </Button>
-          <Button size="sm" variant="outline" className="gap-1.5" onClick={exportAllZip}>
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={exportAllZip} disabled={templates.length === 0} title={templates.length === 0 ? "No templates to export yet" : undefined}>
             <FileDown className="h-3.5 w-3.5" /> Export All
           </Button>
         </div>

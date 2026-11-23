@@ -33,6 +33,7 @@ import { WhatsAppCampaignSetupPanel } from '@/components/marketing/WhatsAppCampa
 import WhatsAppAnalytics from '@/pages/WhatsAppAnalytics';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import { fillTemplatePreview, templateVarCount } from '@/components/WhatsApp/waUtils';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 export default function WhatsAppPortal() {
   const { user } = useAuth();
@@ -239,6 +240,7 @@ export default function WhatsAppPortal() {
   };
 
   const deleteDraft = async (id: string) => {
+    if (!(await confirmAction({ title: 'Delete this WhatsApp draft?', description: 'This cannot be undone.', confirmLabel: 'Delete', destructive: true }))) return;
     try {
       await api.marketing.deleteWhatsappDraft(id);
       toast({ title: 'Draft deleted' }); fetchAll();

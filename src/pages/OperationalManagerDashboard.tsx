@@ -49,6 +49,23 @@ function fmtInr(amount: number): string {
  })}`;
 }
 
+/** ₹8.5L / ₹45k style for chart axes. */
+function fmtInrShort(amount: number): string {
+ const n = Number(amount || 0);
+ const trim = (x: number) => x.toFixed(1).replace(/\.0$/, "");
+ if (n >= 10000000) return `₹${trim(n / 10000000)}Cr`;
+ if (n >= 100000) return `₹${trim(n / 100000)}L`;
+ if (n >= 1000) return `₹${Math.round(n / 1000)}k`;
+ return `₹${Math.round(n)}`;
+}
+
+/** "2026-11-06" → "06 Nov" */
+function fmtDayLabel(key: string): string {
+ const [y, m, d] = String(key || "").split("-").map(Number);
+ if (!y || !m || !d) return String(key || "");
+ return new Date(y, m - 1, d).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+}
+
 type PaymentChartData = {
  name: string;
  value: number;
@@ -72,21 +89,30 @@ export default function OperationalManagerDashboard() {
  const [team, setTeam] = useState<TeamMemberLookup[]>([]);
  const [chartPeriod, setChartPeriod] = useState<"7d" | "30d" | "90d" | "all">("30d");
 
+ const [studentCounts, setStudentCounts] = useState<{ enrolled: number; registered: number } | null>(null);
+
  const load = useCallback(async () => {
  setLoading(true);
  setError(null);
  try {
- // "7d" / "30d" / "90d" are not PaymentLinkPeriod values, so pass an explicit unix range instead.
- const days = chartPeriod === "7d" ? 7 : chartPeriod === "30d" ? 30 : chartPeriod === "90d" ? 90 : 0;
- const nowSec = Math.floor(Date.now() / 1000);
- const [candidatesRes, linksRes] = await Promise.allSettled([
+ // All links once: "Pending links" must include old unpaid links; the chart period
+ // only filters what the charts show (client-side), so switching it never refetches.
+ const [candidatesRes, linksRes, studentsRes] = await Promise.allSettled([
  api.paymentCandidates.list(),
- getAllPaymentLinks(
- days > 0
- ? { from: nowSec - days * 86400, to: nowSec }
- : { period: "all" },
- ),
+ getAllPaymentLinks({ period: "all" }),
+ api.students.list(),
  ]);
+
+ if (studentsRes.status === "fulfilled") {
+ const rows = Array.isArray((studentsRes.value as { data?: unknown })?.data)
+ ? ((studentsRes.value as { data: Array<{ course_id?: unknown; batch_id?: unknown }> }).data)
+ : [];
+ // Same rule as the Students page: no course and no batch yet = registered only.
+ const registered = rows.filter((s) => !String(s.course_id ?? "").trim() && !String(s.batch_id ?? "").trim()).length;
+ setStudentCounts({ enrolled: rows.length - registered, registered });
+ } else {
+ setStudentCounts(null);
+ }
 
  const kpiData = (candidatesRes.status === "fulfilled"
  ? (candidatesRes.value as { kpi?: PaymentCandidateKpi })
@@ -120,18 +146,38 @@ export default function OperationalManagerDashboard() {
  } finally {
  setLoading(false);
  }
- }, [chartPeriod]);
+ }, []);
 
  useEffect(() => {
  void load();
  }, [load]);
+
+ const periodDays = chartPeriod === "7d" ? 7 : chartPeriod === "30d" ? 30 : chartPeriod === "90d" ? 90 : 0;
+ const periodLabel = chartPeriod === "all" ? "all time" : `last ${periodDays} days`;
+ const sinceSec = periodDays > 0 ? Math.floor(Date.now() / 1000) - periodDays * 86400 : 0;
+ const linkPaymentsInPeriod = useCallback(
+ (link: RazorpayPaymentLink): Array<{ at: number; amount: number }> => {
+ const pays = (link.payments ?? [])
+ .filter((p) => !/failed|refunded/i.test(String(p.status || "")) && Number(p.amount || 0) > 0)
+ .map((p) => ({ at: Number(p.created_at || 0), amount: Number(p.amount || 0) / 100 }));
+ // Older rows carry only amount_paid: count it on the link's own date.
+ const list = pays.length > 0 ? pays : (link.amount_paid || 0) > 0 ? [{ at: Number(link.created_at || 0), amount: (link.amount_paid || 0) / 100 }] : [];
+ return list.filter((p) => p.at >= sinceSec);
+ },
+ [sinceSec],
+ );
+ // Links that belong to the chart period: created in it, or paid during it.
+ const chartLinks = useMemo(
+ () => (sinceSec === 0 ? links : links.filter((l) => Number(l.created_at || 0) >= sinceSec || linkPaymentsInPeriod(l).length > 0)),
+ [links, sinceSec, linkPaymentsInPeriod],
+ );
 
  const name = String(user?.full_name || "").trim() || "Operational Manager";
 
  // Payment status distribution
  const statusData = useMemo<PaymentChartData[]>(() => {
  const statusMap = new Map<string, { value: number; count: number }>();
- for (const link of links) {
+ for (const link of chartLinks) {
  const s = link.status || "unknown";
  const existing = statusMap.get(s) || { value: 0, count: 0 };
  statusMap.set(s, { value: existing.value + ((link.amount_paid || 0) / 100), count: existing.count + 1 });
@@ -150,40 +196,46 @@ export default function OperationalManagerDashboard() {
  count: val.count,
  }))
  .sort((a, b) => b.value - a.value);
- }, [links]);
+ }, [chartLinks]);
 
- // Daily collection trend
+ // Daily collections: every payment on its own date (an installment link is no longer
+ // booked entirely on its last payment day). Days without payments show as 0.
  const dailyTrend = useMemo<DailyCollection[]>(() => {
  const dayMap = new Map<string, { collected: number; count: number }>();
- for (const link of links) {
- const lastPayment = link.payments?.[link.payments.length - 1];
- const paidAt = Number(lastPayment?.created_at || 0);
- const date = localDateKey((paidAt > 0 ? paidAt : link.created_at) * 1000);
+ for (const link of chartLinks) {
+ for (const p of linkPaymentsInPeriod(link)) {
+ const date = localDateKey(p.at * 1000);
  const existing = dayMap.get(date) || { collected: 0, count: 0 };
- const collected = link.status === "paid" || link.status === "partially_paid" ? (link.amount_paid || 0) / 100 : 0;
- dayMap.set(date, { collected: existing.collected + collected, count: existing.count + 1 });
+ dayMap.set(date, { collected: existing.collected + p.amount, count: existing.count + 1 });
+ }
+ }
+ if (periodDays > 0) {
+ for (let i = periodDays - 1; i >= 0; i--) {
+ const key = localDateKey(Date.now() - i * 86400000);
+ if (!dayMap.has(key)) dayMap.set(key, { collected: 0, count: 0 });
+ }
  }
  return Array.from(dayMap.entries())
  .map(([date, val]) => ({ date, collected: val.collected, links: val.count }))
  .sort((a, b) => a.date.localeCompare(b.date));
- }, [links]);
+ }, [chartLinks, linkPaymentsInPeriod, periodDays]);
 
- // Top members by collection
+ // Top members by collection (payments received in the chart period)
  const memberData = useMemo(() => {
  const memberMap = new Map<string, { name: string; collected: number; links: number }>();
- for (const link of links) {
+ for (const link of chartLinks) {
  // Creator lives in Razorpay notes (salesperson_id / staff ID); resolve it against the team roster.
  const creator = resolvePaymentLinkCreator(link, team);
  const key = creator.id || creator.referral_code || "unassigned";
  const label = creator.full_name && creator.full_name !== "—" ? creator.full_name : creator.referral_code || "Unassigned";
  const existing = memberMap.get(key) || { name: label, collected: 0, links: 0 };
- const collected = link.status === "paid" || link.status === "partially_paid" ? (link.amount_paid || 0) / 100 : 0;
+ const collected = linkPaymentsInPeriod(link).reduce((s, p) => s + p.amount, 0);
  memberMap.set(key, { name: existing.name, collected: existing.collected + collected, links: existing.links + 1 });
  }
  return Array.from(memberMap.values())
  .sort((a, b) => b.collected - a.collected)
  .slice(0, 10);
- }, [links, team]);
+ }, [chartLinks, team, linkPaymentsInPeriod]);
 
  // Same figure as Payment Records (candidate ledger: link payments + approved manual payments).
  const ledgerCollected = Number(kpi?.total_paid ?? 0);
@@ -238,17 +290,34 @@ export default function OperationalManagerDashboard() {
  <KpiCard
  title="Pending Links"
  value={String(pendingCount)}
- hint={`${pendingCount} pending links`}
+ hint="Unpaid or part-paid, all time"
  icon={Receipt}
  color="text-amber-600"
  />
  <KpiCard
  title="Enrolled Students"
- value={String(kpi?.enrolled_count ?? 0)}
- hint="Candidates linked to enrolled students"
+ value={String(studentCounts?.enrolled ?? 0)}
+ hint={studentCounts ? `${studentCounts.registered} registered · ${studentCounts.enrolled + studentCounts.registered} students in all` : "Students with a course or batch"}
  icon={GraduationCap}
  color="text-blue-600"
  />
+ </div>
+
+ <div className="flex flex-wrap items-center justify-between gap-2">
+ <p className="text-sm font-semibold text-foreground">Payment charts · {periodLabel}</p>
+ <div className="inline-flex rounded-lg border bg-muted/40 p-0.5" role="group" aria-label="Chart period">
+ {([["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"], ["all", "All time"]] as const).map(([key, text]) => (
+ <button
+ key={key}
+ type="button"
+ aria-pressed={chartPeriod === key}
+ onClick={() => setChartPeriod(key)}
+ className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${chartPeriod === key ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+ >
+ {text}
+ </button>
+ ))}
+ </div>
  </div>
 
  {/* Assigned Assignments */}
@@ -261,7 +330,7 @@ export default function OperationalManagerDashboard() {
  {/* Payment Status Breakdown */}
  <Card className="border-border/50 shadow-none">
  <CardHeader className="px-3 sm:px-4">
- <CardTitle className="text-sm font-semibold">Payment Status</CardTitle>
+ <CardTitle className="text-sm font-semibold">Payment Status <span className="font-normal text-muted-foreground">· links, {periodLabel}</span></CardTitle>
  </CardHeader>
  <CardContent className="px-2 sm:px-4">
  {statusData.length === 0 ? (
@@ -302,7 +371,7 @@ export default function OperationalManagerDashboard() {
  {/* Daily Collection Trend */}
  <Card className="border-border/50 shadow-none">
  <CardHeader className="px-3 sm:px-4">
- <CardTitle className="text-sm font-semibold">Daily Collections</CardTitle>
+ <CardTitle className="text-sm font-semibold">Daily Collections <span className="font-normal text-muted-foreground">· {periodLabel}</span></CardTitle>
  </CardHeader>
  <CardContent className="px-2 sm:px-4">
  {dailyTrend.length === 0 ? (
@@ -313,14 +382,19 @@ export default function OperationalManagerDashboard() {
  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
  <XAxis
  dataKey="date"
+ tickFormatter={fmtDayLabel}
+ minTickGap={16}
  tick={{ fontSize: 10 }}
  stroke="hsl(var(--muted-foreground))"
  />
  <YAxis
+ tickFormatter={fmtInrShort}
+ width={56}
  tick={{ fontSize: 10 }}
  stroke="hsl(var(--muted-foreground))"
  />
  <Tooltip
+ labelFormatter={(d: string) => fmtDayLabel(d)}
  formatter={(value: number) => [fmtInr(value), "Collected"]}
  contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 10, fontSize: 12 }}
  />
@@ -342,7 +416,7 @@ export default function OperationalManagerDashboard() {
  {/* Top Members by Collection */}
  <Card className="border-border/50 shadow-none">
  <CardHeader className="px-3 sm:px-4">
- <CardTitle className="text-sm font-semibold">Top Members by Collection</CardTitle>
+ <CardTitle className="text-sm font-semibold">Top Members by Collection <span className="font-normal text-muted-foreground">· {periodLabel}</span></CardTitle>
  </CardHeader>
  <CardContent className="px-2 sm:px-4">
  {memberData.length === 0 ? (
@@ -361,6 +435,8 @@ export default function OperationalManagerDashboard() {
  height={60}
  />
  <YAxis
+ tickFormatter={fmtInrShort}
+ width={56}
  tick={{ fontSize: 10 }}
  stroke="hsl(var(--muted-foreground))"
  />

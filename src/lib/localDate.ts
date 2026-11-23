@@ -34,3 +34,12 @@ export function localDateKey(value: Date | number | string = new Date()): string
 export function localMonthKey(value: Date | number | string = new Date()): string {
   return localDateKey(value).slice(0, 7);
 }
+
+/** "15 Nov 2026" (local calendar day; accepts the same inputs as localDateKey). "—" when empty/invalid. */
+export function formatShortDate(value: Date | number | string | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const key = localDateKey(value);
+  if (!key) return "—";
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}

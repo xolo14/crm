@@ -25,9 +25,34 @@ export interface ConfirmOptions {
   destructive?: boolean;
 }
 
-type Pending = ConfirmOptions & { resolve: (ok: boolean) => void; settled?: boolean };
+type Pending = ConfirmOptions & {
+  resolve: (ok: boolean) => void;
+  settled?: boolean;
+  /** When set, the dialog shows a text box and resolveText receives its value. */
+  input?: { label: string; placeholder?: string };
+  resolveText?: (value: string | null) => void;
+};
 
 let enqueue: ((pending: Pending) => void) | null = null;
+
+/**
+ * Like confirmAction, with a text box (e.g. a reason). Resolves with the trimmed text
+ * (possibly empty) when confirmed, or null when cancelled.
+ */
+export function promptAction(options: ConfirmOptions & { inputLabel: string; placeholder?: string }): Promise<string | null> {
+  if (!enqueue) {
+    const v = typeof window !== "undefined" ? window.prompt([options.title, options.description].filter(Boolean).join("\n\n")) : null;
+    return Promise.resolve(v === null ? null : v.trim());
+  }
+  return new Promise<string | null>((resolveText) =>
+    enqueue?.({
+      ...options,
+      input: { label: options.inputLabel, placeholder: options.placeholder },
+      resolve: () => undefined,
+      resolveText,
+    }),
+  );
+}
 
 /**
  * App-styled replacement for window.confirm(): resolves true when the user confirms.
@@ -54,11 +79,16 @@ export function ConfirmDialogHost() {
   }, []);
 
   const current = queue[0];
+  const [text, setText] = useState("");
+  useEffect(() => {
+    setText("");
+  }, [current]);
   // Both the button's onClick and Radix's onOpenChange(false) fire for one click: settle once.
   const settle = (ok: boolean) => {
     if (!current || current.settled) return;
     current.settled = true;
     current.resolve(ok);
+    current.resolveText?.(ok ? text.trim() : null);
     setQueue((q) => q.filter((p) => p !== current));
   };
 
@@ -79,6 +109,20 @@ export function ConfirmDialogHost() {
             <AlertDialogDescription className="sr-only">Confirm or cancel this action.</AlertDialogDescription>
           )}
         </AlertDialogHeader>
+        {current?.input ? (
+          <div className="space-y-1.5">
+            <label htmlFor="confirm-dialog-input" className="text-sm font-medium">
+              {current.input.label}
+            </label>
+            <textarea
+              id="confirm-dialog-input"
+              className="min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder={current.input.placeholder}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </div>
+        ) : null}
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => settle(false)}>{current?.cancelLabel || "Cancel"}</AlertDialogCancel>
           <AlertDialogAction

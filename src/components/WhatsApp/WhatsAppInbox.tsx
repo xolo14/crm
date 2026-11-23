@@ -310,7 +310,9 @@ export default function WhatsAppInbox({
   if (!connected) {
     return (
       <div className="rounded-xl border border-dashed p-10 text-center text-sm text-muted-foreground">
-        Connect WhatsApp for your organization to use the inbox.
+        WhatsApp isn't connected for your organization yet.
+        <br />
+        An organization admin can connect it under Communications → WhatsApp Setup.
       </div>
     );
   }

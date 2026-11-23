@@ -1151,6 +1151,42 @@ function paymentLinksOverlayCrmRows(array $items, ?int $from, ?int $to): array
  *
  * @param array<string, mixed> $filters
  */
+/**
+ * Receipt / enrolment side effects for paid links. In a web request they run after the
+ * response has been sent (once per request), so list loads never wait on them; the CLI
+ * (cron) runs them inline.
+ */
+function paymentLinksDeferFulfillPaidItems(array $items): void
+{
+    static $queued = false;
+    if ($queued || $items === []) {
+        return;
+    }
+    $queued = true;
+    $run = static function () use ($items): void {
+        if (!function_exists('paymentLinksFulfillPaidItems')) {
+            require_once __DIR__ . '/payment_link_fulfillment.php';
+        }
+        try {
+            paymentLinksFulfillPaidItems($items);
+        } catch (Throwable $e) {
+            error_log('[payment_links] deferred fulfil: ' . $e->getMessage());
+        }
+    };
+    if (PHP_SAPI === 'cli') {
+        $run();
+        return;
+    }
+    register_shutdown_function(static function () use ($run): void {
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+        }
+        ignore_user_abort(true);
+        @set_time_limit(180);
+        $run();
+    });
+}
+
 function paymentLinksScheduleBackgroundSync(array $filters): void
 {
     if (empty($GLOBALS['__payment_links_needs_sync'])) {
@@ -1238,11 +1274,9 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
         $items = paymentLinksSyncCacheRead($cacheFile, PAYMENT_LINKS_SYNC_TTL);
         if ($items !== null) {
             $items = paymentLinksOverlayCrmRows($items, $from, $to);
-            // Cache hit skips Razorpay HTTP but must still reconcile receipt/enrollment.
-            if (!function_exists('paymentLinksFulfillPaidItems')) {
-                require_once __DIR__ . '/payment_link_fulfillment.php';
-            }
-            paymentLinksFulfillPaidItems($items);
+            // Cache hit skips Razorpay HTTP but must still reconcile receipt/enrollment —
+            // after the response, so a page load never waits on receipts (they took ~14s).
+            paymentLinksDeferFulfillPaidItems($items);
         }
     }
 
@@ -1294,10 +1328,7 @@ function paymentLinksListMerged(array $filters = [], ?array $tokenData = null): 
         // Re-merge once from a single DB read (refresh/fulfill may have updated rows).
         $items = paymentLinksOverlayCrmRows($items, $from, $to);
 
-        if (!function_exists('paymentLinksFulfillPaidItems')) {
-            require_once __DIR__ . '/payment_link_fulfillment.php';
-        }
-        paymentLinksFulfillPaidItems($items);
+        paymentLinksDeferFulfillPaidItems($items);
 
         try {
             @file_put_contents(

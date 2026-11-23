@@ -302,6 +302,7 @@ export default function LinkDetailModal({
               {downloadingInvoice ? "Loading…" : "Download Invoice"}
             </button>
           )}
+          {link.short_url ? (
           <button
             type="button"
             onClick={() => onCopyShortUrl(link.short_url)}
@@ -310,6 +311,7 @@ export default function LinkDetailModal({
             <Copy size={14} />
             Copy Link
           </button>
+          ) : null}
           {canEmailRemind && (
             <button
               type="button"

@@ -22,7 +22,8 @@ export function mapCampaignForms(res: unknown): CampaignFormOption[] {
 }
 
 export async function fetchCampaignForms(): Promise<CampaignFormOption[]> {
-  return mapCampaignForms(await api.forms.list());
+  // Campaigns may target any org form (Operational Managers included; others are unaffected).
+  return mapCampaignForms(await api.forms.list({ scope: 'org' }));
 }
 
 export type FormLeadRow = {
@@ -49,7 +50,7 @@ export async function fetchFormLeadRows(formId: string): Promise<{
   let destination: FormLeadDestination = "form_leads";
   const limit = 500;
   while (page <= 10) {
-    const res = (await api.forms.submissions(formId, { page, limit })) as {
+    const res = (await api.forms.submissions(formId, { page, limit, scope: 'org' })) as {
       submissions?: FormLeadRow[];
       total?: number;
       destination?: string;

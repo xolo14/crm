@@ -341,7 +341,7 @@ export function FormDescriptionEditor({
               <Link2 className="h-3.5 w-3.5" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="start" className="w-72 space-y-2 p-3">
+          <PopoverContent align="start" className="w-72 space-y-2 p-3" aria-label="Insert link">
             <div>
               <Label className="text-[11px]">Link URL</Label>
               <Input

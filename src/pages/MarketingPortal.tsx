@@ -40,6 +40,7 @@ import {
   placeholderValuesComplete,
   syncNamePlaceholderValues,
 } from '@/lib/emailDraftPlaceholders';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 /** Same HTML the mailbox sends. Full documents keep their <style> and tables; plain text is escaped. */
 function emailPreviewSrcDoc(body: unknown): string {
@@ -257,6 +258,7 @@ export default function MarketingPortal() {
   };
 
   const deleteDraft = async (id: string) => {
+    if (!(await confirmAction({ title: 'Delete this email draft?', description: 'This cannot be undone.', confirmLabel: 'Delete', destructive: true }))) return;
     try {
       await api.marketing.deleteEmailDraft(id);
       toast({ title: 'Draft deleted' });
@@ -510,9 +512,16 @@ export default function MarketingPortal() {
     return () => window.clearInterval(timer);
   }, [anyCampaignSending]);
 
-  const retryCampaign = async (campaign: { id?: string }) => {
+  const retryCampaign = async (campaign: { id?: string; failed_count?: number | string; name?: string; subject?: string }) => {
     const id = String(campaign.id || '');
     if (!id || retryingCampaignId) return;
+    const failed = Number(campaign.failed_count ?? 0);
+    const ok = await confirmAction({
+      title: failed > 0 ? `Resend to ${failed} failed recipient${failed === 1 ? '' : 's'}?` : 'Resend to the failed recipients?',
+      description: 'They will receive this campaign email again.',
+      confirmLabel: 'Resend',
+    });
+    if (!ok) return;
     setRetryingCampaignId(id);
     try {
       const res = await api.marketing.retryEmailCampaign(id);
@@ -741,7 +750,7 @@ export default function MarketingPortal() {
                                 disabled={retryingCampaignId === String(c.id)}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  void retryCampaign(c);
+                                  void retryCampaign({ ...c, failed_count: summary.failed });
                                 }}
                               >
                                 {retryingCampaignId === String(c.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Retry'}

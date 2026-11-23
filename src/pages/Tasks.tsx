@@ -18,6 +18,7 @@ import { Plus, Search, Filter, Download, Upload, MoreHorizontal, Pencil, Trash2,
 import * as perms from '@/lib/permissions';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { confirmAction } from '@/components/ConfirmDialogHost';
+import { formatShortDate } from '@/lib/localDate';
 
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 const STATUSES = ['pending', 'in_progress', 'completed', 'cancelled'] as const;
@@ -121,13 +122,13 @@ export default function Tasks() {
           {filtered.length === 0 ? <div className="flex flex-col items-center py-16"><CheckSquare className="h-12 w-12 text-muted-foreground/20 mb-4" /><p className="text-sm font-medium text-muted-foreground">No tasks</p></div> : filtered.map((task: any) => (
             <div key={task.id} className={`mobile-card p-4 ${task.status === 'completed' ? 'opacity-50' : ''}`}>
               <div className="flex items-start gap-3">
-                <Checkbox className="mt-1 h-5 w-5" checked={task.status === 'completed'} onCheckedChange={c => toggleComplete(task.id, !!c)} />
+                <Checkbox className="mt-1 h-5 w-5" aria-label={`Mark "${task.title}" complete`} checked={task.status === 'completed'} onCheckedChange={c => toggleComplete(task.id, !!c)} />
                 <div className="flex-1 min-w-0">
                   <p className={`font-semibold text-[15px] leading-tight ${task.status === 'completed' ? 'line-through' : ''}`}>{task.title}</p>
                   {task.description && <p className="text-[13px] text-muted-foreground mt-1 line-clamp-2">{task.description}</p>}
                   <div className="flex flex-wrap items-center gap-2 mt-2.5">
                     <Badge variant="outline" className={`${priorityColors[task.priority || 'medium']} capitalize text-[11px] px-2 py-0.5 rounded-md`}>{task.priority}</Badge>
-                    {task.due_date && <span className={`text-[12px] ${isOverdue(task) ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>{new Date(task.due_date).toLocaleDateString()}</span>}
+                    {task.due_date && <span className={`text-[12px] ${isOverdue(task) ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>{formatShortDate(task.due_date)}</span>}
                     {getAssigneeName(task.assigned_to, task) && <span className="text-[12px] text-primary font-medium">→ {getAssigneeName(task.assigned_to, task)}</span>}
                   </div>
                 </div>
@@ -153,13 +154,13 @@ export default function Tasks() {
               : filtered.map((task: any, i: number) => (
                 <TableRow key={task.id} className={task.status === 'completed' ? 'opacity-50' : ''}>
                   <TableCell className="text-muted-foreground text-sm">{i + 1}</TableCell>
-                  <TableCell><Checkbox checked={task.status === 'completed'} onCheckedChange={c => toggleComplete(task.id, !!c)} /></TableCell>
+                  <TableCell><Checkbox aria-label={`Mark "${task.title}" complete`} checked={task.status === 'completed'} onCheckedChange={c => toggleComplete(task.id, !!c)} /></TableCell>
                   <TableCell>
                     <p className={`font-medium text-sm ${task.status === 'completed' ? 'line-through' : ''}`}>{task.title}</p>
                     {task.description && <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-xs">{task.description}</p>}
                   </TableCell>
                   <TableCell><Badge variant="outline" className={`${priorityColors[task.priority || 'medium']} capitalize text-xs`}>{task.priority}</Badge></TableCell>
-                  <TableCell>{task.due_date ? <span className={`text-sm ${isOverdue(task) ? 'text-destructive font-medium' : 'text-muted-foreground'}`}>{new Date(task.due_date).toLocaleDateString()}</span> : '—'}</TableCell>
+                  <TableCell>{task.due_date ? <span className={`text-sm ${isOverdue(task) ? 'text-destructive font-medium' : 'text-muted-foreground'}`}>{formatShortDate(task.due_date)}</span> : '—'}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{getAssigneeName(task.assigned_to, task) || '—'}</TableCell>
                   <TableCell><Badge variant="secondary" className="capitalize text-xs">{task.status?.replace('_', ' ')}</Badge></TableCell>
                   <TableCell>

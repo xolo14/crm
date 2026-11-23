@@ -489,7 +489,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
           <Table>
             <TableHeader>
               <TableRow>
-                {hasBulkDelete && <TableHead className="w-12"><Checkbox checked={allSelected ? true : someSelected ? 'indeterminate' : false} onCheckedChange={toggleSelectAll} /></TableHead>}
+                {hasBulkDelete && <TableHead className="w-12"><Checkbox aria-label="Select all students" checked={allSelected ? true : someSelected ? 'indeterminate' : false} onCheckedChange={toggleSelectAll} /></TableHead>}
                 <TableHead className={`w-12 ${extraCol}`}>#</TableHead>
                 <TableHead>Student</TableHead>
                 <TableHead className={extraCol}>Contact</TableHead>
@@ -510,7 +510,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
                 <TableRow><TableCell colSpan={hasBulkDelete ? 14 : 13} className="text-center py-8 text-muted-foreground">No students found</TableCell></TableRow>
               ) : filtered.map((student, index) => (
                 <TableRow key={student.id} className={selectedIds.has(student.id) ? 'bg-muted/50' : ''}>
-                  {hasBulkDelete && <TableCell><Checkbox checked={selectedIds.has(student.id)} onCheckedChange={() => toggleSelect(student.id)} /></TableCell>}
+                  {hasBulkDelete && <TableCell><Checkbox aria-label={`Select ${student.name || "student"}`} checked={selectedIds.has(student.id)} onCheckedChange={() => toggleSelect(student.id)} /></TableCell>}
                   <TableCell className={`text-muted-foreground text-sm ${extraCol}`}>{index + 1}</TableCell>
                   <TableCell className="max-w-[14rem]">
                     <span className="block truncate font-medium" title={student.name}>{student.name}</span>

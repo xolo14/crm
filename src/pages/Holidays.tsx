@@ -143,6 +143,11 @@ export default function Holidays() {
       setNotes(dayHolidays[0].notes || '');
       setDialogOpen(true);
     } else if (canAddHoliday) {
+      // Requests are for upcoming days; admins may still record past holidays.
+      if (!canManageHolidays && day < new Date(new Date().toDateString())) {
+        toast.info('Past dates can’t be requested. Ask an admin to record a past holiday.');
+        return;
+      }
       setAddDate(format(day, 'yyyy-MM-dd'));
       setAddName('');
       setAddType('custom');
