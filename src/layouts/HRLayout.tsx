@@ -138,6 +138,8 @@ export default function HRLayout({ children }: { children: ReactNode }) {
   const hasAssignedAssignments = Boolean(myAssignmentsRes?.data && myAssignmentsRes.data.length > 0);
 
   const logout = () => {
+    // Confirm first: on a phone the button sits where a thumb lands.
+    if (!window.confirm("Log out of the HR Portal?")) return;
     api.hr.logout();
     navigate(AUTH_PORTAL.login);
   };
@@ -167,9 +169,13 @@ export default function HRLayout({ children }: { children: ReactNode }) {
                 <Menu className="h-5 w-5" />
               </Button>
             </SheetTrigger>
-            <SheetContent side="left" className="p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
+            <SheetContent side="left" className="flex h-dvh flex-col p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
               <SheetTitle className="sr-only">HR navigation</SheetTitle>
-              <div className="border-b border-sidebar-border px-4 py-4 text-lg font-bold">HR Portal</div>
+              <div className="border-b border-sidebar-border px-4 py-4">
+                <p className="text-lg font-bold">HR Portal</p>
+                <p className="mt-1 truncate text-sm font-semibold">{hrUser?.full_name || "HR User"}</p>
+                {hrUser?.email ? <p className="truncate text-xs text-sidebar-foreground/70">{hrUser.email}</p> : null}
+              </div>
               <NavLinks
                 unreadCount={unreadCount}
                 pageAccess={pageAccess}
@@ -178,6 +184,12 @@ export default function HRLayout({ children }: { children: ReactNode }) {
                 hasAssignedAssignments={hasAssignedAssignments}
                 onNavigate={() => setSheetOpen(false)}
               />
+              <div className="border-t border-sidebar-border p-3" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 0px))" }}>
+                <Button variant="ghost" className="w-full justify-start gap-2 text-sidebar-foreground hover:bg-sidebar-accent" onClick={logout}>
+                  <LogOut className="h-4 w-4" aria-hidden />
+                  Log out
+                </Button>
+              </div>
             </SheetContent>
           </Sheet>
           <span className="font-semibold text-sm truncate">HR Portal</span>
@@ -185,8 +197,9 @@ export default function HRLayout({ children }: { children: ReactNode }) {
             <div className="text-right min-w-0 hidden sm:block">
               <p className="text-xs font-semibold truncate max-w-[120px]">{hrUser?.full_name || "HR User"}</p>
             </div>
-            <Button variant="ghost" size="icon" className="h-10 w-10 touch-target shrink-0" onClick={logout} aria-label="Logout">
-              <LogOut className="h-4 w-4" />
+            <Button variant="ghost" size="sm" className="h-10 gap-1.5 touch-target shrink-0 px-2.5" onClick={logout}>
+              <LogOut className="h-4 w-4" aria-hidden />
+              <span className="text-xs">Log out</span>
             </Button>
           </div>
         </div>

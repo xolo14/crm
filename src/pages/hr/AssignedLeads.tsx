@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
-import { FileText } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { FileText, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -55,9 +54,14 @@ export default function AssignedLeads() {
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{lead.full_name}</p>
+                    {lead.phone ? (
+                      <a href={`tel:${lead.phone.replace(/[^\d+]/g, "")}`} className="inline-flex items-center gap-1 text-sm font-medium text-teal-700">
+                        <Phone className="h-3.5 w-3.5" aria-hidden />
+                        {lead.phone}
+                      </a>
+                    ) : null}
                     <p className="truncate text-xs text-muted-foreground">{lead.email || "—"}</p>
                   </div>
-                  <Badge variant="outline">{statusLabel(lead.status)}</Badge>
                 </div>
                 <div className="mt-2 space-y-2">
                   <p className="text-xs text-muted-foreground">Assigned by: {lead.assigned_by_name || "—"}</p>
@@ -84,7 +88,8 @@ export default function AssignedLeads() {
                   <Input
                     className="h-8 text-xs"
                     defaultValue={lead.notes || ""}
-                    placeholder="Update notes..."
+                    placeholder="Add a note (saves when you tap away)"
+                    aria-label={`Notes for ${lead.full_name}`}
                     onBlur={(e) => {
                       if ((lead.notes || "") !== e.target.value) {
                         handleUpdate(lead, { notes: e.target.value });
@@ -144,7 +149,7 @@ export default function AssignedLeads() {
                       className="h-8 text-xs"
                       title={lead.notes || ""}
                       defaultValue={lead.notes || ""}
-                      placeholder="Add note"
+                      placeholder="Add note — saves when you click away"
                       onBlur={(e) => {
                         if ((lead.notes || "") !== e.target.value) {
                           handleUpdate(lead, { notes: e.target.value });

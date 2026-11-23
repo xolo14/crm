@@ -63,7 +63,7 @@ export default function MyLeads() {
       </div>
 
       {week && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg bg-muted/40 px-4 py-2 text-sm text-muted-foreground">
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg bg-muted/40 px-4 py-2 text-sm text-muted-foreground">
           <Calendar className="h-4 w-4 shrink-0 text-teal-500" />
           <span>
             Showing leads for <strong className="text-foreground">{week.label}</strong>
@@ -74,12 +74,15 @@ export default function MyLeads() {
 
       <div className="mb-3">
         <Tabs value={statusTab} onValueChange={setStatusTab}>
-          <TabsList>
+          {/* Same six statuses (and words) as Add Lead and Assigned Leads; scrolls sideways on a phone. */}
+          <TabsList className="h-auto max-w-full justify-start overflow-x-auto">
             <TabsTrigger value="all">All</TabsTrigger>
             <TabsTrigger value="new">New</TabsTrigger>
             <TabsTrigger value="contacted">Contacted</TabsTrigger>
             <TabsTrigger value="interested">Interested</TabsTrigger>
-            <TabsTrigger value="converted">Enroll</TabsTrigger>
+            <TabsTrigger value="not_interested">Not interested</TabsTrigger>
+            <TabsTrigger value="converted">Converted</TabsTrigger>
+            <TabsTrigger value="lost">Lost</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
@@ -143,6 +146,7 @@ export default function MyLeads() {
         </div>
       ) : (
         <Card className="border-border/50 shadow-none">
+          <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -197,6 +201,7 @@ export default function MyLeads() {
               ))}
             </TableBody>
           </Table>
+          </div>
         </Card>
       )}
 

@@ -27,15 +27,31 @@ const resumeSchema = z
     message: "PDF or Word only",
   });
 
+/** Local "YYYY-MM-DD" for today (date inputs compare as strings). */
+function todayIso(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 const schema = z.object({
-  full_name: z.string().min(2, "Name required"),
-  phone: z.string().min(10, "Valid phone required"),
-  email: z.string().email().optional().or(z.literal("")),
+  full_name: z.string().trim().min(2, "Enter the candidate's full name"),
+  // 10–15 digits; spaces, dashes, brackets and a leading + are allowed.
+  phone: z
+    .string()
+    .trim()
+    .refine((v) => /^\+?[\d\s()-]{10,20}$/.test(v) && v.replace(/\D/g, "").length >= 10 && v.replace(/\D/g, "").length <= 15, {
+      message: "Enter a valid phone number (10–15 digits)",
+    }),
+  email: z.string().trim().email("Enter a valid email address").optional().or(z.literal("")),
   source: z.string().optional(),
   status: z.enum(["new", "contacted", "interested", "not_interested", "converted", "lost"]),
   priority: z.enum(["low", "medium", "high"]),
   notes: z.string().optional(),
-  follow_up_date: z.string().optional(),
+  follow_up_date: z
+    .string()
+    .optional()
+    .refine((v) => !v || v >= todayIso(), { message: "Follow-up date can't be in the past" }),
   hr_id: z.string().optional(),
   resume: resumeSchema,
 });
@@ -91,16 +107,25 @@ export default function AddLeadDialog({
         <form onSubmit={submit} className="flex w-full min-w-0 flex-col px-6 pb-6">
           <div className="grid w-full min-w-0 grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-2 sm:items-start">
             <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
-              <Label htmlFor="add-full-name">Full Name</Label>
-              <Input id="add-full-name" className="w-full" {...form.register("full_name")} />
+              <Label htmlFor="add-full-name">Full Name <span className="text-destructive" aria-hidden>*</span></Label>
+              <Input id="add-full-name" className="w-full" required aria-required="true" autoComplete="name" aria-invalid={Boolean(form.formState.errors.full_name)} {...form.register("full_name")} />
+              {form.formState.errors.full_name?.message ? (
+                <p id="add-full_name-error" role="alert" className="text-xs text-destructive">{form.formState.errors.full_name?.message}</p>
+              ) : null}
             </div>
             <div className="flex min-w-0 flex-col gap-1.5">
-              <Label htmlFor="add-phone">Phone</Label>
-              <Input id="add-phone" className="w-full" inputMode="tel" {...form.register("phone")} />
+              <Label htmlFor="add-phone">Phone <span className="text-destructive" aria-hidden>*</span></Label>
+              <Input id="add-phone" className="w-full" type="tel" inputMode="tel" required aria-required="true" autoComplete="tel" placeholder="+91 98765 43210" aria-invalid={Boolean(form.formState.errors.phone)} {...form.register("phone")} />
+              {form.formState.errors.phone?.message ? (
+                <p id="add-phone-error" role="alert" className="text-xs text-destructive">{form.formState.errors.phone?.message}</p>
+              ) : null}
             </div>
             <div className="flex min-w-0 flex-col gap-1.5">
-              <Label htmlFor="add-email">Email</Label>
-              <Input id="add-email" className="w-full" type="email" {...form.register("email")} />
+              <Label htmlFor="add-email">Email <span className="text-xs font-normal text-muted-foreground">(optional)</span></Label>
+              <Input id="add-email" className="w-full" type="email" autoComplete="email" aria-invalid={Boolean(form.formState.errors.email)} {...form.register("email")} />
+              {form.formState.errors.email?.message ? (
+                <p id="add-email-error" role="alert" className="text-xs text-destructive">{form.formState.errors.email?.message}</p>
+              ) : null}
             </div>
             <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
               <Label>Source</Label>
@@ -146,7 +171,7 @@ export default function AddLeadDialog({
                   <SelectItem value="contacted">Contacted</SelectItem>
                   <SelectItem value="interested">Interested</SelectItem>
                   <SelectItem value="not_interested">Not Interested</SelectItem>
-                  <SelectItem value="converted">Enroll</SelectItem>
+                  <SelectItem value="converted">Converted</SelectItem>
                   <SelectItem value="lost">Lost</SelectItem>
                 </SelectContent>
               </Select>
@@ -166,7 +191,10 @@ export default function AddLeadDialog({
             </div>
             <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
               <Label htmlFor="add-follow-up">Follow Up Date</Label>
-              <Input id="add-follow-up" className="w-full" type="date" {...form.register("follow_up_date")} />
+              <Input id="add-follow-up" className="w-full" type="date" min={todayIso()} aria-invalid={Boolean(form.formState.errors.follow_up_date)} {...form.register("follow_up_date")} />
+              {form.formState.errors.follow_up_date?.message ? (
+                <p id="add-follow_up_date-error" role="alert" className="text-xs text-destructive">{form.formState.errors.follow_up_date?.message}</p>
+              ) : null}
             </div>
             <div className="flex min-w-0 flex-col gap-1.5 sm:col-span-2">
               <Label htmlFor="add-notes">Notes</Label>
@@ -185,7 +213,11 @@ export default function AddLeadDialog({
               )}
             />
           </div>
-          <DialogFooter className="mt-6 w-full flex-shrink-0 border-t border-border pt-4 sm:justify-end">
+          <p className="mt-4 text-xs text-muted-foreground"><span className="text-destructive">*</span> Required</p>
+          <DialogFooter className="mt-3 w-full flex-shrink-0 gap-2 border-t border-border pt-4 sm:justify-end">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>
+              Cancel
+            </Button>
             <Button type="submit" disabled={mutation.isPending || (isAdminMode && !form.watch("hr_id"))}>
               {mutation.isPending ? "Saving..." : "Add Lead"}
             </Button>

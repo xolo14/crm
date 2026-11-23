@@ -26,7 +26,7 @@ function HolidayTable({ rows, muted }: { rows: HolidayRow[]; muted?: boolean }) 
           <TableRow>
             <TableHead>Holiday</TableHead>
             <TableHead>Date</TableHead>
-            <TableHead>Day</TableHead>
+            <TableHead className="hidden sm:table-cell">Day</TableHead>
             <TableHead>Type</TableHead>
           </TableRow>
         </TableHeader>
@@ -34,8 +34,11 @@ function HolidayTable({ rows, muted }: { rows: HolidayRow[]; muted?: boolean }) 
           {rows.map((h) => (
             <TableRow key={h.id} className={muted ? "text-muted-foreground" : ""}>
               <TableCell className={muted ? "" : "font-medium"}>{h.name}</TableCell>
-              <TableCell>{formatDateIN(h.date)}</TableCell>
-              <TableCell>{weekdayName(h.date)}</TableCell>
+              <TableCell className="whitespace-nowrap">
+                {formatDateIN(h.date)}
+                <span className="block text-xs text-muted-foreground sm:hidden">{weekdayName(h.date)}</span>
+              </TableCell>
+              <TableCell className="hidden sm:table-cell">{weekdayName(h.date)}</TableCell>
               <TableCell>
                 {isDayOff(h) ? (
                   <Badge className="bg-emerald-600/10 text-emerald-700 hover:bg-emerald-600/10">Day off</Badge>

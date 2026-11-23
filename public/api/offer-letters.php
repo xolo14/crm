@@ -122,8 +122,14 @@ function offerLettersPurgeSentRecord(PDO $db, array $tokenData, string $id): boo
 }
 
 /** Org-scoped access for offer letter templates (sent letters already use orgFilter). */
+/**
+ * Templates are shared org-wide: every HR / manager / admin in the org sees all of them,
+ * whoever created them. Pass the DB so the org resolves from the user record when the
+ * token itself carries no org_id (HR portal logins).
+ */
 function offerLetterTemplateOrgFilter($tokenData, string $tableAlias = 't'): array {
-    return orgFilter($tokenData, $tableAlias);
+    global $db;
+    return orgFilter($tokenData, $tableAlias, $db instanceof PDO ? $db : null);
 }
 
 function offerLettersFetchTemplateInScope(PDO $db, $tokenData, string $id): ?array {

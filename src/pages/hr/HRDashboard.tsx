@@ -27,7 +27,7 @@ export default function HRDashboard() {
         <h1 className="text-2xl font-semibold">HR Dashboard</h1>
         <p className="text-sm text-muted-foreground">Overview of your leads, tasks and holidays.</p>
       </div>
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">My Leads</CardTitle>

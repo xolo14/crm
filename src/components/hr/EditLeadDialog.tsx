@@ -146,7 +146,7 @@ export default function EditLeadDialog({
                 <SelectItem value="contacted">Contacted</SelectItem>
                 <SelectItem value="interested">Interested</SelectItem>
                 <SelectItem value="not_interested">Not Interested</SelectItem>
-                <SelectItem value="converted">Enroll</SelectItem>
+                <SelectItem value="converted">Converted</SelectItem>
                 <SelectItem value="lost">Lost</SelectItem>
               </SelectContent>
             </Select>

@@ -91,7 +91,8 @@ export function SettingsNav({
 
   const pills = (
     <div className={cn(pillsOnly ? "-mx-0" : "md:hidden -mx-4 px-4", "overflow-x-auto scrollbar-none")}>
-      <div className="flex gap-2 pb-1 min-w-0">
+      {/* Few tabs (HR / limited roles): wrap so none is cut off; many tabs: one scrollable row. */}
+      <div className={cn("flex gap-2 pb-1 min-w-0", flatItems.length <= 4 && "flex-wrap")}>
         {flatItems.map((item) => {
           const isActive = item.id === active;
           return (

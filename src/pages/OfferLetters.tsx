@@ -17,6 +17,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { cn } from '@/lib/utils';
+import { isSimpleMailHtml, mailHtmlToText, mailTextToHtml } from '@/lib/mailBodyText';
 import { buildMultiPagePrintableHtml, OFFER_PAGE_BREAK, splitOfferHtmlPages } from '@/utils/offerLetterPdf';
 import {
   DocumentTemplateEditor,
@@ -595,6 +597,8 @@ export default function OfferLetters() {
   const [activeTab, setActiveTab] = useState('templates');
 
   const [showEditor, setShowEditor] = useState(false);
+  /** Mail body editor: plain text by default; HTML only when asked or when the body needs it. */
+  const [mailBodyAsHtml, setMailBodyAsHtml] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<OfferTemplate | null>(null);
   const [templateForm, setTemplateForm] = useState({
     template_name: '',
@@ -731,6 +735,12 @@ export default function OfferLetters() {
     );
     return { normalized, bodies, boxes };
   };
+
+  // Each time the editor opens, pick plain-text mode unless the saved body uses richer HTML.
+  useEffect(() => {
+    if (showEditor) setMailBodyAsHtml(!isSimpleMailHtml(templateForm.mail_body));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showEditor]);
 
   const openNewTemplate = () => {
     setEditingTemplate(null);
@@ -1889,22 +1899,45 @@ export default function OfferLetters() {
                   <Input className="h-8 text-xs" value={templateForm.mail_subject} onChange={(e) => setTemplateForm((f) => ({ ...f, mail_subject: e.target.value }))} placeholder="Offer — {{candidate_name}}" />
                 </div>
                 <div>
-                  <Label className="text-[10px]">Mail body (HTML)</Label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label className="text-[10px]" htmlFor="offer-mail-body">
+                      {mailBodyAsHtml ? 'Mail body (HTML)' : 'Mail body'}
+                    </Label>
+                    <button
+                      type="button"
+                      className="text-[10px] font-medium text-primary hover:underline"
+                      onClick={() => setMailBodyAsHtml((v) => !v)}
+                      disabled={mailBodyAsHtml && !isSimpleMailHtml(templateForm.mail_body)}
+                      title={mailBodyAsHtml && !isSimpleMailHtml(templateForm.mail_body) ? 'This body uses formatting that plain text would lose' : undefined}
+                    >
+                      {mailBodyAsHtml ? 'Edit as plain text' : 'Edit as HTML'}
+                    </button>
+                  </div>
                   <Textarea
+                    id="offer-mail-body"
                     ref={(el) => {
                       if (!el) return;
                       el.style.height = 'auto';
                       el.style.height = `${Math.max(el.scrollHeight, 120)}px`;
                     }}
-                    className="text-xs min-h-[120px] resize-none overflow-hidden border-0 shadow-none focus-visible:ring-0 bg-muted/30 rounded-md px-2 py-2"
-                    value={templateForm.mail_body}
+                    className={cn(
+                      'text-xs min-h-[120px] resize-none overflow-hidden border-0 shadow-none focus-visible:ring-0 bg-muted/30 rounded-md px-2 py-2',
+                      mailBodyAsHtml && 'font-mono',
+                    )}
+                    value={mailBodyAsHtml ? templateForm.mail_body : mailHtmlToText(templateForm.mail_body)}
                     onChange={(e) => {
                       const el = e.currentTarget;
                       el.style.height = 'auto';
                       el.style.height = `${Math.max(el.scrollHeight, 120)}px`;
-                      setTemplateForm((f) => ({ ...f, mail_body: e.target.value }));
+                      const next = mailBodyAsHtml ? e.target.value : mailTextToHtml(e.target.value);
+                      setTemplateForm((f) => ({ ...f, mail_body: next }));
                     }}
                   />
+                  {!mailBodyAsHtml ? (
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      Leave a blank line between paragraphs. Placeholders like {'{{candidate_name}}'} are filled in for each candidate.
+                    </p>
+                  ) : null}
                 </div>
                 <div>
                   <Label className="text-[10px]">Recipient email placeholder</Label>
@@ -2211,13 +2244,15 @@ export default function OfferLetters() {
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Offer Letters</h1>
           <p className="text-xs sm:text-sm text-muted-foreground">Professional offer letter templates with A4 dimensions & email automation</p>
         </div>
-        <Button size="sm" className="gap-1.5" onClick={openNewTemplate}>
-          <Plus className="h-3.5 w-3.5" /> New Template
+        {/* Disabled until templates/sent letters have loaded, so the first click always opens the editor. */}
+        <Button size="sm" className="gap-1.5" onClick={openNewTemplate} disabled={loading} aria-busy={loading}>
+          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <Plus className="h-3.5 w-3.5" />}
+          {loading ? "Loading…" : "New Template"}
         </Button>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="mb-4">
+        <TabsList className="mb-4 h-auto max-w-full flex-wrap justify-start">
           <TabsTrigger value="templates" className="gap-1.5"><FileText className="h-3.5 w-3.5" />Templates</TabsTrigger>
           <TabsTrigger value="forms" className="gap-1.5"><Users className="h-3.5 w-3.5" />Forms</TabsTrigger>
           <TabsTrigger value="sent" className="gap-1.5"><Send className="h-3.5 w-3.5" />Sent Letters</TabsTrigger>

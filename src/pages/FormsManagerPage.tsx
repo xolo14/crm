@@ -703,6 +703,13 @@ export default function FormsManagerPage() {
   const [formNameError, setFormNameError] = useState("");
   const [history, setHistory] = useState<FormBuilderState[]>([]);
   const [future, setFuture] = useState<FormBuilderState[]>([]);
+  // Each builder session starts with an empty undo/redo history.
+  useEffect(() => {
+    if (builderOpen) {
+      setHistory([]);
+      setFuture([]);
+    }
+  }, [builderOpen]);
   const [backfillRunning, setBackfillRunning] = useState(false);
   const initialTab = (() => {
     const t = String(searchParams.get("tab") || "").trim().toLowerCase();
@@ -1957,18 +1964,20 @@ export default function FormsManagerPage() {
     return (
       <>
       <div className="min-h-[calc(100dvh-120px)] bg-muted/40 dark:bg-background -mx-4 sm:-mx-6 lg:-mx-8" onClick={() => setSelectedQuestionId(null)}>
-        <div className="sticky top-0 z-20 h-[72px] backdrop-blur-xl bg-background/90 border-b border-border">
-          <div className="px-4 sm:px-6 h-full flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
+        <div className="sticky top-0 z-20 min-h-[72px] backdrop-blur-xl bg-background/90 border-b border-border">
+          <div className="px-4 sm:px-6 py-2 min-h-[72px] flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
               <Button variant="ghost" size="sm" onClick={() => setBuilderOpen(false)}><ArrowLeft className="h-4 w-4 mr-1" />Back</Button>
               <Button variant="ghost" size="sm" onClick={undoBuilder} disabled={history.length === 0}>Undo</Button>
               <Button variant="ghost" size="sm" onClick={redoBuilder} disabled={future.length === 0}>Redo</Button>
               <div className="min-w-0">
-                <Input className="h-8 w-64 bg-transparent border-none shadow-none text-sm font-semibold text-foreground" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value } }))} />
-                <p className="text-[11px] text-muted-foreground px-3">Last edited just now</p>
+                <Input aria-label="Form title" className="h-8 w-44 sm:w-64 bg-transparent border-none shadow-none text-sm font-semibold text-foreground" value={builder.title} onChange={(e) => applyBuilderUpdate(() => dispatchBuilder({ type: "set", patch: { title: e.target.value } }))} />
+                <p className="text-[11px] text-muted-foreground px-3">
+                  {editing ? "Changes are kept when you click Save" : "New form · not saved yet"}
+                </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button variant={builderTab === "questions" ? "default" : "outline"} size="sm" onClick={() => setBuilderTab("questions")}>Questions</Button>
               <Button variant={builderTab === "settings" ? "default" : "outline"} size="sm" onClick={() => setBuilderTab("settings")}>Settings</Button>
               <Button variant={builderTab === "preview" ? "default" : "outline"} size="sm" onClick={() => setBuilderTab("preview")}><Eye className="h-4 w-4 mr-1" />Preview</Button>
