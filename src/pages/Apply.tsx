@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { AlertTriangle, Check, CheckCircle2, Lock, X } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
 import { PublicFormShell } from '@/components/forms/PublicFormShell';
@@ -925,7 +926,7 @@ export default function Apply() {
         .sp-back:hover{color:#fff;}
         .sp-form-group{margin-bottom:20px;}
         .sp-label{display:block;font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:8px;}
-        .sp-root.sp-custom .sp-label{font-size:0.8rem;color:var(--text-main);font-weight:800;}
+        .sp-root.sp-custom .sp-label{font-size:0.875rem;color:var(--text-main);font-weight:600;text-transform:none;letter-spacing:0;}
         .sp-input{width:100%;background:var(--field-bg,#000);border:1px solid var(--border-light);color:var(--text-main,#fff);padding:16px;min-height:48px;font-size:16px;font-family:'Inter',sans-serif;border-radius:0;transition:border-color 0.3s;-webkit-appearance:none;}
         .sp-input:focus{outline:none;border-color:var(--accent);}
         @media(max-width:480px){.sp-input{min-height:50px;border-radius:10px;padding:14px;}}
@@ -1065,14 +1066,14 @@ export default function Apply() {
               <div className="sp-reality">
                 <div className="sp-hook">The Industry Reality</div>
                 <div className="sp-reality-item">
-                  <div className="sp-icon-box" style={{ color: '#ff4d4d' }}>✕</div>
+                  <div className="sp-icon-box" style={{ color: '#ff4d4d' }}><X size={18} strokeWidth={2.4} aria-hidden /></div>
                   <div>
                     <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#fff', marginBottom: 2 }}>Academic Projects Don't Count</h3>
                     <p style={{ fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.4 }}>Recruiters ignore library management systems. They want scalable, deployed apps.</p>
                   </div>
                 </div>
                 <div className="sp-reality-item">
-                  <div className="sp-icon-box" style={{ color: '#2ECC71', background: 'rgba(46,204,113,0.1)', borderRadius: '50%' }}>✓</div>
+                  <div className="sp-icon-box" style={{ color: '#2ECC71', background: 'rgba(46,204,113,0.1)', borderRadius: '50%' }}><Check size={18} strokeWidth={2.4} aria-hidden /></div>
                   <div>
                     <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#fff', marginBottom: 2 }}>Production Experience Wins</h3>
                     <p style={{ fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.4 }}>Our interns push code to production using CI/CD pipelines.</p>
@@ -1135,7 +1136,7 @@ export default function Apply() {
 
         {view === 'form' && !submitted && isDirectFormLink && (formLoadState === 'inactive' || formLoadState === 'error' || !!closedReason || oneResponseBlocked) && (
           <div className="sp-slide-right sp-form-shell" style={{ padding: '48px 24px', textAlign: 'center', maxWidth: 480, margin: '0 auto' }}>
-            <div style={{ fontSize: '2.5rem', marginBottom: 16 }}>⚠️</div>
+            <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center', color: '#b45309' }}><AlertTriangle size={40} strokeWidth={1.8} aria-hidden /></div>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: 8 }}>
               {formLoadState === 'inactive' || closedReason || oneResponseBlocked ? 'This form is not available' : 'Could not load form'}
             </h2>
@@ -1253,7 +1254,7 @@ export default function Apply() {
                   </section>
                 )}
                 <div className="sp-form-secure">
-                  <span style={{ color: formBrand.accentColor, fontSize: '1rem' }}>🔒</span>
+                  <Lock size={16} strokeWidth={2} style={{ color: formBrand.accentColor, flexShrink: 0 }} aria-hidden />
                   <span className="sp-form-secure-text">Your data is ISO-protected and never shared with third parties.</span>
                 </div>
                 {couponEnabled &&
@@ -1334,7 +1335,7 @@ export default function Apply() {
         {/* SUCCESS STATE */}
         {submitted && (
           <div className="sp-success">
-            <div style={{ fontSize: '3rem', marginBottom: 16 }}>✓</div>
+            <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center', color: formBrand.accentColor }}><CheckCircle2 size={52} strokeWidth={1.8} aria-hidden /></div>
             <h2>Applied!</h2>
             <p>{confirmationMessage || 'Our counselor will call you within 24 hours.'}</p>
             {quizResult && quizResult.total > 0 ? (
