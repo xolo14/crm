@@ -364,6 +364,7 @@ export default function Notifications() {
                     if (/^https?:\/\//i.test(n.link)) { window.open(n.link, '_blank', 'noopener'); return; }
                     // In-app navigation (no full reload), only to a page this user can open.
                     if (canOpenNotificationLink(n.link)) navigate(n.link);
+                    else toast({ title: 'Nothing to open', description: "This notification's page isn't part of your access." });
                   }}
                 >
                   <div className="flex items-center gap-2 flex-wrap">

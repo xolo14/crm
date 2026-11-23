@@ -509,7 +509,7 @@ export default function CommunicationsHubPage({ adminLink }: { adminLink?: strin
                   <div className="space-y-1.5">
                     <Label>Approved template</Label>
                     <Select value={waTemplateId} onValueChange={setWaTemplateId}>
-                      <SelectTrigger><SelectValue placeholder={templates.length ? "Select template" : "No approved templates"} /></SelectTrigger>
+                      <SelectTrigger aria-label="WhatsApp template"><SelectValue placeholder={templates.length ? "Select template" : "No approved templates"} /></SelectTrigger>
                       <SelectContent>
                         {templates.map((t: WhatsappTemplate) => (
                           <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>

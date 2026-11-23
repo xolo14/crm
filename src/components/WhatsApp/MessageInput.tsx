@@ -89,6 +89,7 @@ export default function MessageInput({
         className="h-11 w-11 rounded-full bg-[var(--wa-send)] hover:bg-[#1da851] text-white shrink-0"
         disabled={!value.trim() || sending || disabled}
         onClick={onSend}
+        aria-label="Send message"
       >
         <Send className="h-4 w-4" />
       </Button>
