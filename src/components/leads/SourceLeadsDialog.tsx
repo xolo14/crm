@@ -7,7 +7,9 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
-import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X, Download, ChevronLeft, ChevronRight, Paperclip } from 'lucide-react';
+import { Search, Shuffle, Trash2, UserPlus, Users, Filter, Undo2, ArrowLeft, X, Download, ChevronLeft, ChevronRight, Paperclip, SlidersHorizontal } from 'lucide-react';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
+import { Switch } from '@/components/ui/switch';
 import { BulkAssignDialog } from '@/components/BulkAssignDialog';
 import { SOURCE_BUCKET_LABELS, getPeaklyyAttemptCount, isAddedSourceBucket, isPeaklyySourceBucket, type LeadSourceBucket } from '@/lib/leadSources';
 import { cn } from '@/lib/utils';
@@ -357,6 +359,15 @@ export function SourceLeadsDialog({
 
   const canUndo = !!undoSnapshot?.length;
   const showDetail = !!detailPanel;
+  // Mobile (< sm): filters and actions live in a bottom sheet so the list gets the screen.
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const activeFilterCount =
+    (statusFilter !== 'all' ? 1 : 0) + (unassignedOnly ? 1 : 0) + (assigneeFilter !== 'all' ? 1 : 0);
+  const clearFilters = () => {
+    setStatusFilter('all');
+    setUnassignedOnly(false);
+    setAssigneeFilter('all');
+  };
   const [portalEl, setPortalEl] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -400,13 +411,13 @@ export function SourceLeadsDialog({
     <>
       <div
         ref={setPortalEl}
-        className="fixed inset-0 z-[100] flex flex-col bg-background"
+        className="fixed inset-0 z-[100] flex h-[100dvh] !max-h-none flex-col bg-background"
         role="dialog"
         aria-modal="false"
         aria-label={label}
       >
         {/* Top bar — full viewport, covers app sidebar */}
-        <header className="shrink-0 flex flex-wrap items-center gap-2 px-3 sm:px-5 py-3 border-b border-border bg-card">
+        <header className="shrink-0 flex items-center gap-2 px-3 sm:flex-wrap sm:px-5 py-3 border-b border-border bg-card">
           <Button
             type="button"
             variant="ghost"
@@ -421,7 +432,7 @@ export function SourceLeadsDialog({
             <span className="hidden sm:inline">{backLabel}</span>
             <span className="sm:hidden">Back</span>
           </Button>
-          <div className="min-w-0 flex-1 flex flex-wrap items-center gap-2">
+          <div className="min-w-0 flex-1 flex items-center gap-2 sm:flex-wrap">
             <h2 className="text-base sm:text-lg font-semibold truncate">{label}</h2>
             <Badge variant="secondary" className="font-normal shrink-0">
               {leads.length} lead{leads.length === 1 ? '' : 's'}
@@ -432,7 +443,7 @@ export function SourceLeadsDialog({
               type="button"
               variant="outline"
               size="sm"
-              className="gap-1.5 h-9 shrink-0"
+              className="hidden gap-1.5 h-9 shrink-0 sm:inline-flex"
               disabled={filtered.length === 0 && selectedIds.size === 0}
               onClick={handleExportClick}
               title={selectedIds.size > 0 ? `Export ${selectedIds.size} selected` : 'Export leads in this view'}
@@ -457,16 +468,38 @@ export function SourceLeadsDialog({
           >
             <div className="shrink-0 px-4 sm:px-5 py-3 space-y-2 border-b border-border/50 bg-muted/10">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <div className="relative flex-1 min-w-0">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search name, email, phone..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="pl-9 h-11"
-                  />
+                <div className="flex flex-1 min-w-0 items-center gap-2">
+                  <div className="relative flex-1 min-w-0">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search name, email, phone..."
+                      aria-label="Search leads"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      className="pl-9 h-10 sm:h-11"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant={activeFilterCount > 0 ? 'default' : 'outline'}
+                    size="icon"
+                    className="relative h-10 w-10 shrink-0 sm:hidden"
+                    onClick={() => setFiltersOpen(true)}
+                    aria-label={
+                      activeFilterCount > 0
+                        ? `Filters and actions, ${activeFilterCount} filter${activeFilterCount === 1 ? '' : 's'} active`
+                        : 'Filters and actions'
+                    }
+                  >
+                    <SlidersHorizontal className="h-4 w-4" />
+                    {activeFilterCount > 0 ? (
+                      <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-white">
+                        {activeFilterCount}
+                      </span>
+                    ) : null}
+                  </Button>
                 </div>
-                <div className="flex gap-2 w-full sm:w-auto flex-wrap">
+                <div className="hidden sm:flex gap-2 w-full sm:w-auto flex-wrap">
                   <Select value={statusFilter} onValueChange={setStatusFilter}>
                     <SelectTrigger className="h-11 flex-1 sm:w-[150px] sm:flex-none">
                       <Filter className="h-3.5 w-3.5 mr-1.5 shrink-0" />
@@ -522,7 +555,7 @@ export function SourceLeadsDialog({
               </div>
 
               {selectedIds.size > 0 && (
-                <div className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg bg-primary/5 border border-primary/20">
+                <div className="hidden sm:flex flex-wrap items-center gap-2 p-2.5 rounded-lg bg-primary/5 border border-primary/20">
                   <span className="text-sm font-medium text-primary">{selectedIds.size} selected</span>
                   {bulkAssignButton}
                   {undoButton}
@@ -558,7 +591,7 @@ export function SourceLeadsDialog({
                 </div>
               )}
 
-              <div className="flex items-center justify-between gap-2">
+              <div className="hidden sm:flex items-center justify-between gap-2">
                 <p className="text-xs text-muted-foreground">
                   {filtered.length} of {leads.length} in this source
                   {filtered.length > pageSize ? ` · page ${safePage} of ${totalPages}` : ''}
@@ -681,14 +714,15 @@ export function SourceLeadsDialog({
                             <Button
                               variant="outline"
                               size="sm"
-                              className="h-10 shrink-0 gap-1 text-xs touch-target"
+                              className="size-10 shrink-0 gap-1 p-0 text-xs touch-target sm:w-auto sm:px-3"
+                              aria-label={isAssigned ? `Reassign ${lead.name}` : `Assign ${lead.name}`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 onOpenAssign(lead.id);
                               }}
                             >
-                              <UserPlus className="h-3.5 w-3.5" />
-                              {isAssigned ? 'Reassign' : 'Assign'}
+                              <UserPlus className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
+                              <span className="hidden sm:inline">{isAssigned ? 'Reassign' : 'Assign'}</span>
                             </Button>
                           )}
                         </div>
@@ -910,13 +944,40 @@ export function SourceLeadsDialog({
                 </Table>
               </div>
             </div>
+            {selectedIds.size > 0 ? (
+              <div className="shrink-0 flex items-center gap-2 border-t border-primary/20 bg-primary/5 px-4 py-2 sm:hidden">
+                <span className="text-sm font-medium text-primary">{selectedIds.size} selected</span>
+                {canBulkAssign && teamMembers.length > 0 ? (
+                  <Button
+                    size="sm"
+                    className="h-9 gap-1.5"
+                    disabled={autoAssignPool.length === 0 || isAutoAssigning || undoing}
+                    onClick={() => setAutoAssignOpen(true)}
+                  >
+                    <Shuffle className="h-3.5 w-3.5" />
+                    Bulk Assign
+                  </Button>
+                ) : null}
+                <button
+                  type="button"
+                  className="ml-auto flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
+                  onClick={() => setSelectedIds(new Set())}
+                  aria-label="Clear selection"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ) : null}
             {(filtered.length > 50 || pageSize !== 50) && (
-              <div className="shrink-0 flex flex-col sm:flex-row items-center justify-between gap-2 px-4 sm:px-5 py-2.5 border-t border-border bg-card">
-                <p className="text-xs text-muted-foreground">
+              <div
+                className="shrink-0 flex flex-row items-center justify-center sm:justify-between gap-2 px-3 sm:px-5 pt-2.5 border-t border-border bg-card"
+                style={{ paddingBottom: 'max(0.625rem, env(safe-area-inset-bottom, 0px))' }}
+              >
+                <p className="hidden sm:block text-xs text-muted-foreground">
                   Showing {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filtered.length)} of {filtered.length}
                 </p>
                 <div className="flex items-center gap-1">
-                  <span className="text-xs text-muted-foreground mr-1 tabular-nums whitespace-nowrap">
+                  <span className="hidden sm:inline text-xs text-muted-foreground mr-1 tabular-nums whitespace-nowrap">
                     Page {safePage} of {totalPages}
                   </span>
                   <Select value={String(pageSize)} onValueChange={setPageSizeFromSelect}>
@@ -949,9 +1010,13 @@ export function SourceLeadsDialog({
                       key={page}
                       type="button"
                       onClick={() => goToPage(page)}
-                      className={`h-8 w-8 rounded-md text-xs font-medium transition-colors ${
-                        safePage === page ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground'
-                      }`}
+                      aria-current={safePage === page ? 'page' : undefined}
+                      className={cn(
+                        'h-8 w-8 rounded-md text-xs font-medium transition-colors',
+                        safePage === page ? 'bg-primary text-primary-foreground' : 'hover:bg-muted text-muted-foreground',
+                        // Phones: only the current page and its neighbours.
+                        Math.abs(page - safePage) > 1 && 'hidden sm:inline-block',
+                      )}
                     >
                       {page}
                     </button>
@@ -988,6 +1053,145 @@ export function SourceLeadsDialog({
           ) : null}
         </div>
       </div>
+
+      <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
+        <SheetContent
+          side="bottom"
+          className="z-[120] max-h-[85dvh] overflow-y-auto rounded-t-2xl px-4 pt-5"
+          overlayClassName="z-[115]"
+          style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
+        >
+          <SheetTitle className="mb-4 text-base">Filters & actions</SheetTitle>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">Status</p>
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="h-11 w-full" aria-label="Filter by status">
+                  <Filter className="h-3.5 w-3.5 mr-1.5 shrink-0" />
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent className="z-[130]">
+                  <SelectItem value="all">All Statuses</SelectItem>
+                  {LEAD_STATUSES.map((s) => (
+                    <SelectItem key={s} value={s} className="capitalize">{formatLeadStatus(s)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {isManager && currentUserId ? (
+              <div className="space-y-1.5">
+                <p className="text-xs font-medium text-muted-foreground">Assigned to</p>
+                <Select
+                  value={assigneeFilter}
+                  onValueChange={(v) => {
+                    setAssigneeFilter(v);
+                    if (v !== 'all') setUnassignedOnly(false);
+                  }}
+                >
+                  <SelectTrigger className="h-11 w-full" aria-label="Filter by assignee">
+                    <SelectValue placeholder="Assigned to" />
+                  </SelectTrigger>
+                  <SelectContent className="z-[130]">
+                    <SelectItem value="all">All assignees</SelectItem>
+                    <SelectItem value="self">Self</SelectItem>
+                    {assigneeOptions.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+            <label className="flex min-h-11 items-center justify-between gap-3 rounded-lg border border-border px-3">
+              <span className="text-sm font-medium">Unassigned only</span>
+              <Switch
+                checked={unassignedOnly}
+                onCheckedChange={(on) => {
+                  setUnassignedOnly(on);
+                  setAssigneeFilter('all');
+                }}
+              />
+            </label>
+
+            <div className="border-t border-border" />
+
+            <p className="text-xs text-muted-foreground">
+              {filtered.length} of {leads.length} in this source
+              {selectedIds.size > 0 ? ` · ${selectedIds.size} selected` : ''}
+            </p>
+            {canSelect && filtered.length > 0 ? (
+              <Button type="button" variant="outline" className="h-11 w-full" onClick={toggleSelectAll}>
+                {allSelected ? 'Deselect all' : 'Select all'}
+              </Button>
+            ) : null}
+            {canBulkAssign && teamMembers.length > 0 ? (
+              <Button
+                type="button"
+                className="h-11 w-full gap-1.5"
+                disabled={autoAssignPool.length === 0 || isAutoAssigning || undoing}
+                onClick={() => {
+                  setFiltersOpen(false);
+                  setAutoAssignOpen(true);
+                }}
+              >
+                <Shuffle className="h-4 w-4" />
+                Bulk Assign
+              </Button>
+            ) : null}
+            {canBulkAssign && onBulkUndoAssign ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11 w-full gap-1.5"
+                disabled={!canUndo || undoing || isAutoAssigning}
+                onClick={() => void handleUndoBulkAssign()}
+              >
+                <Undo2 className="h-4 w-4" />
+                {undoing ? 'Undoing…' : 'Undo last bulk assign'}
+              </Button>
+            ) : null}
+            {canExport && onExport ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11 w-full gap-1.5"
+                disabled={filtered.length === 0 && selectedIds.size === 0}
+                onClick={() => {
+                  setFiltersOpen(false);
+                  handleExportClick();
+                }}
+              >
+                <Download className="h-4 w-4" />
+                {selectedIds.size > 0 ? `Export (${selectedIds.size})` : 'Export'}
+              </Button>
+            ) : null}
+            {canBulkDelete && onBulkDelete && selectedIds.size > 0 ? (
+              <Button
+                type="button"
+                variant="destructive"
+                className="h-11 w-full gap-1.5"
+                onClick={() => {
+                  setFiltersOpen(false);
+                  void handleBulkDelete();
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete selected
+              </Button>
+            ) : null}
+
+            <div className="flex gap-2 pt-2">
+              <Button type="button" variant="outline" className="h-11 flex-1" onClick={clearFilters} disabled={activeFilterCount === 0}>
+                Clear filters
+              </Button>
+              <Button type="button" className="h-11 flex-1" onClick={() => setFiltersOpen(false)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       <BulkAssignDialog
         open={autoAssignOpen}
