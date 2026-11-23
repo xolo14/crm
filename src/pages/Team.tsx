@@ -911,7 +911,7 @@ export default function Team() {
           }
         }}
       >
-        <DialogContent className="max-w-[95vw] sm:max-w-lg">
+        <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Add Team Member</DialogTitle>
           </DialogHeader>
@@ -1054,7 +1054,7 @@ export default function Team() {
           }
         }}
       >
-        <DialogContent className="max-w-[95vw] sm:max-w-lg">
+        <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Send welcome email</DialogTitle>
           </DialogHeader>
@@ -1156,7 +1156,7 @@ export default function Team() {
           }
         }}
       >
-        <DialogContent className="max-w-[95vw] sm:max-w-lg max-h-[min(92dvh,100%)] sm:max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg max-h-[min(92dvh,100%)] sm:max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 p-0 overflow-hidden">
           <DialogHeader className="shrink-0 px-6 pt-6 pb-3 pr-12">
             <DialogTitle>Edit Team Member</DialogTitle>
             <p className="text-sm text-muted-foreground text-left">
@@ -1431,7 +1431,7 @@ export default function Team() {
       </Dialog>
 
       <Dialog open={pageAccessOpen} onOpenChange={setPageAccessOpen}>
-        <DialogContent className="!flex max-w-[95vw] sm:max-w-lg max-h-[min(90dvh,720px)] flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent aria-describedby={undefined} className="!flex max-w-[95vw] sm:max-w-lg max-h-[min(90dvh,720px)] flex-col gap-0 p-0 overflow-hidden">
           <DialogHeader className="px-6 py-4 border-b shrink-0">
             <DialogTitle>
               {normalizeRole(editingMember?.role || '') === 'hr'
@@ -1628,7 +1628,7 @@ export default function Team() {
 
       {/* Assign Task Dialog */}
       <Dialog open={taskDialogOpen} onOpenChange={(open) => { setTaskDialogOpen(open); if (!open) setTaskAssignTo(null); }}>
-        <DialogContent className="max-w-[95vw] sm:max-w-lg">
+        <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
           <DialogHeader><DialogTitle>Assign Task to {taskAssignTo?.full_name}</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5"><Label>Title *</Label><Input value={taskForm.title} onChange={e => setTaskForm(p => ({ ...p, title: e.target.value }))} placeholder="Task title" /></div>

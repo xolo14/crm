@@ -1,4 +1,9 @@
 <?php
+// Library file: only included by other endpoints; a direct web request gets a 404.
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && realpath((string) $_SERVER['SCRIPT_FILENAME']) === __FILE__) {
+    http_response_code(404);
+    exit;
+}
 /**
  * Payment receipt: invoice PDF storage + customer email after paid / partial payment.
  */
@@ -28,8 +33,9 @@ function paymentLinkReceiptRenderHtmlToPdf(string $html, string $destAbsPath): b
             @mkdir($fontDir, 0775, true);
         }
         $options = new \Dompdf\Options();
-        // Allow data: URI org logos embedded in the HTML (not arbitrary remote fetch).
-        $options->set('isRemoteEnabled', true);
+        // The org logo is embedded as a data: URI, which Dompdf loads even with remote access
+        // off, so remote fetching stays disabled (receipts never need http(s) resources).
+        $options->set('isRemoteEnabled', false);
         $options->set('isHtml5ParserEnabled', true);
         $options->set('tempDir', $tmpDir);
         $options->set('fontDir', $fontDir);

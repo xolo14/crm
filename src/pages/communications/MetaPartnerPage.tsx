@@ -229,7 +229,7 @@ export default function MetaPartnerPage() {
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1"><Plus className="h-4 w-4" /> Add template</Button>
               </DialogTrigger>
-              <DialogContent className="max-w-lg">
+              <DialogContent aria-describedby={undefined} className="max-w-lg">
                 <DialogHeader><DialogTitle>New official template</DialogTitle></DialogHeader>
                 <div className="space-y-3">
                   <div className="space-y-1.5"><Label>Name</Label><Input value={libForm.name} onChange={(e) => setLibForm((p) => ({ ...p, name: e.target.value }))} /></div>

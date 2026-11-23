@@ -11,12 +11,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useToast } from '@/hooks/use-toast';
 import { ArrowLeft, Trash2, Loader2, CalendarDays, TrendingUp } from 'lucide-react';
 import * as perms from '@/lib/permissions';
+import { localDateKey, localMonthKey } from '@/lib/localDate';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 const toDateKey = (value: string | null | undefined) => {
   if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toISOString().slice(0, 10);
+  return localDateKey(value);
 };
 
 const toMonthKey = (value: string | null | undefined) => toDateKey(value).slice(0, 7);
@@ -27,8 +27,8 @@ export default function LeadHistory() {
   const navigate = useNavigate();
   const [leads, setLeads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [historyDate, setHistoryDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [historyDate, setHistoryDate] = useState(() => localDateKey());
+  const [historyMonth, setHistoryMonth] = useState(() => localMonthKey());
   const [selectedImportSet, setSelectedImportSet] = useState<string>('all');
 
   const hasDelete = perms.canDelete(role);
@@ -88,7 +88,7 @@ export default function LeadHistory() {
       .filter(lead => parseLeadTags(lead.tags).includes(selectedImportSet))
       .map(lead => lead.id);
     if (leadIds.length === 0) { toast({ title: 'No leads found in selected import set' }); return; }
-    if (!confirm(`Delete ${leadIds.length} leads from this imported set? This cannot be undone.`)) return;
+    if (!(await confirmAction({ title: `Delete ${leadIds.length} leads from this imported set?`, description: 'This cannot be undone.', confirmLabel: 'Delete', destructive: true }))) return;
     let deletedCount = 0;
     for (const id of leadIds) { try { await api.leads.delete(id); deletedCount++; } catch {} }
     await fetchLeads();

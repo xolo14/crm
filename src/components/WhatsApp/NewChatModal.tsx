@@ -52,7 +52,7 @@ export default function NewChatModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md max-h-[min(92dvh,calc(100dvh-1rem))] overflow-y-auto">
+      <DialogContent aria-describedby={undefined} className="max-w-md max-h-[min(92dvh,calc(100dvh-1rem))] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New chat</DialogTitle>
         </DialogHeader>

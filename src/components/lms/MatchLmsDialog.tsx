@@ -167,7 +167,7 @@ export function MatchLmsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[95vw] sm:max-w-2xl max-h-[85vh] flex flex-col">
+      <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-2xl max-h-[85vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>Match LMS {label}</DialogTitle>
         </DialogHeader>

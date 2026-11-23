@@ -36,6 +36,7 @@ import {
   type CallLogStats,
   type CallLogsQueryParams,
 } from "@/types/callLog";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 function normalizeRole(role?: string | null) {
   const r = String(role || "").toLowerCase();
@@ -203,7 +204,7 @@ function DailyLogsStrip({
   const pages = Math.max(1, Math.ceil(total / limit));
 
   const onDelete = async (log: CallLog) => {
-    if (!confirm("Delete this call log?")) return;
+    if (!(await confirmAction({ title: "Delete this call log?", confirmLabel: "Delete", destructive: true }))) return;
     try {
       await delMut.mutateAsync(log.id);
       toast({ title: "Deleted" });

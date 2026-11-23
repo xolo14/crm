@@ -81,6 +81,11 @@ function stripExecutableHtml(html: string): string {
   out = out.replace(/\son\w+\s*=\s*[^\s"'>]+/gi, "");
   // javascript: URLs in href/src/action.
   out = out.replace(/((?:href|src|action)\s*=\s*)(["'])\s*javascript:[^"']*\2/gi, '$1$2#$2');
+  // Elements that can load or run other documents: nested frames, plugins, <base> (rewrites
+  // every relative URL) and <meta http-equiv="refresh"> (redirects the print window).
+  out = out.replace(/<(iframe|object|embed|frame|frameset)\b[\s\S]*?<\/\1\s*>/gi, "");
+  out = out.replace(/<(iframe|object|embed|frame|frameset|base)\b[^>]*\/?>/gi, "");
+  out = out.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh[^>]*>/gi, "");
   return out;
 }
 

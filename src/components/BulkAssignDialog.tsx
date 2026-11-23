@@ -63,7 +63,7 @@ export function BulkAssignDialog({ open, onOpenChange, teamMembers, unassignedCo
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!isAssigning) onOpenChange(v); }}>
-      <DialogContent className="max-w-[95vw] sm:max-w-md">
+      <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Shuffle className="h-5 w-5 text-primary" />

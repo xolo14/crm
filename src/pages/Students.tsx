@@ -21,6 +21,8 @@ import { BulkActionsBar } from '@/components/BulkActions';
 import * as perms from '@/lib/permissions';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { canUseLmsStudentsTab, LmsStudentsTab } from '@/components/lms/LmsStudentsTab';
+import { localDateKey } from '@/lib/localDate';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 const STUDENT_STATUSES = ['active', 'completed', 'dropped'] as const;
 
@@ -197,7 +199,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
             college: cols[4] || null,
             year_of_study: cols[5] || null,
             status: cols[9] || cols[8] || 'active',
-            enrollment_date: cols[10] || cols[9] || new Date().toISOString().split('T')[0],
+            enrollment_date: cols[10] || cols[9] || localDateKey(),
           });
           ok++;
         } catch {
@@ -282,7 +284,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
 
   const handleDelete = async (id: string) => {
     if (!hasDelete) { toast({ variant: 'destructive', title: 'Permission denied' }); return; }
-    if (confirm('Delete this student?')) {
+    if (await confirmAction({ title: 'Delete this student?', confirmLabel: 'Delete', destructive: true })) {
       try {
         await api.students.delete(id);
         toast({ title: 'Student deleted' });
@@ -296,7 +298,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
       toast({ variant: 'destructive', title: 'Permission denied' });
       return;
     }
-    if (!confirm(`Delete ${selectedIds.size} selected student(s)?`)) return;
+    if (!(await confirmAction({ title: `Delete ${selectedIds.size} selected student(s)?`, confirmLabel: 'Delete', destructive: true }))) return;
     let ok = 0;
     let failed = 0;
     for (const id of selectedIds) {
@@ -358,7 +360,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
           {hasCreate && (
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
               <DialogTrigger asChild><Button size="sm" className="gap-1.5"><Plus className="h-4 w-4" />{!isMobile && ' Enroll'}</Button></DialogTrigger>
-              <DialogContent className="max-w-[95vw] sm:max-w-lg">
+              <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
                 <DialogHeader><DialogTitle>Enroll New Student</DialogTitle></DialogHeader>
                 <form onSubmit={handleCreate} className="space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -624,7 +626,7 @@ function StudentsRoster({ hidePageTitle = false }: { hidePageTitle?: boolean }) 
       </Sheet>
 
       <Dialog open={editDialogOpen} onOpenChange={(open) => { setEditDialogOpen(open); if (!open) setEditingStudent(null); }}>
-        <DialogContent className="max-w-[95vw] sm:max-w-lg">
+        <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
           <DialogHeader><DialogTitle>Edit Student</DialogTitle></DialogHeader>
           {editingStudent && (
             <form onSubmit={handleEdit} className="space-y-4">

@@ -8,6 +8,7 @@ import {
   shouldTriggerEmail,
 } from "@/utils/phaseCalculator";
 import { getApiBase } from "@/lib/apiBase";
+import { localDateKey } from "@/lib/localDate";
 
 const API_BASE = getApiBase();
 
@@ -168,7 +169,7 @@ export async function checkAndSendPhaseEmails(
         phaseName: nextDef.name,
         targetAmount: nextDef.target,
         durationDays: nextDef.duration,
-        startDate: start.toISOString().slice(0, 10),
+        startDate: localDateKey(start),
       };
     }
 
@@ -187,8 +188,8 @@ export async function checkAndSendPhaseEmails(
         phaseName: phaseInfo.phaseName,
         dayInPhase: phaseInfo.dayInPhase,
         totalDaysInPhase: phaseInfo.totalDays,
-        startDate: phaseInfo.startDate.toISOString().slice(0, 10),
-        endDate: phaseInfo.endDate.toISOString().slice(0, 10),
+        startDate: localDateKey(phaseInfo.startDate),
+        endDate: localDateKey(phaseInfo.endDate),
         isPhaseComplete: phaseInfo.isPhaseComplete,
       },
       target: {

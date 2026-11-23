@@ -1,4 +1,9 @@
 <?php
+// Library file: only included by other endpoints; a direct web request gets a 404.
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && realpath((string) $_SERVER['SCRIPT_FILENAME']) === __FILE__) {
+    http_response_code(404);
+    exit;
+}
 /**
  * Hostinger-safe Google Cloud Storage helper (no google/cloud-storage SDK).
  * Uses service-account JWT → OAuth token for upload, and V4 signed URLs for download.

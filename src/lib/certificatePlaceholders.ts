@@ -4,6 +4,7 @@
 
 import { applyPlaceholders, extractPlaceholderKeys } from "@/modules/docForms/types";
 import { escapeOfferHtmlAttr, escapeOfferHtmlText } from "@/lib/offerLetterPlaceholders";
+import { localDateKey } from "@/lib/localDate";
 
 /** Auto-filled at issue time — never shown as manual bulk columns. */
 export const CERT_AUTO_PLACEHOLDER_KEYS = new Set([
@@ -283,7 +284,7 @@ export function buildCertTemplatePreviewPlaceholderValues(
   const fields = template?.fields || {};
   const domainSample = String(opts?.domainName ?? fields.domainName ?? "").trim();
   const coursePreview = certSampleTextHasPlaceholderTokens(domainSample) ? "Sample Course" : domainSample;
-  const issueDate = opts?.issueDate ?? new Date().toISOString().slice(0, 10);
+  const issueDate = opts?.issueDate ?? localDateKey();
   const certId = opts?.certId ?? "OR-CC-XXXXXX";
   const recipient = String(opts?.recipientName ?? fields.recipientName ?? "Recipient Name").trim();
   const company = String(opts?.companyName ?? fields.companyName ?? "Organization").trim();

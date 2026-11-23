@@ -62,7 +62,7 @@ export default function BulkAssignHRLeadsDialog({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !loading && onOpenChange(v)}>
-      <DialogContent className="max-w-[95vw] sm:max-w-lg">
+      <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Shuffle className="h-5 w-5 text-primary" />

@@ -1,4 +1,9 @@
 <?php
+// Library file: only included by other endpoints; a direct web request gets a 404.
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && realpath((string) $_SERVER['SCRIPT_FILENAME']) === __FILE__) {
+    http_response_code(404);
+    exit;
+}
 /**
  * Razorpay Payment Links API (PHP cURL — no Node.js required).
  * Prefer per-org credentials (Settings → Razorpay Setup); fall back to

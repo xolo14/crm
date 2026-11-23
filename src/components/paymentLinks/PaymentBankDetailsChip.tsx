@@ -222,7 +222,7 @@ export default function PaymentBankDetailsChip() {
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md max-h-[min(92dvh,100%)] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-md max-h-[min(92dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Building2 className="h-4 w-4" />
@@ -299,7 +299,7 @@ export default function PaymentBankDetailsChip() {
       </Dialog>
 
       <Dialog open={qrZoomOpen} onOpenChange={setQrZoomOpen}>
-        <DialogContent className="max-w-lg p-4">
+        <DialogContent aria-describedby={undefined} className="max-w-lg p-4">
           <DialogHeader>
             <DialogTitle>Payment QR</DialogTitle>
           </DialogHeader>

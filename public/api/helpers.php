@@ -58,7 +58,9 @@ function syncpediaSecurityHeaders(): void
     }
     header_remove('X-Powered-By');
     header('X-Content-Type-Options: nosniff');
-    header('X-Frame-Options: DENY');
+    // SAMEORIGIN matches the nginx header: two different values ("DENY, SAMEORIGIN") make
+    // browsers ignore X-Frame-Options altogether.
+    header('X-Frame-Options: SAMEORIGIN');
     header('Referrer-Policy: strict-origin-when-cross-origin');
     header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
 }
@@ -1550,6 +1552,46 @@ function hierarchyGetVisibleUserIds(PDO $db, array $tokenData): array
         $cache[$key] = hierarchyVisibleUserIds($db, $tokenData);
     }
     return $cache[$key];
+}
+
+/**
+ * Call Log scope for admin/manager views (the list and the recording download use this):
+ * - include assigned hierarchy members (self + downline)
+ * - include unassigned same-org members (reports_to_id IS NULL) except admin/super_admin
+ *
+ * @return string[] user ids
+ */
+function callLogsVisibleOrgMemberIds(PDO $db, array $tokenData, string $userId, string $orgId): array
+{
+    $ids = [];
+    try {
+        $ids = hierarchyGetVisibleUserIds($db, $tokenData);
+    } catch (Throwable $ignored) {
+        $ids = [$userId];
+    }
+    if (empty($ids)) {
+        $ids = [$userId];
+    }
+
+    try {
+        $st = $db->prepare("
+            SELECT id
+            FROM users
+            WHERE org_id = ?
+              AND is_active = 1
+              AND (reports_to_id IS NULL OR reports_to_id = '')
+              AND LOWER(TRIM(role)) NOT IN ('admin', 'super_admin')
+        ");
+        $st->execute([$orgId]);
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $uid) {
+            if (is_string($uid) && $uid !== '' && !in_array($uid, $ids, true)) {
+                $ids[] = $uid;
+            }
+        }
+    } catch (Throwable $ignored) {
+    }
+
+    return $ids;
 }
 
 /**
@@ -6117,7 +6159,45 @@ function saveCallRecordingUpload(?array $file, ?PDO $db = null, ?string $orgId =
     if (!move_uploaded_file($tmp, $destFs)) {
         respond(['error' => 'Failed to save recording'], 500);
     }
+
+    // AMR/3GP (common on budget Android phones) can't be decoded by any browser's <audio>
+    // element, so without this the UI can only offer "Download to play". Transcode to AAC/M4A
+    // when ffmpeg is on the server; on any failure, keep the original file as uploaded.
+    if (in_array($ext, ['amr', '3gp', '3gpp'], true)) {
+        $transcoded = callRecordingTranscodeToM4a($destFs);
+        if ($transcoded !== null) {
+            @unlink($destFs);
+            $filename = $transcoded;
+        }
+    }
+
     return rtrim($dirRel, '/') . '/' . $filename;
+}
+
+/**
+ * Transcode an AMR/3GP recording at $absPath to AAC/M4A in the same directory.
+ * Returns the new filename (caller deletes the original) or null if ffmpeg is
+ * unavailable or the conversion fails — original file is left untouched either way.
+ */
+function callRecordingTranscodeToM4a(string $absPath): ?string
+{
+    if (!function_exists('shell_exec')) {
+        return null;
+    }
+    $ffmpeg = trim((string) @shell_exec('command -v ffmpeg 2>/dev/null'));
+    if ($ffmpeg === '') {
+        return null;
+    }
+    $outName = pathinfo($absPath, PATHINFO_FILENAME) . '.m4a';
+    $outPath = dirname($absPath) . DIRECTORY_SEPARATOR . $outName;
+    $cmd = escapeshellarg($ffmpeg) . ' -y -i ' . escapeshellarg($absPath)
+        . ' -c:a aac -b:a 64k ' . escapeshellarg($outPath) . ' 2>&1';
+    @shell_exec($cmd);
+    if (!is_file($outPath) || filesize($outPath) < 16) {
+        @unlink($outPath);
+        return null;
+    }
+    return $outName;
 }
 
 /**

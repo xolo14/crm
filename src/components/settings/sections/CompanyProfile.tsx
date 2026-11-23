@@ -350,12 +350,12 @@ export function CompanyProfile() {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    const allowed = ["image/png", "image/jpeg", "image/svg+xml", "image/webp"];
+    const allowed = ["image/png", "image/jpeg", "image/webp"];
     if (!allowed.includes(file.type) || file.size > 2 * 1024 * 1024) {
       toast({
         variant: "destructive",
         title: "Invalid logo",
-        description: "Use PNG, JPG, SVG, or WebP up to 2MB (preferably transparent PNG).",
+        description: "Use PNG, JPG, or WebP up to 2MB (preferably transparent PNG).",
       });
       return;
     }
@@ -495,7 +495,7 @@ export function CompanyProfile() {
                 {uploadingLogo ? "Uploading…" : "Upload Logo"}
                 <input
                   type="file"
-                  accept=".png,.jpg,.jpeg,.svg,.webp,image/png,image/jpeg,image/svg+xml,image/webp"
+                  accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
                   onChange={(e) => void handleLogoUpload(e)}
                   className="hidden"
                   disabled={uploadingLogo}
@@ -511,7 +511,7 @@ export function CompanyProfile() {
                 </button>
               ) : null}
             </div>
-            <p className="mt-2 text-xs text-gray-400">PNG / JPG / SVG / WebP · max 2MB · no background fill applied</p>
+            <p className="mt-2 text-xs text-gray-400">PNG / JPG / WebP · max 2MB · no background fill applied</p>
           </div>
         </div>
         <SettingsRow label="Company Name">

@@ -65,6 +65,7 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { format } from 'date-fns';
 import { normalizeAppRole } from '@/lib/roleUtils';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 interface OfferTemplate {
   id: string;
@@ -985,7 +986,7 @@ export default function OfferLetters() {
       toast({ variant: 'destructive', title: 'Permission denied', description: 'Only Super Admin and Admin can delete sent letters.' });
       return;
     }
-    if (!window.confirm(`Delete the offer letter for ${row.recipient_name || row.recipient_email}? This also removes the PDF from storage.`)) {
+    if (!(await confirmAction({ title: `Delete the offer letter for ${row.recipient_name || row.recipient_email}?`, description: 'This also removes the PDF from storage.', confirmLabel: 'Delete', destructive: true }))) {
       return;
     }
     try {
@@ -1823,7 +1824,7 @@ export default function OfferLetters() {
     return (
       <div className="fixed inset-0 z-50 bg-background flex flex-col overflow-hidden">
         {/* Top bar */}
-        <div className="flex items-center justify-between px-4 py-2 border-b bg-background shrink-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-b bg-background shrink-0">
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="sm" className="gap-1" onClick={() => setShowEditor(false)}>
               <ChevronLeft className="h-4 w-4" /> Back
@@ -1833,7 +1834,7 @@ export default function OfferLetters() {
               <p className="text-[10px] text-muted-foreground">{pages.length} page(s)</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Input className="h-8 text-xs w-48" value={templateForm.template_name} onChange={e => setTemplateForm(f => ({ ...f, template_name: e.target.value }))} placeholder="Template Name *" />
             <Input className="h-8 text-xs w-40" value={templateForm.role_title} onChange={e => setTemplateForm(f => ({ ...f, role_title: e.target.value }))} placeholder="Role Title *" />
             {editingTemplate ? (
@@ -1889,6 +1890,7 @@ export default function OfferLetters() {
             <aside className="w-[320px] shrink-0 border-l bg-background overflow-y-auto flex flex-col">
               <PlaceholderPalette
                 className="border-0 rounded-none"
+                scrollable={false}
                 documentHtml={`${pages[currentPage] || ''}\n${templateForm.mail_subject || ''}\n${templateForm.mail_body || ''}\n${templateForm.pdf_filename_pattern || ''}`}
                 onInsert={insertPlaceholder}
               />
@@ -2418,7 +2420,7 @@ export default function OfferLetters() {
 
       {/* Preview Dialog */}
       <Dialog open={showPreview} onOpenChange={setShowPreview}>
-        <DialogContent className="max-w-4xl max-h-[min(90dvh,calc(100dvh-2rem))]">
+        <DialogContent aria-describedby={undefined} className="max-w-4xl max-h-[min(90dvh,calc(100dvh-2rem))]">
           <DialogHeader><DialogTitle>Template Preview (A4)</DialogTitle></DialogHeader>
           <div className="overflow-auto max-h-[70vh] flex flex-col items-center gap-6 p-4 bg-muted/30 rounded-lg">
             {splitPages(previewHtml).map((pageHtml, idx, arr) => (
@@ -2442,7 +2444,7 @@ export default function OfferLetters() {
 
       {/* Send Offer Letter Dialog - Multi-step */}
       <Dialog open={showSend} onOpenChange={setShowSend}>
-        <DialogContent className="max-w-4xl max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-4xl max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Send Offer Letter</DialogTitle>
           </DialogHeader>

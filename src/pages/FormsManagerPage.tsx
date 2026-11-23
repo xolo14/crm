@@ -62,6 +62,7 @@ import {
   serializePlaceholderMap,
   type PlaceholderMapState,
 } from "@/lib/formTemplatePlaceholders";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 type LeadDestination = "form_leads" | "hr_leads";
 type FormMgmtTab = "leads" | "hr" | "doc" | "api";
@@ -634,7 +635,7 @@ function SortableQuestionCard({
         <div className={cn("flex items-center justify-between border-t pt-3 transition-opacity", selected ? "opacity-100" : "opacity-0 group-hover:opacity-100")}>
           <div className="flex gap-2">
             <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); onDuplicate(); }}>Duplicate</Button>
-            <Button variant="ghost" size="sm" className="text-destructive" onClick={(e) => { e.stopPropagation(); if (confirm("Delete this question?")) onDelete(); }}>Delete</Button>
+            <Button variant="ghost" size="sm" className="text-destructive" onClick={(e) => { e.stopPropagation(); void confirmAction({ title: "Delete this question?", confirmLabel: "Delete", destructive: true }).then((ok) => { if (ok) onDelete(); }); }}>Delete</Button>
           </div>
           <div className="flex items-center gap-2 text-xs">
             <span>Required</span>
@@ -1772,7 +1773,7 @@ export default function FormsManagerPage() {
   }
 
   async function deleteForm(form: LeadForm) {
-    const ok = window.confirm(`Delete "${form.name}"? This cannot be undone.`);
+    const ok = await confirmAction({ title: `Delete "${form.name}"?`, description: "This cannot be undone.", confirmLabel: "Delete", destructive: true });
     if (!ok) return;
     try {
       await api.forms.delete(form.id);

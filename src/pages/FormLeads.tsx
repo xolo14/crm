@@ -35,6 +35,7 @@ import {
 import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
 import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 const MARKETING_RESUME_TYPES = [
   'application/pdf',
@@ -662,14 +663,14 @@ export default function FormLeads() {
 
   const handleDelete = async (id: string) => {
     if (!canDeleteLead()) { toast({ variant: 'destructive', title: 'Permission denied' }); return; }
-    if (confirm('Delete this lead permanently?')) {
+    if (await confirmAction({ title: 'Delete this lead permanently?', confirmLabel: 'Delete', destructive: true })) {
       try { await api.leads.delete(id); setLeads(prev => prev.filter(l => l.id !== id)); toast({ title: 'Lead deleted' }); }
       catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
     }
   };
 
   const handleBulkDelete = async () => {
-    if (!confirm(`Delete ${selectedIds.size} leads permanently?`)) return;
+    if (!(await confirmAction({ title: `Delete ${selectedIds.size} leads permanently?`, confirmLabel: 'Delete', destructive: true }))) return;
     for (const id of selectedIds) { try { await api.leads.delete(id); } catch {} }
     fetchData();
     toast({ title: `${selectedIds.size} leads deleted` });
@@ -979,7 +980,7 @@ export default function FormLeads() {
           }
           currentUserId={user?.id}
           onBulkDelete={hasBulkDelete ? async (ids) => {
-            if (!confirm(`Delete ${ids.length} leads permanently?`)) return;
+            if (!(await confirmAction({ title: `Delete ${ids.length} leads permanently?`, confirmLabel: 'Delete', destructive: true }))) return;
             let deleted = 0;
             for (const id of ids) {
               try {
@@ -1179,7 +1180,7 @@ export default function FormLeads() {
       )}
 
       <Sheet open={detailOpen && !sourceDialogKey} onOpenChange={setDetailOpen}>
-        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+        <SheetContent aria-describedby={undefined} className="w-full sm:max-w-lg overflow-y-auto">
           {detailLead && (
             <>
               <SheetHeader className="pb-4 border-b border-border">
@@ -1352,7 +1353,7 @@ export default function FormLeads() {
           if (!open) { setAssignLeadId(null); setAssignSelectedReps(new Set()); }
         }
       }}>
-        <DialogContent className="max-w-[95vw] sm:max-w-sm">
+        <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <UserPlus className="h-5 w-5 text-primary" /> Assign Lead to Team Members
@@ -1459,7 +1460,7 @@ export default function FormLeads() {
       {/* Marketing: Add Lead Dialog */}
       {isMarketing && (
         <Dialog open={showAddLead} onOpenChange={(o) => { setShowAddLead(o); if (!o) setManualLeadResume(null); }}>
-          <DialogContent>
+          <DialogContent aria-describedby={undefined}>
             <DialogHeader><DialogTitle>Add Lead Manually</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div><Label className="text-xs">Name *</Label><Input value={newLead.name} onChange={e => setNewLead(p => ({ ...p, name: e.target.value }))} placeholder="Full name" /></div>
@@ -1495,7 +1496,7 @@ export default function FormLeads() {
       {/* Marketing: Import CSV Dialog */}
       {isMarketing && (
         <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
-          <DialogContent className="max-w-lg">
+          <DialogContent aria-describedby={undefined} className="max-w-lg">
             <DialogHeader><DialogTitle>Import Leads from CSV</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">{importPreview.length} leads found. They'll be linked to your staff ID.</p>
@@ -1535,7 +1536,7 @@ export default function FormLeads() {
       />
 
       <Dialog open={exportCardsOpen} onOpenChange={setExportCardsOpen}>
-        <DialogContent className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent aria-describedby={undefined} className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 p-0 overflow-hidden">
           <DialogHeader className="px-6 pt-6 pb-3 shrink-0">
             <DialogTitle>Export form leads by card</DialogTitle>
           </DialogHeader>

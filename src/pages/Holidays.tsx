@@ -410,7 +410,7 @@ export default function Holidays() {
                     <div
                       key={h.id}
                       className={cn(
-                        "flex items-center justify-between p-3 rounded-xl border transition-all hover:shadow-sm",
+                        "flex items-center justify-between gap-2 p-3 rounded-xl border transition-all hover:shadow-sm",
                         isPast && "opacity-60",
                         canViewAllHolidays && "cursor-pointer hover:border-primary/30",
                       )}
@@ -422,7 +422,7 @@ export default function Holidays() {
                         }
                       }}
                     >
-                      <div className="flex items-center gap-3">
+                      <div className="flex min-w-0 flex-1 items-center gap-3">
                         <div className={cn(
                           "h-11 w-11 rounded-xl flex flex-col items-center justify-center text-xs font-bold shrink-0",
                           h.type === 'festival' || h.type === 'regional' ? "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"

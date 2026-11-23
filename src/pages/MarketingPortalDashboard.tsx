@@ -431,7 +431,7 @@ export default function MarketingPortalDashboard() {
 
       {/* Import CSV Dialog */}
       <Dialog open={showImport} onOpenChange={setShowImport}>
-        <DialogContent className="max-w-lg">
+        <DialogContent aria-describedby={undefined} className="max-w-lg">
           <DialogHeader><DialogTitle>Import Leads from CSV</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">

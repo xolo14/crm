@@ -1056,7 +1056,7 @@ export function SourceLeadsDialog({
       </div>
 
       <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
-        <SheetContent
+        <SheetContent aria-describedby={undefined}
           side="bottom"
           className="z-[120] max-h-[85dvh] overflow-y-auto rounded-t-2xl px-4 pt-5"
           overlayClassName="z-[115]"

@@ -305,7 +305,7 @@ function AddLmsStudentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[95vw] sm:max-w-lg">
+      <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Add LMS Student</DialogTitle>
         </DialogHeader>

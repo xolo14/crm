@@ -667,7 +667,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon" className="h-10 w-10 rounded-xl touch-target shrink-0"><Menu className="h-5 w-5" /></Button>
             </SheetTrigger>
-            <SheetContent side="left" className="p-0 w-[min(300px,88vw)] max-w-[300px]">
+            <SheetContent aria-describedby={undefined} side="left" className="p-0 w-[min(300px,88vw)] max-w-[300px]">
               <SheetTitle className="sr-only">Navigation</SheetTitle>
               <SidebarContent
                 collapsed={false}

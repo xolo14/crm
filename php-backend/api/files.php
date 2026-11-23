@@ -91,7 +91,8 @@ $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
 
 if (strpos($rawPath, '/uploads/assessment_answers/') === 0) {
     $found = false;
-    $like = '%' . $rawPath . '%';
+    // Escape % and _ so a crafted path cannot wildcard-match someone else's answer file.
+    $like = '%' . sqlLikeEscape($rawPath) . '%';
     try {
         if ($role === 'assessment_viewer') {
             ensureUsersResultAssessmentColumn($db);
@@ -144,12 +145,20 @@ if (strpos($rawPath, '/uploads/assessment_answers/') === 0) {
         }
     }
     if (!$log) {
+        // Same file stored under a different folder prefix: match the exact file name only.
+        // The name is escaped so % or _ in the request can never wildcard-match another
+        // organisation's recording, and the match is re-checked in PHP.
         $baseName = basename($rawPath);
-        if ($baseName !== '' && $baseName !== '.' && $baseName !== '..') {
+        if ($baseName !== '' && $baseName !== '.' && $baseName !== '..' && preg_match('/^[A-Za-z0-9._-]+$/', $baseName)) {
             try {
-                $st = $db->prepare('SELECT * FROM call_logs WHERE attachment_path LIKE ? ORDER BY id DESC LIMIT 1');
-                $st->execute(['%' . $baseName]);
-                $log = $st->fetch(PDO::FETCH_ASSOC) ?: null;
+                $st = $db->prepare('SELECT * FROM call_logs WHERE attachment_path LIKE ? ORDER BY id DESC LIMIT 5');
+                $st->execute(['%/' . sqlLikeEscape($baseName)]);
+                foreach ($st->fetchAll(PDO::FETCH_ASSOC) ?: [] as $candidateLog) {
+                    if (basename((string) ($candidateLog['attachment_path'] ?? '')) === $baseName) {
+                        $log = $candidateLog;
+                        break;
+                    }
+                }
             } catch (Throwable $e) {
                 $log = null;
             }
@@ -222,16 +231,23 @@ if (strpos($rawPath, '/uploads/assessment_answers/') === 0) {
         respond(['error' => 'Recording file missing on disk'], 404);
     }
     if ($role !== 'super_admin') {
-        $repId = (string) ($log['sales_rep_id'] ?? '');
+        // Default deny, same rules as the Call Log list: your own calls; org admins any call
+        // in their organisation; managers calls by their team. Every other role: own only.
+        $repId = trim((string) ($log['sales_rep_id'] ?? ''));
         $logOrg = trim((string) ($log['org_id'] ?? ''));
-        $callerOrg = resolveCreatorOrgId($db, $tokenData);
-        if ($role === 'sales_representative' && $repId !== $userId) {
-            respond(['error' => 'Forbidden'], 403);
+        $callerOrg = trim((string) (resolveCreatorOrgId($db, $tokenData) ?? ''));
+        $sameOrg = $callerOrg !== '' && $logOrg !== '' && $logOrg === $callerOrg;
+        $allowed = false;
+        if ($repId !== '' && $repId === $userId) {
+            $allowed = true;
+        } elseif (in_array($role, ['admin', 'org'], true)) {
+            $allowed = $sameOrg;
+        } elseif ($role === 'manager') {
+            $allowed = $sameOrg
+                && in_array($repId, callLogsVisibleOrgMemberIds($db, $tokenData, $userId, $callerOrg), true);
         }
-        if (in_array($role, ['admin', 'org', 'manager', 'hr', 'marketing'], true)) {
-            if ($callerOrg === null || $callerOrg === '' || ($logOrg !== '' && $logOrg !== $callerOrg)) {
-                respond(['error' => 'Forbidden'], 403);
-            }
+        if (!$allowed) {
+            respond(['error' => 'Forbidden'], 403);
         }
     }
 } elseif (strpos($rawPath, '/uploads/payment_proofs/') === 0) {
@@ -247,7 +263,8 @@ if (strpos($rawPath, '/uploads/assessment_answers/') === 0) {
         $callerOrg = resolveCreatorOrgId($db, $tokenData);
         if ($submitter === $userId) {
             // owner ok
-        } elseif (in_array($role, ['admin', 'org'], true)) {
+        } elseif (in_array($role, ['admin', 'org', 'operational_manager'], true)) {
+            // Operational managers review and approve org manual payments, so they need the proof.
             if ($callerOrg === null || $callerOrg === '' || ($mpOrg !== '' && $mpOrg !== $callerOrg)) {
                 respond(['error' => 'Forbidden'], 403);
             }

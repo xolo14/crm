@@ -6,12 +6,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent } from '@/components/ui/card';
 import { ArrowLeft, Loader2, CalendarDays } from 'lucide-react';
+import { localDateKey, localMonthKey } from '@/lib/localDate';
 
 const toDateKey = (value: string | null | undefined) => {
   if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toISOString().slice(0, 10);
+  return localDateKey(value);
 };
 
 const toMonthKey = (value: string | null | undefined) => toDateKey(value).slice(0, 7);
@@ -20,8 +19,8 @@ export default function FormLeadHistory() {
   const navigate = useNavigate();
   const [leads, setLeads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [historyDate, setHistoryDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [historyDate, setHistoryDate] = useState(() => localDateKey());
+  const [historyMonth, setHistoryMonth] = useState(() => localMonthKey());
 
   useEffect(() => {
     (async () => {

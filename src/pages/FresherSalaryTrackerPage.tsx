@@ -61,6 +61,7 @@ import {
   getEmailTriggerRecords,
 } from "@/utils/emailTrigger";
 import type { EmailTriggerRecord } from "@/types/phaseEmail";
+import { localDateKey } from "@/lib/localDate";
 
 const PICK_ROLES = new Set(["sales_representative"]);
 const KPI_TARGET_LS = "fresher_salary_kpi_monthly_target_display_v1";
@@ -142,7 +143,7 @@ function FresherSalaryAdminTracker() {
 
   const [name, setName] = useState("");
   const [memberRole, setMemberRole] = useState("Sales Executive");
-  const [joiningDate, setJoiningDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [joiningDate, setJoiningDate] = useState(() => localDateKey());
   const [traineeUserId, setTraineeUserId] = useState("");
   const [memberEmail, setMemberEmail] = useState("");
   const [teamSearch, setTeamSearch] = useState("");
@@ -980,7 +981,7 @@ function FresherSalaryAdminTracker() {
           </AlertDialog>
 
           <Dialog open={!!detail} onOpenChange={(o) => !o && setDetailId(null)}>
-            <DialogContent className="max-h-[92vh] w-[min(96vw,920px)] max-w-4xl overflow-hidden p-6">
+            <DialogContent aria-describedby={undefined} className="max-h-[92vh] w-[min(96vw,920px)] max-w-4xl overflow-hidden p-6">
               {detail && (
                 <MemberDetail
                   member={detail}

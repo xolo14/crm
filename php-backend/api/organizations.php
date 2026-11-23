@@ -170,19 +170,19 @@ if ($method === 'POST' && ($_GET['action'] ?? '') === 'upload_logo') {
     }
     $size = (int) ($file['size'] ?? 0);
     if ($size <= 0 || $size > 2 * 1024 * 1024) {
-        respond(['error' => 'Logo must be PNG, JPG, or SVG up to 2MB'], 400);
+        respond(['error' => 'Logo must be PNG, JPG, or WebP up to 2MB'], 400);
     }
     $tmp = (string) ($file['tmp_name'] ?? '');
     $finfo = new finfo(FILEINFO_MIME_TYPE);
     $mime = $tmp !== '' ? (string) $finfo->file($tmp) : '';
+    // No SVG: an SVG can carry script and logos are served from this site's own address.
     $extMap = [
         'image/png' => 'png',
         'image/jpeg' => 'jpg',
-        'image/svg+xml' => 'svg',
         'image/webp' => 'webp',
     ];
     if (!isset($extMap[$mime])) {
-        respond(['error' => 'Only PNG, JPG, SVG, or WebP logos are allowed'], 400);
+        respond(['error' => 'Only PNG, JPG, or WebP logos are allowed'], 400);
     }
     $ext = $extMap[$mime];
     $dirRel = '/uploads/org_logos';

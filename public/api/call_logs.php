@@ -141,45 +141,7 @@ function callLogsResolveOrgId(PDO $db, array $tokenData, string $userId): ?strin
     return ($oid !== null && $oid !== '') ? trim((string) $oid) : null;
 }
 
-/**
- * For admin/manager views:
- * - include assigned hierarchy members (self + downline)
- * - include unassigned same-org members (reports_to_id IS NULL) except admin/super_admin
- *
- * @return string[] user ids
- */
-function callLogsVisibleOrgMemberIds(PDO $db, array $tokenData, string $userId, string $orgId): array
-{
-    $ids = [];
-    try {
-        $ids = hierarchyGetVisibleUserIds($db, $tokenData);
-    } catch (Throwable $ignored) {
-        $ids = [$userId];
-    }
-    if (empty($ids)) {
-        $ids = [$userId];
-    }
-
-    try {
-        $st = $db->prepare("
-            SELECT id
-            FROM users
-            WHERE org_id = ?
-              AND is_active = 1
-              AND (reports_to_id IS NULL OR reports_to_id = '')
-              AND LOWER(TRIM(role)) NOT IN ('admin', 'super_admin')
-        ");
-        $st->execute([$orgId]);
-        foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $uid) {
-            if (is_string($uid) && $uid !== '' && !in_array($uid, $ids, true)) {
-                $ids[] = $uid;
-            }
-        }
-    } catch (Throwable $ignored) {
-    }
-
-    return $ids;
-}
+// callLogsVisibleOrgMemberIds() lives in helpers.php (also used by files.php for recordings).
 
 /**
  * Pick an org_id that exists in table organizations. Tries JWT org, then logged-in user org, then rep org.

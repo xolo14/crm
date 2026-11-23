@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 type RazorpayStatus = {
   configured?: boolean;
@@ -109,7 +110,7 @@ export function RazorpaySetup() {
   };
 
   const onClear = async () => {
-    if (!window.confirm("Remove Razorpay credentials for this organization?")) return;
+    if (!(await confirmAction({ title: "Remove Razorpay credentials for this organization?", confirmLabel: "Remove", destructive: true }))) return;
     setClearing(true);
     try {
       const res = (await api.settings.clearRazorpaySetup()) as { data?: RazorpaySetupPayload };

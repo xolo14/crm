@@ -23,7 +23,7 @@ export default function AssignHRLeadDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent aria-describedby={undefined} className="max-w-md">
         <DialogHeader>
           <DialogTitle>Assign HR Lead</DialogTitle>
         </DialogHeader>

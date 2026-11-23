@@ -27,6 +27,7 @@ import {
  isOpenBatchSchedule,
  formatBatchDate,
 } from '@/utils/batchSchedule';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 const CAN_CREATE_ROLES = ['super_admin', 'admin', 'org', 'manager', 'operational_manager'];
 const CAN_EDIT_ALL_ROLES = ['super_admin', 'admin', 'org', 'manager', 'operational_manager'];
@@ -261,7 +262,7 @@ export default function Batches() {
  toast({ variant: 'destructive', title: 'Permission denied' });
  return;
  }
- if (confirm('Delete this batch?')) {
+ if (await confirmAction({ title: 'Delete this batch?', confirmLabel: 'Delete', destructive: true })) {
  try {
  await api.batches.delete(id);
  toast({ title: 'Batch deleted' });
@@ -389,7 +390,7 @@ export default function Batches() {
  {!isMobile && ' Create Batch'}
  </Button>
  </DialogTrigger>
- <DialogContent className="max-w-[95vw] sm:max-w-lg">
+ <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
  <DialogHeader>
  <DialogTitle>Create New Batch</DialogTitle>
  </DialogHeader>
@@ -439,7 +440,7 @@ export default function Batches() {
 
  {hasImport && (
  <Dialog open={importOpen} onOpenChange={setImportOpen}>
- <DialogContent className="max-w-[95vw] sm:max-w-lg">
+ <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
  <DialogHeader>
  <DialogTitle>Import Batches</DialogTitle>
  </DialogHeader>
@@ -501,7 +502,7 @@ export default function Batches() {
 
  {canEditAll && (
  <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
- <DialogContent className="max-w-[95vw] sm:max-w-lg">
+ <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg">
  <DialogHeader>
  <DialogTitle>Edit Batch</DialogTitle>
  </DialogHeader>

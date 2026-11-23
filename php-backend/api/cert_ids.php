@@ -1,4 +1,9 @@
 <?php
+// Library file: only included by other endpoints; a direct web request gets a 404.
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && realpath((string) $_SERVER['SCRIPT_FILENAME']) === __FILE__) {
+    http_response_code(404);
+    exit;
+}
 /**
  * Certificate type codes (always 2 letters) and issued IDs: AA-CS-XXXXXX
  * First two letters = org prefix (globally unique). Middle two = type. Last six = digits.

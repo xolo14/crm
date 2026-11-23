@@ -230,7 +230,7 @@ export default function CommunicationsAdminPage() {
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1"><Plus className="h-4 w-4" /> Assign number</Button>
               </DialogTrigger>
-              <DialogContent>
+              <DialogContent aria-describedby={undefined}>
                 <DialogHeader><DialogTitle>Assign virtual number to organization</DialogTitle></DialogHeader>
                 <div className="space-y-3">
                   <div className="space-y-1.5">
@@ -326,7 +326,7 @@ export default function CommunicationsAdminPage() {
           </Card>
 
           <Dialog open={editOpen} onOpenChange={(open) => { setEditOpen(open); if (!open) setEditingNumber(null); }}>
-            <DialogContent>
+            <DialogContent aria-describedby={undefined}>
               <DialogHeader><DialogTitle>Edit virtual number</DialogTitle></DialogHeader>
               <div className="space-y-3">
                 <div className="space-y-1.5">

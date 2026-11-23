@@ -371,7 +371,7 @@ export default function SuperAdminPanel() {
             <DialogTrigger asChild>
               <Button size="sm" className="gap-1.5"><Plus className="h-3.5 w-3.5" />Add Organization</Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl max-h-[min(90dvh,100%)] overflow-y-auto">
+            <DialogContent aria-describedby={undefined} className="max-w-2xl max-h-[min(90dvh,100%)] overflow-y-auto">
               <DialogHeader><DialogTitle>Create New Organization</DialogTitle></DialogHeader>
               <div className="space-y-5">
                 <div>
@@ -574,7 +574,7 @@ export default function SuperAdminPanel() {
 
       {/* Edit Features Dialog */}
       <Dialog open={!!showFeatures} onOpenChange={() => setShowFeatures(null)}>
-        <DialogContent className="max-w-lg max-h-[80vh] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-lg max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Manage Features</DialogTitle></DialogHeader>
           <div className="space-y-5">
             {FEATURE_SECTIONS.map(section => (
@@ -642,7 +642,7 @@ export default function SuperAdminPanel() {
 
       {/* Organization Details View */}
       <Dialog open={!!viewOrg} onOpenChange={(open) => { if (!open) setViewOrg(null); }}>
-        <DialogContent className="max-w-lg">
+        <DialogContent aria-describedby={undefined} className="max-w-lg">
           <DialogHeader><DialogTitle>Organization Details</DialogTitle></DialogHeader>
           {viewOrg && (
             <div className="space-y-3 text-sm">
@@ -670,7 +670,7 @@ export default function SuperAdminPanel() {
       </Dialog>
 
       <Dialog open={!!provisionOrg} onOpenChange={(open) => { if (!open) setProvisionOrg(null); }}>
-        <DialogContent className="max-w-md">
+        <DialogContent aria-describedby={undefined} className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2"><KeyRound className="h-4 w-4" />Organization admin credentials</DialogTitle>
           </DialogHeader>

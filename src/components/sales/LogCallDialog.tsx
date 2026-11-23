@@ -315,7 +315,7 @@ export default function LogCallDialog({
   return (
     <>
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
+      <DialogContent aria-describedby={undefined}
         ref={(node) => setDialogContentEl(node)}
         className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 overflow-hidden p-6"
       >

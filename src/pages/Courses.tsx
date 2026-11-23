@@ -21,6 +21,7 @@ import { parseLeadImportFile } from '@/lib/leadImportCsv';
 import { isSyncpediaOrganization } from '@/lib/orgFeatures';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import { LmsCoursesView } from '@/components/lms/LmsCoursesView';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 type Course = {
  id: string; name: string; description: string; price: number;
@@ -118,7 +119,7 @@ function CrmCoursesAdmin() {
  };
 
  const handleDelete = async (id: string) => {
- if (!confirm('Delete this course?')) return;
+ if (!(await confirmAction({ title: 'Delete this course?', confirmLabel: 'Delete', destructive: true }))) return;
  try {
  await api.courses.delete(id);
  toast({ title: 'Course deleted' });
@@ -201,7 +202,7 @@ function CrmCoursesAdmin() {
  {canCreate && (
  <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
  <DialogTrigger asChild><Button size="sm" className="gap-1.5"><Plus className="h-4 w-4" />{!isMobile && ' Add Course'}</Button></DialogTrigger>
- <DialogContent className="max-w-[95vw] sm:max-w-lg"><DialogHeader><DialogTitle>Add New Course</DialogTitle></DialogHeader><CourseForm onSubmit={handleCreate} /></DialogContent>
+ <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg"><DialogHeader><DialogTitle>Add New Course</DialogTitle></DialogHeader><CourseForm onSubmit={handleCreate} /></DialogContent>
  </Dialog>
  )}
  </div>
@@ -292,7 +293,7 @@ function CrmCoursesAdmin() {
  )}
 
  <Dialog open={importOpen} onOpenChange={setImportOpen}>
- <DialogContent className="max-w-md">
+ <DialogContent aria-describedby={undefined} className="max-w-md">
  <DialogHeader>
  <DialogTitle>Import courses</DialogTitle>
  </DialogHeader>
@@ -356,13 +357,13 @@ function CrmCoursesAdmin() {
  </Dialog>
 
  <Dialog open={editDialogOpen} onOpenChange={(open) => { setEditDialogOpen(open); if (!open) setEditingCourse(null); }}>
- <DialogContent className="max-w-[95vw] sm:max-w-lg"><DialogHeader><DialogTitle>Edit Course</DialogTitle></DialogHeader>
+ <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg"><DialogHeader><DialogTitle>Edit Course</DialogTitle></DialogHeader>
  {editingCourse && <CourseForm initialData={editingCourse} onSubmit={handleEdit} isEdit />}
  </DialogContent>
  </Dialog>
 
  <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
- <DialogContent className="max-w-[95vw] sm:max-w-lg"><DialogHeader><DialogTitle>Add New Course</DialogTitle></DialogHeader><CourseForm onSubmit={handleCreate} /></DialogContent>
+ <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg"><DialogHeader><DialogTitle>Add New Course</DialogTitle></DialogHeader><CourseForm onSubmit={handleCreate} /></DialogContent>
  </Dialog>
  </div>
  );

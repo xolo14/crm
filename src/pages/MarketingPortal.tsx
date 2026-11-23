@@ -825,7 +825,7 @@ export default function MarketingPortal() {
       </Tabs>
 
       <Dialog open={!!campaignLog} onOpenChange={(open) => { if (!open) setCampaignLog(null); }}>
-        <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-4xl max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{campaignLog?.subject || 'Campaign emails'}</DialogTitle>
           </DialogHeader>
@@ -870,7 +870,7 @@ export default function MarketingPortal() {
 
       {/* Draft Editor Dialog */}
       <Dialog open={showEditor} onOpenChange={(open) => { setShowEditor(open); if (!open) { setEditingDraft(null); setDraftName(''); setDraftSubject(''); setDraftBody(''); resetDraftPdf(); } }}>
-        <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader><DialogTitle>{editingDraft ? 'Edit Draft' : 'New Email Draft'}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div>
@@ -955,7 +955,7 @@ export default function MarketingPortal() {
 
       {/* Preview Dialog */}
       <Dialog open={showPreview} onOpenChange={setShowPreview}>
-        <DialogContent className="max-w-4xl w-[min(56rem,calc(100%-1.5rem))] max-h-[92vh] overflow-hidden flex flex-col">
+        <DialogContent aria-describedby={undefined} className="max-w-4xl w-[min(56rem,calc(100%-1.5rem))] max-h-[92vh] overflow-hidden flex flex-col">
           <DialogHeader><DialogTitle>Email Preview</DialogTitle></DialogHeader>
           <div className="border rounded-lg overflow-hidden flex flex-col min-h-0">
             <div className="bg-muted/50 px-4 py-2.5 border-b shrink-0">
@@ -981,7 +981,7 @@ export default function MarketingPortal() {
           setCampaignLeads([]);
         }
       }}>
-        <DialogContent className="max-w-5xl w-[min(96rem,calc(100%-1rem))] max-h-[min(94dvh,calc(100dvh-1rem))] overflow-hidden flex flex-col gap-3 p-4 sm:p-6">
+        <DialogContent aria-describedby={undefined} className="max-w-5xl w-[min(96rem,calc(100%-1rem))] max-h-[min(94dvh,calc(100dvh-1rem))] overflow-hidden flex flex-col gap-3 p-4 sm:p-6">
           <DialogHeader className="shrink-0 space-y-0">
             <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
               <div>

@@ -20,14 +20,14 @@ Legacy URL `https://crm.syncpedia.in/api/whatsapp_webhook.php` still works.
 openssl rand -hex 16
 ```
 
-Example output: `a3f8c2e91b4d7f6e8a0c1d2e3f4a5b6c`
+Example output: a 32-character hex string (use your own; never reuse one from a doc).
 
 2. Add it to `api/config.php` on the server:
 
 ```php
-define('WHATSAPP_VERIFY_TOKEN', 'a3f8c2e91b4d7f6e8a0c1d2e3f4a5b6c');
+define('WHATSAPP_VERIFY_TOKEN', 'REPLACE_WITH_YOUR_OWN_RANDOM_VERIFY_TOKEN');
 // or
-define('META_WHATSAPP_WEBHOOK_VERIFY_TOKEN', 'a3f8c2e91b4d7f6e8a0c1d2e3f4a5b6c');
+define('META_WHATSAPP_WEBHOOK_VERIFY_TOKEN', 'REPLACE_WITH_YOUR_OWN_RANDOM_VERIFY_TOKEN');
 ```
 
 3. Paste the **same value** into Meta App Dashboard → WhatsApp → Configuration → Webhooks → **Verify token**.

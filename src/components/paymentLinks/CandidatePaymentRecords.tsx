@@ -514,7 +514,7 @@ export default function CandidatePaymentRecords({
             ) : null}
 
             <Dialog open={pitchEditOpen} onOpenChange={setPitchEditOpen}>
-              <DialogContent className="sm:max-w-md">
+              <DialogContent aria-describedby={undefined} className="sm:max-w-md">
                 <DialogHeader>
                   <DialogTitle>Edit pitch price</DialogTitle>
                 </DialogHeader>

@@ -1,3 +1,4 @@
+import { localDateKey } from "@/lib/localDate";
 /** Download one worksheet as an .xlsx file. */
 export async function downloadExcelSheet(
   fileName: string,
@@ -14,5 +15,5 @@ export async function downloadExcelSheet(
 }
 
 export function excelFileStamp(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localDateKey();
 }

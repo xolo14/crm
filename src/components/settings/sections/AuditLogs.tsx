@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type AuditLogEntry } from "@/lib/api";
 import { formatServerDateTime } from "@/lib/dateTime";
+import { localDateKey } from "@/lib/localDate";
 
 const actionLabelMap: Record<string, string> = {
   created: "Created",
@@ -155,7 +156,7 @@ export function AuditLogs() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `audit-logs-${localDateKey()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };

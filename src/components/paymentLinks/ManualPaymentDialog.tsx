@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
 import { searchAccessibleLeads } from "@/lib/searchAccessibleLeads";
 import { useToast } from "@/hooks/use-toast";
+import { localDateKey } from "@/lib/localDate";
 
 const ACCEPT =
   "image/*,.jpg,.jpeg,.png,.gif,.webp,.bmp,.tif,.tiff,.heic,.heif,.svg,.pdf,application/pdf";
@@ -60,7 +61,7 @@ export default function ManualPaymentDialog({
   const [customerEmail, setCustomerEmail] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [paidAt, setPaidAt] = useState(() =>
-    new Date().toISOString().slice(0, 10),
+    localDateKey(),
   );
   const [amount, setAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("upi");
@@ -86,7 +87,7 @@ export default function ManualPaymentDialog({
     setCustomerName("");
     setCustomerEmail("");
     setCustomerPhone("");
-    setPaidAt(new Date().toISOString().slice(0, 10));
+    setPaidAt(localDateKey());
     setAmount("");
     setPaymentMethod("upi");
     setProof(null);
@@ -323,7 +324,7 @@ export default function ManualPaymentDialog({
         onOpenChange(v);
       }}
     >
-      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+      <DialogContent aria-describedby={undefined} className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {isUpdateMode ? "Update payment" : "Add manual payment"}

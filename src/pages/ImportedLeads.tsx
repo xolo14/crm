@@ -309,7 +309,7 @@ export default function ImportedLeads() {
 
       {/* Lead Detail Sheet */}
       <Sheet open={!!selectedLead} onOpenChange={open => !open && setSelectedLead(null)}>
-        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+        <SheetContent aria-describedby={undefined} className="w-full sm:max-w-md overflow-y-auto">
           <SheetHeader>
             <SheetTitle>{selectedLead?.name}</SheetTitle>
           </SheetHeader>

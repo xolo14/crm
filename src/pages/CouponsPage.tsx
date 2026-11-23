@@ -23,6 +23,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { canDelete } from "@/lib/permissions";
 import { normalizeAppRole } from "@/lib/roleUtils";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 type Coupon = {
   id: string;
@@ -538,7 +539,7 @@ export default function CouponsPage() {
       setApiKeyError("Select an organization");
       return;
     }
-    if (apiKeyValue && !window.confirm("Generate a new key? Sites using the current key will stop working.")) {
+    if (apiKeyValue && !(await confirmAction({ title: "Generate a new key?", description: "Sites using the current key will stop working.", confirmLabel: "Generate new key", destructive: true }))) {
       return;
     }
     setApiKeySaving(true);
@@ -572,7 +573,7 @@ export default function CouponsPage() {
   }
 
   async function onDelete(row: Coupon) {
-    if (!window.confirm(`Delete coupon ${row.code}?`)) return;
+    if (!(await confirmAction({ title: `Delete coupon ${row.code}?`, confirmLabel: "Delete", destructive: true }))) return;
     try {
       await api.coupons.delete(row.id);
       toast({ title: "Coupon deleted" });

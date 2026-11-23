@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/ui/SettingsSection";
 import { SettingsRow } from "@/components/settings/ui/SettingsRow";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 type MetaAccount = {
   id: string;
@@ -111,7 +112,7 @@ export function MetaAdsSetup() {
   };
 
   const onDisconnect = async () => {
-    if (!window.confirm("Disconnect Meta Ads for this organization?")) return;
+    if (!(await confirmAction({ title: "Disconnect Meta Ads for this organization?", confirmLabel: "Disconnect", destructive: true }))) return;
     try {
       await api.metaAds.disconnect();
       toast({ title: "Meta Ads disconnected" });

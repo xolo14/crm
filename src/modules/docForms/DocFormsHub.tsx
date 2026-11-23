@@ -87,6 +87,8 @@ import { cn } from "@/lib/utils";
 import { filterAndSortAssignRoster } from "@/lib/assignRoster";
 import { goToChoices, splitIntoSections, type GoToTarget } from "@/components/forms/sectionFlow";
 import { isL3AdminRole, normalizeAppRole } from "@/lib/roleUtils";
+import { localDateKey } from "@/lib/localDate";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 type TeamMember = {
   id: string;
@@ -506,7 +508,7 @@ export default function DocFormsHubPage({
   }, [draftName, draftDesc, draftFields, draftBrand, draftRuntime, editing?.id]);
 
   const removeForm = async (id: string) => {
-    if (!confirm("Delete this form and its submissions?")) return;
+    if (!(await confirmAction({ title: "Delete this form and its submissions?", confirmLabel: "Delete", destructive: true }))) return;
     try {
       await api.docForms.delete(id);
       toast({ title: "Deleted" });
@@ -1923,7 +1925,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
 
   const unlinkTemplate = async (form: DocForm) => {
     const tplName = templates.find((t) => t.id === form.template_link?.template_id)?.name || "the template";
-    if (!window.confirm(`Unlink ${tplName} from "${form.name}"?\n\nSubmissions are kept. You can link a different template afterwards.`)) return;
+    if (!(await confirmAction({ title: `Unlink ${tplName} from "${form.name}"?`, description: "Submissions are kept. You can link a different template afterwards.", confirmLabel: "Unlink" }))) return;
     setLinking(form.id);
     try {
       await api.docForms.unlinkTemplate(form.id);
@@ -2093,7 +2095,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
         const { captureCertificatePdfBase64 } = await import("@/pages/CertificatesPage");
         const domainName = String(lookupCertPlaceholderValue("domain_name", filled) || "");
         const companyName = String(lookupCertPlaceholderValue("company_name", filled) || "");
-        const issueDate = String(lookupCertPlaceholderValue("issue_date", filled) || filled.date || new Date().toISOString().slice(0, 10));
+        const issueDate = String(lookupCertPlaceholderValue("issue_date", filled) || filled.date || localDateKey());
         const certId = String(filled.certID || filled.cert_id || filled.certificate_id || "");
         const pdfBase64 = await captureCertificatePdfBase64({
           template: tpl,
@@ -2312,7 +2314,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
                           className="h-7 w-7 text-destructive"
                           title="Delete row"
                           onClick={async () => {
-                            if (!confirm("Delete this submission?")) return;
+                            if (!(await confirmAction({ title: "Delete this submission?", confirmLabel: "Delete", destructive: true }))) return;
                             try {
                               await api.docForms.deleteSubmission(row.id);
                               setSubmissions((prev) => prev.filter((r) => r.id !== row.id));
@@ -2366,7 +2368,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
         </Dialog>
 
         <Dialog open={!!editRow} onOpenChange={(o) => !o && setEditRow(null)}>
-          <DialogContent className="max-w-lg">
+          <DialogContent aria-describedby={undefined} className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Edit submission</DialogTitle>
             </DialogHeader>
@@ -2657,7 +2659,7 @@ export function DocIssuedPanel({
   async function deleteIssued(row: import("@/modules/docForms/types").DocIssuedDocument) {
     if (!canDelete) return;
     const label = row.recipient_name || row.recipient_email || "this document";
-    if (!window.confirm(`Delete the issued document for ${label}? This also removes the PDF from storage.`)) {
+    if (!(await confirmAction({ title: `Delete the issued document for ${label}?`, description: "This also removes the PDF from storage.", confirmLabel: "Delete", destructive: true }))) {
       return;
     }
     setDeletingId(row.id);

@@ -260,7 +260,7 @@ export default function OrgWhatsAppSetupPage() {
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1"><Plus className="h-4 w-4" /> New</Button>
               </DialogTrigger>
-              <DialogContent>
+              <DialogContent aria-describedby={undefined}>
                 <DialogHeader><DialogTitle>New WhatsApp template</DialogTitle></DialogHeader>
                 <div className="space-y-3">
                   <div className="space-y-1.5">
@@ -360,7 +360,7 @@ export default function OrgWhatsAppSetupPage() {
           if (!o) setEditing(null);
         }}
       >
-        <DialogContent>
+        <DialogContent aria-describedby={undefined}>
           <DialogHeader>
             <DialogTitle>Edit template</DialogTitle>
           </DialogHeader>

@@ -1,4 +1,9 @@
 <?php
+// Library file: only included by other endpoints; a direct web request gets a 404.
+if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME']) && realpath((string) $_SERVER['SCRIPT_FILENAME']) === __FILE__) {
+    http_response_code(404);
+    exit;
+}
 /**
  * On-disk PDF storage under {site-root}/storage/{subdir}/ (Hostinger: public_html/storage/).
  * DB stores relative paths like storage/payment_invoices/invoice_xxx.pdf

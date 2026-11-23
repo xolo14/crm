@@ -17,6 +17,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Plus, Search, Filter, Download, Upload, MoreHorizontal, Pencil, Trash2, Loader2, CheckSquare } from 'lucide-react';
 import * as perms from '@/lib/permissions';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
 const STATUSES = ['pending', 'in_progress', 'completed', 'cancelled'] as const;
@@ -95,7 +96,7 @@ export default function Tasks() {
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild><Button size="sm" className="gap-1.5 h-8"><Plus className="h-3.5 w-3.5" /><span className="hidden sm:inline">Add Task</span></Button></DialogTrigger>
-          <DialogContent className="max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto"><DialogHeader><DialogTitle>Add Task</DialogTitle></DialogHeader>
+          <DialogContent aria-describedby={undefined} className="max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto"><DialogHeader><DialogTitle>Add Task</DialogTitle></DialogHeader>
             <TaskForm onSubmit={data => createTask.mutate(data)} submitting={createTask.isPending} teamMembers={teamMembers} />
           </DialogContent>
         </Dialog>
@@ -134,7 +135,7 @@ export default function Tasks() {
                   <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-9 w-9 rounded-lg shrink-0"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={() => { setEditingTask(task); setEditDialogOpen(true); }}><Pencil className="h-4 w-4 mr-2" />Edit</DropdownMenuItem>
-                    <DropdownMenuItem className="text-destructive" onClick={() => { if (confirm('Delete?')) deleteTask.mutate(task.id); }}><Trash2 className="h-4 w-4 mr-2" />Delete</DropdownMenuItem>
+                    <DropdownMenuItem className="text-destructive" onClick={() => { void confirmAction({ title: 'Delete this task?', confirmLabel: 'Delete', destructive: true }).then((ok) => { if (ok) deleteTask.mutate(task.id); }); }}><Trash2 className="h-4 w-4 mr-2" />Delete</DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -166,7 +167,7 @@ export default function Tasks() {
                       <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem onClick={() => { setEditingTask(task); setEditDialogOpen(true); }}><Pencil className="h-4 w-4 mr-2" />Edit</DropdownMenuItem>
-                        <DropdownMenuItem className="text-destructive" onClick={() => { if (confirm('Delete?')) deleteTask.mutate(task.id); }}><Trash2 className="h-4 w-4 mr-2" />Delete</DropdownMenuItem>
+                        <DropdownMenuItem className="text-destructive" onClick={() => { void confirmAction({ title: 'Delete this task?', confirmLabel: 'Delete', destructive: true }).then((ok) => { if (ok) deleteTask.mutate(task.id); }); }}><Trash2 className="h-4 w-4 mr-2" />Delete</DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>
@@ -178,7 +179,7 @@ export default function Tasks() {
       )}
 
       <Dialog open={editDialogOpen} onOpenChange={(o) => { setEditDialogOpen(o); if (!o) setEditingTask(null); }}>
-        <DialogContent className="max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto"><DialogHeader><DialogTitle>Edit Task</DialogTitle></DialogHeader>
+        <DialogContent aria-describedby={undefined} className="max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto"><DialogHeader><DialogTitle>Edit Task</DialogTitle></DialogHeader>
           {editingTask && <TaskForm initialData={editingTask} onSubmit={data => updateTask.mutate({ id: editingTask.id, ...data })} submitting={updateTask.isPending} teamMembers={teamMembers} isEdit />}
         </DialogContent>
       </Dialog>

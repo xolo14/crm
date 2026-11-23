@@ -722,6 +722,9 @@ if ($method === 'POST') {
     if ($action === 'verify_reset_otp') {
         $email = trim($input['email'] ?? '');
         syncpediaRateLimitConsume('auth_otp_' . strtolower($email), 5, 900);
+        // Per-account cap across ALL IPs: a code lives 10 minutes, so at most 10 guesses per
+        // account per 15 minutes makes guessing the 6-digit code from many IPs impractical.
+        syncpediaRateLimitConsumeByKey(hash('sha256', 'auth_otp_acct|' . mb_strtolower($email)), 10, 900);
         $otp = trim($input['otp'] ?? '');
         if (!$email || !preg_match('/^\d{6}$/', $otp)) {
             respond(['error' => 'Valid email and 6-digit code are required'], 400);

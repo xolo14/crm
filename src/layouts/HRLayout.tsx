@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import type { PageAccess } from "@/lib/orgAccess";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 const navItems: { to: string; label: string; icon: typeof LayoutDashboard; accessKey: string }[] = [
   { to: "/hr/dashboard", label: "Dashboard", icon: LayoutDashboard, accessKey: "dashboard" },
@@ -137,9 +138,9 @@ export default function HRLayout({ children }: { children: ReactNode }) {
   });
   const hasAssignedAssignments = Boolean(myAssignmentsRes?.data && myAssignmentsRes.data.length > 0);
 
-  const logout = () => {
+  const logout = async () => {
     // Confirm first: on a phone the button sits where a thumb lands.
-    if (!window.confirm("Log out of the HR Portal?")) return;
+    if (!(await confirmAction({ title: "Log out of the HR Portal?", confirmLabel: "Log out" }))) return;
     api.hr.logout();
     navigate(AUTH_PORTAL.login);
   };
@@ -169,7 +170,7 @@ export default function HRLayout({ children }: { children: ReactNode }) {
                 <Menu className="h-5 w-5" />
               </Button>
             </SheetTrigger>
-            <SheetContent side="left" data-full-height className="flex h-dvh !max-h-none flex-col p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
+            <SheetContent aria-describedby={undefined} side="left" data-full-height className="flex h-dvh !max-h-none flex-col p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
               <SheetTitle className="sr-only">HR navigation</SheetTitle>
               <div className="border-b border-sidebar-border px-4 py-4">
                 <p className="text-lg font-bold">HR Portal</p>

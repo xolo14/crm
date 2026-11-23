@@ -89,6 +89,8 @@ import { PlaceholderPalette } from "@/components/templates/PlaceholderPalette";
 import { resolveUploadSrc, resumeStoragePath } from "@/lib/resumeHref";
 import { buildCertificatePdfBase64, certPageSizePx } from "@/utils/certificatePdf";
 import { createRoot } from "react-dom/client";
+import { localDateKey } from "@/lib/localDate";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 type CertStatus = "active" | "draft" | "archived";
 type IssuedStatus = "issued" | "revoked" | "expired";
@@ -947,7 +949,7 @@ function printTemplatePdf(template: CertTemplate) {
 }
 
 function stableNowISODate(): string {
-  return new Date().toISOString().slice(0, 10);
+  return localDateKey();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2535,7 +2537,7 @@ function TemplateBuilderModal({
                     recipientName={draft.fields.recipientName}
                     domainName={draft.fields.domainName}
                     companyName={draft.fields.companyName || defaultCompanyName}
-                    date={new Date().toISOString().slice(0, 10)}
+                    date={localDateKey()}
                     certID={certNumberSample}
                     layoutLocked={layoutLocked}
                     bgImageOverride={bgLocalPreview || undefined}
@@ -2940,7 +2942,7 @@ function TemplateBuilderModal({
     </div>
 
     <Dialog open={addTypeOpen} onOpenChange={setAddTypeOpen}>
-      <DialogContent className="max-w-sm">
+      <DialogContent aria-describedby={undefined} className="max-w-sm">
         <DialogHeader>
           <DialogTitle>Add certificate type</DialogTitle>
         </DialogHeader>
@@ -3542,7 +3544,7 @@ function SingleIssueCertDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto overflow-x-hidden">
+      <DialogContent aria-describedby={undefined} className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="text-base">Issue Certificate — {template.name}</DialogTitle>
         </DialogHeader>
@@ -5203,8 +5205,8 @@ function IssuedCertificatesTable({
                             size="sm"
                             className="h-7 text-xs text-destructive hover:text-destructive"
                             title="Delete certificate and PDF"
-                            onClick={() => {
-                              if (!window.confirm(`Delete the certificate for ${c.recipientName}? This also removes the PDF from storage.`)) {
+                            onClick={async () => {
+                              if (!(await confirmAction({ title: `Delete the certificate for ${c.recipientName}?`, description: "This also removes the PDF from storage.", confirmLabel: "Delete", destructive: true }))) {
                                 return;
                               }
                               void onDelete(c.id).then(
@@ -5460,7 +5462,7 @@ function ImportModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
+      <DialogContent aria-describedby={undefined} className="max-w-xl">
         <DialogHeader>
           <DialogTitle>Import Template (.json / .pdf / .jpeg)</DialogTitle>
         </DialogHeader>
@@ -6207,7 +6209,7 @@ export default function CertificatesPage() {
         }}
       />
       <Dialog open={!!previewTemplate} onOpenChange={(o) => !o && setPreviewTemplate(null)}>
-        <DialogContent className="max-w-4xl max-h-[min(92dvh,100%)] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-4xl max-h-[min(92dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-base">
               Preview — {previewTemplate?.name || "Template"}

@@ -750,7 +750,7 @@ export default function Timetables() {
       </Tabs>
 
       <Dialog open={sessionDialogOpen} onOpenChange={setSessionDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent aria-describedby={undefined} className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{sessionEditIndex !== null ? "Edit session" : "Add session"}</DialogTitle>
           </DialogHeader>
@@ -833,7 +833,7 @@ export default function Timetables() {
       </Dialog>
 
       <Dialog open={!!sendRow} onOpenChange={(o) => !o && setSendRow(null)}>
-        <DialogContent className="max-h-[92dvh] overflow-hidden flex flex-col sm:max-w-3xl">
+        <DialogContent aria-describedby={undefined} className="max-h-[92dvh] overflow-hidden flex flex-col sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Send timetable</DialogTitle>
           </DialogHeader>
@@ -949,6 +949,7 @@ export default function Timetables() {
                   ) : previewHtml ? (
                     <iframe
                       title="Timetable preview"
+                      sandbox=""
                       srcDoc={previewHtml}
                       className="h-72 w-full border-0 bg-white"
                     />

@@ -52,6 +52,8 @@ import { useToast } from "@/hooks/use-toast";
 import { downloadProtectedUpload } from "@/lib/resumeHref";
 import { Checkbox } from "@/components/ui/checkbox";
 import AssignedAssignmentsCard from "@/components/assignments/AssignedAssignmentsCard";
+import { localDateKey } from "@/lib/localDate";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 function downloadTextFile(text: string, filename: string) {
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
@@ -264,7 +266,7 @@ function exportAttemptsCsv(
   a.href = url;
   const slug = (opts.assessmentSlug || "assessment").replace(/[^a-z0-9_-]+/gi, "-");
   const periodPart = opts.periodSlug.replace(/[^a-z0-9_-]+/gi, "-") || "all";
-  a.download = `peaklyy-attempts-${periodPart}-${slug}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `peaklyy-attempts-${periodPart}-${slug}-${localDateKey()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -1545,8 +1547,8 @@ export default function AssessmentsAdminPage() {
                   size="sm"
                   disabled={regenMut.isPending}
                   title="Creates a new candidate link. Links already sent will stop opening the test."
-                  onClick={() => {
-                    if (window.confirm("Create a new test link? Every link already sent to candidates will stop working.")) {
+                  onClick={async () => {
+                    if (await confirmAction({ title: "Create a new test link?", description: "Every link already sent to candidates will stop working.", confirmLabel: "Create new link", destructive: true })) {
                       regenMut.mutate(linkDialogAssessment.id);
                     }
                   }}

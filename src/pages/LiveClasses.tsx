@@ -395,7 +395,7 @@ export default function LiveClasses() {
       )}
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-[95vw] sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit live class" : "Create live class"}</DialogTitle>
           </DialogHeader>

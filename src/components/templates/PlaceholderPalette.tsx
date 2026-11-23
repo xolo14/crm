@@ -105,6 +105,8 @@ type Props = {
   defs?: PlaceholderDef[];
   title?: string;
   description?: string;
+  /** false when the parent panel already scrolls (avoids a scroll area inside a scroll area). */
+  scrollable?: boolean;
 };
 
 /**
@@ -119,6 +121,7 @@ export function PlaceholderPalette({
   defs,
   title,
   description,
+  scrollable = true,
 }: Props) {
   const [customLabel, setCustomLabel] = useState('');
   const [customExtras, setCustomExtras] = useState<PlaceholderDef[]>([]);
@@ -185,12 +188,12 @@ export function PlaceholderPalette({
         <div className="min-w-0">
           <p className="text-xs font-semibold">{heading}</p>
           {!compact ? (
-            <p className="text-[10px] text-muted-foreground truncate">{sub}</p>
+            <p className="text-[10px] leading-snug text-muted-foreground">{sub}</p>
           ) : null}
         </div>
       </div>
 
-      <div className={cn('space-y-3 overflow-y-auto', compact ? 'max-h-40 p-2' : 'max-h-[min(52vh,420px)] p-3')}>
+      <div className={cn('space-y-3', scrollable && 'overflow-y-auto', compact ? 'p-2' : 'p-3', scrollable && (compact ? 'max-h-40' : 'max-h-[min(52vh,420px)]'))}>
         {byCategory.map(([cat, items]) => (
           <div key={cat}>
             <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">{cat}</p>

@@ -100,7 +100,7 @@ export default function AddLeadDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl gap-0 p-0 sm:max-w-xl">
+      <DialogContent aria-describedby={undefined} className="max-w-xl gap-0 p-0 sm:max-w-xl">
         <DialogHeader className="space-y-1 px-6 pt-6 pb-4 text-left">
           <DialogTitle>New Lead</DialogTitle>
         </DialogHeader>

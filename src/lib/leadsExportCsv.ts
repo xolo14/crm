@@ -11,6 +11,7 @@ import {
   resolveLeadPhone,
 } from '@/lib/parseFormLeadNotes';
 import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
+import { localDateKey } from '@/lib/localDate';
 
 export type LeadExportNameResolvers = {
   /** Primary assignee display name(s). */
@@ -177,7 +178,7 @@ export function downloadLeadsDetailCsv(
   const a = document.createElement('a');
   a.href = url;
   const safe = filenameHint.replace(/[^\w\-]+/g, '_').slice(0, 60) || 'leads';
-  a.download = `${safe}-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `${safe}-${localDateKey()}.csv`;
   a.click();
   URL.revokeObjectURL(url);
   return { ok: true, count: rows.length };

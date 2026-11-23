@@ -481,6 +481,30 @@ export function DocumentTemplateEditor({
   const [pasteTip, setPasteTip] = useState<string | null>(null);
   const bodySelected = selectedBoxId === '__body__';
 
+  // Fit the A4 page into the space between the side panels (scale down only), so the letter
+  // never needs a sideways scroll on a laptop. Dragging/resizing boxes measures the page with
+  // getBoundingClientRect, which already reflects the scale, so positions stay exact.
+  const canvasViewportRef = useRef<HTMLDivElement>(null);
+  const canvasPageRef = useRef<HTMLDivElement>(null);
+  const [pageScale, setPageScale] = useState(1);
+  useEffect(() => {
+    const viewport = canvasViewportRef.current;
+    const page = canvasPageRef.current;
+    if (!viewport || !page || typeof ResizeObserver === 'undefined') return;
+    const measure = () => {
+      const cs = window.getComputedStyle(viewport);
+      const available = viewport.clientWidth - parseFloat(cs.paddingLeft || '0') - parseFloat(cs.paddingRight || '0');
+      const natural = page.offsetWidth; // layout width: not affected by the transform
+      if (!natural || available <= 0) return;
+      const next = Math.max(0.45, Math.min(1, Math.floor((available / natural) * 1000) / 1000));
+      setPageScale((prev) => (Math.abs(prev - next) > 0.002 ? next : prev));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(viewport);
+    return () => ro.disconnect();
+  }, [pageWidth]);
+
   const selectedBox = textBoxes.find((b) => b.id === selectedBoxId) || null;
 
   function patchBox(id: string, patch: Partial<OfferTextBox>) {
@@ -1059,8 +1083,18 @@ export function DocumentTemplateEditor({
       )}
 
       {/* Page canvas */}
-      <div className="flex-1 overflow-auto bg-muted/30 p-4 flex justify-center items-start">
+      <div ref={canvasViewportRef} className="flex-1 overflow-auto bg-muted/30 p-4 flex justify-center items-start">
+        {/* Holds the scaled page's real size, so the scroll area matches what is drawn. */}
         <div
+          className="shrink-0"
+          style={
+            pageScale < 1
+              ? { width: `calc(${pageWidth} * ${pageScale})`, height: `calc(${pageMinHeight} * ${pageScale})` }
+              : undefined
+          }
+        >
+        <div
+          ref={canvasPageRef}
           data-canvas-root
           className="relative bg-white shadow-lg shrink-0 offer-template-canvas"
           style={{
@@ -1072,6 +1106,8 @@ export function DocumentTemplateEditor({
             backgroundSize: backgroundImage ? 'contain' : undefined,
             backgroundRepeat: 'no-repeat',
             backgroundPosition: 'top center',
+            transform: pageScale < 1 ? `scale(${pageScale})` : undefined,
+            transformOrigin: 'top left',
           }}
           onClick={() => setSelectedBoxId(null)}
         >
@@ -1245,6 +1281,7 @@ export function DocumentTemplateEditor({
                 );
               })
             : null}
+        </div>
         </div>
       </div>
       </div>

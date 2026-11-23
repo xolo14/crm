@@ -21,6 +21,7 @@ import {
   batchStatusLabel,
   isOpenBatchSchedule,
 } from "@/utils/batchSchedule";
+import { localDateKey } from "@/lib/localDate";
 
 interface Props {
   open: boolean;
@@ -683,7 +684,7 @@ export default function CreatePaymentLinkModal({
                 <input
                   type="date"
                   value={form.expiryDate}
-                  min={new Date().toISOString().slice(0, 10)}
+                  min={localDateKey()}
                   onChange={(e) => patch({ expiryDate: e.target.value })}
                   className={`${inputCls} pl-9 bg-white`}
                 />

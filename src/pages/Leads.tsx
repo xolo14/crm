@@ -60,6 +60,8 @@ import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { ORG_SCOPE_ALL, useOrgScope } from '@/hooks/useOrgScope';
 import { fmtCount, pct } from '@/lib/formatMetric';
+import { localDateKey } from '@/lib/localDate';
+import { confirmAction } from '@/components/ConfirmDialogHost';
 
 const LEAD_STATUSES = ['new', 'contacted', 'not_answered', 'messaged', 'qualified', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'] as const;
 
@@ -85,7 +87,7 @@ function leadColumnSearchText(lead: any, extra: string[]): string {
       created = [
         d.toLocaleDateString(),
         d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-        d.toISOString().slice(0, 10),
+        localDateKey(d),
       ].join(' ');
     }
   }
@@ -1293,7 +1295,7 @@ export default function Leads() {
 
   const handleDelete = async (id: string) => {
     if (!canDeleteLead()) { toast({ variant: 'destructive', title: 'Permission denied' }); return; }
-    if (confirm('Delete this lead permanently?')) {
+    if (await confirmAction({ title: 'Delete this lead permanently?', confirmLabel: 'Delete', destructive: true })) {
       try { await api.leads.delete(id); setLeads(prev => prev.filter(l => l.id !== id)); toast({ title: 'Lead deleted' }); }
       catch (err: any) { toast({ variant: 'destructive', title: 'Error', description: err.message }); }
     }
@@ -1303,7 +1305,7 @@ export default function Leads() {
     const ids = idsOverride ?? Array.from(selectedIds);
     const count = ids.length;
     if (count === 0) return;
-    if (!idsOverride && !confirm(`Delete ${count} leads permanently?`)) return;
+    if (!idsOverride && !(await confirmAction({ title: `Delete ${count} leads permanently?`, confirmLabel: 'Delete', destructive: true }))) return;
     try {
       const res = await api.leads.bulkDelete(ids);
       const deleted = typeof res?.deleted === 'number' ? res.deleted : count;
@@ -2080,7 +2082,7 @@ export default function Leads() {
               <DialogTrigger asChild>
                 <Button size="sm" className="gap-1.5 h-8"><Plus className="h-3.5 w-3.5" /><span className="hidden sm:inline">Add Lead</span></Button>
               </DialogTrigger>
-              <DialogContent className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
+              <DialogContent aria-describedby={undefined} className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
                 <DialogHeader><DialogTitle>Add New Lead</DialogTitle></DialogHeader>
                 <LeadForm
                   onSubmit={handleCreate}
@@ -2712,7 +2714,7 @@ export default function Leads() {
       )}
 
       <Sheet open={detailOpen && !sourceDialogKey} onOpenChange={setDetailOpen}>
-        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+        <SheetContent aria-describedby={undefined} className="w-full sm:max-w-lg overflow-y-auto">
           {detailLead && (
             <>
               <SheetHeader className="pb-4 border-b border-border">
@@ -2838,7 +2840,7 @@ export default function Leads() {
 
       {/* Edit Lead Dialog */}
       <Dialog open={editDialogOpen} onOpenChange={(open) => { setEditDialogOpen(open); if (!open) setEditingLead(null); }}>
-        <DialogContent className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] overflow-y-auto">
           <DialogHeader><DialogTitle>Edit Lead</DialogTitle></DialogHeader>
           {editingLead && (
             <LeadForm
@@ -2860,7 +2862,7 @@ export default function Leads() {
 
       {/* Assign Lead Dialog - Multi-select with Checkboxes */}
       <Dialog open={assignOpen} onOpenChange={(open) => { if (!assignSaving) { setAssignOpen(open); if (!open) { setAssignLeadId(null); setAssignSelectedReps(new Set()); } } }}>
-        <DialogContent className="max-w-[95vw] sm:max-w-sm">
+        <DialogContent aria-describedby={undefined} className="max-w-[95vw] sm:max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <UserPlus className="h-5 w-5 text-primary" />
@@ -2961,7 +2963,7 @@ export default function Leads() {
       />
 
       <Dialog open={importOpen} onOpenChange={setImportOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent aria-describedby={undefined} className="max-w-md">
           <DialogHeader>
             <DialogTitle>Import leads</DialogTitle>
           </DialogHeader>
@@ -3050,7 +3052,7 @@ export default function Leads() {
       </Dialog>
 
       <Dialog open={exportCardsOpen} onOpenChange={setExportCardsOpen}>
-        <DialogContent className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent aria-describedby={undefined} className="max-w-lg max-h-[min(90dvh,calc(100dvh-2rem))] flex flex-col gap-0 p-0 overflow-hidden">
           <DialogHeader className="px-6 pt-6 pb-3 shrink-0">
             <DialogTitle>Export leads by card</DialogTitle>
           </DialogHeader>
@@ -3126,7 +3128,7 @@ export default function Leads() {
       </Dialog>
 
       <Dialog open={canUseLeadFolders && newFolderOpen} onOpenChange={setNewFolderOpen}>
-        <DialogContent className="max-w-sm">
+        <DialogContent aria-describedby={undefined} className="max-w-sm">
           <DialogHeader>
             <DialogTitle>New folder</DialogTitle>
           </DialogHeader>
@@ -3166,7 +3168,7 @@ export default function Leads() {
           }
         }}
       >
-        <DialogContent className="max-w-sm">
+        <DialogContent aria-describedby={undefined} className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Access to manager</DialogTitle>
           </DialogHeader>
@@ -3232,7 +3234,7 @@ export default function Leads() {
           if (!open) setMoveCardKey(null);
         }}
       >
-        <DialogContent className="max-w-sm">
+        <DialogContent aria-describedby={undefined} className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Move to folder</DialogTitle>
           </DialogHeader>

@@ -655,7 +655,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
       <div>{previewPayslip ? <PayslipPreview payslip={previewPayslip} /> : <div className="text-sm text-gray-500">Select an employee to preview.</div>}</div>
 
       <Dialog open={postGenOpen} onOpenChange={setPostGenOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent aria-describedby={undefined} className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>Payslip ready</DialogTitle>
           </DialogHeader>
@@ -701,7 +701,7 @@ export default function GeneratePayslip({ employees, onGenerate, generatedBy }: 
       </Dialog>
 
       <Dialog open={composeOpen} onOpenChange={setComposeOpen}>
-        <DialogContent className="max-w-4xl max-h-[min(90dvh,100%)] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-4xl max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Compose Email</DialogTitle>
             <p className="text-sm text-muted-foreground">Edit before sending the payslip email.</p>

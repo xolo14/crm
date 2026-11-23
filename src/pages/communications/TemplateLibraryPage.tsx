@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import type { PlatformTemplateLibraryItem, WhatsappTemplate } from "@/types/communications";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 const CATEGORY_LABELS: Record<string, string> = {
   utility: "Utility",
@@ -217,8 +218,8 @@ export default function TemplateLibraryPage() {
                       size="sm"
                       variant="ghost"
                       className="text-destructive hover:text-destructive"
-                      onClick={() => {
-                        if (confirm(`Remove "${t.name}" from CRM? (Does not delete from Meta.)`)) {
+                      onClick={async () => {
+                        if (await confirmAction({ title: `Remove "${t.name}" from CRM?`, description: "This does not delete it from Meta.", confirmLabel: "Remove", destructive: true })) {
                           communicationsApi.deleteTemplate(t.id).then(
                             () => {
                               toast({ title: "Removed from CRM" });
@@ -240,7 +241,7 @@ export default function TemplateLibraryPage() {
       </Tabs>
 
       <Dialog open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
-        <DialogContent className="max-w-lg max-h-[min(90dvh,100%)] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-lg max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Customize: {selected?.name}</DialogTitle>
           </DialogHeader>

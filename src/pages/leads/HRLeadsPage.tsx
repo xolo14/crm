@@ -27,6 +27,8 @@ import * as perms from "@/lib/permissions";
 import { getISTLastWeekRangeYYYYMMDD, getISTMonthRangeYYYYMMDD, getISTWeekRangeYYYYMMDD } from "@/lib/hrLeadsWeek";
 import { openProtectedUpload } from "@/lib/resumeHref";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { localDateKey } from "@/lib/localDate";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 const STATUSES = ["new", "contacted", "interested", "not_interested", "converted", "lost"];
 
@@ -142,7 +144,7 @@ export default function HRLeadsPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `hr-leads-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `hr-leads-${localDateKey()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -486,7 +488,7 @@ export default function HRLeadsPage() {
                         <DropdownMenuItem
                           className="text-destructive"
                           onClick={async () => {
-                            if (!confirm("Delete this lead?")) return;
+                            if (!(await confirmAction({ title: "Delete this lead?", confirmLabel: "Delete", destructive: true }))) return;
                             await deleteMutation.mutateAsync(leadNumericId(lead));
                             toast({ title: "Lead deleted" });
                           }}
@@ -514,7 +516,7 @@ export default function HRLeadsPage() {
       {canAddLead && <AddLeadDialog open={openAdd} onOpenChange={setOpenAdd} hrUsers={hrUsers} />}
 
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+        <SheetContent aria-describedby={undefined} className="w-full sm:max-w-lg overflow-y-auto">
           {detailLead ? (
             <>
               <SheetHeader className="pb-4 border-b border-border">

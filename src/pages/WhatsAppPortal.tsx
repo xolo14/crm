@@ -690,7 +690,7 @@ export default function WhatsAppPortal() {
 
       {/* Draft Editor */}
       <Dialog open={showEditor} onOpenChange={(open) => { setShowEditor(open); if (!open) { setEditingDraft(null); setDraftName(''); setDraftSubject(''); setDraftBody(''); } }}>
-        <DialogContent className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-3xl max-h-[min(90dvh,100%)] overflow-y-auto">
           <DialogHeader><DialogTitle>{editingDraft ? 'Edit Draft' : 'New WhatsApp Draft'}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div><Label className="text-xs font-medium">Draft Name *</Label><Input value={draftName} onChange={e => setDraftName(e.target.value)} placeholder="e.g. Welcome Message, Promo..." className="mt-1" /></div>
@@ -718,7 +718,7 @@ export default function WhatsAppPortal() {
 
       {/* Preview */}
       <Dialog open={showPreview} onOpenChange={setShowPreview}>
-        <DialogContent className="max-w-md">
+        <DialogContent aria-describedby={undefined} className="max-w-md">
           <DialogHeader><DialogTitle>WhatsApp Preview</DialogTitle></DialogHeader>
           <div className="bg-emerald-50 dark:bg-emerald-950/20 rounded-xl p-4">
             <div className="bg-white dark:bg-card rounded-lg p-3 shadow-sm max-w-[280px]">
@@ -738,7 +738,7 @@ export default function WhatsAppPortal() {
           setCampaignLeads([]);
         }
       }}>
-        <DialogContent className="max-w-5xl w-[min(96rem,calc(100%-1rem))] max-h-[min(94dvh,calc(100dvh-1rem))] overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-w-5xl w-[min(96rem,calc(100%-1rem))] max-h-[min(94dvh,calc(100dvh-1rem))] overflow-y-auto">
           <DialogHeader><DialogTitle className="flex items-center gap-2"><MessageSquare className="h-4 w-4 text-emerald-500" />Send WhatsApp Campaign</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

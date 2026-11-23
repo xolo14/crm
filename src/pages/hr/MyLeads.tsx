@@ -13,6 +13,7 @@ import EditLeadDialog from "@/components/hr/EditLeadDialog";
 import { useDeleteLead, useMyLeads } from "@/hooks/useHRLeads";
 import type { HRLead } from "@/types/hrLeads";
 import { openProtectedUpload } from "@/lib/resumeHref";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 const statusClass: Record<string, string> = {
   new: "bg-blue-500/10 text-blue-700 border-blue-200",
@@ -42,7 +43,7 @@ export default function MyLeads() {
   const week = data?.week;
 
   const onDelete = async (id: number) => {
-    if (!confirm("Delete this lead?")) return;
+    if (!(await confirmAction({ title: "Delete this lead?", confirmLabel: "Delete", destructive: true }))) return;
     await deleteMutation.mutateAsync(id);
     toast({ title: "Lead deleted" });
   };

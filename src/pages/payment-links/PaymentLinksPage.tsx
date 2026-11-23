@@ -30,6 +30,7 @@ import CreatePaymentLinkModal from "@/components/payments/CreatePaymentLinkModal
 import PaymentLinkSuccess from "@/components/payments/PaymentLinkSuccess";
 import LinkDetailModal from "@/components/paymentLinks/LinkDetailModal";
 import PaymentMailDialog from "@/components/paymentLinks/PaymentMailDialog";
+import { confirmAction } from "@/components/ConfirmDialogHost";
 
 const initialFilters: TableFilters = {
   status: "",
@@ -232,7 +233,7 @@ export default function PaymentLinksPage() {
 
   const handleCancel = useCallback(
     async (id: string) => {
-      if (!window.confirm("Cancel this payment link?")) return;
+      if (!(await confirmAction({ title: "Cancel this payment link?", description: "The customer can no longer pay with it.", confirmLabel: "Cancel link", cancelLabel: "Keep link", destructive: true }))) return;
       try {
         await apiCancel(id);
         setLinks((prev) =>
@@ -255,7 +256,7 @@ export default function PaymentLinksPage() {
 
   const handleDelete = useCallback(
     async (id: string) => {
-      if (!window.confirm("Delete this cancelled payment link from the list?")) return;
+      if (!(await confirmAction({ title: "Delete this cancelled payment link from the list?", confirmLabel: "Delete", destructive: true }))) return;
       try {
         await apiDelete(id);
         setLinks((prev) => prev.filter((l) => l.id !== id));

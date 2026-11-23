@@ -545,7 +545,7 @@ export default function MyReferrals() {
 
       {/* View Report Dialog */}
       <Dialog open={!!viewReport} onOpenChange={() => setViewReport(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent aria-describedby={undefined} className="max-w-md">
           <DialogHeader>
             <DialogTitle>Daily Report — {viewReport && new Date(viewReport.report_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</DialogTitle>
           </DialogHeader>

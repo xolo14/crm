@@ -84,7 +84,7 @@ function ProofPreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[min(92vw,56rem)] max-h-[min(92dvh,100%)] overflow-hidden p-4 sm:p-5">
+      <DialogContent aria-describedby={undefined} className="max-w-[min(92vw,56rem)] max-h-[min(92dvh,100%)] overflow-hidden p-4 sm:p-5">
         <DialogHeader>
           <DialogTitle>Payment proof</DialogTitle>
         </DialogHeader>

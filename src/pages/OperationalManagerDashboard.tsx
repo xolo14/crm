@@ -38,6 +38,7 @@ import {
 import AssignedAssignmentsCard from "@/components/assignments/AssignedAssignmentsCard";
 import AssignedFormLinksCard from "@/components/forms/AssignedFormLinksCard";
 import AssignedDocFormLinksCard from "@/components/forms/AssignedDocFormLinksCard";
+import { localDateKey } from "@/lib/localDate";
 
 const COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316"];
 
@@ -157,7 +158,7 @@ export default function OperationalManagerDashboard() {
  for (const link of links) {
  const lastPayment = link.payments?.[link.payments.length - 1];
  const paidAt = Number(lastPayment?.created_at || 0);
- const date = new Date((paidAt > 0 ? paidAt : link.created_at) * 1000).toISOString().split("T")[0];
+ const date = localDateKey((paidAt > 0 ? paidAt : link.created_at) * 1000);
  const existing = dayMap.get(date) || { collected: 0, count: 0 };
  const collected = link.status === "paid" || link.status === "partially_paid" ? (link.amount_paid || 0) / 100 : 0;
  dayMap.set(date, { collected: existing.collected + collected, count: existing.count + 1 });
