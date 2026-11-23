@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChartOrEmpty } from "@/components/hr/ChartOrEmpty";
+import { evenTicks } from "@/lib/hrFormat";
 
 function downloadCsv(filename: string, rows: any[]) {
   if (!rows.length) return;
@@ -22,12 +23,6 @@ function downloadCsv(filename: string, rows: any[]) {
 
 const RANGE_TEXT: Record<string, string> = { week: "last 7 days", month: "last 30 days", year: "last 12 months" };
 
-/** Evenly spaced axis labels, always including the latest bucket (today / this month). */
-function evenTicks(labels: string[], range: string): string[] {
-  const step = range === "month" ? 5 : range === "year" ? 2 : 1;
-  const n = labels.length;
-  return labels.filter((_, i) => (n - 1 - i) % step === 0);
-}
 
 type TaskSummary = { total: number; completed: number; late: number; overdue: number; completion_rate: number };
 

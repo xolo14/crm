@@ -42,3 +42,10 @@ export function isoDay(d: Date = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
+
+/** Evenly spaced chart axis labels that always include the latest bucket (today / this month). */
+export function evenTicks(labels: string[], range: "week" | "month" | "year" | string): string[] {
+  const step = range === "month" ? 5 : range === "year" ? 2 : 1;
+  const n = labels.length;
+  return labels.filter((_, i) => (n - 1 - i) % step === 0);
+}

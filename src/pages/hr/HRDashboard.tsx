@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { CalendarDays, ClipboardCheck, UserPlus, Users } from "lucide-react";
 import { ChartOrEmpty } from "@/components/hr/ChartOrEmpty";
 import { getCurrentWeekKeyIST } from "@/lib/hrLeadsWeek";
+import { evenTicks } from "@/lib/hrFormat";
 const WEEKLY_TARGET = 20;
 
 export default function HRDashboard() {
@@ -18,6 +19,7 @@ export default function HRDashboard() {
   const stats = data?.stats || data?.data?.stats || {};
   const activity = data?.activity || [];
   const trend = data?.trend || [];
+  const dayTicks = evenTicks(activity.map((r: { label: string }) => r.label), "month");
   const weekMeta = stats.week || data?.week;
   const myWeekCount = stats.my_leads_count ?? stats.my_leads_added ?? 0;
 
@@ -74,7 +76,7 @@ export default function HRDashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={activity}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} ticks={dayTicks} interval={0} />
                   <YAxis allowDecimals={false} />
                   <Tooltip />
                   <Bar dataKey="value" name="Leads" fill="#2ed573" />
@@ -90,7 +92,7 @@ export default function HRDashboard() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={trend}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} ticks={dayTicks} interval={0} />
                   <YAxis allowDecimals={false} />
                   <Tooltip />
                   <Line type="monotone" dataKey="value" name="Total" stroke="#0f2318" strokeWidth={2} dot={false} />
