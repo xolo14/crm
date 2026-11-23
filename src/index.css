@@ -246,8 +246,9 @@
     font-size: 16px !important; /* Prevents iOS zoom on focus */
   }
 
-  /* Prefer dvh so dialogs fit the visible viewport (Safari URL bar) */
-  [role="dialog"] {
+  /* Prefer dvh so dialogs fit the visible viewport (Safari URL bar).
+     Full-screen layers (drawers, the source-card dialog) opt out with data-full-height. */
+  [role="dialog"]:not([data-full-height]) {
     max-height: min(92dvh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px))) !important;
   }
 

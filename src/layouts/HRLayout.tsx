@@ -169,7 +169,7 @@ export default function HRLayout({ children }: { children: ReactNode }) {
                 <Menu className="h-5 w-5" />
               </Button>
             </SheetTrigger>
-            <SheetContent side="left" className="flex h-dvh !max-h-none flex-col p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
+            <SheetContent side="left" data-full-height className="flex h-dvh !max-h-none flex-col p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
               <SheetTitle className="sr-only">HR navigation</SheetTitle>
               <div className="border-b border-sidebar-border px-4 py-4">
                 <p className="text-lg font-bold">HR Portal</p>

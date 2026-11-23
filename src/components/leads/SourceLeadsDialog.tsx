@@ -413,6 +413,7 @@ export function SourceLeadsDialog({
         ref={setPortalEl}
         className="fixed inset-0 z-[100] flex h-[100dvh] !max-h-none flex-col bg-background"
         role="dialog"
+        data-full-height
         aria-modal="false"
         aria-label={label}
       >
