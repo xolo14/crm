@@ -265,7 +265,7 @@ export default function MarketingMetaAdsPage() {
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
               Campaign spend, clicks, conversions & ROAS — refreshed from synced Meta data
-              {connected ? "" : " (connect Meta Ads in Settings first)"}.
+              {connected ? "" : canSync ? " (connect Meta Ads in Settings first)" : " (your organization admin connects Meta Ads)"}.
             </p>
           </div>
         </div>

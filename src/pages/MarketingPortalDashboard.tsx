@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type KeyboardEvent } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import { api } from '@/lib/api';
 import { phpList } from '@/lib/phpList';
@@ -34,6 +34,19 @@ export default function MarketingPortalDashboard() {
   const mineOnly = normalizeAppRole(user?.role) === 'marketing';
   const { toast } = useToast();
   const navigate = useNavigate();
+  /** KPI card that opens a page — clickable and reachable with Tab + Enter/Space. */
+  const cardLink = (to: string, label: string) => ({
+    role: 'button' as const,
+    tabIndex: 0,
+    'aria-label': label,
+    onClick: () => navigate(to),
+    onKeyDown: (e: KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        navigate(to);
+      }
+    },
+  });
 
   const [loading, setLoading] = useState(true);
   const [referralCode, setReferralCode] = useState('');
@@ -216,7 +229,7 @@ export default function MarketingPortalDashboard() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card className="border-l-4 border-l-primary cursor-pointer hover:shadow-md transition-shadow" onClick={() => navigate('/marketing/portal')}>
+        <Card className="border-l-4 border-l-primary cursor-pointer hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" {...cardLink('/marketing/portal', 'Total sent — open campaigns')}>
           <CardContent className="p-3 md:p-4">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Total Sent</span>
@@ -229,7 +242,7 @@ export default function MarketingPortalDashboard() {
           </CardContent>
         </Card>
 
-        <Card className="border-l-4 border-l-blue-500 cursor-pointer hover:shadow-md transition-shadow" onClick={() => navigate('/marketing/form-leads')}>
+        <Card className="border-l-4 border-l-blue-500 cursor-pointer hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" {...cardLink('/marketing/form-leads', 'Form leads — open form leads')}>
           <CardContent className="p-3 md:p-4">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Form Leads</span>
@@ -240,7 +253,7 @@ export default function MarketingPortalDashboard() {
           </CardContent>
         </Card>
 
-        <Card className="border-l-4 border-l-emerald-500">
+        <Card className="border-l-4 border-l-emerald-500 cursor-pointer hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" {...cardLink('/marketing/form-leads', 'Conversion — open form leads')}>
           <CardContent className="p-3 md:p-4">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Conversion</span>
@@ -251,7 +264,7 @@ export default function MarketingPortalDashboard() {
           </CardContent>
         </Card>
 
-        <Card className="border-l-4 border-l-amber-500">
+        <Card className="border-l-4 border-l-amber-500 cursor-pointer hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" {...cardLink('/marketing/portal', 'Campaigns — open campaigns')}>
           <CardContent className="p-3 md:p-4">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Campaigns</span>
