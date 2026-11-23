@@ -165,11 +165,11 @@ export default function HRLayout({ children }: { children: ReactNode }) {
         <div className="flex items-center gap-3 px-4 py-3 min-h-[52px]">
           <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
             <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-10 w-10 rounded-xl touch-target shrink-0">
+              <Button variant="ghost" size="icon" className="h-10 w-10 rounded-xl touch-target shrink-0" aria-label="Open menu">
                 <Menu className="h-5 w-5" />
               </Button>
             </SheetTrigger>
-            <SheetContent side="left" className="flex h-dvh flex-col p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
+            <SheetContent side="left" className="flex h-dvh !max-h-none flex-col p-0 w-[min(300px,88vw)] max-w-[300px] bg-sidebar text-sidebar-foreground">
               <SheetTitle className="sr-only">HR navigation</SheetTitle>
               <div className="border-b border-sidebar-border px-4 py-4">
                 <p className="text-lg font-bold">HR Portal</p>
