@@ -1366,7 +1366,7 @@ export default function DocFormsHubPage({
             <span>/</span>
             <span>Certificates & Offer Letters</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">Certificates & Offer Letters Forms</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Certificate & Offer Letter Form</h1>
           <p className="text-sm text-muted-foreground">
             Assign access and share a public fill link (like Apply). Link templates on Offer Letters / Certificates → Forms.
           </p>
@@ -1414,7 +1414,7 @@ export default function DocFormsHubPage({
                         <TableHead className="w-[12%]">Type</TableHead>
                         {showCreatedByColumn ? <TableHead className="w-[12%]">Created by</TableHead> : null}
                         <TableHead className="w-[10%]">Status</TableHead>
-                        <TableHead className="w-[8%] text-right">Subs</TableHead>
+                        <TableHead className="w-[11%] text-right" title="Number of form submissions">Submissions</TableHead>
                         <TableHead className="w-[8%]">Link</TableHead>
                         <TableHead className="w-[10%]">Assign</TableHead>
                         <TableHead className="w-[14%]">Assigned</TableHead>
@@ -2434,7 +2434,7 @@ export function DocFormsWorkspace({ formType }: { formType: DocFormType }) {
         <div>
           <h2 className="text-sm font-semibold">{formType === "offer_letter" ? "Offer letter forms" : "Certificate forms"}</h2>
           <p className="text-[11px] text-muted-foreground">
-            Created under Form Management → Certificates & Offer Letters Forms. Link a template, then open submissions.
+            Created under Form Management → Certificate & Offer Letter Form. Link a template, then open submissions.
           </p>
         </div>
         <Button asChild size="sm" variant="outline" className="h-8 text-xs">
@@ -2687,7 +2687,7 @@ export function DocIssuedPanel({
     return (
       <Card>
         <CardContent className="py-10 text-center text-sm text-muted-foreground">
-          No documents issued from forms yet. Use Forms → submissions → Play.
+          No documents issued from forms yet. Open a form under Forms, view its submissions, and press Play (▶) on a submission to issue the document.
         </CardContent>
       </Card>
     );

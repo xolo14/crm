@@ -97,6 +97,85 @@ if ($action === 'delete_hr' && $method === 'DELETE') {
 
 requireRole($tokenData, ['hr']);
 
+/** Today in IST (the team's calendar), not the DB server's timezone. */
+function hrTodayIst(): string
+{
+    return (new DateTime('now', new DateTimeZone('Asia/Kolkata')))->format('Y-m-d');
+}
+
+/**
+ * "Upcoming holidays" — one rule for the dashboard card and the Holidays page:
+ * declared days off (is_approved = 1) from today (IST) through the next 365 days.
+ */
+function hrUpcomingHolidayCount(PDO $db, array $tokenData): int
+{
+    $org = orgFilter($tokenData, '', $db);
+    $today = hrTodayIst();
+    $until = (new DateTime($today))->modify('+365 days')->format('Y-m-d');
+    $st = $db->prepare("SELECT COUNT(*) FROM holidays WHERE is_approved = 1 AND date >= ? AND date <= ? AND {$org['where']}");
+    $st->execute(array_merge([$today, $until], $org['params']));
+    return (int) $st->fetchColumn();
+}
+
+/**
+ * Buckets for HR charts, oldest first, every bucket present (zeros included):
+ * week = last 7 days, month = last 30 days (by day), year = last 12 months (by month).
+ *
+ * @return list<array{key: string, label: string}>
+ */
+function hrPeriodBuckets(string $range): array
+{
+    $tz = new DateTimeZone('Asia/Kolkata');
+    $out = [];
+    if ($range === 'year') {
+        $m = new DateTime('first day of this month', $tz);
+        $m->modify('-11 months');
+        for ($i = 0; $i < 12; $i++) {
+            $out[] = ['key' => $m->format('Y-m'), 'label' => $m->format('M Y')];
+            $m->modify('+1 month');
+        }
+        return $out;
+    }
+    $days = $range === 'week' ? 7 : 30;
+    $d = new DateTime('today', $tz);
+    $d->modify('-' . ($days - 1) . ' days');
+    for ($i = 0; $i < $days; $i++) {
+        $out[] = ['key' => $d->format('Y-m-d'), 'label' => $d->format('d M')];
+        $d->modify('+1 day');
+    }
+    return $out;
+}
+
+/**
+ * Count rows per bucket. $dateExpr is a column on $table; $where/$params scope the rows.
+ *
+ * @return list<array{label: string, count: int}>
+ */
+function hrSeries(PDO $db, string $table, string $dateExpr, string $where, array $params, string $range): array
+{
+    $buckets = hrPeriodBuckets($range);
+    $fmt = $range === 'year' ? '%Y-%m' : '%Y-%m-%d';
+    $from = $range === 'year' ? $buckets[0]['key'] . '-01' : $buckets[0]['key'];
+    $counts = [];
+    try {
+        $st = $db->prepare("SELECT DATE_FORMAT({$dateExpr}, '{$fmt}') k, COUNT(*) c FROM {$table}
+                             WHERE {$where} AND {$dateExpr} >= ? GROUP BY DATE_FORMAT({$dateExpr}, '{$fmt}')");
+        $st->execute(array_merge($params, [$from]));
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $counts[(string) $r['k']] = (int) $r['c'];
+        }
+    } catch (Throwable $e) {
+        error_log('[hr series] ' . $e->getMessage());
+    }
+    return array_map(static fn($b) => ['label' => $b['label'], 'count' => $counts[$b['key']] ?? 0], $buckets);
+}
+
+/** HR leads = applicants assigned to this HR user plus the ones they added themselves. */
+function hrLeadSeries(PDO $db, string $userId, string $range): array
+{
+    return hrSeries($db, 'leads', 'created_at', '(assigned_to = ? OR created_by = ?)', [$userId, $userId], $range);
+}
+
 if ($action === 'hr_dashboard' && $method === 'GET') {
     $bounds = hrLeadsWeekBoundsAndMeta();
     $wkStart = $bounds['start'];
@@ -124,25 +203,14 @@ if ($action === 'hr_dashboard' && $method === 'GET') {
     }
 
     $q3 = $db->prepare("SELECT COUNT(*) c FROM tasks WHERE assigned_to=? AND status <> 'completed'"); $q3->execute([$userId]); $c = $q3->fetch();
-    $orgHolidays = orgFilter($tokenData, '', $db);
-    $q4 = $db->prepare("SELECT COUNT(*) c FROM holidays WHERE date >= CURDATE() AND is_approved = 1 AND {$orgHolidays['where']}");
-    $q4->execute($orgHolidays['params']);
-    $d = $q4->fetch();
 
-    // Grouped by day; the label uses MIN(created_at) so the query is valid under ONLY_FULL_GROUP_BY.
-    $activity = [];
-    try {
-        $q5 = $db->prepare("SELECT DATE_FORMAT(MIN(created_at), '%b %d') label, COUNT(*) value FROM hr_leads WHERE hr_id=? AND is_assigned=0 AND deleted_at IS NULL AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
-        $q5->execute([$userId]);
-        $activity = $q5->fetchAll();
-    } catch (Throwable $e) {
-        try {
-            $q5 = $db->prepare("SELECT DATE_FORMAT(MIN(created_at), '%b %d') label, COUNT(*) value FROM leads WHERE created_by=? AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
-            $q5->execute([$userId]);
-            $activity = $q5->fetchAll();
-        } catch (Throwable $e2) {
-            error_log('[hr_dashboard] activity: ' . $e2->getMessage());
-        }
+    // Last 30 days of applicants (assigned + own), every day present; trend = running total.
+    $activity = array_map(static fn($r) => ['label' => $r['label'], 'value' => $r['count']], hrLeadSeries($db, (string) $userId, 'month'));
+    $trend = [];
+    $running = 0;
+    foreach ($activity as $row) {
+        $running += (int) $row['value'];
+        $trend[] = ['label' => $row['label'], 'value' => $running];
     }
 
     respond([
@@ -150,12 +218,13 @@ if ($action === 'hr_dashboard' && $method === 'GET') {
             'my_leads_added' => $myHrLeadsWeek,
             'assigned_leads' => $assignedHrLeads,
             'pending_tasks' => (int) ($c['c'] ?? 0),
-            'upcoming_holidays' => (int) ($d['c'] ?? 0),
+            'upcoming_holidays' => hrUpcomingHolidayCount($db, $tokenData),
             'my_leads_count' => $myHrLeadsWeek,
             'week' => $bounds['week'],
         ],
         'week' => $bounds['week'],
         'activity' => $activity,
+        'trend' => $trend,
     ]);
 }
 
@@ -269,15 +338,36 @@ if ($action === 'tasks' && $method === 'PUT') {
 }
 
 if ($action === 'reports' && $method === 'GET') {
-    $lead = $db->prepare("SELECT DATE_FORMAT(MIN(created_at), '%b %d') label, COUNT(*) count FROM leads WHERE created_by=? AND created_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(created_at) ORDER BY DATE(created_at)");
-    $lead->execute([$userId]);
-    $task = $db->prepare("SELECT DATE_FORMAT(MIN(updated_at), '%b %d') label, SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) completed FROM tasks WHERE assigned_to=? AND updated_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) GROUP BY DATE(updated_at) ORDER BY DATE(updated_at)");
-    $task->execute([$userId]);
-    respond(['lead_report' => $lead->fetchAll(), 'task_report' => $task->fetchAll()]);
+    // range: week (7 days) | month (30 days) | year (12 months); every period present.
+    $range = (string) ($_GET['range'] ?? 'month');
+    if (!in_array($range, ['week', 'month', 'year'], true)) {
+        $range = 'month';
+    }
+    $leadReport = hrLeadSeries($db, (string) $userId, $range);
+    $taskDone = hrSeries($db, 'tasks', 'updated_at', "assigned_to = ? AND status = 'completed'", [$userId], $range);
+    $taskReport = array_map(static fn($r) => ['label' => $r['label'], 'completed' => $r['count']], $taskDone);
+
+    $tot = $db->prepare("SELECT COUNT(*) total, SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) done FROM tasks WHERE assigned_to = ?");
+    $tot->execute([$userId]);
+    $t = $tot->fetch(PDO::FETCH_ASSOC) ?: [];
+    $total = (int) ($t['total'] ?? 0);
+    $done = (int) ($t['done'] ?? 0);
+
+    respond([
+        'range' => $range,
+        'lead_report' => $leadReport,
+        'task_report' => $taskReport,
+        'task_summary' => [
+            'total' => $total,
+            'completed' => $done,
+            'completion_rate' => $total > 0 ? (int) round($done * 100 / $total) : 0,
+        ],
+    ]);
 }
 
 if ($action === 'notifications' && $method === 'GET') {
-    $stmt = $db->prepare("SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 200");
+    // HR has no payments access, so payment alerts are never shown here (data exposure, not just noise).
+    $stmt = $db->prepare("SELECT * FROM notifications WHERE user_id=? AND (type IS NULL OR type NOT IN ('payment', 'payment_link', 'manual_payment')) ORDER BY created_at DESC LIMIT 200");
     $stmt->execute([$userId]);
     respond(['data' => $stmt->fetchAll()]);
 }
@@ -296,7 +386,12 @@ if ($action === 'holidays' && $method === 'GET') {
     $orgHolidays = orgFilter($tokenData, '', $db);
     $stmt = $db->prepare("SELECT * FROM holidays WHERE YEAR(date)=? AND {$orgHolidays['where']} ORDER BY date ASC");
     $stmt->execute(array_merge([$year], $orgHolidays['params']));
-    respond(['data' => $stmt->fetchAll()]);
+    respond([
+        'data' => $stmt->fetchAll(),
+        // Same rule as the dashboard card, so both show the same number.
+        'today' => hrTodayIst(),
+        'upcoming_days_off' => hrUpcomingHolidayCount($db, $tokenData),
+    ]);
 }
 
 if ($action === 'mark_notification_read' && $method === 'PUT') {

@@ -56,7 +56,7 @@ const limitedNavGroups = [
   {
     label: "Account",
     items: [
-      { id: "general", name: "Personal Profile", icon: SlidersHorizontal },
+      { id: "general", name: "Profile & Appearance", icon: SlidersHorizontal },
       { id: "password", name: "Password Change", icon: KeyRound },
     ],
   },

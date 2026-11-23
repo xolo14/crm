@@ -3478,15 +3478,15 @@ export default function FormsManagerPage() {
           </ul>
           <div className="hidden w-full overflow-x-auto sm:block">
           {/* Fixed layout with a sane minimum width so names/orgs/creators aren't cut to a few letters. */}
-          <Table className="w-full min-w-[960px] table-fixed">
+          <Table className={cn("w-full table-fixed", rows.length > 0 && "min-w-[960px]")}>
             <TableHeader>
               <TableRow>
                 <TableHead className={canAssignForms ? "w-[22%]" : "w-[30%]"}>Name</TableHead>
                 {isSuperAdmin ? <TableHead className="w-[12%]">Organization</TableHead> : null}
                 {showCreatedByColumn ? <TableHead className="w-[14%]">Created by</TableHead> : null}
                 <TableHead className="w-[10%]">Status</TableHead>
-                <TableHead className="w-[8%] text-right">Subs</TableHead>
-                <TableHead className="w-[8%]">Link</TableHead>
+                <TableHead className="w-[11%] text-right" title="Number of form submissions">Submissions</TableHead>
+                <TableHead className={canAssignForms ? "w-[8%]" : "w-[14%]"}>Link</TableHead>
                 {canAssignForms ? <TableHead className="w-[10%]">Assign</TableHead> : null}
                 {canAssignForms ? <TableHead className="w-[14%]">Assigned</TableHead> : null}
                 {canEditForms ? <TableHead className="w-[6%] text-right"> </TableHead> : null}

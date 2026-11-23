@@ -1272,6 +1272,10 @@ try {
             if (mt_rand(0, 9) < 3) {
                 continue;
             }
+            // Payment alerts only for roles that can open payments (never HR / marketing).
+            if ($type === 'payment' && isset($u['role']) && in_array($u['role'], ['hr', 'marketing'], true)) {
+                continue;
+            }
             seedInsert($db, 'notifications', [
                 'id' => uuid(), 'user_id' => $u['id'], 'title' => $title, 'message' => $msg, 'type' => $type,
                 'is_read' => $j > 2 ? 1 : 0, 'link' => $link, 'org_id' => $ORG,
@@ -1291,7 +1295,11 @@ try {
             ['Republic Day', ($y + 1) . '-01-26', 'public'],
             ['Independence Day', "{$y}-08-15", 'public'],
             ['Gandhi Jayanti', "{$y}-10-02", 'public'],
-            ['Team Offsite', ymd($TODAY->modify('+24 days')), 'company'],
+            // A working-day offsite: +24 days, moved off Saturday/Sunday.
+            ['Team Offsite', ymd((static function (DateTimeImmutable $d): DateTimeImmutable {
+                $dow = (int) $d->format('N');
+                return $dow >= 6 ? $d->modify('+' . (8 - $dow) . ' days') : $d;
+            })($TODAY->modify('+24 days'))), 'company'],
             ['Founders\' Day', ymd($TODAY->modify('+52 days')), 'optional'],
         ];
         $hChk = $db->prepare('SELECT COUNT(*) FROM holidays WHERE org_id = ? AND date = ?');

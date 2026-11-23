@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
-import { Trash2, Upload } from "lucide-react";
+import { Monitor, Moon, Sun, Trash2, Upload, type LucideIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
@@ -343,10 +343,10 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
     }
   };
 
-  const themeOptions: { key: ThemeChoice; icon: string; label: string }[] = [
-    { key: "light", icon: "☀", label: "Light" },
-    { key: "dark", icon: "🌙", label: "Dark" },
-    { key: "system", icon: "💻", label: "System" },
+  const themeOptions: { key: ThemeChoice; icon: LucideIcon; label: string }[] = [
+    { key: "light", icon: Sun, label: "Light" },
+    { key: "dark", icon: Moon, label: "Dark" },
+    { key: "system", icon: Monitor, label: "System" },
   ];
 
   const selectedTheme = mounted && isThemeChoice(activeTheme) ? activeTheme : theme;
@@ -367,7 +367,7 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
                 <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-sm font-medium hover:bg-muted">
                   <Upload className="h-4 w-4" />
                   Choose photo
-                  <input type="file" accept="image/jpeg,image/png,image/webp" onChange={handleAvatarChange} className="hidden" />
+                  <input type="file" aria-label="Choose profile photo" accept="image/jpeg,image/png,image/webp" onChange={handleAvatarChange} className="hidden" />
                 </label>
                 {avatarPreview && (
                   <button
@@ -389,10 +389,10 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
           </div>
         </div>
         <SettingsRow label="Full name" description="Your name as shown throughout the CRM.">
-          <Input value={fullName} maxLength={100} onChange={(event) => { setFullName(event.target.value); setProfileError(""); }} autoComplete="name" />
+          <Input aria-label="Full name" value={fullName} maxLength={100} onChange={(event) => { setFullName(event.target.value); setProfileError(""); }} autoComplete="name" />
         </SettingsRow>
         <SettingsRow label="Email address" description="Used for signing in and account communication.">
-          <Input type="email" value={email} onChange={(event) => { setEmail(event.target.value); setProfileError(""); clearEmailOtpChallenge(); }} autoComplete="email" />
+          <Input aria-label="Email address" type="email" value={email} onChange={(event) => { setEmail(event.target.value); setProfileError(""); clearEmailOtpChallenge(); }} autoComplete="email" />
         </SettingsRow>
         {isSuperAdmin ? (
           <>
@@ -423,7 +423,7 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
           </>
         ) : null}
         <SettingsRow label="Phone number" description="Include the country code when applicable." border={false}>
-          <Input type="tel" value={phone} maxLength={24} onChange={(event) => { setPhone(event.target.value); setProfileError(""); }} autoComplete="tel" />
+          <Input aria-label="Phone number" type="tel" value={phone} maxLength={24} onChange={(event) => { setPhone(event.target.value); setProfileError(""); }} autoComplete="tel" />
         </SettingsRow>
         {awaitingEmailOtp ? (
           <div className="border-t border-border px-5 py-4">
@@ -478,6 +478,7 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
                 key={option.key}
                 type="button"
                 onClick={() => selectTheme(option.key)}
+                aria-pressed={option.key === selectedTheme}
                 className={cn(
                   "w-24 rounded-xl p-3 text-center text-xs font-medium transition-all duration-150 ease-in-out",
                   option.key === selectedTheme
@@ -485,7 +486,7 @@ export function GeneralSettings({ personalOnly = false }: GeneralSettingsProps) 
                     : "border border-border bg-card text-muted-foreground hover:bg-muted",
                 )}
               >
-                <div>{option.icon}</div>
+                <option.icon className="mx-auto h-5 w-5" aria-hidden />
                 <div className="mt-1">{option.label}</div>
               </button>
             ))}

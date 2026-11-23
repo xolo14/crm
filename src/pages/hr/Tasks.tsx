@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { formatDateIN, statusLabel } from "@/lib/hrFormat";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -42,14 +43,14 @@ export default function HRTasks() {
               <div className="p-3">
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-semibold">{task.title}</p>
-                  <Badge className={priorityClass(task.priority)}>{task.priority}</Badge>
+                  <Badge className={priorityClass(task.priority)}>{statusLabel(task.priority)}</Badge>
                 </div>
                 <div className="mt-2 flex items-center justify-between">
                   <p className="text-xs text-muted-foreground">{task.assigned_by_name || "—"}</p>
-                  <Badge variant="secondary">{task.status}</Badge>
+                  <Badge variant="secondary">{statusLabel(task.status)}</Badge>
                 </div>
                 <div className="mt-2 flex items-center justify-between">
-                  <p className="text-xs text-muted-foreground">{task.due_date ? new Date(task.due_date).toLocaleDateString() : "—"}</p>
+                  <p className="text-xs text-muted-foreground">{formatDateIN(task.due_date)}</p>
                   {task.status !== "completed" && <Button size="sm" className="h-7 text-xs" onClick={() => mutation.mutate(task.id)}>Mark Complete</Button>}
                 </div>
               </div>
@@ -65,9 +66,9 @@ export default function HRTasks() {
                 <TableRow key={task.id}>
                   <TableCell className="font-medium">{task.title}</TableCell>
                   <TableCell className="text-muted-foreground">{task.assigned_by_name || "—"}</TableCell>
-                  <TableCell className="text-muted-foreground">{task.due_date ? new Date(task.due_date).toLocaleDateString() : "—"}</TableCell>
-                  <TableCell><Badge className={priorityClass(task.priority)}>{task.priority}</Badge></TableCell>
-                  <TableCell><Badge variant="secondary">{task.status}</Badge></TableCell>
+                  <TableCell className="text-muted-foreground">{formatDateIN(task.due_date)}</TableCell>
+                  <TableCell><Badge className={priorityClass(task.priority)}>{statusLabel(task.priority)}</Badge></TableCell>
+                  <TableCell><Badge variant="secondary">{statusLabel(task.status)}</Badge></TableCell>
                   <TableCell>{task.status !== "completed" && <Button size="sm" className="h-7 text-xs" onClick={() => mutation.mutate(task.id)}>Mark Complete</Button>}</TableCell>
                 </TableRow>
               ))}

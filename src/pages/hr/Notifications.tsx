@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { formatDateTimeIN } from "@/lib/hrFormat";
 import { api } from "@/lib/api";
 import { Bell } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -40,7 +41,7 @@ export default function HRNotifications() {
             <button className="w-full text-left" onClick={() => mutation.mutate(n.id)}>
               <p className="font-medium">{n.title}</p>
               {n.message && <p className="text-sm text-muted-foreground">{n.message}</p>}
-              <p className="mt-1 text-xs text-muted-foreground">{n.created_at ? new Date(n.created_at).toLocaleString() : ""}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{formatDateTimeIN(n.created_at)}</p>
             </button>
           </CardContent>
         </Card>
