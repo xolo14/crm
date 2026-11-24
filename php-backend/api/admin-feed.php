@@ -98,7 +98,7 @@ try {
     if ($action === 'leads') {
         $limit = max(1, min(500, (int) ($_GET['limit'] ?? 300)));
         $st = $db->prepare("SELECT l.id, l.name, l.email, l.phone, l.college, l.year_of_study, l.course_interest,
-                l.source, l.source_label, l.status, l.next_follow_up, l.created_at, u.name AS owner
+                l.source, l.source_label, l.status, l.next_follow_up, l.created_at, u.full_name AS owner
             FROM leads l
             LEFT JOIN users u ON u.id = l.assigned_to
             WHERE 1=1{$orgSql}
