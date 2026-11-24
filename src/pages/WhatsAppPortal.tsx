@@ -21,6 +21,7 @@ import {
   CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, Phone, TrendingUp
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { formatServer } from '@/lib/dateTime';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   CampaignRecipientPicker,
@@ -565,7 +566,7 @@ export default function WhatsAppPortal() {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold truncate">{d.name || d.subject || '(No name)'}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      Title: {d.subject || '(No title)'} · Updated {format(new Date(d.updated_at), 'dd MMM yyyy HH:mm')}
+                      Title: {d.subject || '(No title)'} · Updated {formatServer(d.updated_at, 'dd MMM yyyy HH:mm')}
                       {d.created_by_name ? ` · ${d.created_by_name}` : ''}
                       <Badge variant="outline" className="ml-2 text-[10px]">{d.status}</Badge>
                     </p>
@@ -609,7 +610,7 @@ export default function WhatsAppPortal() {
                     ) : campaigns.map((c: any) => (
                       <TableRow key={c.id}>
                         <TableCell className="text-sm font-medium max-w-[200px] truncate">{c.subject}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{format(new Date(c.created_at), 'dd MMM HH:mm')}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{formatServer(c.created_at, 'dd MMM HH:mm')}</TableCell>
                         <TableCell className="text-center text-sm">{c.recipient_count}</TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">{c.sent_count}</Badge></TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{c.failed_count}</Badge></TableCell>
@@ -674,7 +675,7 @@ export default function WhatsAppPortal() {
                             'bg-amber-50 text-amber-700 border-amber-200'
                           }>{s.status}</Badge>
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{s.sent_at ? formatServer(s.sent_at, 'dd MMM HH:mm') : '—'}</TableCell>
                         <TableCell className="text-xs text-red-500 max-w-[200px] truncate">{s.error_message || '—'}</TableCell>
                       </TableRow>
                     ))}

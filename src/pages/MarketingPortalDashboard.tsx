@@ -15,6 +15,8 @@ import {
   Upload, UserPlus, Download
 } from 'lucide-react';
 import { format, subDays, startOfMonth, endOfMonth } from 'date-fns';
+import { formatServer, serverTime } from '@/lib/dateTime';
+import { parseCsvText } from '@/lib/leadImportCsv';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
@@ -100,23 +102,24 @@ export default function MarketingPortalDashboard() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
-      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-      if (lines.length < 2) { toast({ variant: 'destructive', title: 'CSV must have a header row and data' }); return; }
-      const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/['"]/g, ''));
+      // Quote-aware parse: keeps "John Doe" / "ABC College" whole and blank cells in place
+      // (the old regex split on spaces and dropped empty columns, shifting phone into email).
+      const table = parseCsvText(text || '');
+      if (table.length < 2) { toast({ variant: 'destructive', title: 'CSV must have a header row and data' }); return; }
+      const headers = table[0].map(h => h.trim().toLowerCase());
       const nameIdx = headers.findIndex(h => h.includes('name'));
       const emailIdx = headers.findIndex(h => h.includes('email'));
       const phoneIdx = headers.findIndex(h => h.includes('phone') || h.includes('mobile'));
       const collegeIdx = headers.findIndex(h => h.includes('college') || h.includes('institution'));
       const sourceIdx = headers.findIndex(h => h.includes('source'));
 
-      const parsed = lines.slice(1).map(line => {
-        const cols = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g)?.map(c => c.replace(/^"|"$/g, '').trim()) || line.split(',').map(c => c.trim());
+      const parsed = table.slice(1).map(cols => {
         return {
-          name: cols[nameIdx] || cols[0] || '',
-          email: emailIdx >= 0 ? cols[emailIdx] : '',
-          phone: phoneIdx >= 0 ? cols[phoneIdx] : '',
-          college: collegeIdx >= 0 ? cols[collegeIdx] : '',
-          source: sourceIdx >= 0 ? cols[sourceIdx] : 'other',
+          name: (nameIdx >= 0 ? cols[nameIdx] : cols[0]) || '',
+          email: emailIdx >= 0 ? cols[emailIdx] || '' : '',
+          phone: phoneIdx >= 0 ? cols[phoneIdx] || '' : '',
+          college: collegeIdx >= 0 ? cols[collegeIdx] || '' : '',
+          source: (sourceIdx >= 0 ? cols[sourceIdx] : '') || 'other',
         };
       }).filter(r => r.name);
 
@@ -128,7 +131,11 @@ export default function MarketingPortalDashboard() {
   };
 
   const handleImportConfirm = async () => {
-    if (importPreview.length === 0 || !referralCode) return;
+    if (importPreview.length === 0) return;
+    if (!referralCode) {
+      toast({ variant: 'destructive', title: 'No staff ID on your account', description: 'Ask an admin to set your referral code, then import again.' });
+      return;
+    }
     setImporting(true);
     try {
       const records = importPreview.map(r => ({
@@ -178,7 +185,7 @@ export default function MarketingPortalDashboard() {
   const last7Days = Array.from({ length: 7 }, (_, i) => {
     const date = subDays(new Date(), 6 - i);
     const dayStr = format(date, 'yyyy-MM-dd');
-    const count = formLeads.filter(l => format(new Date(l.created_at), 'yyyy-MM-dd') === dayStr).length;
+    const count = formLeads.filter(l => formatServer(l.created_at, 'yyyy-MM-dd') === dayStr).length;
     return { day: format(date, 'EEE'), leads: count };
   });
 
@@ -189,7 +196,7 @@ export default function MarketingPortalDashboard() {
   const allCampaigns = [
     ...emailCampaigns.map(c => ({ ...c, channel: 'email' })),
     ...waCampaigns.map(c => ({ ...c, channel: 'whatsapp' })),
-  ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 5);
+  ].sort((a, b) => serverTime(b.created_at) - serverTime(a.created_at)).slice(0, 5);
 
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>;
 
@@ -402,7 +409,7 @@ export default function MarketingPortalDashboard() {
                     </div>
                     <div className="flex items-center gap-2">
                       <Badge variant="outline" className="text-[10px] capitalize">{lead.status || 'new'}</Badge>
-                      <span className="text-[10px] text-muted-foreground">{format(new Date(lead.created_at), 'dd MMM')}</span>
+                      <span className="text-[10px] text-muted-foreground">{formatServer(lead.created_at, 'dd MMM')}</span>
                     </div>
                   </div>
                 ))}
@@ -433,7 +440,7 @@ export default function MarketingPortalDashboard() {
                         {c.sent_count || 0} sent · {c.failed_count || 0} failed · {c.pending_count || 0} pending
                       </p>
                     </div>
-                    <span className="text-[10px] text-muted-foreground shrink-0 ml-2">{format(new Date(c.created_at), 'dd MMM')}</span>
+                    <span className="text-[10px] text-muted-foreground shrink-0 ml-2">{formatServer(c.created_at, 'dd MMM')}</span>
                   </div>
                 ))}
               </div>

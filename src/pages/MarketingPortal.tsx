@@ -20,6 +20,7 @@ import {
   CheckCircle2, XCircle, Clock, Edit, Search, BarChart3, Users, CalendarClock, Paperclip, X, TrendingUp
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
+import { formatServer } from '@/lib/dateTime';
 import { useSearchParams } from 'react-router-dom';
 import { normalizeAppRole } from '@/lib/roleUtils';
 import {
@@ -682,7 +683,7 @@ export default function MarketingPortal() {
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold truncate">{d.name || d.subject || '(No name)'}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      Subject: {d.subject || '(No subject)'} · Updated {format(new Date(d.updated_at), 'dd MMM yyyy HH:mm')}
+                      Subject: {d.subject || '(No subject)'} · Updated {formatServer(d.updated_at, 'dd MMM yyyy HH:mm')}
                       {d.attachment_name ? ` · PDF: ${d.attachment_name}` : ''}
                       {d.created_by_name ? ` · ${d.created_by_name}` : ''}
                       <Badge variant="outline" className="ml-2 text-[10px]">{d.status}</Badge>
@@ -730,7 +731,7 @@ export default function MarketingPortal() {
                       return (
                       <TableRow key={c.id} className="cursor-pointer hover:bg-muted/50" onClick={() => openCampaignLog(c)}>
                         <TableCell className="text-sm font-medium max-w-[200px] truncate">{c.subject}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{format(new Date(c.created_at), 'dd MMM HH:mm')}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{formatServer(c.created_at, 'dd MMM HH:mm')}</TableCell>
                         <TableCell className="text-center text-sm">{recipients}</TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">{summary.sent}</Badge></TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{summary.failed}</Badge></TableCell>
@@ -815,8 +816,8 @@ export default function MarketingPortal() {
                             'bg-amber-50 text-amber-700 border-amber-200'
                           }>{outcome.label}</Badge>
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{s.scheduled_at ? format(new Date(s.scheduled_at), 'dd MMM HH:mm') : '—'}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{outcome.tone === 'sent' && s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{s.scheduled_at ? formatServer(s.scheduled_at, 'dd MMM HH:mm') : '—'}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{outcome.tone === 'sent' && s.sent_at ? formatServer(s.sent_at, 'dd MMM HH:mm') : '—'}</TableCell>
                         <TableCell className="text-xs text-red-600 max-w-[360px] whitespace-normal">{outcome.reason || '—'}</TableCell>
                       </TableRow>
                       );
@@ -865,8 +866,8 @@ export default function MarketingPortal() {
                           'bg-amber-50 text-amber-700 border-amber-200'
                         }>{outcome.label}</Badge>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{s.scheduled_at ? format(new Date(s.scheduled_at), 'dd MMM HH:mm') : '—'}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{outcome.tone === 'sent' && s.sent_at ? format(new Date(s.sent_at), 'dd MMM HH:mm') : '—'}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{s.scheduled_at ? formatServer(s.scheduled_at, 'dd MMM HH:mm') : '—'}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{outcome.tone === 'sent' && s.sent_at ? formatServer(s.sent_at, 'dd MMM HH:mm') : '—'}</TableCell>
                       <TableCell className="text-xs text-red-600 max-w-[360px] whitespace-normal">{outcome.reason || '—'}</TableCell>
                     </TableRow>
                   );

@@ -1,3 +1,5 @@
+import { format } from "date-fns";
+
 /** App display timezone — matches PHP/MySQL session (+05:30 / Asia/Kolkata). */
 export const APP_TIMEZONE = "Asia/Kolkata";
 
@@ -27,6 +29,20 @@ export function parseServerDateTime(value?: string | null): Date | null {
 
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * date-fns `format` for API/MySQL datetimes. `format(new Date("2026-11-20 10:04:03"))` throws
+ * (and blanks the page) wherever the browser can't read the MySQL form; this returns `fallback` instead.
+ */
+export function formatServer(value: string | null | undefined, pattern: string, fallback = "—"): string {
+  const d = parseServerDateTime(value);
+  return d ? format(d, pattern) : fallback;
+}
+
+/** Epoch ms for sorting API datetimes; 0 when missing/invalid. */
+export function serverTime(value: string | null | undefined): number {
+  return parseServerDateTime(value)?.getTime() ?? 0;
 }
 
 /** e.g. "15 Jul 2026 · 03:45 pm" in India time */

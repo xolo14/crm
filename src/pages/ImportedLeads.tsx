@@ -14,6 +14,7 @@ import { useToast } from '@/hooks/use-toast';
 import * as perms from '@/lib/permissions';
 import { Search, Loader2, Phone, Mail, Users, Target, CheckCircle2, Clock, Eye, Building2, GraduationCap, StickyNote, ArrowUpRight, XCircle, ChevronLeft, ChevronRight, Download, Upload, FileDown } from 'lucide-react';
 import { format } from 'date-fns';
+import { formatServer } from '@/lib/dateTime';
 
 const LEAD_STATUSES = ['new', 'contacted', 'interested', 'demo_scheduled', 'demo_attended', 'registered', 'enrolled', 'lost'] as const;
 
@@ -121,7 +122,7 @@ export default function ImportedLeads() {
     const headers = ['S.No', 'Name', 'Email', 'Phone', 'College', 'Source', 'Status', 'Created At'];
     const rows = filtered.map((l, i) => [
       i + 1, l.name, l.email || '', l.phone || '', l.college || '',
-      SOURCE_LABELS[l.source] || l.source || '', l.status || '', format(new Date(l.created_at), 'dd/MM/yyyy'),
+      SOURCE_LABELS[l.source] || l.source || '', l.status || '', formatServer(l.created_at, 'dd/MM/yyyy'),
     ]);
     const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -336,7 +337,7 @@ export default function ImportedLeads() {
                   <p className="text-sm">{selectedLead.notes}</p>
                 </div>
               )}
-              <p className="text-xs text-muted-foreground">Created: {format(new Date(selectedLead.created_at), 'dd MMM yyyy, hh:mm a')}</p>
+              <p className="text-xs text-muted-foreground">Created: {formatServer(selectedLead.created_at, 'dd MMM yyyy, hh:mm a')}</p>
             </div>
           )}
         </SheetContent>

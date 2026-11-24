@@ -13,6 +13,7 @@ import {
   Filter, TrendingUp, ArrowLeft, PieChart, Activity
 } from 'lucide-react';
 import { format, subDays, startOfDay, endOfDay, startOfWeek, endOfWeek, differenceInCalendarDays } from 'date-fns';
+import { formatServer } from '@/lib/dateTime';
 import { useNavigate } from 'react-router-dom';
 import {
   ChartContainer, ChartTooltip, ChartTooltipContent
@@ -215,7 +216,7 @@ export default function EmailAnalytics({
       for (const row of filteredSends) {
         const stamp = sendStamp(row);
         if (!stamp) continue;
-        if (format(new Date(stamp), 'yyyy-MM-dd') !== dateStr) continue;
+        if (formatServer(stamp, 'yyyy-MM-dd') !== dateStr) continue;
         const tone = emailSendOutcome(row).tone;
         if (tone === 'sent') sent += 1;
         else if (tone === 'failed') failed += 1;

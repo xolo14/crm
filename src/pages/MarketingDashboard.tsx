@@ -17,6 +17,7 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { format, subDays, startOfDay, endOfDay, startOfWeek, endOfWeek } from 'date-fns';
+import { formatServer, serverTime } from '@/lib/dateTime';
 import { useNavigate } from 'react-router-dom';
 import { isL3AdminRole, normalizeAppRole } from '@/lib/roleUtils';
 
@@ -133,7 +134,7 @@ export default function MarketingDashboard() {
         if (key) mergedByKey.set(key, m);
       });
       const membersData = Array.from(mergedByKey.values()).sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        (a, b) => serverTime(b.created_at) - serverTime(a.created_at)
       );
       setMembers(membersData);
 
@@ -437,7 +438,7 @@ export default function MarketingDashboard() {
                     ) : bulkCampaigns.map(c => (
                       <TableRow key={c.id}>
                         <TableCell className="text-sm font-medium max-w-[200px] truncate">{c.subject}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{format(new Date(c.created_at), 'dd MMM yyyy HH:mm')}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{formatServer(c.created_at, 'dd MMM yyyy HH:mm')}</TableCell>
                         <TableCell className="text-center text-sm">{c.recipient_count}</TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">{c.sent_count}</Badge></TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{c.failed_count}</Badge></TableCell>
@@ -612,7 +613,7 @@ export default function MarketingDashboard() {
                     ) : waCampaigns.map(c => (
                       <TableRow key={c.id}>
                         <TableCell className="text-sm font-medium max-w-[200px] truncate">{c.subject}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{format(new Date(c.created_at), 'dd MMM yyyy HH:mm')}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{formatServer(c.created_at, 'dd MMM yyyy HH:mm')}</TableCell>
                         <TableCell className="text-center text-sm">{c.recipient_count}</TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">{c.sent_count}</Badge></TableCell>
                         <TableCell className="text-center"><Badge variant="outline" className="bg-red-50 text-red-700 border-red-200 text-xs">{c.failed_count}</Badge></TableCell>
