@@ -292,7 +292,7 @@ if ($method === 'GET') {
         $chunkLimit = max(1, $chunkLimit);
         $chunkOffset = max(0, $chunkOffset);
         try {
-            $stmt = $db->prepare("SELECT $selectCols FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $chunkLimit . " OFFSET " . $chunkOffset);
+            $stmt = $db->prepare("SELECT $selectCols FROM leads WHERE $where ORDER BY created_at DESC, id DESC LIMIT " . $chunkLimit . " OFFSET " . $chunkOffset);
             $stmt->execute($params);
             $chunk = $stmt->fetchAll();
             return is_array($chunk) ? $chunk : [];
@@ -301,7 +301,7 @@ if ($method === 'GET') {
                 throw $liteSelectErr;
             }
             error_log('leads.php GET lite select fallback: ' . $liteSelectErr->getMessage());
-            $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC LIMIT " . $chunkLimit . " OFFSET " . $chunkOffset);
+            $stmt = $db->prepare("SELECT * FROM leads WHERE $where ORDER BY created_at DESC, id DESC LIMIT " . $chunkLimit . " OFFSET " . $chunkOffset);
             $stmt->execute($params);
             $chunk = $stmt->fetchAll();
             return is_array($chunk) ? $chunk : [];

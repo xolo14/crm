@@ -491,6 +491,7 @@ export const api = {
       }
 
       const allRows: any[] = [];
+      const seenIds = new Set<string>();
       let offset = 0;
       let total = 0;
       const maxPages = uncapped ? 10000 : Math.max(1, Math.ceil(softCap / pageSize));
@@ -498,7 +499,13 @@ export const api = {
         const data = await request(`/leads.php?${buildQs(pageSize, offset)}`);
         const rows = Array.isArray(data?.data) ? data.data : [];
         total = typeof data?.total === 'number' ? data.total : allRows.length + rows.length;
-        allRows.push(...rows);
+        // Offset paging can hand back a row twice if ordering ties shift between pages — keep one.
+        for (const r of rows) {
+          const id = r && typeof r === 'object' ? String((r as { id?: unknown }).id ?? '') : '';
+          if (id && seenIds.has(id)) continue;
+          if (id) seenIds.add(id);
+          allRows.push(r);
+        }
         params?.onPage?.({
           data: allRows.slice(0, softCap),
           truncated: Boolean(data?.truncated),
