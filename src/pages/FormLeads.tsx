@@ -36,6 +36,7 @@ import { downloadLeadsDetailCsv } from '@/lib/leadsExportCsv';
 import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
 import { leadFormPaymentBadge } from '@/lib/leadFormPayment';
 import { confirmAction } from '@/components/ConfirmDialogHost';
+import { isReportableUser } from '@/lib/reportableUsers';
 
 const MARKETING_RESUME_TYPES = [
   'application/pdf',
@@ -598,8 +599,18 @@ export default function FormLeads() {
   };
 
   const handleBulkAutoAllocate = async () => {
-    const unassigned = filtered.filter(l => !l.assigned_to && l.referred_by && codeToUserId[l.referred_by]);
+    // Only real, active collectors: never hand leads to a deactivated member or a test/review account.
+    const allocatable = new Set(profiles.filter((p: any) => isReportableUser(p)).map((p: any) => String(p.user_id)));
+    const unassigned = filtered.filter(
+      l => !l.assigned_to && l.referred_by && codeToUserId[l.referred_by] && allocatable.has(String(codeToUserId[l.referred_by])),
+    );
     if (unassigned.length === 0) { toast({ title: 'No leads to auto-allocate' }); return; }
+    const ok = await confirmAction({
+      title: `Auto-allocate ${unassigned.length} lead${unassigned.length === 1 ? '' : 's'}?`,
+      description: 'Each unassigned lead goes to the active team member whose referral code collected it. Inactive and test accounts are skipped.',
+      confirmLabel: 'Auto-allocate',
+    });
+    if (!ok) return;
     let count = 0;
     let failed = 0;
     for (const lead of unassigned) {
