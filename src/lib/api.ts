@@ -1313,13 +1313,6 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ form_id: formId }),
       }),
-    /** Admin: move every lead of `source_ids` into `target_id`; old links open the kept form. */
-    merge: (data: { target_id: string; source_ids: string[]; name?: string }) =>
-      request('/forms.php?action=merge', { method: 'POST', body: JSON.stringify(data) }) as Promise<{
-        message?: string;
-        merged_forms?: number;
-        moved_leads?: number;
-      }>,
     assignments: (formId: string) => request(`/forms.php?action=assignments&form_id=${formId}`),
     assignMembers: (formId: string, memberIds: string[]) =>
       request('/forms.php?action=assign', { method: 'POST', body: JSON.stringify({ form_id: formId, member_ids: memberIds }) }),

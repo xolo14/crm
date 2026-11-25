@@ -31,7 +31,7 @@ import { MediaBlock } from "@/components/forms/MediaBlock";
 import type { ValidationRule } from "@/components/forms/formValidation";
 import type { GoToTarget } from "@/components/forms/sectionFlow";
 import { goToChoices, splitIntoSections } from "@/components/forms/sectionFlow";
-import { Image as ImageIcon, Video, Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, MoreHorizontal, Pencil, Power, Share2, Mail, MessageSquare, QrCode, Merge } from "lucide-react";
+import { Image as ImageIcon, Video, Copy, Link as LinkIcon, Loader2, Plus, RefreshCw, Save, Users, Trash2, ArrowLeft, GripVertical, Eye, MoreHorizontal, Pencil, Power, Share2, Mail, MessageSquare, QrCode } from "lucide-react";
 import { normalizeFormColor, parseFormMetaJson } from "@/components/forms/publicFormTypes";
 import { resolveFormSubmitButtonLabel } from "@/components/forms/formRuntime";
 import { computeLeadFormPaymentBreakdown, formatInrAmount } from "@/lib/leadFormPayment";
@@ -63,7 +63,6 @@ import {
   type PlaceholderMapState,
 } from "@/lib/formTemplatePlaceholders";
 import { confirmAction } from "@/components/ConfirmDialogHost";
-import { MergeFormsDialog } from "@/components/forms/MergeFormsDialog";
 
 type LeadDestination = "form_leads" | "hr_leads";
 type FormMgmtTab = "leads" | "hr" | "doc" | "api";
@@ -720,8 +719,6 @@ export default function FormsManagerPage() {
   })();
   const [mgmtTab, setMgmtTab] = useState<FormMgmtTab>(initialTab);
   const [docCreateSignal, setDocCreateSignal] = useState(0);
-  /** Which table's "Merge forms" dialog is open (Leads or HR forms). */
-  const [mergeDest, setMergeDest] = useState<LeadDestination | null>(null);
   const [detailForm, setDetailForm] = useState<LeadForm | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [publishCampaignOpen, setPublishCampaignOpen] = useState(false);
@@ -3349,17 +3346,6 @@ export default function FormsManagerPage() {
         onConfirm={publishWithCampaign}
       />
 
-      <MergeFormsDialog
-        open={mergeDest !== null}
-        onOpenChange={(open) => { if (!open) setMergeDest(null); }}
-        forms={
-          mergeDest
-            ? forms.filter((f) => formLeadDestinationFromMeta(parseFormMetaJson(f.meta_json)) === mergeDest)
-            : []
-        }
-        onMerged={() => void bootstrap({ soft: true })}
-      />
-
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Form Management</h1>
         <p className="text-sm text-muted-foreground">
@@ -3418,14 +3404,8 @@ export default function FormsManagerPage() {
         : "No leads forms yet. Create your first leads form.";
     return (
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-3">
+        <CardHeader className="pb-3">
           <CardTitle className="text-base">{destination === "hr_leads" ? "HR Forms" : "Leads Forms"}</CardTitle>
-          {isOrgAdmin && rows.length >= 2 ? (
-            <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={() => setMergeDest(destination)}>
-              <Merge className="h-4 w-4" />
-              Merge forms
-            </Button>
-          ) : null}
         </CardHeader>
         <CardContent className="px-0 sm:px-6">
           {/* Phones: one card per form (the 9-column table merged into one unreadable row). */}

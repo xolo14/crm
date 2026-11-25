@@ -5611,7 +5611,7 @@ function publicLeadFetchFormBySlug(PDO $db, string $slug): ?array {
     if (is_array($row)) {
         return $row;
     }
-    // A form merged into another (forms.php?action=merge) is switched off but its old link /
+    // A form merged into another (the Cybersecurity merge, 2026-11-25) is switched off but its old link /
     // QR code keeps working: open the form it was merged into (one hop only).
     try {
         $alias = $db->prepare(
