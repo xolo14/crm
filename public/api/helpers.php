@@ -5608,7 +5608,36 @@ function publicLeadFetchFormBySlug(PDO $db, string $slug): ?array {
     );
     $stmt->execute([$slug]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return is_array($row) ? $row : null;
+    if (is_array($row)) {
+        return $row;
+    }
+    // A form merged into another (forms.php?action=merge) is switched off but its old link /
+    // QR code keeps working: open the form it was merged into (one hop only).
+    try {
+        $alias = $db->prepare(
+            'SELECT meta_json FROM lead_forms
+             WHERE LOWER(TRIM(slug)) = LOWER(TRIM(?)) AND is_active = 0
+             ORDER BY (org_id IS NOT NULL) DESC, updated_at DESC LIMIT 1',
+        );
+        $alias->execute([$slug]);
+        $meta = json_decode((string) ($alias->fetchColumn() ?: ''), true);
+        $targetId = is_array($meta) ? trim((string) ($meta['merged_into_id'] ?? '')) : '';
+        if ($targetId === '') {
+            return null;
+        }
+        $t = $db->prepare(
+            'SELECT lf.id, lf.name, lf.slug, lf.description, lf.fields_json, lf.meta_json, lf.is_active, lf.org_id, lf.created_by,
+                    o.name AS org_name, o.logo_url AS org_logo_url
+             FROM lead_forms lf
+             LEFT JOIN organizations o ON o.id = lf.org_id
+             WHERE lf.id = ? AND lf.is_active = 1 LIMIT 1',
+        );
+        $t->execute([$targetId]);
+        $target = $t->fetch(PDO::FETCH_ASSOC);
+        return is_array($target) ? $target : null;
+    } catch (Throwable $e) {
+        return null;
+    }
 }
 
 /** @return array<int,array<string,mixed>> */

@@ -53,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $cnt = 0;
     try {
         $c = $db->prepare('SELECT COUNT(*) FROM leads WHERE source = ?');
-        $c->execute(['form_' . $slug]);
+        $c->execute(['form_' . (string) ($row['slug'] ?? $slug)]);
         $cnt = (int) $c->fetchColumn();
     } catch (Throwable $e) {
         $cnt = 0;
@@ -202,6 +202,11 @@ if ($formSlug === '' && is_string($source) && preg_match('/^form_(.+)$/', $sourc
 $formRow = $formSlug !== '' ? publicLeadFetchFormBySlug($db, $formSlug) : null;
 if ($formSlug !== '' && !is_array($formRow)) {
     respond(['error' => 'Form not found or inactive'], 404);
+}
+// Use the form's own slug: an old link of a merged form resolves to the form it was merged into,
+// and its submissions must land on that form's leads card.
+if (is_array($formRow) && trim((string) ($formRow['slug'] ?? '')) !== '') {
+    $formSlug = trim((string) $formRow['slug']);
 }
 
 // Public form submissions always use form_{slug} as source (ignore client override).
