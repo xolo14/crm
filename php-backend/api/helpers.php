@@ -8983,18 +8983,20 @@ function syncpediaLeadSourceCardFieldsFlushChunk(PDO $db, array $items): void
     $keySql = 'CASE id';
     $labelSql = 'CASE id';
     $gateSql = 'CASE id';
-    $params = [];
+    // Placeholders are bound in SQL order: every key pair, then every label pair, then every gate
+    // pair. (Interleaving them per lead shifted values into the wrong column for any chunk with
+    // more than one lead: labels became gate keys and most keys went NULL → "other" card.)
+    $keyParams = [];
+    $labelParams = [];
+    $gateParams = [];
     foreach ($items as $item) {
         $ids[] = $item['id'];
         $keySql .= ' WHEN ? THEN ?';
         $labelSql .= ' WHEN ? THEN ?';
         $gateSql .= ' WHEN ? THEN ?';
-        $params[] = $item['id'];
-        $params[] = $item['key'];
-        $params[] = $item['id'];
-        $params[] = $item['label'];
-        $params[] = $item['id'];
-        $params[] = $item['gate'];
+        array_push($keyParams, $item['id'], $item['key']);
+        array_push($labelParams, $item['id'], $item['label']);
+        array_push($gateParams, $item['id'], $item['gate']);
     }
     $keySql .= ' END';
     $labelSql .= ' END';
@@ -9004,7 +9006,7 @@ function syncpediaLeadSourceCardFieldsFlushChunk(PDO $db, array $items): void
         source_key_at = CURRENT_TIMESTAMP, updated_at = updated_at
         WHERE id IN ($ph)";
     $stmt = $db->prepare($sql);
-    $stmt->execute(array_merge($params, $ids));
+    $stmt->execute(array_merge($keyParams, $labelParams, $gateParams, $ids));
 }
 
 /**
@@ -9264,6 +9266,18 @@ function syncpediaAggregateLeadSourceCardsGrouped(PDO $db, array $tokenData, str
 function syncpediaAggregateLeadSourceCards(PDO $db, array $tokenData, string $where, array $params): array
 {
     try {
+        if (syncpediaLeadSourceCardFieldsEnsureSchema($db)) {
+            // Card fields written before the bind-order fix (2026-11-25) may sit in the wrong
+            // columns: mark them stale once so the backfill below recomputes them.
+            syncpediaRunSchemaCheckOnce('lead_source_card_fields_rebind_v1', function () use ($db) {
+                try {
+                    $db->exec("UPDATE leads SET source_key_at = NULL
+                        WHERE source_key_at IS NOT NULL AND source_key_at < '2026-11-26 00:00:00'");
+                } catch (Throwable $e) {
+                    error_log('[lead source cards] rebind reset: ' . $e->getMessage());
+                }
+            });
+        }
         if (syncpediaLeadSourceCardFieldsEnsureSchema($db)
             && syncpediaLeadSourceCardFieldsBackfill($db, $where, $params)
         ) {
