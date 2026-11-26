@@ -120,7 +120,17 @@ if ($method === 'GET') {
         }
         $where = "u.org_id = ? AND u.is_active = 1 AND LOWER(TRIM(u.role)) NOT IN ('super_admin')";
         $params = [$orgId];
-    } elseif (in_array($effRole, ['manager', 'operational_manager'], true)) {
+    } elseif ($effRole === 'operational_manager') {
+        /** Operational Manager: every L1 (Sales Rep / HR / Marketing) and L2 (Manager / OM) member of the org,
+         *  active or not — read-only. Editing stays limited to their own downline (PUT checks that). */
+        $orgId = teamResolveCallerOrgId($db, $tokenData);
+        if ($orgId === null || $orgId === '') {
+            respond(['data' => []]);
+        }
+        // Roles are filtered after the query by their normalised key (stored role names have variants).
+        $where = 'u.org_id = ?';
+        $params = [$orgId];
+    } elseif ($effRole === 'manager') {
         /** L2: read-only roster — direct/indirect reports only (assigned team). */
         $orgId = teamResolveCallerOrgId($db, $tokenData);
         if ($orgId === null || $orgId === '') {
@@ -181,6 +191,12 @@ if ($method === 'GET') {
     }
     // Reps / HR / marketing read this roster only for "assign to" pickers: they must not see
     // other people's page-access settings or the org admin's contact details.
+    if ($effRole === 'operational_manager') {
+        $omRoster = array_merge(syncpediaL1AssignableRoles(), ['manager', 'operational_manager']);
+        $rows = array_values(array_filter($rows, static function ($r) use ($omRoster) {
+            return is_array($r) && in_array(syncpediaNormalizeRoleKey((string) ($r['role'] ?? '')), $omRoster, true);
+        }));
+    }
     $isPeerReader = in_array($effRole, $orgPeerRoles, true);
     $callerId = (string) ($tokenData['user_id'] ?? '');
     foreach ($rows as &$row) {

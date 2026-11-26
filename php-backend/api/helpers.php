@@ -928,9 +928,9 @@ function tenantOrgScopeSql(PDO $db, array $tokenData, string $alias = ''): array
 }
 
 /**
- * TEMPORARY (2026-11-26): leads an Operational Manager imported by CSV are private to
- * Operational Managers. Nobody else in the org (Org Admin, managers, reps, HR, marketing)
- * sees them, except a member they are assigned to, who sees only those leads.
+ * TEMPORARY (2026-11-26): leads an Operational Manager imported by CSV are private to that
+ * OM. Nobody else in the org (Org Admin, managers, other OMs, reps, HR, marketing) sees
+ * them, except a member they are assigned to, who sees only those leads.
  * Super Admin is outside the org structure and still sees everything.
  * Set to false to go back to the normal org-wide visibility. Nothing is moved or deleted.
  */
@@ -947,17 +947,19 @@ function syncpediaHiddenOmImportsSql(array $tokenData, string $alias = ''): arra
         return ['sql' => '', 'params' => []];
     }
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    if ($role === 'super_admin' || $role === 'operational_manager') {
+    if ($role === 'super_admin') {
         return ['sql' => '', 'params' => []];
     }
     $uid = (string) ($tokenData['user_id'] ?? '');
     $c = $alias !== '' ? "{$alias}." : '';
+    // Hidden unless the viewer imported it or it is assigned to them.
     $sql = " AND (CASE WHEN (COALESCE({$c}tags, '') LIKE '%import_set:%' OR COALESCE({$c}notes, '') LIKE '%import_set:%')"
         . " AND {$c}created_by IN (SELECT om_u.id FROM users om_u WHERE LOWER(TRIM(COALESCE(om_u.role, ''))) IN ('operational_manager', 'ops_manager', 'l2_operational_manager', 'operational manager'))"
+        . " AND COALESCE({$c}created_by, '') <> ?"
         . " AND COALESCE({$c}assigned_to, '') <> ?"
         . " AND NOT EXISTS (SELECT 1 FROM lead_assignments om_la WHERE om_la.lead_id = {$c}id AND om_la.user_id = ?)"
         . ' THEN 1 ELSE 0 END) = 0';
-    return ['sql' => $sql, 'params' => [$uid, $uid]];
+    return ['sql' => $sql, 'params' => [$uid, $uid, $uid]];
 }
 
 /**

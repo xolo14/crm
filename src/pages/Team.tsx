@@ -292,6 +292,25 @@ export default function Team() {
   };
 
   const visibleTeam = team.filter((m) => getRoleLevel(m.role) <= currentLevel);
+  /** Operational Managers see every L1/L2 member of the org, but may act only on their own downline. */
+  const isOmViewer = authNorm === 'operational_manager';
+  const omDownlineIds = (() => {
+    const ids = new Set<string>();
+    const me = String(user?.id || '');
+    if (!isOmViewer || !me) return ids;
+    const byId = new Map(team.map((m) => [String(m.id), m]));
+    for (const m of team) {
+      let cur = String(m.reports_to_id || '');
+      const seen = new Set<string>();
+      while (cur && !seen.has(cur)) {
+        if (cur === me) { ids.add(String(m.id)); break; }
+        seen.add(cur);
+        cur = String(byId.get(cur)?.reports_to_id || '');
+      }
+    }
+    return ids;
+  })();
+  const canActOnMember = (m: TeamMember) => !isOmViewer || omDownlineIds.has(String(m.id));
   const filtered = visibleTeam.filter(m => {
     const matchSearch = m.full_name?.toLowerCase().includes(search.toLowerCase()) || m.email?.toLowerCase().includes(search.toLowerCase());
     const matchRole = roleFilter === 'all' || normalizeRole(m.role) === roleFilter;
@@ -675,7 +694,7 @@ export default function Team() {
             {stats.total} members · {stats.active} active{stats.reportable !== stats.active ? ` (${stats.reportable} counted in reports)` : ''}
             {isManagerViewer && (
               <span className="ml-2 inline-flex items-center rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 border border-blue-200">
-                Your team
+                {isOmViewer ? 'L1 & L2 members' : 'Your team'}
               </span>
             )}
           </p>
@@ -689,7 +708,9 @@ export default function Team() {
           )}
           {isManagerViewer && (
             <p className="text-xs text-muted-foreground mt-1">
-              Showing members assigned to you. You can add Sales Rep, HR, and Marketing members (auto-assigned to you). Editing and removing members is limited to Admin / Super Admin.
+              {isOmViewer
+                ? 'Showing all Sales Rep, HR, Marketing, Manager and Operational Manager members in your organisation. You can add Sales Rep, HR, and Marketing members (auto-assigned to you); page access and tasks can be changed only for members on your team. Editing and removing members is limited to Admin / Super Admin.'
+                : 'Showing members assigned to you. You can add Sales Rep, HR, and Marketing members (auto-assigned to you). Editing and removing members is limited to Admin / Super Admin.'}
             </p>
           )}
           {canAssignTeam && (
@@ -753,7 +774,7 @@ export default function Team() {
                                 <Avatar className="h-7 w-7"><AvatarFallback className="text-xs bg-primary/10 text-primary">{getInitials(member.full_name)}</AvatarFallback></Avatar>
                                 <div><p className="text-sm font-medium">{member.full_name}</p><p className="text-xs text-muted-foreground">{member.email}</p></div>
                               </div>
-                              {showMemberMenu && (
+                              {showMemberMenu && canActOnMember(member) && (
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-7 w-7"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                                   <DropdownMenuContent align="end">
@@ -855,7 +876,7 @@ export default function Team() {
                               <TableCell className="px-3 py-2.5 text-sm text-muted-foreground align-middle whitespace-nowrap">
                                 {new Date(member.created_at).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}
                               </TableCell>
-                              {showMemberMenu && (
+                              {showMemberMenu && canActOnMember(member) && (
                                 <TableCell className="px-2 py-2.5 pr-3 align-middle">
                                   <DropdownMenu>
                                     <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
@@ -879,7 +900,7 @@ export default function Team() {
                                   </DropdownMenu>
                                 </TableCell>
                               )}
-                              {!showMemberMenu && <TableCell className="px-2 py-2.5 pr-3" />}
+                              {!(showMemberMenu && canActOnMember(member)) && <TableCell className="px-2 py-2.5 pr-3" />}
                             </TableRow>
                             );
                           })}
