@@ -161,13 +161,13 @@ const navItems: NavItem[] = [
     to: '/my-referrals',
     icon: Users,
     label: 'Sales Tracker',
-    roles: ['super_admin', 'org', 'manager'],
+    roles: ['super_admin', 'org', 'manager', 'operational_manager'],
     children: [
       {
         to: '/referral-analytics',
         icon: TrendingUp,
         label: 'Rep Performance',
-        roles: ['super_admin', 'org', 'manager'],
+        roles: ['super_admin', 'org', 'manager', 'operational_manager'],
       },
     ],
   },

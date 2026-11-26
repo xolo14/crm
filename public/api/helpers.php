@@ -6630,6 +6630,88 @@ function staffIdsRewriteAttribution(PDO $db, string $orgId, string $userId, stri
     }
 }
 
+/**
+ * One-time repair (2026-11-26): members created before staffIdCodeRetired() existed could be handed
+ * a deleted member's staff code and so "inherit" every lead that code had collected. Give each such
+ * member a fresh code; leads they collected themselves (on or after joining) move with them, older
+ * leads stay with the deleted member's code. A member re-created under the same name keeps the code.
+ */
+function syncpediaFixRecycledStaffCodes(PDO $db): void
+{
+    ensureDeletedUsersTable($db);
+    $st = $db->query(
+        "SELECT u.id, u.org_id, u.role, u.full_name, u.referral_code, u.created_at
+         FROM users u
+         WHERE u.org_id IS NOT NULL AND u.org_id <> ''
+           AND u.referral_code IS NOT NULL AND u.referral_code <> ''
+           AND (
+             EXISTS (SELECT 1 FROM deleted_users d WHERE UPPER(d.referral_code) = UPPER(u.referral_code) AND d.id <> u.id)
+             OR EXISTS (SELECT 1 FROM leads l WHERE l.referred_by = u.referral_code AND l.created_at < DATE_SUB(u.created_at, INTERVAL 1 DAY))
+           )"
+    );
+    $rows = $st ? ($st->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+    $sameName = $db->prepare('SELECT 1 FROM deleted_users WHERE UPPER(referral_code) = UPPER(?) AND LOWER(TRIM(full_name)) = LOWER(TRIM(?)) LIMIT 1');
+    foreach ($rows as $u) {
+        $id = (string) ($u['id'] ?? '');
+        $old = (string) ($u['referral_code'] ?? '');
+        $orgId = (string) ($u['org_id'] ?? '');
+        $name = (string) ($u['full_name'] ?? '');
+        if ($id === '' || $old === '' || $orgId === '') {
+            continue;
+        }
+        $sameName->execute([$old, $name]);
+        if ($name !== '' && $sameName->fetchColumn()) {
+            continue;
+        }
+        $prefix = orgStaffIdPrefix($db, $orgId);
+        $new = $prefix !== '' ? nextStaffIdForRole($db, $orgId, (string) ($u['role'] ?? ''), $prefix) : null;
+        if (!$new) {
+            $new = generateUniqueSpReferralCode($db, $name !== '' ? $name : 'member');
+        }
+        if ($new === '' || strcasecmp($new, $old) === 0) {
+            continue;
+        }
+        $db->prepare('UPDATE users SET referral_code = ? WHERE id = ?')->execute([$new, $id]);
+        $db->prepare('UPDATE leads SET referred_by = ? WHERE org_id = ? AND referred_by = ? AND created_at >= ?')
+            ->execute([$new, $orgId, $old, (string) ($u['created_at'] ?? '1970-01-01 00:00:00')]);
+        try {
+            $db->prepare('UPDATE payment_links SET salesperson_referral_code = ? WHERE salesperson_id = ?')->execute([$new, $id]);
+        } catch (Throwable $e) {
+        }
+        error_log("[staff codes] {$name} ({$id}): recycled code {$old} replaced by {$new}");
+    }
+}
+
+/**
+ * A staff code is retired once a deleted member held it or any lead carries it as referred_by.
+ * Handing it out again would give the new member every lead the old code collected.
+ */
+function staffIdCodeRetired(PDO $db, string $code): bool
+{
+    $code = strtoupper(trim($code));
+    if ($code === '') {
+        return false;
+    }
+    try {
+        ensureDeletedUsersTable($db);
+        $st = $db->prepare('SELECT 1 FROM deleted_users WHERE UPPER(referral_code) = ? LIMIT 1');
+        $st->execute([$code]);
+        if ($st->fetchColumn()) {
+            return true;
+        }
+    } catch (Throwable $e) {
+    }
+    try {
+        $st = $db->prepare('SELECT 1 FROM leads WHERE referred_by = ? LIMIT 1');
+        $st->execute([$code]);
+        if ($st->fetchColumn()) {
+            return true;
+        }
+    } catch (Throwable $e) {
+    }
+    return false;
+}
+
 function nextStaffIdForRole(PDO $db, string $orgId, string $role, string $prefix): ?string
 {
     $prefix = normalizeStaffIdPrefix($prefix);
@@ -6657,7 +6739,7 @@ function nextStaffIdForRole(PDO $db, string $orgId, string $role, string $prefix
         $candidate = $prefix . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
         $chk = $db->prepare('SELECT id FROM users WHERE UPPER(referral_code) = ? LIMIT 1');
         $chk->execute([$candidate]);
-        if (!$chk->fetch()) {
+        if (!$chk->fetch() && !staffIdCodeRetired($db, $candidate)) {
             return $candidate;
         }
     }
@@ -6731,7 +6813,7 @@ function assignOrgStaffIds(PDO $db, string $orgId, string $prefix): int
                 }
                 $candidate = $prefix . str_pad((string) $next, 4, '0', STR_PAD_LEFT);
                 $taken->execute([$candidate, $id]);
-                if ($taken->fetch()) {
+                if ($taken->fetch() || staffIdCodeRetired($db, $candidate)) {
                     $used[$next] = 'other';
                     $next++;
                     continue;

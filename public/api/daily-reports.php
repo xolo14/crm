@@ -99,7 +99,7 @@ if ($method === 'GET') {
                dr.total_calls, dr.total_followups, dr.total_demos, dr.total_conversions,
                dr.new_leads_contacted, dr.total_lost, dr.summary, dr.challenges,
                dr.created_at, dr.updated_at,
-               u.full_name as user_name, u.email as user_email
+               u.full_name as user_name, u.email as user_email, u.role as user_role
         FROM daily_reports dr
         INNER JOIN users u ON u.id = dr.user_id
         WHERE $where
@@ -116,7 +116,7 @@ if ($method === 'GET') {
             SELECT dr.id, dr.user_id, dr.report_date,
                    dr.total_calls, dr.total_followups, dr.total_demos, dr.total_conversions,
                    dr.new_leads_contacted, dr.summary, dr.challenges, dr.created_at,
-                   u.full_name as user_name, u.email as user_email
+                   u.full_name as user_name, u.email as user_email, u.role as user_role
             FROM daily_reports dr
             INNER JOIN users u ON u.id = dr.user_id
             WHERE $where

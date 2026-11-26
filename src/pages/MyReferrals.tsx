@@ -197,8 +197,10 @@ export default function MyReferrals() {
     );
     for (const report of dateFilteredReports) {
       if (!report.user_id) continue;
-      // Test accounts never get a rep row from their daily reports.
+      // Test accounts and the platform Super Admin never get a rep row from their daily reports.
       if (excludedIds.has(String(report.user_id))) continue;
+      const reportRole = String((report as any).user_role || '').trim().toLowerCase();
+      if (reportRole === 'super_admin' || reportRole === 'superadmin') continue;
       if (!stats[report.user_id]) {
         stats[report.user_id] = {
           name: report.user_name || report.user_email || userIdToName[report.user_id] || 'Unknown',

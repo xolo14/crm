@@ -124,6 +124,14 @@ function teamResolveCallerOrgId(PDO $db, array $tokenData): ?string {
 
 // GET - List team members (scoped by org when applicable)
 if ($method === 'GET') {
+    // One-time: members who were handed a deleted member's staff code get a fresh one (see helpers).
+    try {
+        syncpediaRunSchemaCheckOnce('recycled_staff_codes_fix_v1', function () use ($db) {
+            syncpediaFixRecycledStaffCodes($db);
+        });
+    } catch (Throwable $e) {
+        error_log('[staff codes] ' . $e->getMessage());
+    }
     $effRole = teamNormalizeRoleForRead($tokenData);
     $allowedRead = ['org', 'super_admin', 'manager', 'operational_manager', 'sales_representative', 'hr', 'marketing'];
     if (!in_array($effRole, $allowedRead, true)) {
