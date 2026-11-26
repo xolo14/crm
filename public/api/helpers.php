@@ -1513,7 +1513,7 @@ function syncpediaL1AssignableRoles(): array
  *
  * Desired behavior:
  * - L4 super_admin: return [] meaning "no restriction"
- * - L3 admin/org and L2 manager: return self + all nested reports
+ * - L3 admin/org and L2 manager / operational manager: return self + all nested reports
  * - other roles: return [self]
  */
 function hierarchyVisibleUserIds(PDO $db, array $tokenData): array {
@@ -1527,7 +1527,7 @@ function hierarchyVisibleUserIds(PDO $db, array $tokenData): array {
         return [];
     }
 
-    $treeRoles = ['admin', 'org', 'manager'];
+    $treeRoles = ['admin', 'org', 'manager', 'operational_manager'];
     if (!in_array($role, $treeRoles, true)) {
         return [$userId];
     }

@@ -629,7 +629,8 @@ export default function Team() {
     reportable: listedMembers.filter((m) => isReportableUser(m)).length,
   };
 
-  const activeManagers = team.filter((m) => m.is_active && normalizeRole(m.role) === 'manager');
+  // L1 members may report to a Manager or an Operational Manager (both L2).
+  const activeManagers = team.filter((m) => m.is_active && ['manager', 'operational_manager'].includes(normalizeRole(m.role)));
 
   const managersForL1Member = (member: TeamMember) => {
     const orgId = String(member.org_id || '').trim();

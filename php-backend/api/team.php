@@ -369,11 +369,12 @@ if ($method === 'POST') {
         $chk->execute([$reportsToId]);
         $mgr = $chk->fetch();
         $mgrRole = $mgr ? normalizeRoleValue($mgr['role']) : '';
-        $allowedParentRoles = ['manager'];
-        if ($memberRole === 'manager') {
+        // L1 members report to an L2 (Manager or Operational Manager); L2 members report to the org admin.
+        $allowedParentRoles = ['manager', 'operational_manager'];
+        if (in_array($memberRole, ['manager', 'operational_manager'], true)) {
             $allowedParentRoles = ['admin', 'org', 'super_admin'];
         } elseif (in_array($memberRole, syncpediaL1AssignableRoles(), true)) {
-            $allowedParentRoles = ['manager'];
+            $allowedParentRoles = ['manager', 'operational_manager'];
         }
         if (!$mgr || !in_array($mgrRole, $allowedParentRoles, true)) {
             respond(['error' => 'Invalid parent for reports_to'], 400);
@@ -611,11 +612,12 @@ if ($method === 'PUT') {
                 }
             }
 
-            $allowedParentRoles = ['manager'];
-            if ($targetRoleForValidation === 'manager') {
+            // L1 members report to an L2 (Manager or Operational Manager); L2 members report to the org admin.
+            $allowedParentRoles = ['manager', 'operational_manager'];
+            if (in_array($targetRoleForValidation, ['manager', 'operational_manager'], true)) {
                 $allowedParentRoles = ['admin', 'org', 'super_admin'];
             } elseif (in_array($targetRoleForValidation, syncpediaL1AssignableRoles(), true)) {
-                $allowedParentRoles = ['manager'];
+                $allowedParentRoles = ['manager', 'operational_manager'];
             }
 
             if (!$mgr || !in_array(normalizeRoleValue($mgr['role']), $allowedParentRoles, true)) {
