@@ -292,27 +292,11 @@ export default function Team() {
   };
 
   const visibleTeam = team.filter((m) => getRoleLevel(m.role) <= currentLevel);
-  /** Operational Managers see every L1/L2 member of the org, but may act only on their own downline. */
+  /** Operational Managers see every L1/L2 member of the org and manage Sales Rep / HR / Marketing members
+   *  anywhere in it: page access, tasks, activate / deactivate, remove. Managers and other OMs are view-only. */
   const isOmViewer = authNorm === 'operational_manager';
-  const omDownlineIds = (() => {
-    const ids = new Set<string>();
-    const me = String(user?.id || '');
-    if (!isOmViewer || !me) return ids;
-    const byId = new Map(team.map((m) => [String(m.id), m]));
-    for (const m of team) {
-      let cur = String(m.reports_to_id || '');
-      const seen = new Set<string>();
-      while (cur && !seen.has(cur)) {
-        if (cur === me) { ids.add(String(m.id)); break; }
-        seen.add(cur);
-        cur = String(byId.get(cur)?.reports_to_id || '');
-      }
-    }
-    return ids;
-  })();
-  const canActOnMember = (m: TeamMember) => !isOmViewer || omDownlineIds.has(String(m.id));
-  /** OMs may activate, deactivate and remove Sales Rep / HR / Marketing members anywhere in the org. */
   const omCanManageStatus = (m: TeamMember) => isOmViewer && isL1OperationalRole(m.role) && String(m.id) !== String(user?.id || '');
+  const canActOnMember = (m: TeamMember) => !isOmViewer || omCanManageStatus(m);
   const memberMenuVisible = (m: TeamMember, showMemberMenu: boolean) => (showMemberMenu && canActOnMember(m)) || omCanManageStatus(m);
   const filtered = visibleTeam.filter(m => {
     const matchSearch = m.full_name?.toLowerCase().includes(search.toLowerCase()) || m.email?.toLowerCase().includes(search.toLowerCase());
@@ -714,7 +698,7 @@ export default function Team() {
           {isManagerViewer && (
             <p className="text-xs text-muted-foreground mt-1">
               {isOmViewer
-                ? 'Showing all Sales Rep, HR, Marketing, Manager and Operational Manager members in your organisation. You can add Sales Rep, HR, and Marketing members (auto-assigned to you); page access and tasks can be changed only for members on your team. You can activate, deactivate and remove Sales Rep, HR and Marketing members; editing details and managing Managers is limited to Admin / Super Admin.'
+                ? 'Showing all Sales Rep, HR, Marketing, Manager and Operational Manager members in your organisation. You can add Sales Rep, HR, and Marketing members (auto-assigned to you); For Sales Rep, HR and Marketing members you can change page access, assign tasks, activate, deactivate and remove them; editing details and managing Managers is limited to Admin / Super Admin.'
                 : 'Showing members assigned to you. You can add Sales Rep, HR, and Marketing members (auto-assigned to you). Editing and removing members is limited to Admin / Super Admin.'}
             </p>
           )}

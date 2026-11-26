@@ -534,9 +534,14 @@ if ($method === 'PUT') {
     }
 
     if ($isManagerCaller) {
-        $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
-        if (!in_array($id, $visibleIds, true) || $id === (string) $userId) {
-            respond(['error' => 'You can only update members on your team'], 403);
+        if ($callerRole === 'operational_manager') {
+            // OMs manage L1 members anywhere in their org (not only their own downline).
+            teamOmAssertL1Target($db, $tokenData, (string) $id);
+        } else {
+            $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
+            if (!in_array($id, $visibleIds, true) || $id === (string) $userId) {
+                respond(['error' => 'You can only update members on your team'], 403);
+            }
         }
         $input = getInput();
         // Managers / OMs may only change page-access toggles on their L1 reports.
