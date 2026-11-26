@@ -311,6 +311,9 @@ export default function Team() {
     return ids;
   })();
   const canActOnMember = (m: TeamMember) => !isOmViewer || omDownlineIds.has(String(m.id));
+  /** OMs may activate, deactivate and remove Sales Rep / HR / Marketing members anywhere in the org. */
+  const omCanManageStatus = (m: TeamMember) => isOmViewer && isL1OperationalRole(m.role) && String(m.id) !== String(user?.id || '');
+  const memberMenuVisible = (m: TeamMember, showMemberMenu: boolean) => (showMemberMenu && canActOnMember(m)) || omCanManageStatus(m);
   const filtered = visibleTeam.filter(m => {
     const matchSearch = m.full_name?.toLowerCase().includes(search.toLowerCase()) || m.email?.toLowerCase().includes(search.toLowerCase());
     const matchRole = roleFilter === 'all' || normalizeRole(m.role) === roleFilter;
@@ -587,6 +590,7 @@ export default function Team() {
   const handleToggleStatus = async (member: TeamMember) => {
     try {
       await api.team.update(member.id, { is_active: member.is_active ? 0 : 1 });
+      toast({ title: member.is_active ? `${member.full_name || 'Member'} deactivated` : `${member.full_name || 'Member'} activated` });
       fetchTeam();
     } catch (err: any) {
       toast({ variant: 'destructive', title: err.message });
@@ -710,7 +714,7 @@ export default function Team() {
           {isManagerViewer && (
             <p className="text-xs text-muted-foreground mt-1">
               {isOmViewer
-                ? 'Showing all Sales Rep, HR, Marketing, Manager and Operational Manager members in your organisation. You can add Sales Rep, HR, and Marketing members (auto-assigned to you); page access and tasks can be changed only for members on your team. Editing and removing members is limited to Admin / Super Admin.'
+                ? 'Showing all Sales Rep, HR, Marketing, Manager and Operational Manager members in your organisation. You can add Sales Rep, HR, and Marketing members (auto-assigned to you); page access and tasks can be changed only for members on your team. You can activate, deactivate and remove Sales Rep, HR and Marketing members; editing details and managing Managers is limited to Admin / Super Admin.'
                 : 'Showing members assigned to you. You can add Sales Rep, HR, and Marketing members (auto-assigned to you). Editing and removing members is limited to Admin / Super Admin.'}
             </p>
           )}
@@ -775,20 +779,20 @@ export default function Team() {
                                 <Avatar className="h-7 w-7"><AvatarFallback className="text-xs bg-primary/10 text-primary">{getInitials(member.full_name)}</AvatarFallback></Avatar>
                                 <div><p className="text-sm font-medium">{member.full_name}</p><p className="text-xs text-muted-foreground">{member.email}</p></div>
                               </div>
-                              {showMemberMenu && canActOnMember(member) && (
+                              {memberMenuVisible(member, showMemberMenu) && (
                                 <DropdownMenu>
                                   <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-7 w-7"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                                   <DropdownMenuContent align="end">
-                                    {(manageable || canPageAccessEdit) && (
+                                    {(manageable || canPageAccessEdit) && canActOnMember(member) && (
                                       <DropdownMenuItem onClick={() => openEditMember(member)}><Edit className="h-4 w-4 mr-2" /> Edit</DropdownMenuItem>
                                     )}
-                                    {manageable && (
+                                    {(manageable || omCanManageStatus(member)) && (
                                       <DropdownMenuItem onClick={() => handleToggleStatus(member)}>{member.is_active ? 'Deactivate' : 'Activate'}</DropdownMenuItem>
                                     )}
-                                    {(manageable || isManagerViewer) && (
+                                    {(manageable || isManagerViewer) && canActOnMember(member) && (
                                       <DropdownMenuItem onClick={() => { setTaskAssignTo(member); setTaskDialogOpen(true); }}><ClipboardList className="h-4 w-4 mr-2" /> Assign Task</DropdownMenuItem>
                                     )}
-                                    {manageable && (
+                                    {(manageable || omCanManageStatus(member)) && (
                                       <>
                                         <DropdownMenuSeparator />
                                         <DropdownMenuItem className="text-destructive" onClick={() => setDeleteConfirmId(member.id)}><Trash2 className="h-4 w-4 mr-2" /> Remove</DropdownMenuItem>
@@ -877,21 +881,21 @@ export default function Team() {
                               <TableCell className="px-3 py-2.5 text-sm text-muted-foreground align-middle whitespace-nowrap">
                                 {new Date(member.created_at).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}
                               </TableCell>
-                              {showMemberMenu && canActOnMember(member) && (
+                              {memberMenuVisible(member, showMemberMenu) && (
                                 <TableCell className="px-2 py-2.5 pr-3 align-middle">
                                   <DropdownMenu>
                                     <DropdownMenuTrigger asChild><Button variant="ghost" size="icon" className="h-8 w-8"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
                                     <DropdownMenuContent align="end">
-                                      {(manageable || canPageAccessEdit) && (
+                                      {(manageable || canPageAccessEdit) && canActOnMember(member) && (
                                         <DropdownMenuItem onClick={() => openEditMember(member)}><Edit className="h-4 w-4 mr-2" /> Edit</DropdownMenuItem>
                                       )}
-                                      {manageable && (
+                                      {(manageable || omCanManageStatus(member)) && (
                                         <DropdownMenuItem onClick={() => handleToggleStatus(member)}>{member.is_active ? 'Deactivate' : 'Activate'}</DropdownMenuItem>
                                       )}
-                                      {(manageable || isManagerViewer) && (
+                                      {(manageable || isManagerViewer) && canActOnMember(member) && (
                                         <DropdownMenuItem onClick={() => { setTaskAssignTo(member); setTaskDialogOpen(true); }}><ClipboardList className="h-4 w-4 mr-2" /> Assign Task</DropdownMenuItem>
                                       )}
-                                      {manageable && (
+                                      {(manageable || omCanManageStatus(member)) && (
                                         <>
                                           <DropdownMenuSeparator />
                                           <DropdownMenuItem className="text-destructive" onClick={() => setDeleteConfirmId(member.id)}><Trash2 className="h-4 w-4 mr-2" /> Remove</DropdownMenuItem>
@@ -901,7 +905,7 @@ export default function Team() {
                                   </DropdownMenu>
                                 </TableCell>
                               )}
-                              {!(showMemberMenu && canActOnMember(member)) && <TableCell className="px-2 py-2.5 pr-3" />}
+                              {!memberMenuVisible(member, showMemberMenu) && <TableCell className="px-2 py-2.5 pr-3" />}
                             </TableRow>
                             );
                           })}

@@ -79,6 +79,33 @@ function teamNormalizeRoleForRead(array $tokenData): string {
     return $r;
 }
 
+/**
+ * Operational Managers may activate, deactivate and remove L1 members (Sales Rep / HR / Marketing)
+ * anywhere in their own organization, never managers, other OMs, admins or themselves.
+ *
+ * @return array<string, mixed> the target user row
+ */
+function teamOmAssertL1Target(PDO $db, array $tokenData, string $targetId): array {
+    $callerId = (string) ($tokenData['user_id'] ?? '');
+    if ($targetId === '' || $targetId === $callerId) {
+        respond(['error' => 'You cannot change your own account here'], 400);
+    }
+    $st = $db->prepare('SELECT id, role, org_id, full_name, referral_code, reports_to_id FROM users WHERE id = ? LIMIT 1');
+    $st->execute([$targetId]);
+    $target = $st->fetch(PDO::FETCH_ASSOC);
+    if (!$target) {
+        respond(['error' => 'User not found'], 404);
+    }
+    $callerOrg = teamResolveCallerOrgId($db, $tokenData);
+    if ($callerOrg === null || $callerOrg === '' || trim((string) ($target['org_id'] ?? '')) !== $callerOrg) {
+        respond(['error' => 'You can only manage members in your organization'], 403);
+    }
+    if (!in_array(syncpediaNormalizeRoleKey((string) ($target['role'] ?? '')), syncpediaL1AssignableRoles(), true)) {
+        respond(['error' => 'Operational Managers can manage only Sales Rep, HR and Marketing members'], 403);
+    }
+    return $target;
+}
+
 function teamResolveCallerOrgId(PDO $db, array $tokenData): ?string {
     $oid = isset($tokenData['org_id']) ? trim((string) $tokenData['org_id']) : '';
     if ($oid !== '') {
@@ -491,6 +518,21 @@ if ($method === 'PUT') {
     $callerRole = normalizeRoleValue((string) ($tokenData['role'] ?? ''));
     $isManagerCaller = in_array($callerRole, ['manager', 'operational_manager'], true);
 
+    // Operational Manager: activate / deactivate an L1 member of the org.
+    if ($callerRole === 'operational_manager') {
+        $omInput = getInput();
+        if (is_array($omInput) && array_key_exists('is_active', $omInput) && array_diff(array_keys($omInput), ['is_active']) === []) {
+            $target = teamOmAssertL1Target($db, $tokenData, (string) $id);
+            $active = (int) (bool) $omInput['is_active'];
+            if ($active === 0) {
+                syncpediaBumpUserTokenVersion($db, (string) $id);
+            }
+            $db->prepare('UPDATE users SET is_active = ? WHERE id = ?')->execute([$active, $id]);
+            syncpediaAuditLog($db, $tokenData, 'updated', 'team_member', (string) $id, ($active ? 'Activated' : 'Deactivated') . ' team member: ' . ($target['full_name'] ?? $id));
+            respond(['message' => $active ? 'Member activated' : 'Member deactivated', 'is_active' => $active]);
+        }
+    }
+
     if ($isManagerCaller) {
         $visibleIds = hierarchyGetVisibleUserIds($db, $tokenData);
         if (!in_array($id, $visibleIds, true) || $id === (string) $userId) {
@@ -703,13 +745,17 @@ if ($method === 'PUT') {
 
 // DELETE - Remove team member (archive to trash, then hard delete)
 if ($method === 'DELETE') {
-    requireRole($tokenData, ['org', 'super_admin']);
+    requireRole($tokenData, ['org', 'super_admin', 'operational_manager']);
     $id = $_GET['id'] ?? '';
     if (!$id) {
         respond(['error' => 'ID required'], 400);
     }
     if ($id === $userId) {
         respond(['error' => 'You cannot remove your own account'], 400);
+    }
+    // Operational Managers may remove only L1 members of their own organization.
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'operational_manager') {
+        teamOmAssertL1Target($db, $tokenData, (string) $id);
     }
 
     try {
