@@ -115,15 +115,19 @@ if ($action !== 'summary') {
 }
 
 [$w, $p] = metricsOrgWhere($orgId);
+// Lead counts follow the same visibility as the Leads page (see SYNCPEDIA_HIDE_OM_IMPORTS).
+$omHide = syncpediaHiddenOmImportsSql($tokenData, '');
+$wl = $w . $omHide['sql'];
+$pl = array_merge($p, $omHide['params']);
 
 // ── Leads ───────────────────────────────────────────────────────────────
 $byStatus = [];
 try {
     $st = $db->prepare(
         "SELECT LOWER(TRIM(COALESCE(NULLIF(status, ''), 'new'))) AS s, COUNT(*) AS c
-           FROM leads WHERE {$w} GROUP BY s"
+           FROM leads WHERE {$wl} GROUP BY s"
     );
-    $st->execute($p);
+    $st->execute($pl);
     foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
         $key = (string) $r['s'];
         if ($key === 'converted') {
@@ -141,8 +145,8 @@ $new = (int) ($byStatus['new'] ?? 0);
 $registeredLeads = (int) ($byStatus['registered'] ?? 0);
 $unassigned = metricsCount(
     $db,
-    "SELECT COUNT(*) FROM leads WHERE {$w} AND (assigned_to IS NULL OR assigned_to = '')",
-    $p,
+    "SELECT COUNT(*) FROM leads WHERE {$wl} AND (assigned_to IS NULL OR assigned_to = '')",
+    $pl,
 );
 
 // Unassigned aging buckets (how long leads wait for an owner)
@@ -154,9 +158,9 @@ try {
             SUM(created_at < DATE_SUB(NOW(), INTERVAL 2 DAY) AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)) AS b,
             SUM(created_at < DATE_SUB(NOW(), INTERVAL 7 DAY) AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)) AS c,
             SUM(created_at < DATE_SUB(NOW(), INTERVAL 30 DAY)) AS d
-           FROM leads WHERE {$w} AND (assigned_to IS NULL OR assigned_to = '')"
+           FROM leads WHERE {$wl} AND (assigned_to IS NULL OR assigned_to = '')"
     );
-    $st->execute($p);
+    $st->execute($pl);
     $r = $st->fetch(PDO::FETCH_ASSOC) ?: [];
     $aging = [
         '0_2d' => (int) ($r['a'] ?? 0),
@@ -173,9 +177,9 @@ $bySource = [];
 try {
     $st = $db->prepare(
         "SELECT COALESCE(NULLIF(TRIM(source), ''), 'unknown') AS src, COUNT(*) AS c
-           FROM leads WHERE {$w} GROUP BY src ORDER BY c DESC"
+           FROM leads WHERE {$wl} GROUP BY src ORDER BY c DESC"
     );
-    $st->execute($p);
+    $st->execute($pl);
     $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
     $labelCache = [];
     $merged = [];
@@ -208,10 +212,10 @@ try {
     $counts = [];
     $st = $db->prepare(
         "SELECT DATE_SUB(DATE(created_at), INTERVAL WEEKDAY(created_at) DAY) AS wk, COUNT(*) AS c
-           FROM leads WHERE {$w} AND created_at >= ?
+           FROM leads WHERE {$wl} AND created_at >= ?
           GROUP BY wk"
     );
-    $st->execute(array_merge($p, [$firstMonday->format('Y-m-d 00:00:00')]));
+    $st->execute(array_merge($pl, [$firstMonday->format('Y-m-d 00:00:00')]));
     foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
         $counts[(string) $r['wk']] = (int) $r['c'];
     }

@@ -62,6 +62,9 @@ if ($method === 'GET') {
 
         $where = "l.referred_by = (SELECT referral_code FROM users WHERE id = ? LIMIT 1)";
         $params = [$userId];
+        $omHide = syncpediaHiddenOmImportsSql($tokenData, 'l');
+        $where .= $omHide['sql'];
+        $params = array_merge($params, $omHide['params']);
 
         $org = orgFilter($tokenData, 'l');
         if (($org['where'] ?? '') !== '1=1') {

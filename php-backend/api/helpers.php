@@ -928,11 +928,57 @@ function tenantOrgScopeSql(PDO $db, array $tokenData, string $alias = ''): array
 }
 
 /**
- * Leads list scope: tenant org + L1 self / L2 manager downline.
+ * TEMPORARY (2026-11-26): leads an Operational Manager imported by CSV are private to
+ * Operational Managers. Nobody else in the org (Org Admin, managers, reps, HR, marketing)
+ * sees them, except a member they are assigned to, who sees only those leads.
+ * Super Admin is outside the org structure and still sees everything.
+ * Set to false to go back to the normal org-wide visibility. Nothing is moved or deleted.
+ */
+const SYNCPEDIA_HIDE_OM_IMPORTS = true;
+
+/**
+ * Extra lead filter for SYNCPEDIA_HIDE_OM_IMPORTS ('' when the viewer may see OM imports).
+ *
+ * @return array{sql: string, params: array}
+ */
+function syncpediaHiddenOmImportsSql(array $tokenData, string $alias = ''): array
+{
+    if (!SYNCPEDIA_HIDE_OM_IMPORTS) {
+        return ['sql' => '', 'params' => []];
+    }
+    $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
+    if ($role === 'super_admin' || $role === 'operational_manager') {
+        return ['sql' => '', 'params' => []];
+    }
+    $uid = (string) ($tokenData['user_id'] ?? '');
+    $c = $alias !== '' ? "{$alias}." : '';
+    $sql = " AND (CASE WHEN (COALESCE({$c}tags, '') LIKE '%import_set:%' OR COALESCE({$c}notes, '') LIKE '%import_set:%')"
+        . " AND {$c}created_by IN (SELECT om_u.id FROM users om_u WHERE LOWER(TRIM(COALESCE(om_u.role, ''))) IN ('operational_manager', 'ops_manager', 'l2_operational_manager', 'operational manager'))"
+        . " AND COALESCE({$c}assigned_to, '') <> ?"
+        . " AND NOT EXISTS (SELECT 1 FROM lead_assignments om_la WHERE om_la.lead_id = {$c}id AND om_la.user_id = ?)"
+        . ' THEN 1 ELSE 0 END) = 0';
+    return ['sql' => $sql, 'params' => [$uid, $uid]];
+}
+
+/**
+ * Leads list scope: tenant org + L1 self / L2 manager downline, minus hidden OM imports.
  *
  * @return array{sql: string, params: array}
  */
 function tenantLeadsScopeSql(PDO $db, array $tokenData, string $alias = 'l'): array
+{
+    $base = tenantLeadsScopeSqlBase($db, $tokenData, $alias);
+    $hide = syncpediaHiddenOmImportsSql($tokenData, $alias);
+    if ($hide['sql'] === '') {
+        return $base;
+    }
+    return ['sql' => $base['sql'] . $hide['sql'], 'params' => array_merge($base['params'], $hide['params'])];
+}
+
+/**
+ * @return array{sql: string, params: array}
+ */
+function tenantLeadsScopeSqlBase(PDO $db, array $tokenData, string $alias = 'l'): array
 {
     $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
     if (tenantIsMasterView($tokenData)) {

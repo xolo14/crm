@@ -1362,6 +1362,9 @@ if ($action === 'dialer_contacts' && $method === 'GET') {
         $params[] = $userId;
         $params[] = $userId;
     }
+    $omHide = syncpediaHiddenOmImportsSql($tokenData, '');
+    $sql .= $omHide['sql'];
+    $params = array_merge($params, $omHide['params']);
     if ($search !== '') {
         $sql .= ' AND (name LIKE ? OR phone LIKE ?)';
         $params[] = '%' . $search . '%';
