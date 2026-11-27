@@ -6673,7 +6673,7 @@ function syncpediaFixRecycledStaffCodes(PDO $db, bool $apply = false, string $jo
                 continue;
             }
             $prefix = orgStaffIdPrefix($db, $orgId);
-            $new = $prefix !== '' ? nextStaffIdForRole($db, $orgId, (string) ($u['role'] ?? ''), $prefix) : null;
+            $new = $prefix !== '' ? nextStaffIdForRole($db, $orgId, (string) ($u['role'] ?? ''), $prefix, $apply) : null;
             if (!$new) {
                 $new = generateUniqueSpReferralCode($db, $name !== '' ? $name : 'member');
             }
@@ -6732,7 +6732,36 @@ function staffIdCodeRetired(PDO $db, string $code): bool
     return false;
 }
 
-function nextStaffIdForRole(PDO $db, string $orgId, string $role, string $prefix): ?string
+/** Highest staff number ever issued per org and band, so numbers only go up (never reused). */
+function ensureStaffIdCountersTable(PDO $db): void
+{
+    static $ok = false;
+    if ($ok) {
+        return;
+    }
+    try {
+        $db->exec(
+            "CREATE TABLE IF NOT EXISTS staff_id_counters (
+                org_id CHAR(36) NOT NULL,
+                band_floor INT NOT NULL,
+                last_n INT NOT NULL DEFAULT 0,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (org_id, band_floor)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+        );
+    } catch (Throwable $e) {
+        error_log('[staff_id_counters] ' . $e->getMessage());
+    }
+    $ok = true;
+}
+
+/**
+ * Next staff ID for a new member: one above the highest number ever issued in this org's band,
+ * counting current members, deleted members, codes on leads and the stored high-water mark.
+ * Numbers freed by deleted members are never handed out again, so a new member can never pick up
+ * data recorded against an old code. $reserve = false only previews (does not move the counter).
+ */
+function nextStaffIdForRole(PDO $db, string $orgId, string $role, string $prefix, bool $reserve = true): ?string
 {
     $prefix = normalizeStaffIdPrefix($prefix);
     $floor = staffIdBandFloor($role);
@@ -6740,29 +6769,65 @@ function nextStaffIdForRole(PDO $db, string $orgId, string $role, string $prefix
         return null;
     }
     $ceil = staffIdBandCeiling($floor);
-    $st = $db->prepare('SELECT referral_code FROM users WHERE org_id = ? AND UPPER(referral_code) LIKE ?');
-    $st->execute([$orgId, $prefix . '%']);
-    $used = [];
-    while ($row = $st->fetch(PDO::FETCH_ASSOC)) {
-        $code = strtoupper(trim((string) ($row['referral_code'] ?? '')));
-        if (preg_match('/^' . preg_quote($prefix, '/') . '(\d{4})$/', $code, $m)) {
+    $pattern = '/^' . preg_quote($prefix, '/') . '(\d{4})$/';
+    $high = $floor - 1;
+    $seen = static function (string $code) use (&$high, $pattern, $floor, $ceil): void {
+        if (preg_match($pattern, strtoupper(trim($code)), $m)) {
             $n = (int) $m[1];
-            if ($n >= $floor && $n <= $ceil) {
-                $used[$n] = true;
+            if ($n >= $floor && $n <= $ceil && $n > $high) {
+                $high = $n;
             }
         }
+    };
+    $like = $prefix . '%';
+    $sources = [
+        ['SELECT referral_code FROM users WHERE UPPER(referral_code) LIKE ?', [$like]],
+        ['SELECT referral_code FROM deleted_users WHERE UPPER(referral_code) LIKE ?', [$like]],
+        ['SELECT DISTINCT referred_by FROM leads WHERE referred_by LIKE ?', [$like]],
+    ];
+    ensureDeletedUsersTable($db);
+    foreach ($sources as [$sql, $params]) {
+        try {
+            $st = $db->prepare($sql);
+            $st->execute($params);
+            foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $code) {
+                $seen((string) $code);
+            }
+        } catch (Throwable $e) {
+            error_log('[staff ids] ' . $e->getMessage());
+        }
     }
-    for ($n = $floor; $n <= $ceil; $n++) {
-        if (isset($used[$n])) {
+    ensureStaffIdCountersTable($db);
+    try {
+        $st = $db->prepare('SELECT last_n FROM staff_id_counters WHERE org_id = ? AND band_floor = ?');
+        $st->execute([$orgId, $floor]);
+        $stored = $st->fetchColumn();
+        if ($stored !== false && (int) $stored > $high) {
+            $high = (int) $stored;
+        }
+    } catch (Throwable $e) {
+        error_log('[staff ids] counter: ' . $e->getMessage());
+    }
+    $chk = $db->prepare('SELECT id FROM users WHERE UPPER(referral_code) = ? LIMIT 1');
+    for ($n = $high + 1; $n <= $ceil; $n++) {
+        $candidate = $prefix . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+        $chk->execute([$candidate]);
+        if ($chk->fetch() || staffIdCodeRetired($db, $candidate)) {
             continue;
         }
-        $candidate = $prefix . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
-        $chk = $db->prepare('SELECT id FROM users WHERE UPPER(referral_code) = ? LIMIT 1');
-        $chk->execute([$candidate]);
-        if (!$chk->fetch() && !staffIdCodeRetired($db, $candidate)) {
-            return $candidate;
+        if ($reserve) {
+            try {
+                $db->prepare(
+                    'INSERT INTO staff_id_counters (org_id, band_floor, last_n, updated_at) VALUES (?, ?, ?, NOW())
+                     ON DUPLICATE KEY UPDATE last_n = GREATEST(last_n, VALUES(last_n)), updated_at = NOW()'
+                )->execute([$orgId, $floor, $n]);
+            } catch (Throwable $e) {
+                error_log('[staff ids] counter save: ' . $e->getMessage());
+            }
         }
+        return $candidate;
     }
+    // Band full: caller falls back to a random SP-* code (which also skips retired codes).
     return null;
 }
 
@@ -6819,7 +6884,9 @@ function assignOrgStaffIds(PDO $db, string $orgId, string $prefix): int
             $used[$n] = $id;
             $kept[$id] = true;
         }
-        $next = (int) $floor;
+        // Members who need a new ID get numbers above the highest ever issued (never reused).
+        $probe = nextStaffIdForRole($db, $orgId, (string) ($members[0]['role'] ?? ''), $prefix, false);
+        $next = $probe !== null ? max((int) $floor, (int) substr($probe, -4)) : $ceil + 1;
         foreach ($members as $m) {
             $id = (string) ($m['id'] ?? '');
             if ($id === '' || isset($kept[$id])) {
@@ -6848,6 +6915,15 @@ function assignOrgStaffIds(PDO $db, string $orgId, string $prefix): int
             $upd->execute([$new, $id]);
             staffIdsRewriteAttribution($db, $orgId, $id, $old, $new);
             $used[$next] = $id;
+            try {
+                ensureStaffIdCountersTable($db);
+                $db->prepare(
+                    'INSERT INTO staff_id_counters (org_id, band_floor, last_n, updated_at) VALUES (?, ?, ?, NOW())
+                     ON DUPLICATE KEY UPDATE last_n = GREATEST(last_n, VALUES(last_n)), updated_at = NOW()'
+                )->execute([$orgId, (int) $floor, $next]);
+            } catch (Throwable $e) {
+                error_log('[staff ids] counter save: ' . $e->getMessage());
+            }
             $next++;
             $changed++;
         }
