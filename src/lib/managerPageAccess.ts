@@ -20,6 +20,9 @@ import {
 import { normalizeAppRole } from "@/lib/roleUtils";
 import type { PageAccess } from "@/lib/orgAccess";
 
+/** Page switch for Sales Tracker (/my-referrals) and Rep Performance (/referral-analytics). */
+export const SALES_TRACKER_PAGE_KEY = "sales_tracker";
+
 export type ManagerPageOption = {
   key: string;
   label: string;
@@ -33,12 +36,13 @@ export const MANAGER_PAGE_ACCESS_OPTIONS: ManagerPageOption[] = [
   { key: "team", section: "Core", label: "Team", description: "View and manage downline team" },
   { key: "settings", section: "Core", label: "Settings", description: "Profile and preferences" },
   { key: "trash", section: "Core", label: "Trash", description: "Deleted records" },
-  ...IMPLEMENTED_ORG_FEATURES.map((f) => ({
-    key: f.key,
-    label: f.label,
-    description: f.description,
-    section: f.section,
-  })),
+  ...IMPLEMENTED_ORG_FEATURES.flatMap((f) => {
+    const option = { key: f.key, label: f.label, description: f.description, section: f.section };
+    // Sales Tracker has its own switch, listed right after Leads & Dashboard.
+    return f.key === "leads"
+      ? [option, { key: SALES_TRACKER_PAGE_KEY, label: "Sales Tracker", description: "Sales Rep Tracker and Rep Performance", section: f.section }]
+      : [option];
+  }),
 ];
 
 export const MANAGER_PAGE_ACCESS_KEYS = MANAGER_PAGE_ACCESS_OPTIONS.map((o) => o.key);
@@ -55,6 +59,7 @@ export const MANAGER_DEFAULT_ON_PAGE_KEYS: readonly string[] = [
   "settings",
   "trash",
   "leads",
+  SALES_TRACKER_PAGE_KEY,
   FEATURE_FORM_MANAGEMENT,
   "daily_reports",
   FEATURE_COMMUNICATIONS,
@@ -114,6 +119,11 @@ export const OPERATIONAL_MANAGER_ALWAYS_ON_OPTIONS: ManagerPageOption[] = [];
  */
 export function unsetPageGrant(pages: Record<string, unknown>, featureKey: string): boolean {
   if (featureKey === FEATURE_COUPONS || featureKey === FEATURE_LIVE_CLASSES) return true;
+  // Sales Tracker used to follow the Leads switch; maps saved before it existed keep that.
+  if (featureKey === SALES_TRACKER_PAGE_KEY) {
+    const v = pages.leads;
+    return v === true || v === 1 || v === "1" || v === "true";
+  }
   if (featureKey === FEATURE_PAYMENT_RECORDS) {
     const v = pages.payments;
     return v === true || v === 1 || v === "1" || v === "true";
@@ -287,6 +297,7 @@ export function managerPageAllowedByDefaults(featureKey: string): boolean {
 export function managerFeatureKeyForPath(pathname: string): string | null {
   const p = pathname.split("?")[0].replace(/\/+$/, "") || "/";
   if (p === "/") return "dashboard";
+  if (p.startsWith("/my-referrals") || p.startsWith("/referral-analytics")) return SALES_TRACKER_PAGE_KEY;
   return featureKeyForPath(pathname);
 }
 

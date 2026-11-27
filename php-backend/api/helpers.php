@@ -4109,7 +4109,7 @@ function userNormalizePageAccessInput($input, string $memberRole): array {
 
 function userOperationalManagerOptionalPageKeys(): array
 {
-    return ['courses', 'batches', 'daily_reports', 'leads'];
+    return ['courses', 'batches', 'daily_reports', 'leads', 'sales_tracker'];
 }
 
 /** HR portal page grant — communications / form_management / offer_letters are opt-in. */
@@ -4262,7 +4262,7 @@ function userOperationalManagerAutoGrantedPages(): array
 function userManagerDefaultOnPages(): array
 {
     return [
-        'dashboard', 'team', 'settings', 'trash', 'leads', 'form_management', 'daily_reports',
+        'dashboard', 'team', 'settings', 'trash', 'leads', 'sales_tracker', 'form_management', 'daily_reports',
         'communications', 'students', 'courses', 'batches', 'payments', 'payment_records',
         'certificates', 'holidays', 'notifications', 'tasks',
     ];
