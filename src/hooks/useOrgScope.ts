@@ -77,6 +77,32 @@ export function useOrgScope(): [string, (value: string) => void] {
   return [scope, set];
 }
 
+function viewerIsSuperAdmin(): boolean {
+  try {
+    const raw = localStorage.getItem("auth_user");
+    const role = raw ? String(JSON.parse(raw)?.role || "") : "";
+    return role.toLowerCase().replace(/[^a-z]/g, "") === "superadmin";
+  } catch {
+    return false;
+  }
+}
+
+/** Endpoints that must never be narrowed to the picked org (sign-in, the org list itself). */
+const ORG_SCOPE_SKIP = /(^|\/)(auth|hr_auth|organizations)\.php/i;
+
+/**
+ * Adds `org_id=<picked org>` to a super admin's read (GET) requests, so every page
+ * follows the header organization picker without wiring it page by page.
+ * Writes, requests that already name an org, and "All organizations" are left unchanged.
+ */
+export function withOrgScope(endpoint: string, method?: string): string {
+  if (current === ORG_SCOPE_ALL) return endpoint;
+  if (String(method || "GET").toUpperCase() !== "GET") return endpoint;
+  if (ORG_SCOPE_SKIP.test(endpoint) || /[?&]org_id=/.test(endpoint)) return endpoint;
+  if (!viewerIsSuperAdmin()) return endpoint;
+  return `${endpoint}${endpoint.includes("?") ? "&" : "?"}org_id=${encodeURIComponent(current)}`;
+}
+
 /** Org id for API calls: undefined when the scope is "all". */
 export function orgScopeParam(scope: string): string | undefined {
   return scope && scope !== ORG_SCOPE_ALL ? scope : undefined;

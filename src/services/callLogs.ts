@@ -1,3 +1,4 @@
+import { withOrgScope } from "@/hooks/useOrgScope";
 import type {
   CallLog,
   CallLogPeriod,
@@ -19,7 +20,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     "Content-Type": "application/json",
     ...(options.headers as Record<string, string>),
   };
-  const res = await fetch(`${API_BASE}${url}`, { ...options, headers, credentials: "include" });
+  const res = await fetch(`${API_BASE}${withOrgScope(url, options.method)}`, { ...options, headers, credentials: "include" });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = typeof data?.detail === "string" ? data.detail : "";

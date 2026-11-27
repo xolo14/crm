@@ -1,3 +1,4 @@
+import { withOrgScope } from "@/hooks/useOrgScope";
 import { getApiBase } from '@/lib/apiBase';
 import type {
   ApplyLibraryTemplateResult,
@@ -28,7 +29,7 @@ async function commRequest<T>(endpoint: string, options: RequestInit = {}): Prom
     ...(options.headers as Record<string, string> | undefined),
   };
 
-  const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers, credentials: 'include' });
+  const res = await fetch(`${API_BASE}${withOrgScope(endpoint, options.method)}`, { ...options, headers, credentials: 'include' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     let message = 'Request failed';

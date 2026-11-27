@@ -6,6 +6,7 @@ import { normalizeFresherPolicy, type FresherOrgPolicy } from '@/modules/fresher
 import { AUTH_PORTAL, loginPathFromSessionPortal } from '@/lib/portalAuth';
 
 import { getApiBase } from '@/lib/apiBase';
+import { withOrgScope } from '@/hooks/useOrgScope';
 
 const API_BASE = getApiBase();
 
@@ -99,7 +100,7 @@ async function request(endpoint: string, options: RequestInit = {}) {
 
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${endpoint}`, {
+    res = await fetch(`${API_BASE}${withOrgScope(endpoint, options.method)}`, {
       ...options,
       headers,
       credentials: 'include',
@@ -234,7 +235,7 @@ async function request(endpoint: string, options: RequestInit = {}) {
 async function requestBlob(endpoint: string): Promise<Blob> {
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${endpoint}`, { credentials: 'include' });
+    res = await fetch(`${API_BASE}${withOrgScope(endpoint)}`, { credentials: 'include' });
   } catch {
     throw new Error('Network error - unable to reach server');
   }

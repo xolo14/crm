@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Building2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { ORG_SCOPE_ALL, useOrgScope } from "@/hooks/useOrgScope";
@@ -35,11 +35,20 @@ export function useOrgOptions(enabled = true) {
 /** Header control: which organization every page is looking at (super admin only). */
 export function OrgScopeSwitcher({ className }: { className?: string }) {
   const [scope, setScope] = useOrgScope();
+  const queryClient = useQueryClient();
   const { data: orgs = [] } = useOrgOptions();
   const known = scope === ORG_SCOPE_ALL || orgs.some((o) => o.id === scope);
 
+  // Drop data cached for the previous org before switching; the layout then remounts the
+  // open page, so it reloads for the picked org.
+  const pick = (value: string) => {
+    if (value === scope) return;
+    queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== "org_scope_options" });
+    setScope(value);
+  };
+
   return (
-    <Select value={known ? scope : ORG_SCOPE_ALL} onValueChange={setScope}>
+    <Select value={known ? scope : ORG_SCOPE_ALL} onValueChange={pick}>
       <SelectTrigger
         className={className ?? "h-8 w-[200px] gap-2 rounded-lg text-xs font-medium"}
         aria-label="Organization scope"

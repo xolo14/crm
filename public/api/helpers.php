@@ -891,7 +891,7 @@ function tenantIsMasterView(array $tokenData): bool
     if ($role !== 'super_admin') {
         return false;
     }
-    if (!empty($_GET['org_id'])) {
+    if (!empty($_GET['org_id']) && $_GET['org_id'] !== 'all') {
         return false;
     }
     $jwtOrg = $tokenData['org_id'] ?? null;
@@ -4598,6 +4598,14 @@ function syncpediaGetOrCreateOrgId(PDO $db, string $actingUserId): ?string {
  *    Syncpedia platform tenant so platform-scoped users never end up org-less.
  */
 function resolveCreatorOrgId(PDO $db, array $tokenData): ?string {
+    // Super admin looking at one organization (header picker sends ?org_id=): use that org,
+    // not the super admin's own home org, so every page shows the picked org's data.
+    if (syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? '')) === 'super_admin') {
+        $picked = trim((string) ($_GET['org_id'] ?? ''));
+        if ($picked !== '' && $picked !== 'all') {
+            return $picked;
+        }
+    }
     $tokenOrg = $tokenData['org_id'] ?? null;
     if ($tokenOrg !== null && trim((string) $tokenOrg) !== '') {
         return (string) $tokenOrg;

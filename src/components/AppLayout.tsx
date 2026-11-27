@@ -34,7 +34,7 @@ import { assessmentsApi } from '@/services/assessments';
 import type { PageAccess } from '@/lib/orgAccess';
 import { OrgScopeSwitcher } from '@/components/OrgScopeSwitcher';
 import { CommandPalette, type CommandPage } from '@/components/CommandPalette';
-import { syncOrgScopeToUrl } from '@/hooks/useOrgScope';
+import { syncOrgScopeToUrl, useOrgScope } from '@/hooks/useOrgScope';
 import { Search } from 'lucide-react';
 
 /** Shell pages not stored in org_features — always on for admins; managers need page grants. */
@@ -611,6 +611,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const showOrgViewingBadge = role === 'super_admin' && !!organization && location.pathname === '/org-crm';
   const resultsOnly = normalizeAppRole(role) === "assessment_viewer";
   const isSuperAdminShell = normalizeAppRole(role) === "super_admin";
+  const [orgScope] = useOrgScope();
 
   useEffect(() => {
     if (isSuperAdminShell) syncOrgScopeToUrl();
@@ -758,7 +759,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         )}
         {/* Content area */}
         <div className={cn("max-w-7xl mx-auto pb-safe w-full min-w-0", compactMode ? "p-3 md:p-4" : "p-4 md:p-6")}>
-          {children}
+          {/* Super admin: remount the page when the header org changes so it reloads that org's data. */}
+          <React.Fragment key={isSuperAdminShell ? orgScope : "page"}>{children}</React.Fragment>
         </div>
       </main>
     </div>
