@@ -23,14 +23,14 @@ function settingsAssignableRoles(string $actorRole): array
 
 if ($method === 'GET') {
     if (tenantIsMasterView($tokenData)) {
-        $stmt = $db->prepare('SELECT id, email, full_name, phone, role, is_active, created_at, org_id FROM users WHERE COALESCE(role, '') <> 'deleted' ORDER BY created_at DESC');
+        $stmt = $db->prepare("SELECT id, email, full_name, phone, role, is_active, created_at, org_id FROM users WHERE COALESCE(role, '') <> 'deleted' ORDER BY created_at DESC");
         $stmt->execute();
     } else {
         $orgId = resolveCreatorOrgId($db, $tokenData);
         if ($orgId === null || $orgId === '') {
             respond(['data' => []]);
         }
-        $stmt = $db->prepare('SELECT id, email, full_name, phone, role, is_active, created_at, org_id FROM users WHERE org_id = ? AND COALESCE(role, '') <> 'deleted' ORDER BY created_at DESC');
+        $stmt = $db->prepare("SELECT id, email, full_name, phone, role, is_active, created_at, org_id FROM users WHERE org_id = ? AND COALESCE(role, '') <> 'deleted' ORDER BY created_at DESC");
         $stmt->execute([$orgId]);
     }
     respond(['data' => $stmt->fetchAll()]);
