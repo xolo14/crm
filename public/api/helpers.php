@@ -6935,7 +6935,8 @@ function generateUniqueSpReferralCode(PDO $db, string $fullName): string {
         $code = sprintf('SP-%s-%04d', $slug, $n);
         $st = $db->prepare('SELECT id FROM users WHERE referral_code = ? LIMIT 1');
         $st->execute([$code]);
-        if (!$st->fetch()) {
+        // Never reuse a deleted member's code or one already on leads (new members start empty).
+        if (!$st->fetch() && !staffIdCodeRetired($db, $code)) {
             return $code;
         }
     }
