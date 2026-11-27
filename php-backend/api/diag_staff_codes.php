@@ -78,5 +78,28 @@ foreach ($names as $n) {
         } catch (Throwable $e) {
             echo '   forms lookup error: ' . $e->getMessage() . "\n";
         }
+        // Other tracker columns: assigned leads, daily reports (Calls / Follow-ups / Reports), call log.
+        try {
+            $q = $db->prepare('SELECT status, COUNT(*) c, MIN(created_at) first_lead FROM leads WHERE assigned_to = ? GROUP BY status');
+            $q->execute([$row['id']]);
+            foreach ($q->fetchAll(PDO::FETCH_ASSOC) as $a) {
+                echo "   assigned lead status {$a['status']}: {$a['c']} (oldest lead created {$a['first_lead']})\n";
+            }
+            $q = $db->prepare('SELECT MIN(created_at) FROM lead_assignments WHERE user_id = ?');
+            $q->execute([$row['id']]);
+            echo '   first assignment to this member: ' . ($q->fetchColumn() ?: '-') . "\n";
+            $q = $db->prepare('SELECT report_date, total_calls, total_followups, created_at FROM daily_reports WHERE user_id = ? ORDER BY report_date');
+            $q->execute([$row['id']]);
+            foreach ($q->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                echo "   daily report {$r['report_date']}: calls={$r['total_calls']} followups={$r['total_followups']} (saved {$r['created_at']})\n";
+            }
+            $q = $db->prepare('SELECT call_date, COUNT(*) c FROM call_logs WHERE sales_rep_id = ? GROUP BY call_date ORDER BY call_date');
+            $q->execute([$row['id']]);
+            foreach ($q->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                echo "   call log {$r['call_date']}: {$r['c']} call(s)\n";
+            }
+        } catch (Throwable $e) {
+            echo '   activity lookup error: ' . $e->getMessage() . "\n";
+        }
     }
 }
