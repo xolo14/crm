@@ -7906,7 +7906,7 @@ function syncpediaUserRecordLabels(PDO $db, array $userIds): array
         foreach (array_chunk($missing, 200) as $chunk) {
             $ph = implode(',', array_fill(0, count($chunk), '?'));
             try {
-                $st = $db->prepare("SELECT id, referral_code FROM deleted_users WHERE id IN ($ph)");
+                $st = $db->prepare("SELECT id, referral_code, full_name FROM deleted_users WHERE id IN ($ph)");
                 $st->execute($chunk);
                 while ($u = $st->fetch(PDO::FETCH_ASSOC)) {
                     if (!is_array($u)) {
@@ -7914,7 +7914,11 @@ function syncpediaUserRecordLabels(PDO $db, array $userIds): array
                     }
                     $uid = trim((string) ($u['id'] ?? ''));
                     $code = syncpediaDeletedUserStaffFallback($uid, (string) ($u['referral_code'] ?? ''));
-                    if ($uid !== '' && $code !== '') {
+                    // Deleted members keep their name on everything they did, marked as deleted.
+                    $dname = trim((string) ($u['full_name'] ?? ''));
+                    if ($uid !== '' && $dname !== '') {
+                        $labels[$uid] = $dname . ' (deleted)';
+                    } elseif ($uid !== '' && $code !== '') {
                         $labels[$uid] = $code;
                     }
                 }

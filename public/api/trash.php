@@ -79,6 +79,35 @@ function trashRestoreRow(PDO $db, array $trashRow, array $typeMap): void {
         }
     }
 
+    // Removed team members keep their row (marked role 'deleted') so their history stays linked:
+    // restoring puts the archived details back on that same row instead of inserting a new one.
+    if ($table === 'users') {
+        $exists = $db->prepare('SELECT id FROM users WHERE id = ? LIMIT 1');
+        $exists->execute([(string) $use['id']]);
+        if ($exists->fetch()) {
+            $email = strtolower(trim((string) ($use['email'] ?? '')));
+            if ($email !== '') {
+                $dup = $db->prepare('SELECT id FROM users WHERE LOWER(TRIM(email)) = ? AND id <> ? LIMIT 1');
+                $dup->execute([$email, (string) $use['id']]);
+                if ($dup->fetch()) {
+                    throw new RuntimeException('Restore failed: ' . $email . ' is now used by another account');
+                }
+            }
+            $set = [];
+            $vals = [];
+            foreach ($use as $c => $v) {
+                if ($c === 'id') {
+                    continue;
+                }
+                $set[] = '`' . $c . '` = ?';
+                $vals[] = $v;
+            }
+            $vals[] = (string) $use['id'];
+            $db->prepare('UPDATE `users` SET ' . implode(', ', $set) . ' WHERE id = ?')->execute($vals);
+            return;
+        }
+    }
+
     $cols = array_keys($use);
     $ph = implode(',', array_fill(0, count($cols), '?'));
     $sql = 'INSERT INTO `' . $table . '` (`' . implode('`,`', $cols) . '`) VALUES (' . $ph . ')';

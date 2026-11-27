@@ -25,21 +25,6 @@ function normalizeRoleValue(string $value): string {
     return $clean;
 }
 
-/** Remove activity rows that would otherwise linger after the user is deleted (no FK on some hosts). */
-function teamPurgeDeletedMemberActivity(PDO $db, string $memberId): void
-{
-    $queries = [
-        'DELETE FROM daily_reports WHERE user_id = ?',
-        'DELETE FROM call_logs WHERE sales_rep_id = ?',
-    ];
-    foreach ($queries as $sql) {
-        try {
-            $db->prepare($sql)->execute([$memberId]);
-        } catch (Throwable $e) {
-        }
-    }
-}
-
 function teamEnsureReportsToColumn(PDO $db): void {
     static $done = false;
     if ($done) {
@@ -218,6 +203,10 @@ if ($method === 'GET') {
     }
     // Reps / HR / marketing read this roster only for "assign to" pickers: they must not see
     // other people's page-access settings or the org admin's contact details.
+    // Removed members stay in the database (their history keeps their name) but are not on the roster.
+    $rows = array_values(array_filter($rows, static function ($r) {
+        return is_array($r) && syncpediaNormalizeRoleKey((string) ($r['role'] ?? '')) !== 'deleted';
+    }));
     if ($effRole === 'operational_manager') {
         $omRoster = array_merge(syncpediaL1AssignableRoles(), ['manager', 'operational_manager']);
         $rows = array_values(array_filter($rows, static function ($r) use ($omRoster) {
@@ -778,6 +767,9 @@ if ($method === 'DELETE') {
     if (($target['role'] ?? '') === 'super_admin') {
         respond(['error' => 'Super admin cannot be removed from Team'], 403);
     }
+    if (strtolower(trim((string) ($target['role'] ?? ''))) === 'deleted') {
+        respond(['error' => 'This member was already removed'], 404);
+    }
     // Org admins can remove only members in their own organization.
     if (syncpediaNormalizeRoleKey((string) $role) === 'org') {
         $adminOrg = resolveCreatorOrgId($db, $tokenData);
@@ -805,10 +797,23 @@ if ($method === 'DELETE') {
     } catch (Throwable $e) {
     }
 
-    teamPurgeDeletedMemberActivity($db, (string) $id);
-
-    $stmt = $db->prepare("DELETE FROM users WHERE id = ?");
-    $stmt->execute([$id]);
+    // Keep the member's row instead of deleting it: everything they did (lead changes, calls, notes,
+    // assignments, payments, reports) stays linked to their ID on every page and shows "Name (deleted)".
+    // A hard DELETE would cascade-delete or blank those records. The account can no longer sign in,
+    // its email is freed for reuse, and its ID / staff number is never given to anyone else.
+    ensureUsersResultAssessmentColumn($db); // role column accepts 'deleted'
+    syncpediaBumpUserTokenVersion($db, (string) $id);
+    $tombEmail = 'deleted+' . strtolower(preg_replace('/[^a-z0-9]/i', '', (string) $id)) . '@deleted.invalid';
+    $baseName = trim((string) ($target['full_name'] ?? ''));
+    $stmt = $db->prepare(
+        "UPDATE users SET role = 'deleted', is_active = 0, email = ?, full_name = ?, password_hash = ?, reports_to_id = NULL WHERE id = ?"
+    );
+    $stmt->execute([
+        $tombEmail,
+        mb_substr(($baseName !== '' ? $baseName : 'Member') . ' (deleted)', 0, 100),
+        password_hash(bin2hex(random_bytes(24)), PASSWORD_DEFAULT),
+        $id,
+    ]);
     syncpediaAuditLog($db, $tokenData, 'deleted', 'team_member', $id, 'Removed team member: ' . ($target['full_name'] ?? $id));
     $reportsTo = trim((string) ($target['reports_to_id'] ?? ''));
     syncpediaNotifyMemberLifecycle(

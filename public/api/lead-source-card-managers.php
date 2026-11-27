@@ -98,7 +98,7 @@ if ($method === 'GET' && $action === 'managers') {
         $st = $db->prepare(
             "SELECT id, full_name, email, role, is_active
              FROM users
-             WHERE org_id = ?
+             WHERE org_id = ? AND COALESCE(role, '') <> 'deleted'
              ORDER BY full_name ASC"
         );
         $st->execute([$orgId]);

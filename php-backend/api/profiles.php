@@ -281,6 +281,8 @@ if ($method === 'GET') {
     $orgScope = orgFilter($tokenData, 'u');
     $where = $orgScope['where'];
     $params = $orgScope['params'];
+    // Removed members are kept for history but are not current team members.
+    $where .= " AND COALESCE(u.role, '') <> 'deleted'";
 
     if ($role !== 'super_admin') {
         $where .= " AND u.role <> 'super_admin'";
