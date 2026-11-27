@@ -1,9 +1,11 @@
 <?php
 /**
- * Read-only check: why do some members show "Form Leads" they never collected?
- * Prints each member's staff code and the leads carrying it. Changes nothing.
+ * Check: why do some members show "Form Leads" they never collected?
+ * Prints each member's staff code and the leads carrying it, plus a preview of the repair
+ * (syncpediaFixRecycledStaffCodes). Changes nothing unless --fix is passed.
  *
- * CLI:  php /var/www/crm/api/diag_staff_codes.php "Amajala" "Sai Hemanth" ...
+ * CLI:  php /var/www/crm/api/diag_staff_codes.php "Amajala" "Sai Hemanth" ...         (preview)
+ *       php /var/www/crm/api/diag_staff_codes.php --fix "Amajala" "Sai Hemanth" ...   (apply)
  */
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -11,13 +13,19 @@ if (PHP_SAPI !== 'cli') {
 }
 require_once __DIR__ . '/helpers.php';
 $db = (new Database())->getConnection();
-$names = array_slice($argv ?? [], 1);
+$args = array_slice($argv ?? [], 1);
+$apply = in_array('--fix', $args, true);
+$names = array_values(array_filter($args, static fn($a) => $a !== '--fix'));
+
+// Staff accounts created in the last 30 days whose code is on leads older than the account.
+echo ($apply ? 'REPAIR (applied):' : 'REPAIR PREVIEW (nothing changed; add --fix to apply):') . "\n";
+$lines = syncpediaFixRecycledStaffCodes($db, $apply);
+echo $lines === [] ? "   nothing to repair\n" : '   ' . implode("\n   ", $lines) . "\n";
+echo "\n";
 if ($names === []) {
     $names = ['Amajala', 'Datti', 'Maddela', 'Sai Hemanth'];
 }
 
-$marker = dirname(__DIR__) . '/storage/schema_checks/recycled_staff_codes_fix_v1.done';
-echo 'repair marker: ' . (is_file($marker) ? 'done at ' . date('Y-m-d H:i:s', (int) @file_get_contents($marker)) : 'NOT done') . "\n";
 try {
     ensureDeletedUsersTable($db);
     echo 'deleted_users rows: ' . (int) $db->query('SELECT COUNT(*) FROM deleted_users')->fetchColumn() . "\n";

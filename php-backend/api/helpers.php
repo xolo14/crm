@@ -6631,55 +6631,75 @@ function staffIdsRewriteAttribution(PDO $db, string $orgId, string $userId, stri
 }
 
 /**
- * One-time repair (2026-11-26): members created before staffIdCodeRetired() existed could be handed
- * a deleted member's staff code and so "inherit" every lead that code had collected. Give each such
- * member a fresh code; leads they collected themselves (on or after joining) move with them, older
- * leads stay with the deleted member's code. A member re-created under the same name keeps the code.
+ * Repair (2026-11-27): a member's staff code may already be on leads collected before the member
+ * existed (a deleted or earlier member held the code, including a deleted-and-re-created account).
+ * Those leads were counted as the new member's "Form Leads". Each such member gets a fresh code;
+ * leads they collected on or after joining move with them, older leads keep the old code and are
+ * no longer credited to anyone current. Lookups run in PHP so no cross-table string comparison
+ * (collation) can fail. Returns one line per member changed.
+ *
+ * @return string[]
  */
-function syncpediaFixRecycledStaffCodes(PDO $db): void
+function syncpediaFixRecycledStaffCodes(PDO $db, bool $apply = false, string $joinedSince = '2026-10-28 00:00:00'): array
 {
-    ensureDeletedUsersTable($db);
-    $st = $db->query(
-        "SELECT u.id, u.org_id, u.role, u.full_name, u.referral_code, u.created_at
-         FROM users u
-         WHERE u.org_id IS NOT NULL AND u.org_id <> ''
-           AND u.referral_code IS NOT NULL AND u.referral_code <> ''
-           AND (
-             EXISTS (SELECT 1 FROM deleted_users d WHERE UPPER(d.referral_code) = UPPER(u.referral_code) AND d.id <> u.id)
-             OR EXISTS (SELECT 1 FROM leads l WHERE l.referred_by = u.referral_code AND l.created_at < DATE_SUB(u.created_at, INTERVAL 1 DAY))
-           )"
+    $done = [];
+    $staffRoles = array_merge(syncpediaL1AssignableRoles(), ['manager', 'operational_manager']);
+    $users = $db->prepare(
+        "SELECT id, org_id, role, full_name, referral_code, created_at FROM users
+         WHERE org_id IS NOT NULL AND org_id <> '' AND referral_code IS NOT NULL AND referral_code <> ''
+           AND created_at IS NOT NULL AND created_at >= ?"
     );
-    $rows = $st ? ($st->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
-    $sameName = $db->prepare('SELECT 1 FROM deleted_users WHERE UPPER(referral_code) = UPPER(?) AND LOWER(TRIM(full_name)) = LOWER(TRIM(?)) LIMIT 1');
+    $users->execute([$joinedSince]);
+    $rows = $users->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $older = $db->prepare('SELECT COUNT(*) FROM leads WHERE referred_by = ? AND created_at < ?');
+    $setCode = $db->prepare('UPDATE users SET referral_code = ? WHERE id = ?');
+    $moveOwn = $db->prepare('UPDATE leads SET referred_by = ? WHERE referred_by = ? AND created_at >= ?');
     foreach ($rows as $u) {
         $id = (string) ($u['id'] ?? '');
         $old = (string) ($u['referral_code'] ?? '');
         $orgId = (string) ($u['org_id'] ?? '');
         $name = (string) ($u['full_name'] ?? '');
-        if ($id === '' || $old === '' || $orgId === '') {
+        $joined = (string) ($u['created_at'] ?? '');
+        if ($id === '' || $old === '' || $orgId === '' || $joined === '') {
             continue;
         }
-        $sameName->execute([$old, $name]);
-        if ($name !== '' && $sameName->fetchColumn()) {
+        if (!in_array(syncpediaNormalizeRoleKey((string) ($u['role'] ?? '')), $staffRoles, true)) {
             continue;
         }
-        $prefix = orgStaffIdPrefix($db, $orgId);
-        $new = $prefix !== '' ? nextStaffIdForRole($db, $orgId, (string) ($u['role'] ?? ''), $prefix) : null;
-        if (!$new) {
-            $new = generateUniqueSpReferralCode($db, $name !== '' ? $name : 'member');
-        }
-        if ($new === '' || strcasecmp($new, $old) === 0) {
-            continue;
-        }
-        $db->prepare('UPDATE users SET referral_code = ? WHERE id = ?')->execute([$new, $id]);
-        $db->prepare('UPDATE leads SET referred_by = ? WHERE org_id = ? AND referred_by = ? AND created_at >= ?')
-            ->execute([$new, $orgId, $old, (string) ($u['created_at'] ?? '1970-01-01 00:00:00')]);
         try {
-            $db->prepare('UPDATE payment_links SET salesperson_referral_code = ? WHERE salesperson_id = ?')->execute([$new, $id]);
+            $older->execute([$old, $joined]);
+            $before = (int) $older->fetchColumn();
+            if ($before === 0) {
+                continue;
+            }
+            $prefix = orgStaffIdPrefix($db, $orgId);
+            $new = $prefix !== '' ? nextStaffIdForRole($db, $orgId, (string) ($u['role'] ?? ''), $prefix) : null;
+            if (!$new) {
+                $new = generateUniqueSpReferralCode($db, $name !== '' ? $name : 'member');
+            }
+            if ($new === '' || strcasecmp($new, $old) === 0) {
+                continue;
+            }
+            if (!$apply) {
+                $done[] = "{$name}: {$old} -> {$new} (preview); {$before} older lead(s) would stop counting";
+                continue;
+            }
+            $setCode->execute([$new, $id]);
+            $moveOwn->execute([$new, $old, $joined]);
+            $moved = $moveOwn->rowCount();
+            try {
+                $db->prepare('UPDATE payment_links SET salesperson_referral_code = ? WHERE salesperson_id = ?')->execute([$new, $id]);
+            } catch (Throwable $e) {
+            }
+            $line = "{$name}: {$old} -> {$new}; {$before} older lead(s) no longer counted, {$moved} own lead(s) kept";
+            $done[] = $line;
+            error_log('[staff codes] ' . $line);
         } catch (Throwable $e) {
+            $done[] = "{$name}: ERROR " . $e->getMessage();
+            error_log('[staff codes] ' . $name . ': ' . $e->getMessage());
         }
-        error_log("[staff codes] {$name} ({$id}): recycled code {$old} replaced by {$new}");
     }
+    return $done;
 }
 
 /**

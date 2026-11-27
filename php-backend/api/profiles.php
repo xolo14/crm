@@ -9,14 +9,6 @@ $userId = $tokenData['user_id'];
 $role = $tokenData['role'];
 
 if ($method === 'GET') {
-    // One-time: members who were handed a deleted member's staff code get a fresh one (see helpers).
-    try {
-        syncpediaRunSchemaCheckOnce('recycled_staff_codes_fix_v1', function () use ($db) {
-            syncpediaFixRecycledStaffCodes($db);
-        });
-    } catch (Throwable $e) {
-        error_log('[staff codes] ' . $e->getMessage());
-    }
     // If requesting dashboard data
     if (!empty($_GET['action']) && $_GET['action'] === 'dashboard') {
         @set_time_limit(120);
