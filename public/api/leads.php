@@ -232,9 +232,25 @@ if ($method === 'GET') {
         }
     }
 
+    // Sales rep Leads Management: leads assigned to the caller are shown in their own
+    // per-day "Assigned" cards, so source cards and their lists leave them out.
+    $whereWithMine = $where;
+    $paramsWithMine = $params;
+    $excludeMyAssigned = isset($_GET['exclude_my_assigned']) && !in_array(strtolower(trim((string) $_GET['exclude_my_assigned'])), ['', '0', 'false'], true);
+    if ($excludeMyAssigned && (string) $userId !== '') {
+        $where .= " AND NOT (COALESCE(assigned_to, '') = ? OR EXISTS (SELECT 1 FROM lead_assignments mine_la WHERE mine_la.lead_id = leads.id AND mine_la.user_id = ?))";
+        $params[] = (string) $userId;
+        $params[] = (string) $userId;
+    }
+
     $sourceCardsAction = trim((string) ($_GET['action'] ?? ''));
     if ($sourceCardsAction === 'source_cards') {
         $summary = syncpediaAggregateLeadSourceCards($db, $tokenData, $where, $params);
+        if ($excludeMyAssigned) {
+            // The KPI row still counts every lead the caller has, assigned ones included.
+            $all = syncpediaAggregateLeadSourceCards($db, $tokenData, $whereWithMine, $paramsWithMine);
+            $summary['kpi'] = $all['kpi'] ?? ($summary['kpi'] ?? null);
+        }
         respond($summary);
     }
 

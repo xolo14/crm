@@ -27,6 +27,7 @@ import { LeadActivityTimeline } from '@/components/LeadActivityTimeline';
 import { LeadEnrollDialog } from '@/components/leads/LeadEnrollDialog';
 import { FormSubmissionDetails } from '@/components/leads/FormSubmissionDetails';
 import { SourceLeadsDialog } from '@/components/leads/SourceLeadsDialog';
+import { AssignedDayCards, type AssignedLead } from '@/components/leads/AssignedDayCards';
 import * as perms from '@/lib/permissions';
 import { isL1OperationalRole, isL2Role, isMarketingFamilyRole, isOperationalManagerRole, isSalesRepRole } from '@/lib/roleUtils';
 import { filterAndSortAssignRoster, ensureAssignRosterIncludesSelf } from '@/lib/assignRoster';
@@ -334,6 +335,11 @@ export default function Leads() {
   /** Sales rep / exec: hub lists all org-visible rows from API; My Leads shows only referral-link form submissions. */
   const isSalesRepMyLeadsPage =
     location.pathname === '/my-leads' && isSalesRepRole(normalizedLeadRole);
+  /** Sales rep Leads Management / My Leads: assigned leads get per-day cards, not source cards. */
+  const isSalesRepAssignedView =
+    isSalesRepRole(normalizedLeadRole) && ['/leads-management', '/my-leads'].includes(location.pathname);
+  const [myAssignedLeads, setMyAssignedLeads] = useState<AssignedLead[]>([]);
+  const [myAssignedLoading, setMyAssignedLoading] = useState(false);
   const rosterMarketingLike = isMarketingFamilyRole(normalizedLeadRole);
   /** Includes managers plus roles that assign leads using same-org reps */
   const needsAssignmentRoster =
@@ -420,7 +426,10 @@ export default function Leads() {
     if (!hasServerCardsRef.current || statusChangedPeriod) setLoading(true);
     try {
       if (!statusChangedPeriod) {
-        const data = await api.leads.sourceCards(leadScope);
+        const data = await api.leads.sourceCards({
+          ...leadScope,
+          ...(isSalesRepAssignedView ? { exclude_my_assigned: true } : {}),
+        });
         if (gen !== fetchLeadsGen.current) return;
         const cards = Array.isArray(data?.cards) ? data.cards : [];
         hasServerCardsRef.current = true;
@@ -467,6 +476,7 @@ export default function Leads() {
     statusChangedPeriod,
     leadScope,
     normalizedLeadRole,
+    isSalesRepAssignedView,
   ]);
 
   const loadLeadForms = useCallback(async () => {
@@ -884,6 +894,7 @@ export default function Leads() {
     void api.leads
       .list({
         ...leadScope,
+        ...(isSalesRepAssignedView ? { exclude_my_assigned: true } : {}),
         source_bucket: sourceDialogKey,
         lite: false,
         limit: 1500,
@@ -901,7 +912,29 @@ export default function Leads() {
     return () => {
       cancelled = true;
     };
-  }, [sourceDialogKey, dialogReload, statusChangedPeriod, leadScope, isFormLeadsPage]);
+  }, [sourceDialogKey, dialogReload, statusChangedPeriod, leadScope, isFormLeadsPage, isSalesRepAssignedView]);
+
+  // Sales rep: leads assigned to them with the time each was assigned (per-day cards).
+  // Reloads with the source cards and when a lead's detail panel closes (status may have changed).
+  useEffect(() => {
+    if (!isSalesRepAssignedView || detailOpen) return;
+    let cancelled = false;
+    setMyAssignedLoading(true);
+    api.leadAssignments
+      .myLeads()
+      .then((res) => {
+        if (!cancelled) setMyAssignedLeads(Array.isArray(res?.data) ? (res.data as AssignedLead[]) : []);
+      })
+      .catch(() => {
+        /* keep what is shown */
+      })
+      .finally(() => {
+        if (!cancelled) setMyAssignedLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSalesRepAssignedView, dialogReload, detailOpen]);
 
   useEffect(() => {
     if (!assignLeadId) return;
@@ -2167,6 +2200,14 @@ export default function Leads() {
 
       {showSourceCards ? (
         <>
+          {isSalesRepAssignedView ? (
+            <AssignedDayCards
+              leads={myAssignedLeads}
+              loading={myAssignedLoading}
+              statusColors={statusColors}
+              onOpenLead={(lead) => openDetail(lead)}
+            />
+          ) : null}
           <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
               <h2 className="text-sm font-semibold tracking-tight">

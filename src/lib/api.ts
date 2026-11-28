@@ -453,6 +453,8 @@ export const api = {
       uncapped?: boolean;
       /** Stop client-side paging after this many rows (role caps / picker search). */
       maxRows?: number;
+      /** Leave out leads assigned to the caller (sales rep's per-day Assigned cards show them). */
+      exclude_my_assigned?: boolean;
       /** Only rows in this Leads source card (server scans, does not download the whole org first). */
       source_bucket?: string;
       /** Called after each page so the screen can render before later pages finish. */
@@ -470,6 +472,7 @@ export const api = {
         if (params?.org_id) q.set('org_id', params.org_id);
         if (params?.status_changed) q.set('status_changed', params.status_changed);
         if (params?.source_bucket) q.set('source_bucket', params.source_bucket);
+        if (params?.exclude_my_assigned) q.set('exclude_my_assigned', '1');
         q.set('limit', String(limit));
         if (offset > 0) q.set('offset', String(offset));
         return q.toString();
@@ -558,8 +561,9 @@ export const api = {
         },
       ),
     /** Source-card counts only. The Leads page draws cards from this instead of every lead row. */
-    sourceCards: (params?: { org_id?: string; form_leads?: boolean; referred_by?: string }) => {
+    sourceCards: (params?: { org_id?: string; form_leads?: boolean; referred_by?: string; exclude_my_assigned?: boolean }) => {
       const q = new URLSearchParams({ action: 'source_cards' });
+      if (params?.exclude_my_assigned) q.set('exclude_my_assigned', '1');
       if (params?.org_id) q.set('org_id', params.org_id);
       if (params?.referred_by) q.set('referred_by', params.referred_by);
       if (params?.form_leads === true) q.set('form_leads', '1');
@@ -1203,6 +1207,8 @@ export const api = {
   // Lead Assignments
   leadAssignments: {
     list: (leadId?: string) => request(`/lead-assignments.php${leadId ? '?lead_id=' + leadId : ''}`),
+    /** Leads assigned to the signed-in user (main or shared assignee), each with assigned_at. */
+    myLeads: () => request('/lead-assignments.php?action=my_leads') as Promise<{ data?: any[] }>,
     /** Atomically replace assignees for one lead (multi-member). */
     setAssignees: (leadId: string, userIds: string[]) =>
       request('/lead-assignments.php?action=set', {

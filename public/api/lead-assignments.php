@@ -46,7 +46,7 @@ if ($method === 'GET') {
             LEFT JOIN users u ON u.id = la.user_id
             WHERE $where
             ORDER BY COALESCE(la.created_at, l.created_at) DESC
-            LIMIT 500
+            LIMIT 5000
         ");
         $stmt->execute(array_merge([$userId, $userId], $params));
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
