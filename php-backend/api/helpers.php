@@ -280,8 +280,24 @@ function syncpediaBumpUserTokenVersion(PDO $db, string $userId): void
     }
 }
 
+// Android app sessions: the token lives MOBILE_TOKEN_IDLE_TTL and is re-issued (sliding) on
+// authenticated requests, so an app in use stays signed in and one left unused expires.
+if (!defined('MOBILE_TOKEN_IDLE_TTL')) {
+    define('MOBILE_TOKEN_IDLE_TTL', 7 * 86400);
+}
+if (!defined('MOBILE_TOKEN_RENEW_AFTER')) {
+    define('MOBILE_TOKEN_RENEW_AFTER', 3600);
+}
+
+/** True for requests from the Syncpedia Android app (it sends X-Syncpedia-Client: android). */
+function syncpediaIsMobileAppClient(): bool
+{
+    $v = $_SERVER['HTTP_X_SYNCPEDIA_CLIENT'] ?? '';
+    return is_string($v) && strtolower(trim($v)) === 'android';
+}
+
 // Simple JWT implementation
-function createToken($userId, $role, $orgId = null, ?int $tokenVersion = null) {
+function createToken($userId, $role, $orgId = null, ?int $tokenVersion = null, bool $mobile = false) {
     if ($tokenVersion === null) {
         try {
             $db = (new Database())->getConnection();
@@ -290,15 +306,19 @@ function createToken($userId, $role, $orgId = null, ?int $tokenVersion = null) {
             $tokenVersion = 1;
         }
     }
-    $header = base64_encode(json_encode(['alg' => 'HS256', 'typ' => 'JWT']));
-    $payload = base64_encode(json_encode([
+    $claims = [
         'user_id' => $userId,
         'role' => $role,
         'org_id' => $orgId,
         'tv' => (int) $tokenVersion,
-        'exp' => time() + TOKEN_EXPIRY,
+        'exp' => time() + ($mobile ? MOBILE_TOKEN_IDLE_TTL : TOKEN_EXPIRY),
         'iat' => time(),
-    ]));
+    ];
+    if ($mobile) {
+        $claims['cl'] = 'm';
+    }
+    $header = base64_encode(json_encode(['alg' => 'HS256', 'typ' => 'JWT']));
+    $payload = base64_encode(json_encode($claims));
     $signature = base64_encode(hash_hmac('sha256', "$header.$payload", JWT_SECRET, true));
     return "$header.$payload.$signature";
 }
@@ -411,6 +431,18 @@ function verifyToken() {
     } catch (Throwable $e) {
         error_log('[verifyToken] user lookup failed: ' . $e->getMessage());
         respond(['error' => 'Authentication temporarily unavailable'], 401);
+    }
+
+    // Sliding app session: re-issue a fresh MOBILE_TOKEN_IDLE_TTL token at most hourly. Runs only
+    // after the signature/expiry/active/token_version checks above, so revoked users never renew.
+    // A pre-1.0.12 24h token from the app is upgraded on its first request.
+    $isAppToken = ($data['cl'] ?? '') === 'm';
+    if (($isAppToken || syncpediaIsMobileAppClient()) && !headers_sent()) {
+        $issuedAt = (int) ($data['iat'] ?? 0);
+        if (!$isAppToken || $issuedAt <= 0 || time() - $issuedAt >= MOBILE_TOKEN_RENEW_AFTER) {
+            $fresh = createToken($uid, (string) ($data['role'] ?? ''), $data['org_id'] ?? null, (int) ($data['tv'] ?? 1), true);
+            header('X-Refreshed-Token: ' . $fresh);
+        }
     }
 
     if (function_exists('syncpediaSetMailContext')) {

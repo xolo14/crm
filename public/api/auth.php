@@ -160,7 +160,7 @@ function authLoginSuccessResponse(PDO $db, array $user): array {
     if ($normalizedRole === 'super_admin') {
         $tokenOrgId = null;
     }
-    $token = createToken($user['id'], $user['role'], $tokenOrgId);
+    $token = createToken($user['id'], $user['role'], $tokenOrgId, null, syncpediaIsMobileAppClient());
     syncpediaIssueAuthCookie($token);
     unset($user['password_hash'], $user['is_active']);
 
@@ -1301,7 +1301,7 @@ if ($method === 'POST') {
         $targetOrgId = $input['org_id'] ?? null;
         
         // Re-issue token with new org context
-        $token = createToken($tokenData['user_id'], $tokenData['role'], $targetOrgId);
+        $token = createToken($tokenData['user_id'], $tokenData['role'], $targetOrgId, null, syncpediaIsMobileAppClient());
         syncpediaIssueAuthCookie($token);
         
         $org = null;
