@@ -989,7 +989,8 @@ function syncpediaHiddenOmImportsSql(array $tokenData, string $alias = ''): arra
         . " AND {$c}created_by IN (SELECT om_u.id FROM users om_u WHERE LOWER(TRIM(COALESCE(om_u.role, ''))) IN ('operational_manager', 'ops_manager', 'l2_operational_manager', 'operational manager'))"
         . " AND COALESCE({$c}created_by, '') <> ?"
         . " AND COALESCE({$c}assigned_to, '') <> ?"
-        . " AND NOT EXISTS (SELECT 1 FROM lead_assignments om_la WHERE om_la.lead_id = {$c}id AND om_la.user_id = ?)"
+        // Unaliased callers query `FROM leads`; a bare `id` here would bind to om_la.id.
+        . " AND NOT EXISTS (SELECT 1 FROM lead_assignments om_la WHERE om_la.lead_id = " . ($alias !== '' ? "{$alias}.id" : 'leads.id') . " AND om_la.user_id = ?)"
         . ' THEN 1 ELSE 0 END) = 0';
     return ['sql' => $sql, 'params' => [$uid, $uid, $uid]];
 }
@@ -1885,7 +1886,9 @@ function hierarchyL1OwnLeadsScopeSql(array $tokenData, string $alias = '', ?PDO 
         return ['sql' => ' AND 1=0', 'params' => []];
     }
     $col = $alias !== '' ? "{$alias}." : '';
-    $idCol = $alias !== '' ? "{$alias}.id" : 'id';
+    // Unaliased callers query `FROM leads`. A bare `id` inside the lead_assignments subquery
+    // would bind to la.id, so shared (non-primary) assignees never saw their leads.
+    $idCol = $alias !== '' ? "{$alias}.id" : 'leads.id';
     $sql = " AND ({$col}assigned_to = ? OR {$col}referred_by = (SELECT referral_code FROM users WHERE id = ?) OR {$col}created_by = ? OR EXISTS (SELECT 1 FROM lead_assignments la WHERE la.lead_id = {$idCol} AND la.user_id = ?)";
     $params = [$userId, $userId, $userId, $userId];
     if ($db instanceof PDO) {
