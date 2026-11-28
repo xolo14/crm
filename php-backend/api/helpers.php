@@ -960,10 +960,10 @@ function tenantOrgScopeSql(PDO $db, array $tokenData, string $alias = ''): array
 }
 
 /**
- * TEMPORARY (2026-11-26): leads an Operational Manager imported by CSV are private to that
- * OM. Nobody else in the org (Org Admin, managers, other OMs, reps, HR, marketing) sees
- * them, except a member they are assigned to, who sees only those leads.
- * Super Admin is outside the org structure and still sees everything.
+ * TEMPORARY (2026-11-26): leads an Operational Manager imported by CSV are hidden from the
+ * rest of the org (Org Admin, managers, reps, HR, marketing), except a member they are
+ * assigned to, who sees only those leads.
+ * Super Admin and every Operational Manager see all org leads, these imports included (2026-11-28).
  * Set to false to go back to the normal org-wide visibility. Nothing is moved or deleted.
  */
 const SYNCPEDIA_HIDE_OM_IMPORTS = true;
@@ -979,7 +979,7 @@ function syncpediaHiddenOmImportsSql(array $tokenData, string $alias = ''): arra
         return ['sql' => '', 'params' => []];
     }
     $role = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-    if ($role === 'super_admin') {
+    if ($role === 'super_admin' || $role === 'operational_manager') {
         return ['sql' => '', 'params' => []];
     }
     $uid = (string) ($tokenData['user_id'] ?? '');

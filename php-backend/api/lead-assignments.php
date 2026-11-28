@@ -147,7 +147,7 @@ if ($method === 'GET') {
     } else {
         $orgId = resolveCreatorOrgId($db, $tokenData);
         $effRole = syncpediaNormalizeRoleKey((string) ($tokenData['role'] ?? ''));
-        if ($orgId && in_array($effRole, ['admin', 'org', 'finance', 'super_admin', 'manager'], true)) {
+        if ($orgId && in_array($effRole, ['admin', 'org', 'finance', 'super_admin', 'manager', 'operational_manager'], true)) {
             $stmt = $db->prepare("
                 SELECT la.*, u.full_name as user_name, l.name as lead_name
                 FROM lead_assignments la
