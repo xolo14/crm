@@ -232,6 +232,10 @@ if ($method === 'POST') {
         $ok = 0;
         $failed = 0;
         $errors = [];
+        // Check each lead without stopping the request, so one lead outside the caller's
+        // view fails alone instead of failing the whole batch.
+        $bulkScope = tenantLeadsScopeSql($db, $tokenData, 'l');
+        $bulkSeen = $db->prepare("SELECT l.id FROM leads l WHERE l.id = ? AND 1=1{$bulkScope['sql']} LIMIT 1");
         foreach ($leadIds as $leadId) {
             $leadId = trim((string) $leadId);
             if ($leadId === '') {
@@ -239,7 +243,12 @@ if ($method === 'POST') {
                 continue;
             }
             try {
-                syncpediaAssertLeadInScope($db, $tokenData, $leadId);
+                $bulkSeen->execute(array_merge([$leadId], $bulkScope['params']));
+                if (!$bulkSeen->fetchColumn()) {
+                    $bulkSeen->closeCursor();
+                    throw new RuntimeException('lead not found or not visible to you');
+                }
+                $bulkSeen->closeCursor();
                 leadsReplaceAssignees($db, $leadId, $assigneeIds);
                 $ok++;
             } catch (Throwable $e) {

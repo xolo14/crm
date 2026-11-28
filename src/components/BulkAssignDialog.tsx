@@ -12,7 +12,8 @@ interface BulkAssignDialogProps {
   onOpenChange: (open: boolean) => void;
   teamMembers: { id: string; full_name: string; role?: string }[];
   unassignedCount: number;
-  onAssign: (count: number, repIds: string[]) => void;
+  /** May return a promise; the dialog closes once it settles. */
+  onAssign: (count: number, repIds: string[]) => void | Promise<unknown>;
   isAssigning?: boolean;
 }
 
@@ -56,9 +57,15 @@ export function BulkAssignDialog({ open, onOpenChange, teamMembers, unassignedCo
     else setSelectedReps(new Set(teamMembers.map(m => m.id)));
   };
 
-  const handleAssign = () => {
+  const handleAssign = async () => {
     if (validCount <= 0 || selectedReps.size === 0 || isAssigning) return;
-    onAssign(validCount, Array.from(selectedReps));
+    try {
+      await onAssign(validCount, Array.from(selectedReps));
+    } finally {
+      // The page shows the result as a toast; close so it is visible and the list refreshes.
+      setSelectedReps(new Set());
+      onOpenChange(false);
+    }
   };
 
   return (

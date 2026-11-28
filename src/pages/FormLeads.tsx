@@ -501,6 +501,8 @@ export default function FormLeads() {
 
   // KPIs (respect employee filter via cardLeads)
   const totalLeads = leads.length;
+  // The page-level Bulk Assign only hands out leads nobody has yet, so count only those.
+  const unassignedLeadCount = useMemo(() => leads.filter((l) => !l.assigned_to).length, [leads]);
   const filteredTotal = cardLeads.length;
   const newLeads = cardLeads.filter(l => l.status === 'new').length;
   const inPipeline = cardLeads.filter(l => ['interested', 'demo_scheduled', 'demo_attended'].includes(l.status)).length;
@@ -651,6 +653,7 @@ export default function FormLeads() {
       });
       let totalAssigned = 0;
       let failed = 0;
+      const errorHints: string[] = [];
       for (const [repId, leadIds] of Object.entries(repAssignments)) {
         if (leadIds.length === 0) continue;
         try {
@@ -659,14 +662,17 @@ export default function FormLeads() {
           const fail = typeof res?.failed === 'number' ? res.failed : 0;
           totalAssigned += ok;
           failed += fail;
-        } catch {
+          if (Array.isArray(res?.errors) && res.errors.length) errorHints.push(...res.errors.slice(0, 3));
+        } catch (err: any) {
           failed += leadIds.length;
+          if (err?.message) errorHints.push(String(err.message));
         }
       }
       fetchData();
+      const reason = Array.from(new Set(errorHints)).slice(0, 2).join('; ');
       toast({
         title: `${totalAssigned} leads distributed across ${repIds.length} reps`,
-        description: failed > 0 ? `${failed} failed` : undefined,
+        description: failed > 0 ? `${failed} failed${reason ? `: ${reason}` : ''}` : undefined,
         variant: failed > 0 && totalAssigned === 0 ? 'destructive' : undefined,
       });
     } finally { setBulkAssigning(false); }
@@ -1463,7 +1469,7 @@ export default function FormLeads() {
         open={bulkAssignOpen}
         onOpenChange={setBulkAssignOpen}
         teamMembers={teamMembers}
-        unassignedCount={totalLeads}
+        unassignedCount={unassignedLeadCount}
         onAssign={handleBulkAutoAssign}
         isAssigning={bulkAssigning}
       />

@@ -1216,7 +1216,7 @@ export function SourceLeadsDialog({
         onOpenChange={setAutoAssignOpen}
         teamMembers={teamMembers}
         unassignedCount={autoAssignPool.length}
-        onAssign={(count, repIds) => void handleAutoAssign(count, repIds)}
+        onAssign={handleAutoAssign}
         isAssigning={isAutoAssigning || undoing}
       />
     </>
